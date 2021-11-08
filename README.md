@@ -1,0 +1,2 @@
+# ZyXEL-VMG8825-T50-OpenWrt
+OpenWrt for ZyXEL VMG8825-T50
