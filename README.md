@@ -1,5 +1,5 @@
-# ZyXEL-VMG8825-T50-OpenWrt
-OpenWrt for ZyXEL VMG8825-T50
+# ZyXEL-VMG8825-T50K-OpenWrt
+OpenWrt for ZyXEL VMG8825-T50K
 
 https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50
 
