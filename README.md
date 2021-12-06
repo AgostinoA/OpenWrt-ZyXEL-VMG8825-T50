@@ -1,24 +1,24 @@
-<!-- PROJECT SHIELDS -->
-<!--
-*** I'm using markdown "reference style" links for readability.
-*** Reference links are enclosed in brackets [ ] instead of parentheses ( ).
-*** See the bottom of this document for the declaration of the reference variables
-*** for contributors-url, forks-url, etc. This is an optional, concise syntax you may use.
-*** https://www.markdownguide.org/basic-syntax/#reference-style-links
--->
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![MIT License][license-shield]][license-url]
-[![LinkedIn][linkedin-shield]][linkedin-url]
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <a href="https://github.com/othneildrew/Best-README-Template">
+    <img src="https://github.com/openwrt/openwrt/blob/master/include/logo.png" alt="Logo" width="80" height="80">
+  </a>
 
-# OpenWrt for ZyXEL VMG8825-T50/K
-  
-# WEB 
-* [OpenWrt](https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50)
-* [Zyxel](./docs/api.md)
+  <h3 align="center">OpenWrt for ZyXEL VMG8825-T50/K</h3>
 
+  <p align="center">
+    Porting OpenWrt
+    <br />
+    <a href="https://github.com/othneildrew/Best-README-Template"><strong>Explore the docs »</strong></a>
+    <br />
+    <br />
+    <a href="https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50">OpenWrt</a>
+    ·
+    <a href="https://github.com/othneildrew/Best-README-Template/issues">Zyxel</a>
+  </p>
+</div>
+ 
 # Firmware
 ```diff
 + VMG8825-T50K_5.50(ABOM.3) -> ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
