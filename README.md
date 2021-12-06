@@ -34,7 +34,7 @@
 + VMG8825-T50K_5.50(ABOM.3) -> ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
 ```
 
-# TODO
+# TODO FOR INIT
 ```diff
 - N/A
 + DONE
