@@ -10,12 +10,12 @@
   <p align="center">
     Porting OpenWrt
     <br />
-    <a href="https://github.com/othneildrew/Best-README-Template"><strong>Explore the docs »</strong></a>
+    <a href="https://www.zyxel.com/support/download_landing/product/vmg8825_t50k_14.shtml?c=gb&l=en&pid=20180720160007&tab=Firmware&pname=VMG8825-T50K"><strong>Explore firmware official»</strong></a>
     <br />
     <br />
     <a href="https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50">OpenWrt</a>
     ·
-    <a href="https://github.com/othneildrew/Best-README-Template/issues">Zyxel</a>
+    <a href="https://www.zyxel.com/products_services/Dual-Band-Wireless-AC-N-VDSL2-Combo-WAN-Gigabit-IAD-VMG8825-T50K/">Zyxel</a>
   </p>
 </div>
  
