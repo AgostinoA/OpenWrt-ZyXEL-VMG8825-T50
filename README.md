@@ -15,6 +15,13 @@
   - source firmware ZyXEL-VMG8825-T50-OpenWrt
   - source firmware OpenWrt
 
+```diff
+- text in red
++ text in green
+! text in orange
+# text in gray
+@@ text in purple (and bold)@@
+```
 
 ```diff
 - list firmwares
