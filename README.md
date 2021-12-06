@@ -46,7 +46,7 @@
 + add kernel main:last
 + add source ZyXEL-VMG8825-T50
 + add source OpenWrt
-! list firmwares ZyXEL-VMG8825-T50
++ list firmwares ZyXEL-VMG8825-T50
 ! hack json automate
 ! script auto build stock
 # patch all ZyXEL-VMG8825-T50 on Openwrt
