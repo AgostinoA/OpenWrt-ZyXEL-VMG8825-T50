@@ -1,0 +1,1435 @@
+Index: radvd-1.8/defaults.h
+===================================================================
+--- radvd-1.8.orig/defaults.h	2011-05-07 10:26:39.000000000 +0800
++++ radvd-1.8/defaults.h	2017-08-03 14:38:47.529741562 +0800
+@@ -200,7 +200,7 @@
+ 	uint8_t   			nd_opt_dnssli_len;
+ 	uint16_t   			nd_opt_dnssli_reserved;
+ 	uint32_t			nd_opt_dnssli_lifetime;
+-	char				nd_opt_dnssli_suffixes[];
++	unsigned char			nd_opt_dnssli_suffixes[];
+ };
+ 
+ /* Flags */
+Index: radvd-1.8/device-linux.c
+===================================================================
+--- radvd-1.8.orig/device-linux.c	2011-02-27 00:00:23.000000000 +0800
++++ radvd-1.8/device-linux.c	2017-08-03 14:38:43.868580320 +0800
+@@ -226,7 +226,7 @@
+ 
+ 	if (!allrouters_ok) {
+ 		flog(LOG_WARNING, "resetting ipv6-allrouters membership on %s", iface->Name);
+-		setup_allrouters_membership(iface);
++		return setup_allrouters_membership(iface);
+ 	}
+ 
+ 	return(0);
+@@ -243,6 +243,10 @@
+ 	if (snprintf(spath, sizeof(spath), var, iface) >= sizeof(spath))
+ 		return -1;
+ 
++	/* No path traversal */
++	if (!iface[0] || !strcmp(iface, ".") || !strcmp(iface, "..") || strchr(iface, '/'))
++		return -1;
++
+ 	if (access(spath, F_OK) != 0)
+ 		return -1;
+ 
+Index: radvd-1.8/interface.c
+===================================================================
+--- radvd-1.8.orig/interface.c	2011-05-07 10:26:39.000000000 +0800
++++ radvd-1.8/interface.c	2017-08-03 14:38:35.061256987 +0800
+@@ -43,6 +43,7 @@
+ 
+ 	iface->MinRtrAdvInterval = -1;
+ 	iface->AdvDefaultLifetime = -1;
++	iface->AdvDefaultLifetime_bak = -1;	//Niko add
+ 	iface->AdvDefaultPreference = DFLT_AdvDefaultPreference;
+ 	iface->HomeAgentLifetime = -1;
+ }
+@@ -174,6 +175,7 @@
+ 
+ 	if (iface->AdvDefaultLifetime < 0)
+ 		iface->AdvDefaultLifetime = DFLT_AdvDefaultLifetime(iface);
++	iface->AdvDefaultLifetime_bak= iface->AdvDefaultLifetime;	//Niko add
+ 
+ 	if ((iface->AdvDefaultLifetime != 0) &&
+ 	   ((iface->AdvDefaultLifetime > MAX_AdvDefaultLifetime) ||
+Index: radvd-1.8/netlink.c
+===================================================================
+--- radvd-1.8.orig/netlink.c	2011-02-27 00:00:23.000000000 +0800
++++ radvd-1.8/netlink.c	2017-08-03 14:38:28.977772557 +0800
+@@ -29,6 +29,10 @@
+ #include <errno.h>
+ #include <string.h>
+ 
++#ifndef SOL_NETLINK
++#define SOL_NETLINK	270
++#endif
++
+ void process_netlink_msg(int sock)
+ {
+ 	int len;
+@@ -39,7 +43,9 @@
+ 	struct nlmsghdr *nh;
+ 	struct ifinfomsg * ifinfo;
+ 	char ifname[IF_NAMESIZE] = {""};
+-	char * rc = 0;
++	struct rtattr *rta;
++	int rta_len;
++	int reloaded = 0;
+ 
+ 	len = recvmsg (sock, &msg, 0);
+ 	if (len == -1) {
+@@ -57,27 +63,42 @@
+ 		}
+ 
+ 		/* Continue with parsing payload. */
+-                ifinfo = NLMSG_DATA(nh);
+-                rc = if_indextoname(ifinfo->ifi_index, ifname);
++		if (nh->nlmsg_type == RTM_NEWLINK || nh->nlmsg_type == RTM_DELLINK || nh->nlmsg_type == RTM_SETLINK) {
++			ifinfo = (struct ifinfomsg *)NLMSG_DATA(nh);
++			if_indextoname(ifinfo->ifi_index, ifname);
++			rta = IFLA_RTA(NLMSG_DATA(nh));
++			rta_len = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
++			for (; RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len)) {
++				if (rta->rta_type == IFLA_OPERSTATE || rta->rta_type == IFLA_LINKMODE) {
+                 if (ifinfo->ifi_flags & IFF_RUNNING) {
+                         dlog(LOG_DEBUG, 3, "%s, ifindex %d, flags is running", ifname, ifinfo->ifi_index);
+                 }
+                 else {
+                         dlog(LOG_DEBUG, 3, "%s, ifindex %d, flags is *NOT* running", ifname, ifinfo->ifi_index);
+                 }
++					if (!reloaded) {
+ 		reload_config();
++						reloaded = 1;
++					}
++				}
++			}
++		}
+ 	}
+ }
+ 
+ int netlink_socket(void)
+ {
+ 	int rc, sock;
++	unsigned int val = 1;
+ 	struct sockaddr_nl snl;
+ 
+ 	sock = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+ 	if (sock == -1) {
+ 		flog(LOG_ERR, "Unable to open netlink socket: %s", strerror(errno));
+ 	}
++	else if (setsockopt(sock, SOL_NETLINK, NETLINK_NO_ENOBUFS, &val, sizeof(val)) < 0 ) {
++		flog(LOG_ERR, "Unable to setsockopt NETLINK_NO_ENOBUFS: %s", strerror(errno));
++	}
+ 
+ 	memset(&snl, 0, sizeof(snl));
+ 	snl.nl_family = AF_NETLINK;
+Index: radvd-1.8/privsep-linux.c
+===================================================================
+--- radvd-1.8.orig/privsep-linux.c	2011-04-18 06:23:21.000000000 +0800
++++ radvd-1.8/privsep-linux.c	2017-08-03 14:38:17.699529283 +0800
+@@ -63,7 +63,7 @@
+ 		}
+ 		if (ret != sizeof(cmd)) {
+ 			/* Short read, ignore */
+-			continue;
++			return;
+ 		}
+ 
+ 		cmd.iface[IFNAMSIZ-1] = '\0';
+Index: radvd-1.8/process.c
+===================================================================
+--- radvd-1.8.orig/process.c	2011-04-18 06:23:21.000000000 +0800
++++ radvd-1.8/process.c	2017-08-03 14:38:11.582015038 +0800
+@@ -195,7 +195,6 @@
+ 
+ 	if (iface->UnicastOnly) {
+ 		dlog(LOG_DEBUG, 3, "random mdelay for %s: %g seconds.", iface->Name, delay/1000.0);
+-		mdelay(delay);
+ 		send_ra_forall(iface, &addr->sin6_addr);
+ 	}
+ 	else if ( timevaldiff(&tv, &iface->last_multicast) / 1000.0 < iface->MinDelayBetweenRAs ) {
+@@ -281,7 +280,7 @@
+ 		char prefix_str[INET6_ADDRSTRLEN];
+ 		char rdnss_str[INET6_ADDRSTRLEN];
+ 		char suffix[256];
+-		int offset, label_len;
++		unsigned int offset, label_len;
+ 		uint32_t preferred, valid, count;
+ 
+ 		if (len < 2)
+@@ -301,8 +300,9 @@
+ 		}
+ 		else if (optlen > len)
+ 		{
+-			flog(LOG_ERR, "option length greater than total"
+-				" length in RA on %s from %s",
++			flog(LOG_ERR, "option length (%d) greater than total"
++				" length (%d) in RA on %s from %s",
++				optlen, len,
+ 				iface->Name, addr_str);
+ 			break;
+ 		}
+@@ -311,6 +311,8 @@
+ 		{
+ 		case ND_OPT_MTU:
+ 			mtu = (struct nd_opt_mtu *)opt_str;
++			if (len < sizeof(*mtu))
++				return;
+ 
+ 			if (iface->AdvLinkMTU && (ntohl(mtu->nd_opt_mtu_mtu) != iface->AdvLinkMTU))
+ 			{
+@@ -320,6 +322,8 @@
+ 			break;
+ 		case ND_OPT_PREFIX_INFORMATION:
+ 			pinfo = (struct nd_opt_prefix_info *) opt_str;
++			if (len < sizeof(*pinfo))
++				return;
+ 			preferred = ntohl(pinfo->nd_opt_pi_preferred_time);
+ 			valid = ntohl(pinfo->nd_opt_pi_valid_time);
+ 
+@@ -374,6 +378,8 @@
+ 			break;
+ 		case ND_OPT_RDNSS_INFORMATION:
+ 			rdnssinfo = (struct nd_opt_rdnss_info_local *) opt_str;
++			if (len < sizeof(*rdnssinfo))
++				return;
+ 			count = rdnssinfo->nd_opt_rdnssi_len;
+ 
+ 			/* Check the RNDSS addresses received */
+@@ -414,8 +420,12 @@
+ 			break;
+ 		case ND_OPT_DNSSL_INFORMATION:
+ 			dnsslinfo = (struct nd_opt_dnssl_info_local *) opt_str;
++			if (len < sizeof(*dnsslinfo))
++				return;
+ 			suffix[0] = '\0';
+ 			for (offset = 0; offset < (dnsslinfo->nd_opt_dnssli_len-1)*8;) {
++				if (&dnsslinfo->nd_opt_dnssli_suffixes[offset] - opt_str >= len)
++					return;
+ 				label_len = dnsslinfo->nd_opt_dnssli_suffixes[offset++];
+ 
+ 				if (label_len == 0) {
+@@ -435,7 +445,14 @@
+ 					continue;
+ 				}
+ 
+-				if ((sizeof(suffix) - strlen(suffix)) < (label_len + 2)) {
++				/*
++				 * 1) must not overflow int: label + 2, offset + label_len
++				 * 2) last byte of dnssli_suffix must not overflow opt_str + len
++				 */
++				if ((sizeof(suffix) - strlen(suffix)) < (label_len + 2) ||
++				    label_len > label_len + 2 ||
++				    &dnsslinfo->nd_opt_dnssli_suffixes[offset+label_len] - opt_str >= len ||
++				    offset + label_len < offset) {
+ 					flog(LOG_ERR, "oversized suffix in DNSSL option on %s from %s",
+ 							iface->Name, addr_str);
+ 					break;
+@@ -443,7 +460,7 @@
+ 
+ 				if (suffix[0] != '\0')
+ 					strcat(suffix, ".");
+-				strncat(suffix, &dnsslinfo->nd_opt_dnssli_suffixes[offset], label_len);
++				strncat(suffix, (char*)&dnsslinfo->nd_opt_dnssli_suffixes[offset], label_len);
+ 				offset += label_len;
+ 			}
+ 			break;
+Index: radvd-1.8/radvd.c
+===================================================================
+--- radvd-1.8.orig/radvd.c	2011-05-07 10:26:39.000000000 +0800
++++ radvd-1.8/radvd.c	2017-08-03 14:37:42.676715976 +0800
+@@ -94,6 +94,18 @@
+ int readin_config(char *);
+ int check_conffile_perm(const char *, const char *);
+ void main_loop(void);
++void kickoff_adverts_when_pd_change(void);
++void set_prefix_plt_vlt_to_zero(void);
++void set_prefix_plt_vlt_back(void);
++void backup_old_prefix(void);
++void backup_new_prefix(void);
++void set_prefix_to_old(void);
++void set_prefix_back_to_new(void);
++int pd_change_flag_on(void);
++int is_old_new_prefix_exist_and_diff(void);
++int initiativeCheckLifetime();
++int onePrefixExpiredCurrently();
++void prefixExipreSendRaImmediately();
+ 
+ int
+ main(int argc, char *argv[])
+@@ -289,11 +301,11 @@
+ 			exit(1);
+ 		}
+ 		pidstr[ret] = '\0';
+-		if (!kill((pid_t)atol(pidstr), 0))
++		/*if (!kill((pid_t)atol(pidstr), 0))
+ 		{
+ 			flog(LOG_ERR, "radvd already running, terminating.");
+ 			exit(1);
+-		}
++		}*/
+ 		close(fd);
+ 		fd = open(pidfile, O_CREAT|O_TRUNC|O_WRONLY, 0644);
+ 	}
+@@ -314,7 +326,7 @@
+ 	if (get_debuglevel() == 0) {
+ 
+ 		/* Detach from controlling terminal */
+-		if (daemon(0, 0) < 0)
++		if (daemon(0, 1) < 0)
+ 			perror("daemon");
+ 
+ 		/* close old logfiles, including stderr */
+@@ -350,7 +362,18 @@
+ 	close(fd);
+ 
+ 	config_interface();
++
++	// see if need to use 3 RA architecture. (pd is changed)
++	backup_new_prefix();
++	if (is_old_new_prefix_exist_and_diff()==1) {
++		system("echo 1 > /tmp/radvd_pd_change");
++		kickoff_adverts_when_pd_change();
++		system("rm -rf /tmp/radvd_pd_change");
++	}else{
+ 	kickoff_adverts();
++	}
++	backup_old_prefix(); // for the next time radvd.bin be restart.
++
+ 	main_loop();
+ 	stop_adverts();
+ 	unlink(pidfile);
+@@ -358,6 +381,8 @@
+ 	return 0;
+ }
+ 
++unsigned long g_lastChkWanCable_time_in_micros = 0;
++
+ void main_loop(void)
+ {
+ 	struct pollfd fds[2];
+@@ -396,8 +421,10 @@
+ 				}
+ 			}
+ 		}
++		//2016/1/11, Niko. the max timeout is 10 secs, because if wifi is off the timeout time there will be too long
++		timeout= timeout>10000? 10000: timeout;
+ 
+-		dlog(LOG_DEBUG, 3, "polling for %g seconds.", timeout/1000.0);
++		dlog(LOG_DEBUG, 5, "polling for %g seconds.", timeout/1000.0);
+ 
+ 		rc = poll(fds, sizeof(fds)/sizeof(fds[0]), timeout);
+ 
+@@ -451,6 +478,24 @@
+ 			sigusr1_received = 0;
+ 		}
+ 
++
++		struct timeval tv;
++		gettimeofday(&tv,NULL);
++		unsigned long time_in_micros = 1000000 * tv.tv_sec + tv.tv_usec;
++
++		if (time_in_micros - g_lastChkWanCable_time_in_micros > 2000000) {
++			g_lastChkWanCable_time_in_micros = time_in_micros;
++			//2015/09/22 Niko add, call kickoff_adverts if need send RA
++			if (1 == initiativeCheckLifetime())
++			{
++				kickoff_adverts();
++			}
++
++			if (1 == onePrefixExpiredCurrently())
++			{
++				prefixExipreSendRaImmediately();
++			}
++		}
+ 	}
+ }
+ 
+@@ -627,6 +672,13 @@
+ 
+ 	/* XXX: fails due to lack of permissions with non-root user */
+ 	config_interface();
++
++	//2016/01/08, niko: adter reread config, check wan status. then kickoff_adverts
++	if(check_wan_ip_empty()==1)
++	{
++		set_prefix_lifetimes_to_zero(IfaceList);
++		g_HasSetRaltToZero= 1;
++	}
+ 	kickoff_adverts();
+ 
+ 	flog(LOG_INFO, "resuming normal operation");
+@@ -856,3 +908,450 @@
+ 	exit(1);
+ }
+ 
++void set_prefix_plt_vlt_to_zero(void)
++{
++	struct AdvPrefix *prefix;
++	char pfx_str[INET6_ADDRSTRLEN];
++	flog(LOG_INFO, "Resetting prefix lifetimes");
++
++        struct Interface *iface = NULL;
++        iface=IfaceList;
++	if (!iface) return;
++	for (iface; iface; iface = iface->next)
++	{
++		if (!iface) return;
++		for (prefix = iface->AdvPrefixList; prefix;
++							prefix = prefix->next)
++		{
++			if (!prefix)return;
++			print_addr(&prefix->Prefix, pfx_str);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s plft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_preferredlft, prefix->AdvPreferredLifetime);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s vlft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_validlft, prefix->AdvValidLifetime);
++			prefix->curr_validlft =     0;
++			prefix->curr_preferredlft = 0;
++		}
++	}
++}
++void set_prefix_plt_vlt_back(void)
++{
++	struct AdvPrefix *prefix;
++	char pfx_str[INET6_ADDRSTRLEN];
++	flog(LOG_INFO, "Resetting prefix lifetimes");
++
++	struct Interface *iface = NULL;
++	iface=IfaceList;
++	if (!iface) return;
++	for (iface; iface; iface = iface->next)
++	{
++		if (!iface) return;
++		for (prefix = iface->AdvPrefixList; prefix;
++							prefix = prefix->next)
++		{
++			if (!prefix) return;
++			print_addr(&prefix->Prefix, pfx_str);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s plft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_preferredlft, prefix->AdvPreferredLifetime);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s vlft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_validlft, prefix->AdvValidLifetime);
++			prefix->curr_validlft =     prefix->AdvValidLifetime;
++			prefix->curr_preferredlft = prefix->AdvPreferredLifetime;
++		}
++	}
++}
++void set_prefix_to_old(void)
++{
++	struct AdvPrefix *prefix;
++	char pfx_str[INET6_ADDRSTRLEN];
++	flog(LOG_INFO, "Resetting prefix lifetimes");
++
++        struct Interface *iface = NULL;
++        iface=IfaceList;
++	if (!iface) return;
++	for (iface; iface; iface = iface->next)
++	{
++		if (!iface) return;
++		for (prefix = iface->AdvPrefixList; prefix;
++							prefix = prefix->next)
++		{
++			if (!prefix)return;
++			print_addr(&prefix->Prefix, pfx_str);
++
++			// read oldprefix
++			long lSize;
++			unsigned char * buffer;
++			FILE* pFile = NULL;
++			pFile = fopen("/tmp/radvd_oldprefix", "rb");
++			if(!pFile) {
++				system("echo $(date +%H:%M:%S)'  radvd.bin  set_prefix_to_old()  tmpradvd_oldprefix could not open' >> /tmp/dd");
++			}else{
++				// obtain file size:
++				fseek (pFile , 0 , SEEK_END);
++				lSize = ftell (pFile);
++				rewind (pFile);
++				// allocate memory to contain the whole file:
++				buffer = (unsigned char*) malloc (sizeof(unsigned char)*lSize);
++				if (buffer == NULL) {fputs ("Memory error",stderr); exit (2);}
++				// copy the file into the buffer:
++				fread (buffer,1,lSize,pFile);
++				// write into prefix
++				int i=0;
++				for(;i<16;i++){
++					prefix->Prefix.__in6_u.__u6_addr8[i] = buffer[i];
++				}
++				free(buffer);
++				fclose(pFile);
++			}
++		}
++	}
++}
++void set_prefix_back_to_new(void)
++{
++	struct AdvPrefix *prefix;
++	char pfx_str[INET6_ADDRSTRLEN];
++	flog(LOG_INFO, "Resetting prefix lifetimes");
++
++        struct Interface *iface = NULL;
++        iface=IfaceList;
++	if (!iface) return;
++	for (iface; iface; iface = iface->next)
++	{
++		if (!iface) return;
++		for (prefix = iface->AdvPrefixList; prefix;
++							prefix = prefix->next)
++		{
++			if (!prefix) return;
++			print_addr(&prefix->Prefix, pfx_str);
++
++			// read newprefix
++			long lSize;
++			unsigned char * buffer;
++			FILE* pFile = NULL;
++			pFile = fopen("/tmp/radvd_newprefix", "rb");
++			if(!pFile) {
++				system("echo $(date +%H:%M:%S)'  radvd.bin  set_prefix_to_new()  tmpradvd_newprefix could not open' >> /tmp/dd");
++			}else{
++				// obtain file size:
++				fseek (pFile , 0 , SEEK_END);
++				lSize = ftell (pFile);
++				rewind (pFile);
++				// allocate memory to contain the whole file:
++				buffer = (unsigned char*) malloc (sizeof(unsigned char)*lSize);
++				if (buffer == NULL) {fputs ("Memory error",stderr); exit (2);}
++				// copy the file into the buffer:
++				fread (buffer,1,lSize,pFile);
++				// write into prefix
++				int i=0;
++				for(;i<16;i++){
++					prefix->Prefix.__in6_u.__u6_addr8[i] = buffer[i];
++				}
++				free(buffer);
++				fclose(pFile);
++			}
++		}
++	}
++}
++void backup_old_prefix(void)
++{
++    struct AdvPrefix *prefix;
++    char pfx_str[INET6_ADDRSTRLEN];
++    struct Interface *iface = NULL;
++    iface=IfaceList;
++    if (!iface) return;
++    for (iface; iface; iface = iface->next)
++    {
++        if (!iface) return;
++        for (prefix = iface->AdvPrefixList; prefix;
++                        prefix = prefix->next)
++        {
++            if (!prefix)return;
++            print_addr(&prefix->Prefix, pfx_str);
++
++            // backup old prefix
++            unsigned char buff[16];
++            int i=0;
++            for(;i<16;i++){
++                buff[i] = prefix->Prefix.__in6_u.__u6_addr8[i];
++            }
++            FILE* fp = NULL;
++            fp = fopen("/tmp/radvd_oldprefix", "wb");
++            if(!fp) {
++                system("echo $(date +%H:%M:%S)'  radvd.bin  backup_old_prefix()  tmpradvd_oldprefix could not open' >> /tmp/dd");
++            }else{
++                fwrite(buff, sizeof(unsigned char), sizeof(buff), fp);
++                fclose(fp);
++            }
++        }
++    }
++}
++void backup_new_prefix(void)
++{
++    struct AdvPrefix *prefix;
++    char pfx_str[INET6_ADDRSTRLEN];
++    flog(LOG_INFO, "Resetting prefix lifetimes");
++
++    struct Interface *iface = NULL;
++    iface=IfaceList;
++    if (!iface) return;
++    for (iface; iface; iface = iface->next)
++    {
++        if (!iface) return;
++        for (prefix = iface->AdvPrefixList; prefix;
++                        prefix = prefix->next)
++        {
++            if (!prefix)return;
++            print_addr(&prefix->Prefix, pfx_str);
++
++            // backup newprefix
++            unsigned char buff[16];
++            int i=0;
++            for(;i<16;i++){
++                buff[i] = prefix->Prefix.__in6_u.__u6_addr8[i];
++            }
++            FILE* fp = NULL;
++            fp = fopen("/tmp/radvd_newprefix", "wb");
++            if(!fp) {
++                system("echo $(date +%H:%M:%S)'  radvd.bin  set_prefix_to_old()  tmpradvd_newprefix could not open' >> /tmp/dd");
++            }else{
++                fwrite(buff, sizeof(unsigned char), sizeof(buff), fp);
++                fclose(fp);
++            }
++        }
++    }
++}
++
++int
++pd_change_flag_on(void)
++{
++    int result = 0;
++
++    if( access( "/tmp/radvd_pd_change", F_OK ) != -1 ) {
++        // flag exists  
++        result = 1;
++    } else {
++        result = 0;
++    }
++
++    return result;
++}
++
++int
++is_old_new_prefix_exist_and_diff(void)
++{
++    int result = 0;
++
++    // read newprefix
++    long lSize;
++    unsigned char * buffer = NULL;
++    FILE* pFile = NULL;
++    pFile = fopen("/tmp/radvd_newprefix", "rb");
++    if(!pFile) {
++        system("echo $(date +%H:%M:%S)'  radvd.bin  is_diff()  tmpradvd_newprefix could not open' >> /tmp/dd");
++    }else{
++        // obtain file size:
++        fseek (pFile , 0 , SEEK_END);
++        lSize = ftell (pFile);
++        rewind (pFile);
++        // allocate memory to contain the whole file:
++        buffer = (unsigned char*) malloc (sizeof(unsigned char)*lSize);
++        if (buffer == NULL) {fputs ("Memory error",stderr); exit (2);}
++        // copy the file into the buffer:
++        fread (buffer,1,lSize,pFile);
++    }
++
++    // read oldprefix
++    long lSizeold;
++    unsigned char * bufferold = NULL;
++    FILE* pFileold = NULL;
++    pFileold = fopen("/tmp/radvd_oldprefix", "rb");
++    if(!pFileold) {
++        system("echo $(date +%H:%M:%S)'  radvd.bin  is_diff()  tmpradvd_oldprefix could not open' >> /tmp/dd");
++    }else{
++        // obtain file size:
++        fseek (pFileold , 0 , SEEK_END);
++        lSizeold = ftell (pFileold);
++        rewind (pFileold);
++        // allocate memory to contain the whole file:
++        bufferold = (unsigned char*) malloc (sizeof(unsigned char)*lSizeold);
++        if (bufferold == NULL) {fputs ("Memory error",stderr); exit (2);}
++        // copy the file into the buffer:
++        fread (bufferold,1,lSizeold,pFileold);
++    }
++
++    // if new prefix and old prefix are EXIST and THE SAME, then indeed the PD changed.
++    if(buffer && bufferold ) {
++        result = memcmp(buffer, bufferold, 16);
++        if (result != 0) {
++            result = 1;
++        }
++    }else{
++        result = 0;
++    }
++    if (buffer) free(buffer);
++    if (bufferold) free(bufferold);
++    if (pFile) fclose(pFile);
++    if (pFileold) fclose(pFileold);
++
++    return result;
++}
++
++void
++kickoff_adverts_when_pd_change(void)
++{
++        struct Interface *iface;
++        /*
++         *      send initial advertisement and set timers
++         */
++        for(iface=IfaceList; iface; iface=iface->next)
++        {
++                double next;
++
++                gettimeofday(&iface->last_ra_time, NULL);
++                if( iface->UnicastOnly )
++                        continue;
++
++                gettimeofday(&iface->last_multicast, NULL);
++                if (!iface->AdvSendAdvert)
++                        continue;
++
++                set_prefix_plt_vlt_to_zero();
++                set_prefix_to_old();
++                /* send an initial advertisement */
++                int i=3;
++                for (;i>0;i--) {
++                        if (send_ra_forall(iface, NULL) == 0) {
++                                iface->init_racount++;
++                                next = min(MAX_INITIAL_RTR_ADVERT_INTERVAL, iface->MaxRtrAdvInterval);
++                                iface->next_multicast = next_timeval(next);
++                        }
++                }
++                set_prefix_plt_vlt_back();
++                set_prefix_back_to_new();
++        }
++}
++
++//2015/09/22, Niko add, initiative check is need send lifetime=0 or normal lifetime RA package
++int initiativeCheckLifetime()
++{
++	static int wanip_empty_flag= 0; //exclusive flag, trigger one time only
++	if( wanip_empty_flag==0 && check_wan_ip_empty()==1 )
++	{
++		wanip_empty_flag= 1;
++		return 1;
++	}
++	if( wanip_empty_flag==1 && check_wan_ip_empty()==0 )
++	{
++		wanip_empty_flag= 0;
++		return 1;
++	}
++	
++	return 0;
++}
++
++static time_t
++time_diff_secs2(const struct timeval *time_x, const struct timeval *time_y)
++{
++	time_t secs_diff;
++
++	secs_diff = time_x->tv_sec - time_y->tv_sec;
++	if ((time_x->tv_usec - time_y->tv_usec) >= 500000)
++	{
++		secs_diff++;
++	}
++
++	return secs_diff;
++}
++
++static void
++decrement_lifetime2(const time_t secs, uint32_t *lifetime)
++{
++	if (*lifetime > secs)
++	{
++		*lifetime -= secs;
++	}
++	else
++	{
++		*lifetime = 0;
++	}
++}
++
++int
++onePrefixExpiredCurrently()
++{
++	int result = 0;
++	struct Interface *iface;
++	struct AdvPrefix *prefix;
++
++	for(iface=IfaceList;
++		iface;
++		iface=iface->next)
++	{
++		double next;
++
++		if (iface->UnicastOnly) continue;
++		if (!iface->AdvSendAdvert) continue;
++
++		for(prefix = iface->AdvPrefixList;
++			prefix;
++			prefix = prefix->next)
++		{
++			struct timeval time_now;
++			time_t secs_since_last_ra = 7;
++
++			gettimeofday(&time_now, NULL);
++			secs_since_last_ra = time_diff_secs2(&time_now, &iface->last_ra_time);
++			if (secs_since_last_ra < 0)
++			{
++				secs_since_last_ra = 0;
++			}
++
++			uint32_t CURR_PLT = prefix->curr_preferredlft;
++
++			decrement_lifetime2(secs_since_last_ra, &CURR_PLT);
++			if (CURR_PLT == 0)
++			{
++				/*
++				 *	if prefix count down to zero just now,
++				 *	need to send RA to notice clients.
++				 *
++				 *	but if prefix has already count down to zero for a long time,
++				 *	no need to send RA again and again.
++				 */
++				if ( prefix->last_time_pollinged_preferredlft > 0 )
++				{
++					result = 1;
++					prefix->last_time_pollinged_preferredlft = 0;
++				}
++				// else case COULD NOT set result to zero !!!!
++			}
++			else
++			{
++				prefix->last_time_pollinged_preferredlft = (int)CURR_PLT;
++			}
++		}
++	}
++
++	return result;
++}
++
++void
++prefixExipreSendRaImmediately()
++{
++	struct Interface *iface;
++
++	/*
++	 *	send initial advertisement and set timers
++	 */
++	for(iface=IfaceList;
++		iface;
++		iface=iface->next)
++	{
++		double next = 0;
++
++		if (iface->UnicastOnly) continue;
++		/* send an initial advertisement */
++		if (send_ra_forall(iface, NULL) == 0)
++		{
++			iface->init_racount++;
++			next = min(MAX_INITIAL_RTR_ADVERT_INTERVAL, iface->MaxRtrAdvInterval);
++			iface->next_multicast = next_timeval(next);
++		}
++	}
++}
+Index: radvd-1.8/radvd.h
+===================================================================
+--- radvd-1.8.orig/radvd.h	2011-05-07 10:26:39.000000000 +0800
++++ radvd-1.8/radvd.h	2017-08-03 14:37:00.741483639 +0800
+@@ -63,6 +63,7 @@
+ 	uint32_t		AdvRetransTimer;
+ 	uint8_t			AdvCurHopLimit;
+ 	int32_t			AdvDefaultLifetime;   /* XXX: really uint16_t but we need to use -1 */
++	int32_t			AdvDefaultLifetime_bak;	//2016/01/07 Niko: backup Router Lifetime for set_prefix_lifetimes_to_zero() and set_prefix_lifetimes_back() functions
+ 	int			AdvDefaultPreference;
+ 	int			AdvSourceLLAddress;
+ 	int			UnicastOnly;
+@@ -109,6 +110,7 @@
+ 
+ 	uint32_t		curr_validlft;
+ 	uint32_t		curr_preferredlft;
++	uint32_t		last_time_pollinged_preferredlft;
+ 
+ 	/* Mobile IPv6 extensions */
+ 	int             	AdvRouterAddr;
+@@ -188,6 +190,11 @@
+ int check_ip6_forwarding(void);
+ void reload_config(void);
+ void reset_prefix_lifetimes(void);
++int check_wan_ip_empty(void);
++void set_prefix_lifetimes_to_zero(struct Interface *iface);
++void set_prefix_lifetimes_back(struct Interface *iface);
++int g_NeedSetRaltToZero;
++int g_HasSetRaltToZero;
+ 
+ /* timer.c */
+ struct timeval next_timeval(double next);
+Index: radvd-1.8/radvdump.c
+===================================================================
+--- radvd-1.8.orig/radvdump.c	2011-04-18 06:23:21.000000000 +0800
++++ radvd-1.8/radvdump.c	2017-08-03 14:36:51.588016846 +0800
+@@ -463,7 +463,7 @@
+ 
+ 				if (suffix[0] != '\0')
+ 					strcat(suffix, ".");
+-				strncat(suffix, &dnssl_info->nd_opt_dnssli_suffixes[offset], label_len);
++				strncat(suffix, (char*)&dnssl_info->nd_opt_dnssli_suffixes[offset], label_len);
+ 				offset += label_len;
+ 			}
+ 
+Index: radvd-1.8/send.c
+===================================================================
+--- radvd-1.8.orig/send.c	2011-05-07 10:26:39.000000000 +0800
++++ radvd-1.8/send.c	2017-08-03 14:36:47.958975122 +0800
+@@ -17,7 +17,15 @@
+ #include "config.h"
+ #include "includes.h"
+ #include "radvd.h"
++#include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <net/if.h>
++#include <unistd.h>
++#include <linux/ethtool.h>
++#include <linux/sockios.h>
+ 
++g_NeedSetRaltToZero=0;
++g_HasSetRaltToZero=0;
+ /*
+  * Sends an advertisement for all specified clients of this interface
+  * (or via broadcast, if there are no restrictions configured).
+@@ -29,6 +37,20 @@
+ int
+ send_ra_forall(struct Interface *iface, struct in6_addr *dest)
+ {
++	if (!pd_change_flag_on()) {
++		g_NeedSetRaltToZero = check_wan_ip_empty();
++
++		if (g_NeedSetRaltToZero != g_HasSetRaltToZero) {
++			if (g_NeedSetRaltToZero == 1) {
++				set_prefix_lifetimes_to_zero(iface);
++			} else {
++				set_prefix_lifetimes_back(iface);
++			}
++
++			g_HasSetRaltToZero = g_NeedSetRaltToZero;
++		}
++ 	}
++
+ 	struct Clients *current;
+ 
+ 	/* If no list of clients was specified for this interface, we broadcast */
+@@ -66,13 +88,264 @@
+ 	return 0;
+ }
+ 
++int check_tunnel_interface(char * ifName){
++	int  socketFd;
++	struct ifreq intf;
++	int intfaceUp = 0;
++
++	if (ifName == NULL) {
++		return intfaceUp;
++	}
++
++	if ((socketFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
++		return intfaceUp;
++	}
++	else {
++		strcpy(intf.ifr_name, ifName);
++
++		if (ioctl(socketFd, SIOCGIFFLAGS, &intf) != -1) {
++			if (intf.ifr_flags & IFF_UP)
++				intfaceUp = 1;
++		}
++		close(socketFd);		
++	}
++
++	return intfaceUp;
++
++}
++
++//use popen to get system call output
++int DoDoCommand(char* cmd)
++{
++	FILE* fp= NULL;
++	if((fp= popen(cmd, "r"))==NULL)
++		return 1;
++	if(fgets(cmd, 512, fp)==NULL)
++		return 1;
++	if( strlen(cmd)>0 && cmd[strlen(cmd)-1]==10 )
++		cmd[strlen(cmd)-1]= 0;
++	pclose(fp);
++	return 0;
++}
++
++//use fopen to get system call output
++/*int DoGetFile(char* cmd)
++{
++	FILE* fp= NULL;
++	if((fp= fopen(cmd, "r"))==NULL)
++		return 1;
++	if(fgets(cmd, 512, fp)==NULL)
++		return 1;
++	if( strlen(cmd)>0 && cmd[strlen(cmd)-1]==10 )
++		cmd[strlen(cmd)-1]= 0;
++	fclose(fp);
++	return 0;
++}*/
++
++//2016/02/02, new version check_wan_ip_empty()
++//JACKYU: need to review for fitting opal
++int check_wan_ip_empty()
++{
++	int ret = 1;
++    char sysCmd[128] = "\0";
++	sprintf(sysCmd, "ifconfig | grep -A2 \"nas\\|ppp\" | grep \"inet6 addr\" | grep \"Scope:Global\" > /var/wan6ipcheck");
++	system(sysCmd);
++	FILE *fp = fopen("/var/wan6ipcheck", "r");
++	if(fp)
++	{
++		char wan6ip[512] = {0};
++		fread(wan6ip, 1, sizeof(wan6ip) - 1, fp);
++		if(strchr(wan6ip, ':'))
++			ret = 0;
++		fclose(fp);
++    }
++
++
++	//for RFC7084 forwarding case tests 4 and 5
++	//JACK: open later, because currently no default route added for ipv6
++	//note: currently case 4/5 passed without this segment of code
++#if 0
++	if(system("ip -6 route | grep default") != 0) {
++		ret = 1;
++	}
++#endif
++
++#if 0
++	char cmd[512]={};
++	int m_6RDEnable= 0;
++	int m_6to4Enable= 0;
++	int m_6in4Enable= 0;
++	int m_ULAEnable= 0;
++	char m_ifname[128]={};
++	char ckWANv6Status[]="/tmp/ckWANv6Status";
++	
++	//check if 6rd is enabled.
++	snprintf(cmd, sizeof(cmd), "uci get network.general.wan6rd_enable > %s", ckWANv6Status);
++	system(cmd);
++	strcpy(cmd, ckWANv6Status);
++	if (DoGetFile(cmd) == 0)
++		m_6RDEnable= atoi(cmd);
++	
++	//check if 6to4 is enabled.
++	snprintf(cmd, sizeof(cmd), "uci get network.general.wan6to4_enable > %s", ckWANv6Status);
++	system(cmd);
++	strcpy(cmd, ckWANv6Status);
++	if (DoGetFile(cmd) == 0)
++		m_6to4Enable= atoi(cmd);
++	
++	//check if 6in4 is enabled.
++	snprintf(cmd, sizeof(cmd), "uci get network.general.wan6in4_enable > %s", ckWANv6Status);
++	system(cmd);
++	strcpy(cmd, ckWANv6Status);
++	if (DoGetFile(cmd) == 0)
++		m_6in4Enable= atoi(cmd);
++
++#if 0
++	//check if ULA is enabled.
++	snprintf(cmd, sizeof(cmd), "uci get network.general.ULA  > %s", ckWANv6Status);
++	system(cmd);
++	strcpy(cmd, ckWANv6Status);
++	if (DoGetFile(ckWANv6Status))
++		m_ULAEnable= atoi(cmd);
++#endif
++
++	//check interface name is up
++	if( (m_6RDEnable==1 && !check_tunnel_interface("6rd-wan6rd")) ||
++		(m_6to4Enable==1 && !check_tunnel_interface("6to4-wan6to4")) ||
++		(m_6in4Enable==1 && !check_tunnel_interface("6in4-wan6in4")) )
++	{
++		syslog(LOG_DEBUG, "%s(%d): return 1 because tunnel interface is not up", __func__, __LINE__);
++		return 1;
++	}
++	
++	//get current WAN interface name.
++	if(m_6RDEnable==1)
++		strcpy(m_ifname, "6rd-wan6rd");
++	else if(m_6to4Enable==1)
++		strcpy(m_ifname, "6to4-wan6to4");
++	else if(m_6in4Enable==1)
++		strcpy(m_ifname, "6in4-wan6in4");
++	else //not tunneling mode
++	{
++		snprintf(cmd, sizeof(cmd), "uci get dhcp6c.basic.ifname > %s", ckWANv6Status);//this line is danger, who decide value of dhcp6c.basic.ifname?
++		system(cmd);
++		strcpy(cmd, ckWANv6Status);
++		if (DoGetFile(cmd) == 0)
++			strcpy(m_ifname, cmd);
++	}
++	//check does wan interface have global IPv6 address
++	snprintf(cmd, sizeof(cmd), "ifconfig %s | grep Global | awk '{print $3}' > %s", m_ifname, ckWANv6Status);
++	system(cmd);
++	strcpy(cmd, ckWANv6Status);
++	if (DoGetFile(cmd) == 0){
++		if(strstr(cmd, ":")==NULL)
++		{
++			syslog(LOG_DEBUG, "%s(%d): interface:%s does not have IPv6 address, return 1", __func__, __LINE__, m_ifname);
++			return 1;
++		}
++	}
++	//syslog(LOG_DEBUG, "%s(%d): m_6RDEnable:%d, m_6to4Enable:%d, m_6in4Enable:%d, m_ULAEnable:%d, m_ifname:%s", __func__, __LINE__, m_6RDEnable, m_6to4Enable, m_6in4Enable, m_ULAEnable, m_ifname);
++	//check wan link status(1: down, 0:up)
++	int wan_likn_status= 0;
++	snprintf(cmd, sizeof(cmd), "/sbin/swconfig dev eth0 port 5 get link | grep down -c > %s", ckWANv6Status);
++	system(cmd);
++	strcpy(cmd, ckWANv6Status);
++	if (DoGetFile(cmd) == 0){
++		if(atoi(cmd)==1)
++		{
++			syslog(LOG_DEBUG, "%s(%d): wan cable is down, return 1", __func__, __LINE__);
++			return 1;
++		}
++	}
++
++	//Kerker add 2016/01/13
++	//Set ralt zero when no default route
++	if(system("ip -6 route|grep default")!=0){
++		syslog(LOG_USER|LOG_DEBUG, "%s(%d): return 1", __func__, __LINE__);
++		return 1;
++	}
++#endif
++	//syslog(LOG_USER|LOG_DEBUG, "%s(%d): return 0", __func__, __LINE__);
++
++	//printf("%s ret %d\n", __FUNCTION__, ret);
++	return ret;
++
++}
++
++void set_prefix_lifetimes_to_zero(struct Interface *iface)
++{
++	struct AdvPrefix *prefix;
++	char pfx_str[INET6_ADDRSTRLEN];
++
++
++	flog(LOG_INFO, "Resetting prefix lifetimes");
++
++	if (!iface) return;
++
++	for (iface; iface; iface = iface->next)
++	{
++		if (!iface) return;
++
++		iface->AdvDefaultLifetime_bak= iface->AdvDefaultLifetime;	//backup AdvDefaultLifetime
++		iface->AdvDefaultLifetime = 0;
++
++		for (prefix = iface->AdvPrefixList; prefix;
++							prefix = prefix->next)
++		{
++			if (!prefix)return;
++
++			print_addr(&prefix->Prefix, pfx_str);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s plft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_preferredlft, prefix->AdvPreferredLifetime);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s vlft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_validlft, prefix->AdvValidLifetime);
++			prefix->curr_validlft =
++					0;
++			prefix->curr_preferredlft =
++					0;
++		}
++
++	}
++
++}
++
++void set_prefix_lifetimes_back(struct Interface *iface)
++{
++	struct AdvPrefix *prefix;
++	char pfx_str[INET6_ADDRSTRLEN];
++
++
++	flog(LOG_INFO, "Resetting prefix lifetimes");
++
++	if (!iface) return;
++
++	for (iface; iface; iface = iface->next)
++	{
++		if (!iface) return;
++
++		iface->AdvDefaultLifetime= iface->AdvDefaultLifetime_bak;	//restore AdvDefaultLifetime
++
++		for (prefix = iface->AdvPrefixList; prefix;
++							prefix = prefix->next)
++		{
++			if (!prefix) return;
++
++			print_addr(&prefix->Prefix, pfx_str);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s plft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_preferredlft, prefix->AdvPreferredLifetime);
++			dlog(LOG_DEBUG, 4, "%s/%u%%%s vlft reset from %u to %u secs", pfx_str, prefix->PrefixLen, iface->Name, prefix->curr_validlft, prefix->AdvValidLifetime);
++			prefix->curr_validlft =
++					prefix->AdvValidLifetime;
++			prefix->curr_preferredlft =
++					prefix->AdvPreferredLifetime;
++		}
++	}
++}
++
+ static void
+ send_ra_inc_len(size_t *len, int add)
+ {
+ 	*len += add;
+ 	if(*len >= MSG_SIZE_SEND)
+ 	{
+-		flog(LOG_ERR, "Too many prefixes or routes. Exiting.");
++		flog(LOG_ERR, "Too many prefixes, routes, rdnss or dnssl to fit in buffer.  Exiting.");
+ 		exit(1);
+ 	}
+ }
+@@ -130,6 +403,7 @@
+ 	time_t secs_since_last_ra;
+ 
+ 	unsigned char buff[MSG_SIZE_SEND];
++	size_t buff_dest = 0;
+ 	size_t len = 0;
+ 	ssize_t err;
+ 
+@@ -186,6 +460,8 @@
+ 	memset(buff, 0, sizeof(buff));
+ 	radvert = (struct nd_router_advert *) buff;
+ 
++	send_ra_inc_len(&len, sizeof(struct nd_router_advert));
++
+ 	radvert->nd_ra_type  = ND_ROUTER_ADVERT;
+ 	radvert->nd_ra_code  = 0;
+ 	radvert->nd_ra_cksum = 0;
+@@ -211,22 +487,25 @@
+ 	radvert->nd_ra_reachable  = htonl(iface->AdvReachableTime);
+ 	radvert->nd_ra_retransmit = htonl(iface->AdvRetransTimer);
+ 
+-	len = sizeof(struct nd_router_advert);
+-
+ 	prefix = iface->AdvPrefixList;
+ 
++//	printf("(%d) life time chk2 %x %x %x -- %d\n", __LINE__, radvert->nd_ra_router_lifetime, radvert->nd_ra_reachable, radvert->nd_ra_retransmit, len);
++
+ 	/*
+ 	 *	add prefix options
+ 	 */
+ 
++	int IsAnyPrefixEnable = 0;
+ 	while(prefix)
+ 	{
+-		if( prefix->enabled && prefix->curr_preferredlft > 0 )
++//		printf("Checking prefix %d %d %d %d\n", prefix->PrefixLen, iface->cease_adv, prefix->DeprecatePrefixFlag, prefix->DecrementLifetimesFlag);
++		if( prefix->enabled )
+ 		{
+ 			struct nd_opt_prefix_info *pinfo;
+ 
+ 			pinfo = (struct nd_opt_prefix_info *) (buff + len);
+ 
++			send_ra_inc_len(&len, sizeof(*pinfo));
+ 			pinfo->nd_opt_pi_type	     = ND_OPT_PREFIX_INFORMATION;
+ 			pinfo->nd_opt_pi_len	     = 4;
+ 			pinfo->nd_opt_pi_prefix_len  = prefix->PrefixLen;
+@@ -244,14 +523,18 @@
+ 				pinfo->nd_opt_pi_valid_time	= htonl(MIN_AdvValidLifetime);
+ 				pinfo->nd_opt_pi_preferred_time = 0;
+ 			} else {
+-				if (prefix->DecrementLifetimesFlag) {
++				if (prefix->DecrementLifetimesFlag || prefix->curr_preferredlft > 0 ) {
+ 					decrement_lifetime(secs_since_last_ra,
+ 								&prefix->curr_validlft);
+ 					
+ 					decrement_lifetime(secs_since_last_ra,
+ 								&prefix->curr_preferredlft);
+-					if (prefix->curr_preferredlft == 0)
++
++					if (prefix->curr_preferredlft == 0) {
+ 						cease_adv_pfx_msg(iface->Name, &prefix->Prefix, prefix->PrefixLen);
++					} else {
++						IsAnyPrefixEnable = 1;
++					}
+ 				}
+ 				pinfo->nd_opt_pi_valid_time	= htonl(prefix->curr_validlft);
+ 				pinfo->nd_opt_pi_preferred_time = htonl(prefix->curr_preferredlft);
+@@ -261,11 +544,16 @@
+ 
+ 			memcpy(&pinfo->nd_opt_pi_prefix, &prefix->Prefix,
+ 			       sizeof(struct in6_addr));
+-
+-			send_ra_inc_len(&len, sizeof(*pinfo));
+ 		}
+ 
+ 		prefix = prefix->next;
++		}
++
++	if (0 == IsAnyPrefixEnable) {
++		// RFC7084: L-4: An IPv6 CE router MUST NOT advertise itself as a default
++		//               router with a Router Lifetime [RFC4861] greater than zero if
++		//               it has no prefixes configured or delegated to it.
++		radvert->nd_ra_router_lifetime = 0;
+ 	}
+ 
+ 	route = iface->AdvRouteList;
+@@ -280,6 +568,8 @@
+ 
+ 		rinfo = (struct nd_opt_route_info_local *) (buff + len);
+ 
++		send_ra_inc_len(&len, sizeof(*rinfo));
++
+ 		rinfo->nd_opt_ri_type	     = ND_OPT_ROUTE_INFORMATION;
+ 		/* XXX: the prefixes are allowed to be sent in smaller chunks as well */
+ 		rinfo->nd_opt_ri_len	     = 3;
+@@ -295,7 +585,6 @@
+ 
+ 		memcpy(&rinfo->nd_opt_ri_prefix, &route->Prefix,
+ 		       sizeof(struct in6_addr));
+-		send_ra_inc_len(&len, sizeof(*rinfo));
+ 
+ 		route = route->next;
+ 	}
+@@ -312,6 +601,8 @@
+ 
+ 		rdnssinfo = (struct nd_opt_rdnss_info_local *) (buff + len);
+ 
++		send_ra_inc_len(&len, sizeof(*rdnssinfo) - (3-rdnss->AdvRDNSSNumber)*sizeof(struct in6_addr));
++
+ 		rdnssinfo->nd_opt_rdnssi_type	     = ND_OPT_RDNSS_INFORMATION;
+ 		rdnssinfo->nd_opt_rdnssi_len	     = 1 + 2*rdnss->AdvRDNSSNumber;
+ 		rdnssinfo->nd_opt_rdnssi_pref_flag_reserved = 0;
+@@ -328,7 +619,6 @@
+ 		       sizeof(struct in6_addr));
+ 		memcpy(&rdnssinfo->nd_opt_rdnssi_addr3, &rdnss->AdvRDNSSAddr3,
+ 		       sizeof(struct in6_addr));
+-		send_ra_inc_len(&len, sizeof(*rdnssinfo) - (3-rdnss->AdvRDNSSNumber)*sizeof(struct in6_addr));
+ 
+ 		rdnss = rdnss->next;
+ 	}
+@@ -342,13 +632,18 @@
+ 	while(dnssl)
+ 	{
+ 		struct nd_opt_dnssl_info_local *dnsslinfo;
++		int const start_len = len;
+ 		int i;
+-		char *buff_ptr;
+ 
+ 		dnsslinfo = (struct nd_opt_dnssl_info_local *) (buff + len);
+ 
++		send_ra_inc_len(&len, sizeof(dnsslinfo->nd_opt_dnssli_type) + 
++			sizeof(dnsslinfo->nd_opt_dnssli_len) +
++			sizeof(dnsslinfo->nd_opt_dnssli_reserved) +
++			sizeof(dnsslinfo->nd_opt_dnssli_lifetime)
++		);
++
+ 		dnsslinfo->nd_opt_dnssli_type		= ND_OPT_DNSSL_INFORMATION;
+-		dnsslinfo->nd_opt_dnssli_len 		= 1; /* more further down */
+ 		dnsslinfo->nd_opt_dnssli_reserved	= 0;
+ 
+ 		if (iface->cease_adv && dnssl->FlushDNSSLFlag) {
+@@ -357,7 +652,6 @@
+ 			dnsslinfo->nd_opt_dnssli_lifetime	= htonl(dnssl->AdvDNSSLLifetime);
+ 		}
+ 
+-		buff_ptr = dnsslinfo->nd_opt_dnssli_suffixes;
+ 		for (i = 0; i < dnssl->AdvDNSSLNumber; i++) {
+ 			char *label;
+ 			int label_len;
+@@ -370,23 +664,32 @@
+ 				else
+ 					label_len = strchr(label, '.') - label;
+ 
+-				*buff_ptr++ = label_len;
+-
+-				memcpy(buff_ptr, label, label_len);
+-				buff_ptr += label_len;
++				buff_dest = len;
++				send_ra_inc_len(&len, 1);
++				buff[buff_dest] = label_len;
++
++				buff_dest = len;
++				send_ra_inc_len(&len, label_len);
++				memcpy(buff + buff_dest, label, label_len);
+ 
+ 				label += label_len;
+ 
+ 				if (label[0] == '.')
+ 					label++;
+-				else
+-					*buff_ptr++ = 0;
++				else {
++					buff_dest = len;
++					send_ra_inc_len(&len, 1);
++					buff[buff_dest] = 0;
++				}
+ 			}
+ 		}
+ 
+-		dnsslinfo->nd_opt_dnssli_len		+= ((buff_ptr-dnsslinfo->nd_opt_dnssli_suffixes)+7)/8;
++		dnsslinfo->nd_opt_dnssli_len = (len - start_len) / 8;
+ 
+-		send_ra_inc_len(&len, dnsslinfo->nd_opt_dnssli_len * 8);
++		if ( (len - start_len) % 8 != 0 ) {
++			send_ra_inc_len(&len, 8 - (len - start_len) % 8);
++			++dnsslinfo->nd_opt_dnssli_len;
++		}
+ 
+ 		dnssl = dnssl->next;
+ 	}
+@@ -400,12 +703,11 @@
+ 
+ 		mtu = (struct nd_opt_mtu *) (buff + len);
+ 
++		send_ra_inc_len(&len, sizeof(*mtu));
+ 		mtu->nd_opt_mtu_type     = ND_OPT_MTU;
+ 		mtu->nd_opt_mtu_len      = 1;
+ 		mtu->nd_opt_mtu_reserved = 0;
+ 		mtu->nd_opt_mtu_mtu      = htonl(iface->AdvLinkMTU);
+-
+-		send_ra_inc_len(&len, sizeof(*mtu));
+ 	}
+ 
+ 	/*
+@@ -419,14 +721,18 @@
+ 
+ 		ucp = (uint8_t *) (buff + len);
+ 
++		send_ra_inc_len(&len, 2 * sizeof(uint8_t));
++
+ 		*ucp++  = ND_OPT_SOURCE_LINKADDR;
+ 		*ucp++  = (uint8_t) ((iface->if_hwaddr_len + 16 + 63) >> 6);
+ 
+-		send_ra_inc_len(&len, 2 * sizeof(uint8_t));
+-
+ 		i = (iface->if_hwaddr_len + 7) >> 3;
+-		memcpy(buff + len, iface->if_hwaddr, i);
++
++		buff_dest = len;
++
+ 		send_ra_inc_len(&len, i);
++
++		memcpy(buff + buff_dest, iface->if_hwaddr, i);
+ 	}
+ 
+ 	/*
+@@ -451,8 +757,9 @@
+ 		a_ival.reserved	= 0;
+ 		a_ival.adv_ival	= htonl(ival);
+ 
+-		memcpy(buff + len, &a_ival, sizeof(a_ival));
++		buff_dest = len;
+ 		send_ra_inc_len(&len, sizeof(a_ival));
++		memcpy(buff + buff_dest, &a_ival, sizeof(a_ival));
+ 	}
+ 
+ 	/*
+@@ -473,8 +780,9 @@
+ 		ha_info.preference	= htons(iface->HomeAgentPreference);
+ 		ha_info.lifetime	= htons(iface->HomeAgentLifetime);
+ 
+-		memcpy(buff + len, &ha_info, sizeof(ha_info));
++		buff_dest = len;
+ 		send_ra_inc_len(&len, sizeof(ha_info));
++		memcpy(buff + buff_dest, &ha_info, sizeof(ha_info));
+ 	}
+ 
+ 	iov.iov_len  = len;
+Index: radvd-1.8/socket.c
+===================================================================
+--- radvd-1.8.orig/socket.c	2011-02-27 00:00:23.000000000 +0800
++++ radvd-1.8/socket.c	2017-08-03 14:35:44.559870877 +0800
+@@ -87,6 +87,15 @@
+ 	}
+ #endif
+ 
++/* Michael 2013.02.01  disable loopback of RA */
++        int loop = 0;
++        err = setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
++        if (err < 0)
++        {
++                flog(LOG_ERR, "setsockopt(IPV6_MULTICAST_LOOP): %s", strerror(errno));
++                return (-1);
++        }
++
+ 	/*
+ 	 * setup ICMP filter
+ 	 */

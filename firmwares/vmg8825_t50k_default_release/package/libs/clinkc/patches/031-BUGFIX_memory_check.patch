@@ -1,0 +1,98 @@
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2014-07-03 16:47:24.563908942 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2014-07-03 16:50:09.327970657 +0800
+@@ -499,6 +499,10 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
++	if(memory_check(conLen) == FALSE){
++		printf("upgrade firmware fail: out of memory!!!\n");
++		return FALSE;
++	}	
+ 	content = NULL;
+ 	if (0 < conLen) {
+ 		content = (char *)malloc(conLen+1);
+@@ -603,6 +607,12 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 	
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
++	
++	if(memory_check(conLen) == FALSE){
++		printf("upgrade firmware fail: out of memory!!!\n");
++		return FALSE;
++	}
++	
+ 	if (0 < conLen) {
+ 		fp = fopen( savedFile, "wb" );
+ 		if (!fp) {
+@@ -700,6 +710,43 @@
+ 	return TRUE;
+ }
+ 
++int get_free_memory(){
++	int size;
++	FILE *fp = NULL;
++	char *lst = calloc(128, sizeof(char));
++
++	fp = fopen("/proc/meminfo", "r");
++	if(fp != NULL){
++		while((fgets(lst, 128, fp)) != NULL) {
++			if(strstr(lst, "MemFree:") != NULL){
++				sscanf(lst, "MemFree: %d", &size);
++				break;
++			}
++		}
++
++		fclose(fp);
++	}
++	return (size*1024);
++}
++
++int memory_check(int buflen){
++	if(buflen >= get_free_memory()){
++		system("echo 1 > /proc/sys/vm/drop_caches");
++		if(buflen >= get_free_memory()){
++			system("/usr/sbin/logrotate /etc/logrotate.d/sys_logrotate.conf");
++			if(buflen >= get_free_memory()){
++				system("rm *.1");
++				system("rm zcfg.log");
++				if(buflen >= get_free_memory()){
++					return FALSE;
++				}
++			}
++		}
++	}
++
++	return TRUE;
++}
++
+ static char *find_boundary(char *ptr, int buflen, char *boundary, int len){
+ 	int i, b;
+ 	if(!ptr || !boundary || len<=0  || buflen<=0 || buflen < len) return NULL;
+@@ -745,6 +792,10 @@
+ 
+ 	boundaryLen = strlen(boundary);
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
++	if(memory_check(conLen) == FALSE){
++		printf("upgrade firmware fail: out of memory!!!\n");
++		return FALSE;
++	}
+ 	if (0 < conLen && conLen <= HTTPD_MAX_UPLOAD_SIZE) {
+ 		readLen = 0;
+ 		
+Index: clinkc/src/cybergarage/http/chttp_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_request.c	2014-07-03 16:47:24.567908942 +0800
++++ clinkc/src/cybergarage/http/chttp_request.c	2014-07-03 16:50:20.304194426 +0800
+@@ -867,8 +867,8 @@
+ #if 1 //__ZYXEL__, Mark, Firmware Upgrade use orignal function, because cg_http_packet_parse_multipart is to slow
+ 			requestUri = cg_http_request_geturi(httpReq);
+ 			if(requestUri && strstr(requestUri, "/cgi-bin/Firmware_Upgrade") != NULL){
+-				system("echo 1 > /proc/sys/vm/drop_caches");
+-				cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), FIRMWARE_STORE_PATH);
++				if(!cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), FIRMWARE_STORE_PATH))
++					failed = TRUE;
+ 			}
+ 			else
+ #endif		

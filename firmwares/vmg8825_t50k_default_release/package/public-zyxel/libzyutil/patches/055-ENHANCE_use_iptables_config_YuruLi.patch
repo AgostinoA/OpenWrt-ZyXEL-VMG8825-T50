@@ -1,0 +1,197 @@
+Index: libzyutil-1.0/common.c
+===================================================================
+--- libzyutil-1.0.orig/common.c	2017-05-17 11:34:14.797529708 +0800
++++ libzyutil-1.0/common.c	2017-05-17 11:34:42.527270331 +0800
+@@ -10,7 +10,7 @@
+ 
+ #include <ctype.h>
+ #include <unistd.h>
+-
++#define _GNU_SOURCE
+ #include "zcfg_common.h"
+ #include "zcfg_debug.h"
+ #include "zhttpd_oid.h"
+@@ -21,6 +21,9 @@
+ 
+ #include "libzyutil_wrapper.h"
+ 
++#define IPTABLESRESTORE		"iptables-restore"
++#define IP6TABLESRESTORE	"ip6tables-restore"
++
+ #if 0	//move to libzyutil_brcm_wrapper.c
+ #ifdef BROADCOM_PLATFORM
+ #include "board.h"
+@@ -774,4 +777,135 @@
+ 	}while(oidDictionaryAddr->abbreviation != NULL);
+ 
+ 	return -1;
+-}
+\ No newline at end of file
++}
++
++#if 0
++/*zyUtilIptablesLockInit() should be only called once, for now it is called by beIptablesInit() in zcfg_be_iptables.c*/
++void zyUtilIptablesLockInit(){
++	union semun sem_union;
++	
++	iptables_sem_id = semget(ZCFG_IPTABLES_SEM_KEY,1,IPC_CREAT|0666);
++	
++	sem_union.val = 1;
++	semctl(iptables_sem_id, 0, SETVAL, sem_union);
++}
++
++void zyUtilIptablesLock(){
++	struct sembuf sem_b;
++
++	if(iptables_sem_id < 0)
++		iptables_sem_id = semget(ZCFG_IPTABLES_SEM_KEY,1,IPC_CREAT|0666);
++	
++	sem_b.sem_num = 0;
++	sem_b.sem_op = -1;
++	sem_b.sem_flg = SEM_UNDO;
++	semop(iptables_sem_id, &sem_b, 1);
++}
++
++void zyUtilIptablesUnLock(){
++	struct sembuf sem_b;
++	
++	if(iptables_sem_id < 0)
++		iptables_sem_id = semget(ZCFG_IPTABLES_SEM_KEY,1,IPC_CREAT|0666);
++	
++	sem_b.sem_num = 0;
++	sem_b.sem_op = 1;
++	sem_b.sem_flg = SEM_UNDO;
++	semop(iptables_sem_id, &sem_b, 1);
++}
++#endif
++
++void zyUtilInitIptablesConfig(iptCfg_t **ipt){	
++	*ipt = malloc(sizeof(iptCfg_t));
++	(*ipt)->fp_m = open_memstream(&(*ipt)->buf_m, &(*ipt)->len_m);
++	(*ipt)->fp_f = open_memstream(&(*ipt)->buf_f, &(*ipt)->len_f);
++	(*ipt)->fp_n = open_memstream(&(*ipt)->buf_n, &(*ipt)->len_n);
++	(*ipt)->fp_m6 = open_memstream(&(*ipt)->buf_m6, &(*ipt)->len_m6);
++	(*ipt)->fp_f6 = open_memstream(&(*ipt)->buf_f6, &(*ipt)->len_f6);
++}
++
++void zyUtilRestoreIptablesConfig(iptCfg_t *ipt, const char *file, const char *func, int line){
++	FILE *fp = NULL;
++	char cmd[64] = {0};
++	char fileName[32] = {0};
++	int ret = 0;
++	int fd;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s, called from %s, %s():%d\n", __FUNCTION__, file, func, line);
++
++	fclose(ipt->fp_m);
++	fclose(ipt->fp_f);
++	fclose(ipt->fp_n);
++	fclose(ipt->fp_m6);
++	fclose(ipt->fp_f6);
++
++	//iptables-restore
++	if(ipt->len_m || ipt->len_f || ipt->len_n){
++		strcpy(fileName, "/tmp/iptablesConfig-XXXXXX");
++		fd = mkstemp(fileName);
++		fp = fdopen(fd, "w+");
++		if(ipt->len_m){
++			fprintf(fp, "*mangle\n");
++			fprintf(fp, "%s", ipt->buf_m);
++			fprintf(fp, "COMMIT\n");
++		}
++		if(ipt->len_f){
++			fprintf(fp, "*filter\n");
++			fprintf(fp, "%s", ipt->buf_f);
++			fprintf(fp, "COMMIT\n");
++		}
++		if(ipt->len_n){
++			fprintf(fp, "*nat\n");
++			fprintf(fp, "%s", ipt->buf_n);
++			fprintf(fp, "COMMIT\n");
++		}
++		fclose(fp);
++
++		sprintf(cmd, "%s --noflush %s", IPTABLESRESTORE, fileName);
++		ret = system(cmd);
++		if(ret != 0){
++			zcfgLog(ZCFG_LOG_ERR, "%s fail, ret = %d, called from %s, %s():%d\n", IPTABLESRESTORE, ret, file, func, line);
++			printf("%s fail, ret = %d, called from %s, %s():%d\n", IPTABLESRESTORE, ret, file, func, line);
++			sprintf(cmd, "cat %s", fileName);
++			system(cmd);
++		}
++
++		unlink(fileName);
++	}
++	
++	//ip6tables-restore
++	if(ipt->len_m6 || ipt->len_f6){
++		strcpy(fileName, "/tmp/iptablesConfig-XXXXXX");
++		fd = mkstemp(fileName);
++		fp = fdopen(fd, "w+");
++		if(ipt->len_m6){
++			fprintf(fp, "*mangle\n");
++			fprintf(fp, "%s", ipt->buf_m6);
++			fprintf(fp, "COMMIT\n");
++		}
++		if(ipt->len_f6){
++			fprintf(fp, "*filter\n");
++			fprintf(fp, "%s", ipt->buf_f6);
++			fprintf(fp, "COMMIT\n");
++		}
++		fclose(fp);
++
++		sprintf(cmd, "%s --noflush %s", IP6TABLESRESTORE, fileName);
++		ret = system(cmd);
++		if(ret != 0){
++			zcfgLog(ZCFG_LOG_ERR, "%s fail, ret = %d, called from %s, %s():%d\n",IP6TABLESRESTORE, ret, file, func, line);
++			printf("%s fail, ret = %d, called from %s, %s():%d\n", IP6TABLESRESTORE, ret, file, func, line);
++			sprintf(cmd, "cat %s", fileName);
++			system(cmd);
++		}
++
++		unlink(fileName);
++	}
++
++	free(ipt->buf_m);
++	free(ipt->buf_f);
++	free(ipt->buf_n);
++	free(ipt->buf_m6);
++	free(ipt->buf_f6);
++	free(ipt);
++}
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2017-05-17 11:34:14.797529708 +0800
++++ libzyutil-1.0/zyutil.h	2017-05-17 11:34:14.849529708 +0800
+@@ -67,4 +67,31 @@
+ int zyUtilUdpConnInit(const int domain, const char *addr, const int port, skconn_t *skconn);
+ int zyUtilUdpSvrInit(const int domain, const char *addr, const int port, skconn_t *skconn);
+ 
++//#define ZCFG_IPTABLES_SEM_KEY 1234
++#define zyUtilRestoreIptCfg(ipt) zyUtilRestoreIptablesConfig(ipt, __FILE__, __FUNCTION__, __LINE__)
++
++typedef struct
++{
++	FILE *fp_m; //v4 mangle table
++	FILE *fp_f; //v4 filter table
++	FILE *fp_n; //v4 nat table
++	FILE *fp_m6; //v6 mangle table
++	FILE *fp_f6; //v6 filter table
++	char *buf_m;
++	char *buf_f;
++	char *buf_n;
++	char *buf_m6;
++	char *buf_f6;
++	size_t len_m;
++	size_t len_f;
++	size_t len_n;
++	size_t len_m6;
++	size_t len_f6;
++}iptCfg_t;
++
++void zyUtilInitIptablesConfig(iptCfg_t **ipt);
++void zyUtilRestoreIptablesConfig(iptCfg_t *ipt, const char *file, const char *func, int line);
++//void zyUtilIptablesLockInit(void);
++//void zyUtilIptablesLock(void);
++//void zyUtilIptablesUnLock(void);
+ #endif

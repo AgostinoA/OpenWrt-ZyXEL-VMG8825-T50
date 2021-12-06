@@ -1,0 +1,276 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-08-01 17:57:19.787903963 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-08-01 17:58:31.886768903 +0800
+@@ -118,6 +118,11 @@
+ CFLAGS += -DWIND_ITALY_CUSTOMIZATION
+ endif
+ 
++#ONE SSID SECURITY SYNC
++ifeq ($(CONFIG_ZY_WIFI_ONESSID_SECURITY_SYNC),y)
++CFLAGS += -DWIFI_ONESSID_SECURITY_SYNC
++endif
++
+ ifeq ($(CONFIG_PACKAGE_ZyIMS),y)
+ CFLAGS += -DBUILD_PACKAGE_ZyIMS=1
+ INC_PATH += -I$(VOIP_PATH)
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2017-08-01 17:57:20.003903959 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2017-08-01 18:04:11.119753366 +0800
+@@ -116,6 +116,15 @@
+ objIndex_t guest5GSecTmpIid = {0};
+ #endif
+ 
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++
++struct json_object *syncWifiSsidObj = NULL;
++objIndex_t syncWifiSsidIid = {0};
++struct json_object *syncWifiSecObj = NULL;
++objIndex_t syncWifiSecIid = {0};
++bool bSyncSameSSID;
++
++#endif //WIFI_ONESSID_SECURITY_SYNC
+ 
+ unsigned int SLIDER_POS_NONE = 43;
+ unsigned int SLIDER_POS_BASIC = 149;
+@@ -381,6 +390,9 @@
+ #else
+ 	if(wifiApObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT, &wifiApIid, wifiApObj, NULL);
+ 	if(wifiSecObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiSecIid, wifiSecObj, NULL);
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++	if(syncWifiSecObj) zcfgFeObjJsonBlockedSet(RDM_OID_WIFI_ACCESS_POINT_SEC, &syncWifiSecIid, syncWifiSecObj, NULL);
++#endif //WIFI_ONESSID_SECURITY_SYNC
+ 	if(wifiRadioObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_RADIO, &wifiRadioIid, wifiRadioObj, NULL);
+ 	if(wifiSsidObj)zcfgFeObjJsonBlockedSet(RDM_OID_WIFI_SSID, &wifiSsidIid, wifiSsidObj, NULL);
+ 	if(wifiSubnetObj) zcfgFeObjJsonBlockedSet(RDM_OID_DHCPV4_SRV_SUBNET, &wifiSubnetIid, wifiSubnetObj, NULL);
+@@ -396,6 +408,9 @@
+ 	if(wifiApWpsObj) json_object_put(wifiApWpsObj);
+ 	if(wifiApObj) json_object_put(wifiApObj);
+ 	if(wifiSecObj) json_object_put(wifiSecObj);
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++	if(syncWifiSecObj) json_object_put(syncWifiSecObj);
++#endif //WIFI_ONESSID_SECURITY_SYNC
+ 	if(wifiSubnetObj) json_object_put(wifiSubnetObj);
+ #ifdef CBT_CUSTOMIZATION // 20170426 Max Add
+ 	if(guestSsidObj) json_object_put(guestSsidObj);
+@@ -504,6 +519,9 @@
+ 	wifiApWpsObj = NULL;
+ 	wifiApObj = NULL;
+ 	wifiSecObj = NULL;
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++	syncWifiSecObj = NULL;
++#endif //WIFI_ONESSID_SECURITY_SYNC
+ 	wifiSubnetObj = NULL;
+ #ifdef CBT_CUSTOMIZATION // 20170425 Max Add
+ 	guestSsidObj = NULL;
+@@ -712,7 +730,28 @@
+ 
+ 	}else{ // wireless general
+ #endif
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++
++	int getIndex = wifiSsidIid.idx[0] ;
++	int syncIndex = DualbandSync(getIndex);
++		
++	IID_INIT(syncWifiSsidIid);
++	syncWifiSsidIid.level = 1;
++	syncWifiSsidIid.idx[0] = syncIndex;
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &syncWifiSsidIid, &syncWifiSsidObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	char *syncSSID = json_object_get_string(json_object_object_get(syncWifiSsidObj, "SSID"));
++	if (!strcmp(syncSSID, SSID)){
++		bSyncSameSSID = true;
++		printf("\n%s: Wireless network security object synchronization for Same SSID.\n", __FUNCTION__);
++		printf("%s: WiFi Interface[%d]-%s synchronization from Interface[%d]-%s !!!! \n", __FUNCTION__, syncIndex, syncSSID, getIndex, SSID);
++	}
++	else{
++		bSyncSameSSID = false;
++	}
+ 	
++#endif //WIFI_ONESSID_SECURITY_SYNC	
+ 	json_object_object_add(wifiSsidObj, "Enable", json_object_new_boolean(wlEnable));
+ 	json_object_object_add(wifiSsidObj, "X_ZYXEL_Multicast_Fwd", json_object_new_boolean(X_ZYXEL_Multicast_Fwd));
+ 	json_object_object_add(wifiSsidObj, "SSID", json_object_new_string(SSID));
+@@ -734,7 +773,25 @@
+ 	return ret;
+ }
+ 
+-
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++int DualbandSync(int wifiIdx){
++/* 
++	1. Security Level
++	2. Security Mode
++	3. Generate password automatically
++	4. password
++	5. WPA Compatible
++	6. Encryption
++	7. Group Key Update Timer.
++*/
++	if (wifiIdx < 5){
++		return (wifiIdx+4);
++	}
++	else{
++		return (wifiIdx-4);
++	}
++}
++#endif //WIFI_ONESSID_SECURITY_SYNC
+ 
+ zcfgRet_t editWifiApObject(struct json_object *Jobj){
+ 
+@@ -1215,6 +1272,153 @@
+ 			json_object_object_add(wifiSecObj, "RekeyingInterval", json_object_new_int(RekeyingInterval));
+ 		}
+ 	}
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++    //Sync WiFi Security object
++	if (bSyncSameSSID == true){
++		int getIndex = wifiSecIid.idx[0] ;
++		int syncIndex = DualbandSync(getIndex);
++			
++		IID_INIT(syncWifiSecIid);
++		syncWifiSecIid.level = 1;
++		syncWifiSecIid.idx[0] = syncIndex;
++		if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_SEC, &syncWifiSecIid, &syncWifiSecObj)) != ZCFG_SUCCESS) {
++			return ret;
++		}
++
++		if(secMode == SLIDER_POS_NONE)
++			json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("None"));
++		else if(secMode == SLIDER_POS_BASIC)
++		{
++			if (!strcmp(wep,"128bit"))
++			{
++				json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WEP-128"));
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_WepModeSelect", json_object_new_string("WEP-128"));
++			}
++			else
++			{
++				json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WEP-64"));
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_WepModeSelect", json_object_new_string("WEP-64"));
++			}
++			
++			json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEPAuthentication", json_object_new_string("None"));
++			json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEPEncryption", json_object_new_string("WEPEncryption"));
++			
++			json_object_object_add(syncWifiSecObj, "X_ZYXEL_AutoGenWepKey", json_object_new_boolean(X_ZYXEL_AutoGenWepKey));
++			
++			if(X_ZYXEL_AutoGenWepKey)
++			{
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_DefaultKeyID", json_object_new_int(1));
++				
++				if (!strcmp(wep,"128bit"))
++				{
++					X_ZYXEL_Auto_WepKey26 = json_object_get_string(json_object_object_get(syncWifiSecObj, "X_ZYXEL_Auto_WepKey26"));
++					json_object_object_add(syncWifiSecObj, "WEPKey", json_object_new_string(X_ZYXEL_Auto_WepKey26));
++				}
++				else
++				{
++					X_ZYXEL_Auto_WepKey10 = json_object_get_string(json_object_object_get(syncWifiSecObj, "X_ZYXEL_Auto_WepKey10"));
++					json_object_object_add(syncWifiSecObj, "WEPKey", json_object_new_string(X_ZYXEL_Auto_WepKey10));
++				}
++			}
++			else
++			{
++				if (!strcmp(wep,"128bit"))
++				{
++					json_object_object_add(syncWifiSecObj, "WEPKey", json_object_new_string(WEPKey));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEPKey2", json_object_new_string(X_ZYXEL_WEPKey2));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEPKey3", json_object_new_string(X_ZYXEL_WEPKey3));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEPKey4", json_object_new_string(X_ZYXEL_WEPKey4));
++				}
++				else
++				{
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEP64Key1", json_object_new_string(X_ZYXEL_WEP64Key1));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEP64Key2", json_object_new_string(X_ZYXEL_WEP64Key2));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEP64Key3", json_object_new_string(X_ZYXEL_WEP64Key3));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_WEP64Key4", json_object_new_string(X_ZYXEL_WEP64Key4));
++				}
++				
++				json_object_object_add(syncWifiSecObj, "wepid", json_object_new_string(wepid));
++				
++				if(strlen(wepid) == 0)
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_DefaultKeyID", json_object_new_int(1));
++				else
++				{
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_DefaultKeyID", json_object_new_int(wepid[3]-'0'));
++					//The value of wepid[3] is 1~4 but character, so it needs to be changed to number
++					if(wepid[3]-'0' <= 0 || wepid[3]-'0' > 4)
++						json_object_object_add(syncWifiSecObj, "X_ZYXEL_DefaultKeyID", json_object_new_int(1));
++				}
++			}
++		}
++		else if(secMode == SLIDER_POS_MORESECURE)
++		{
++			if(!strcmp(wpaMode,"wpa2psk") || !strcmp(wpaMode,"wpapsk") || !strcmp(wpaMode,"wpawpa2psk"))
++			{
++				if(!strcmp(wpaMode,"wpa2psk"))
++					json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WPA2-Personal"));
++				else if(!strcmp(wpaMode,"wpapsk"))
++					json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WPA-Personal"));
++				else
++					json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WPA-WPA2-Personal"));
++			
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
++			
++				if(X_ZYXEL_AutoGenPSK)
++				{
++					X_ZYXEL_Auto_PSK = json_object_get_string(json_object_object_get(syncWifiSecObj, "X_ZYXEL_Auto_PSK"));
++					json_object_object_add(syncWifiSecObj, "KeyPassphrase", json_object_new_string(X_ZYXEL_Auto_PSK));
++					json_object_object_add(syncWifiSecObj, "PreSharedKey", json_object_new_string(""));
++				}
++				else {
++					if(strlen(psk_value) == 64) {
++						psk_lowercase = (char*)malloc(strlen(psk_value)+1);
++						memset(psk_lowercase, 0, strlen(psk_value)+1);
++						stolower(psk_value, psk_lowercase, strlen(psk_value));
++						json_object_object_add(syncWifiSecObj, "KeyPassphrase", json_object_new_string(""));
++						json_object_object_add(syncWifiSecObj, "PreSharedKey", json_object_new_string(psk_lowercase));
++					}
++					else {
++						json_object_object_add(syncWifiSecObj, "KeyPassphrase", json_object_new_string(psk_value));
++					}
++				}
++			}
++			else if(!strcmp(wpaMode,"wpa2") || !strcmp(wpaMode,"wpa") || !strcmp(wpaMode,"wpawpa"))
++			{
++				if(!strcmp(wpaMode,"wpa2"))
++				{
++					json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WPA2-Enterprise"));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_Preauth", json_object_new_boolean(X_ZYXEL_Preauth));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_ReauthInterval", json_object_new_int(X_ZYXEL_ReauthInterval));
++				}
++				else if(!strcmp(wpaMode,"wpa"))
++					json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WPA-Enterprise"));
++				else
++				{
++					json_object_object_add(syncWifiSecObj, "ModeEnabled", json_object_new_string("WPA-WPA2-Enterprise"));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_Preauth", json_object_new_boolean(X_ZYXEL_Preauth));
++					json_object_object_add(syncWifiSecObj, "X_ZYXEL_ReauthInterval", json_object_new_int(X_ZYXEL_ReauthInterval));
++				}
++				
++				json_object_object_add(syncWifiSecObj, "RadiusServerIPAddr", json_object_new_string(RadiusServerIPAddr));
++				json_object_object_add(syncWifiSecObj, "RadiusServerPort", json_object_new_int(RadiusServerPort));
++				json_object_object_add(syncWifiSecObj, "RadiusSecret", json_object_new_string(RadiusSecret));
++			}
++			
++			if(!strcmp(encryp, "tkip"))
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_Encryption", json_object_new_string("tkip"));
++			else if(!strcmp(encryp, "aes"))
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_Encryption", json_object_new_string("aes"));
++			else
++				json_object_object_add(syncWifiSecObj, "X_ZYXEL_Encryption", json_object_new_string("tkipaes"));
++			
++			json_object_object_add(syncWifiSecObj, "RekeyingInterval", json_object_new_int(RekeyingInterval));
++					
++		}
++
++		
++	   
++	}
++#endif //WIFI_ONESSID_SECURITY_SYNC
+ #ifdef CBT_CUSTOMIZATION // 20170427 Max Add
+ 	}	
+ #endif

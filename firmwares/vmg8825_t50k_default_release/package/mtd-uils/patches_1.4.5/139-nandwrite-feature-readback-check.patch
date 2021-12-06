@@ -1,0 +1,104 @@
+Index: mtd-utils-1.4.5/nandwrite.c
+===================================================================
+--- mtd-utils-1.4.5.orig/nandwrite.c	2012-12-28 15:19:34.000000000 +0800
++++ mtd-utils-1.4.5/nandwrite.c	2014-05-07 17:01:25.880567174 +0800
+@@ -77,6 +77,7 @@
+ "  -f, --forcelegacy       Force legacy support on autoplacement-enabled mtd\n"
+ "                          device\n"
+ "  -m, --markbad           Mark blocks bad if write fails\n"
++"  -c, --readbackcheck     ReadBack Check after writing\n"
+ "  -n, --noecc             Write without ecc\n"
+ "  -N, --noskipbad         Write without bad block skipping\n"
+ "  -o, --oob               Image contains oob data\n"
+@@ -117,6 +118,7 @@
+ static bool		onlyoob = false;
+ static bool		autoplace = false;
+ static bool		markbad = false;
++static bool		readbackchk = false;
+ static bool		forcejffs2 = false;
+ static bool		forceyaffs = false;
+ static bool		forcelegacy = false;
+@@ -131,7 +133,7 @@
+ 
+ 	for (;;) {
+ 		int option_index = 0;
+-		static const char *short_options = "ab:fjmnNoOpqrs:y";
++		static const char *short_options = "ab:fjcmnNoOpqrs:y";
+ 		static const struct option long_options[] = {
+ 			{"help", no_argument, 0, 0},
+ 			{"version", no_argument, 0, 0},
+@@ -140,6 +142,7 @@
+ 			{"forcelegacy", no_argument, 0, 'f'},
+ 			{"jffs2", no_argument, 0, 'j'},
+ 			{"markbad", no_argument, 0, 'm'},
++			{"readbackchk", no_argument, 0, 'c'},
+ 			{"noecc", no_argument, 0, 'n'},
+ 			{"noskipbad", no_argument, 0, 'N'},
+ 			{"oob", no_argument, 0, 'o'},
+@@ -193,6 +196,9 @@
+ 			case 'm':
+ 				markbad = true;
+ 				break;
++			case 'c':
++				readbackchk = true;
++				break;
+ 			case 'o':
+ 				writeoob = true;
+ 				break;
+@@ -281,6 +287,7 @@
+ 	size_t filebuf_len = 0;
+ 	// points to the current page inside filebuf
+ 	unsigned char *writebuf = NULL;
++	unsigned char *readbuf = NULL;
+ 	// points to the OOB for the current page in filebuf
+ 	unsigned char *oobreadbuf = NULL;
+ 	unsigned char *oobbuf = NULL;
+@@ -455,6 +462,8 @@
+ 	filebuf_max = ebsize_aligned / mtd.min_io_size * pagelen;
+ 	filebuf = xmalloc(filebuf_max);
+ 	erase_buffer(filebuf, filebuf_max);
++	readbuf = xmalloc(filebuf_max);
++	erase_buffer(readbuf, filebuf_max);
+ 
+ 	oobbuf = xmalloc(mtd.oob_size);
+ 	erase_buffer(oobbuf, mtd.oob_size);
+@@ -681,6 +690,31 @@
+ 
+ 			continue;
+ 		}
++		else
++		{
++			if(readbackchk){
++				memset (readbuf, 0xff, mtd.min_io_size);
++				if (mtd_read(&mtd, fd, mtdoffset / mtd.eb_size, mtdoffset % mtd.eb_size, readbuf, mtd.min_io_size)) {
++					sys_errmsg("%s: MTD read failure", mtd_device);
++					goto closeall;
++				}
++//printf("blockstart=%#08llx, mtdoffset=%#08llx, blk_num=%#08llx, ofs=%#08llx, readbuf[0]=0x%x, readbuf[1]=0x%x, readbuf[2]=0x%x\n", blockstart, mtdoffset, mtdoffset / mtd.eb_size, mtdoffset % mtd.eb_size, readbuf[0], readbuf[1], readbuf[2]);
++				if(memcmp(readbuf, writebuf, mtd.min_io_size)){
++					fprintf(stderr, "Readback Checking found Error at %#08llx\n", mtdoffset);
++					if (markbad) {
++						fprintf(stderr, "Marking block at %08llx bad\n", mtdoffset & (~mtd.eb_size + 1));
++						if (mtd_mark_bad(&mtd, fd, mtdoffset / mtd.eb_size)) {
++							sys_errmsg("%s: MTD Mark bad block failure", mtd_device);
++							goto closeall;
++						}
++					}
++					/* Must rewind to blockstart if we can */
++					writebuf = filebuf;
++					mtdoffset = blockstart + ebsize_aligned;
++					continue;
++				}
++			}
++		}
+ 		mtdoffset += mtd.min_io_size;
+ 		writebuf += pagelen;
+ 	}
+@@ -693,6 +727,7 @@
+ restoreoob:
+ 	libmtd_close(mtd_desc);
+ 	free(filebuf);
++	free(readbuf);
+ 	free(oobbuf);
+ 
+ 	if (oobinfochanged == 1) {

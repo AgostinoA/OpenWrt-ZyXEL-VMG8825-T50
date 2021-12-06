@@ -1,0 +1,179 @@
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2015-10-06 21:54:55.815172500 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2015-10-06 21:56:51.632448593 +0800
+@@ -695,7 +695,13 @@
+   struct dhcp_netid netid;
+   struct dhcp_mac *next;
+ };
+-
++#ifdef ZYXEL_PATCH
++struct dhcp_ifname {
++  char ifname[IF_NAMESIZE];
++  struct dhcp_netid netid;
++  struct dhcp_ifname *next;
++};
++#endif
+ struct dhcp_bridge {
+   char iface[IF_NAMESIZE];
+   struct dhcp_bridge *alias, *next;
+@@ -932,7 +938,9 @@
+ 
+   /* utility string buffer, hold max sized IP address as string */
+   char *addrbuff;
+-
++#ifdef ZYXEL_PATCH 
++  struct dhcp_ifname *dhcp_ifnames;
++#endif
+ } *daemon;
+ 
+ /* cache.c */
+Index: dnsmasq-2.67/src/option.c
+===================================================================
+--- dnsmasq-2.67.orig/src/option.c	2015-10-06 21:54:55.815172500 +0800
++++ dnsmasq-2.67/src/option.c	2015-10-06 22:03:09.119258108 +0800
+@@ -138,7 +138,9 @@
+ #define LOPT_QUIET_DHCP   326
+ #define LOPT_QUIET_DHCP6  327
+ #define LOPT_QUIET_RA     328
+-
++#ifdef ZYXEL_PATCH
++#define LOPT_TAG_IFNAME   329
++#endif
+ 
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -282,6 +284,9 @@
+     { "quiet-dhcp", 0, 0, LOPT_QUIET_DHCP },
+     { "quiet-dhcp6", 0, 0, LOPT_QUIET_DHCP6 },
+     { "quiet-ra", 0, 0, LOPT_QUIET_RA },
++#ifdef ZYXEL_PATCH	
++    { "dhcp-ifname", 1, 0,  LOPT_TAG_IFNAME},
++#endif
+     { NULL, 0, 0, 0 }
+   };
+ 
+@@ -431,6 +436,9 @@
+   { LOPT_QUIET_DHCP, OPT_QUIET_DHCP, NULL, gettext_noop("Do not log routine DHCP."), NULL },
+   { LOPT_QUIET_DHCP6, OPT_QUIET_DHCP6, NULL, gettext_noop("Do not log routine DHCPv6."), NULL },
+   { LOPT_QUIET_RA, OPT_QUIET_RA, NULL, gettext_noop("Do not log RA."), NULL },
++#ifdef ZYXEL_PATCH  
++  { LOPT_TAG_IFNAME, ARG_DUP, "set:<tag>,<ifname>", gettext_noop("Map interface name to option set."), NULL },
++#endif
+   { 0, 0, NULL, NULL, NULL }
+ }; 
+ 
+@@ -3122,7 +3130,24 @@
+ 	  }
+       }
+       break;
++#ifdef ZYXEL_PATCH
++    case LOPT_TAG_IFNAME:  /* --dhcp-ifname */
++      {
++	if (!(comma = split(arg)))
++	  ret_err(gen_err);
++	else
++	  {
++	    struct dhcp_ifname *new = opt_malloc(sizeof(struct dhcp_ifname));
++	    new->netid.net = opt_string_alloc(set_prefix(arg));
++		arg = comma;
++		strcpy(new->ifname, arg);
+ 
++		new->next = daemon->dhcp_ifnames;
++		daemon->dhcp_ifnames = new;
++	  }
++      }
++      break;
++#endif
+ #ifdef OPTION6_PREFIX_CLASS 
+     case LOPT_PREF_CLSS: /* --dhcp-prefix-class */
+       {
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2015-10-06 21:53:25.141259510 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2015-10-06 22:01:54.182206768 +0800
+@@ -61,7 +61,9 @@
+ static int prune_vendor_opts(struct dhcp_netid *netid);
+ static struct dhcp_opt *pxe_opts(int pxe_arch, struct dhcp_netid *netid, struct in_addr local, time_t now);
+ struct dhcp_boot *find_boot(struct dhcp_netid *netid);
+-
++#ifdef ZYXEL_PATCH
++static int find_ifname(unsigned char *subnet_mac, int len, char *ifname, char *interface);
++#endif
+   
+ size_t dhcp_reply(struct dhcp_context *context, char *iface_name, int int_index,
+ 		  size_t sz, time_t now, int unicast_dest, int *is_inform, int pxe, struct in_addr fallback)
+@@ -95,6 +97,7 @@
+   unsigned char *oui = NULL, *serial = NULL, *class = NULL;
+ #ifdef ZYXEL_PATCH
+   char *vendor_class_ptr = NULL;
++  struct dhcp_ifname *ifname;
+ #endif
+   subnet_addr.s_addr = override.s_addr = 0;
+ 
+@@ -247,7 +250,15 @@
+       /* find mac to use for logging and hashing */
+       emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
+     }
+-  
++
++	for (ifname = daemon->dhcp_ifnames; ifname; ifname = ifname->next){
++
++		if(find_ifname(mess->chaddr, mess->hlen, ifname->ifname, iface_name)){
++			ifname->netid.next = netid;
++			netid = &ifname->netid;
++		}
++	}
++
+   for (mac = daemon->dhcp_macs; mac; mac = mac->next)
+     if (mac->hwaddr_len == mess->hlen &&
+ 	(mac->hwaddr_type == mess->htype || mac->hwaddr_type == 0) &&
+@@ -256,7 +267,7 @@
+ 	mac->netid.next = netid;
+ 	netid = &mac->netid;
+       }
+-  
++
+   /* Determine network for this packet. Our caller will have already linked all the 
+      contexts which match the addresses of the receiving interface but if the 
+      machine has an address already, or came via a relay, or we have a subnet selector, 
+@@ -2147,7 +2158,39 @@
+ 
+   return boot;
+ }
++#ifdef ZYXEL_PATCH
++static int find_ifname(unsigned char *subnet_mac, int len, char *ifname, char *interface)
++{
++	FILE *fp;
++	char sysCmd[128] = {0};
++	char line[128] = {0};
++
++	int sub_mac_idx = 0;
++	char mac_value[32]={0};
++
++	for(sub_mac_idx = 0 ; sub_mac_idx < len ; sub_mac_idx++){
++		if(0 == sub_mac_idx){
++			sprintf(mac_value, "%02x", subnet_mac[sub_mac_idx]);
++		}else{
++			sprintf(mac_value, "%s:%02x", mac_value, subnet_mac[sub_mac_idx]);
++		}
++	}
++
++	sprintf(sysCmd, "brctl showmacs %s | grep %s", interface, mac_value);
++	fp = popen(sysCmd, "r");
+ 
++	if(fp){
++		while(fgets(line, sizeof(line), fp) != NULL){
++			if(strstr(line, ifname) != NULL){
++				pclose(fp);
++				return 1;
++			}
++		}
++		pclose(fp);
++	}
++	return 0;
++}
++#endif
+ static void do_options(struct dhcp_context *context,
+ 		       struct dhcp_packet *mess,
+ 		       unsigned char *end, 

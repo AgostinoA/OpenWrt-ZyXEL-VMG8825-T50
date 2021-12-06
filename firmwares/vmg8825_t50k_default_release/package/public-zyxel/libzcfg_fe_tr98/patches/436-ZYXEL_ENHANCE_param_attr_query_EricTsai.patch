@@ -1,0 +1,239 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-03-20 14:21:51.668145088 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-03-20 14:21:51.680145088 +0800
+@@ -2465,6 +2465,192 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#ifdef ZCFG_QUERY_TR98_PARM_ATTR_LIST
++static zcfgRet_t zcmdObjIidToMappingName(uint32_t objnum, objIndex_t *objIid, char *mappingName)
++{
++	char idxstr[5];
++	int n = 0;
++
++	ztrdbg(ZTR_DL_INFO, "%s\n", __FUNCTION__);
++
++	if(!objIid || !mappingName)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(objnum)
++		sprintf(mappingName, "%u_", objnum);
++
++	n = 0;
++	if(objIid->idx[n] == 0) {
++		strcat(mappingName, "-");
++	}
++	else {
++		while(n < SUPPORTED_INDEX_LEVEL)
++		{
++			if(objIid->idx[n] == 0)
++				break;
++
++			memset(idxstr, 0, sizeof(idxstr));
++			if(!n)
++				sprintf(idxstr, "%d", objIid->idx[n]);
++			else
++				sprintf(idxstr, ".%d", objIid->idx[n]);
++
++			strcat(mappingName, idxstr);
++			n++;
++		}
++	}
++
++	ztrdbg(ZTR_DL_INFO, "%s: mapping name, %s\n", __FUNCTION__, MSG_EMPTY(mappingName));
++
++	return ZCFG_SUCCESS;
++}
++
++static struct json_object *retrieveAttrListObj(struct json_object *zcmdTr98MapAttrList, zcfg_name_t seqnum, objIndex_t *tr98ObjIid)
++{
++	struct json_object *arrayObj = NULL, *tr98MappingIdxObj = NULL;
++	uint32_t arrayIdx;
++	char tr98ObjIidStr[20] = {0};
++
++	ztrdbg(ZTR_DL_INFO, "%s\n", __FUNCTION__);
++
++	arrayIdx = ARRAY_SEQNUM(seqnum);
++	if((arrayObj = json_object_array_get_idx(zcmdTr98MapAttrList, arrayIdx)) == NULL) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: no this object\n", __FUNCTION__);
++		return NULL;
++	}
++
++	zcmdObjIidToMappingName(0, tr98ObjIid, tr98ObjIidStr);
++	if((tr98MappingIdxObj = json_object_object_get(arrayObj, tr98ObjIidStr)) == NULL) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: no index object\n", __FUNCTION__);
++
++	}
++
++	return tr98MappingIdxObj;
++}
++
++static zcfgRet_t qryAndSetParamObjAttr(struct json_object *mappingIdxObj, struct json_object *tr98parm, tr98Parameter_t *parmList)
++{
++	struct json_object *idxObjParm = NULL;
++	int attr;
++
++	ztrdbg(ZTR_DL_INFO, "%s\n", __FUNCTION__);
++
++	while(parmList && parmList->name){
++		if(json_object_object_get(tr98parm, parmList->name)){
++			idxObjParm = (mappingIdxObj) ? json_object_object_get(mappingIdxObj, parmList->name) : NULL;
++			attr = (idxObjParm) ? json_object_get_int(json_object_object_get(idxObjParm, "attr")) : 0;
++			json_object_object_add(tr98parm, parmList->name, json_object_new_int(attr));
++		}
++		parmList++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++static zcfgRet_t parmListQryAndSetParamObjAttr(struct json_object *mappingIdxObj, struct json_object **tr98parm, tr98Parameter_t *parmList)
++{
++	struct json_object *idxObjParm = NULL;
++	int attr;
++
++	ztrdbg(ZTR_DL_INFO, "%s\n", __FUNCTION__);
++
++	*tr98parm = json_object_new_object();
++	while(parmList && parmList->name){
++		idxObjParm = (mappingIdxObj) ? json_object_object_get(mappingIdxObj, parmList->name) : NULL;
++		attr = (idxObjParm) ? json_object_get_int(json_object_object_get(idxObjParm, "attr")) : 0;
++		json_object_object_add(*tr98parm, parmList->name, json_object_new_int(attr));
++		parmList++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++static zcfgRet_t clearParamObjAttr(struct json_object *tr98parm, tr98Parameter_t *parmList)
++{
++	ztrdbg(ZTR_DL_INFO, "%s\n", __FUNCTION__);
++
++	while(parmList && parmList->name){
++		if(json_object_object_get(tr98parm, parmList->name))
++			json_object_object_add(tr98parm, parmList->name, json_object_new_int(0));
++
++		parmList++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFeTr98QueryAttrObjExist(const char *tr98ObjName, struct json_object **tr98parm)
++{
++	char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0}, tr181ObjName[OBJ_NAME_BUFF_SIZE] = {0};
++	const char *tr98ObjNamePtr;
++
++	if (ReplaceWANDeviceIndex(tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++		return ZCFG_INVALID_OBJECT;
++
++	tr98ObjNamePtr = (newtr98ObjName[0] != '\0') ? (const char *)newtr98ObjName : tr98ObjName;
++
++	if(zcfgFe98To181MappingNameGet(tr98ObjNamePtr, tr181ObjName) != ZCFG_SUCCESS)
++		return zcfgFeTr98ObjNameGet((char *)tr98ObjName, tr98parm);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFeTr98QueryAttrObjNameGet(const char *tr98ObjName, struct json_object **tr98parm, void *zcmdTr98MapAttrList)
++{
++	zcfgRet_t ret;
++	char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0}, tr181ObjName[OBJ_NAME_BUFF_SIZE] = {0};
++	const char *tr98ObjNamePtr;
++	tr98Parameter_t *parmList;
++	zcfg_name_t seqnum = 0;
++	objIndex_t tr98ObjIid;
++	struct json_object *attrListObj;
++
++	if(!zcmdTr98MapAttrList)
++		return zcfgFeTr98ObjNameGet((char *)tr98ObjName, tr98parm);
++
++	if (ReplaceWANDeviceIndex(tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++		return ZCFG_INVALID_OBJECT;
++
++	tr98ObjNamePtr = (newtr98ObjName[0] != '\0') ? (const char *)newtr98ObjName : tr98ObjName;
++	if(zcfgFe98To181MappingNameGet(tr98ObjNamePtr, tr181ObjName) != ZCFG_SUCCESS){
++		if((ret = zcfgFeTr98ObjNameGet((char *)tr98ObjName, tr98parm)) != ZCFG_SUCCESS)
++			return ret;
++	}
++
++	ret = zcfgFe98NameToSeqnum(tr98ObjNamePtr, &seqnum, &tr98ObjIid);
++	if(ret != ZCFG_SUCCESS){
++		json_object_put(*tr98parm);
++		return ZCFG_INVALID_OBJECT;
++	}
++
++	int handler = ARRAY_SEQNUM(seqnum);
++
++	// if seqnum specific objs,
++	//	 zcfgFeTr98ObjNameGet(tr98ObjName, tr98parm);
++
++	parmList = tr98Obj[handler].parameter;
++	if(!parmList){
++		printf("%s: no parmList\n", __FUNCTION__);
++		json_object_put(*tr98parm);
++		return ZCFG_INVALID_OBJECT;
++	}
++
++	attrListObj = retrieveAttrListObj(zcmdTr98MapAttrList, seqnum, &tr98ObjIid);
++	if(attrListObj && *tr98parm){ //objNameQried
++		qryAndSetParamObjAttr(attrListObj, *tr98parm, parmList);
++		return ZCFG_SUCCESS;
++	}
++	else if(!attrListObj && *tr98parm) { //objNameQried
++		clearParamObjAttr(*tr98parm, parmList);
++		return ZCFG_SUCCESS;
++	}
++
++	parmListQryAndSetParamObjAttr(attrListObj, tr98parm, parmList);
++
++	return ZCFG_SUCCESS;
++}
++#endif
++
+ #ifdef ZCFG_PARM_NAMEMAPPING
+ int zcfgFeTr98ObjParamAttrGetByName(const char *tr98ObjName, const char *name)
+ {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-03-20 14:21:51.664145088 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-03-20 14:21:51.680145088 +0800
+@@ -130,6 +130,8 @@
+ 		zstdlog(logLev, format, ##__VA_ARGS__); \
+ 	} while(0)
+ 
++#define MSG_EMPTY(msg) ((msg != NULL && msg[0] != '\0') ? msg : "(empty)")
++
+ 
+ #define TRANS_WANIPIFACE_98TO181   1
+ #define TRANS_WANIPIFACE_181TO98   2
+@@ -208,6 +210,13 @@
+ zcfgRet_t zcfgFeTr98ParamList(char *);
+ 
+ int zcfgFeTr98ParamAttrChk(int , int);
++#ifdef ZCFG_QUERY_TR98_PARM_ATTR_LIST
++zcfgRet_t zcfgFeTr98QueryAttrObjExist(const char *, struct json_object **);
++zcfgRet_t zcfgFeTr98QueryAttrObjNameGet(const char *, struct json_object **, void *);
++#else
++#define zcfgFeTr98QueryAttrObjExist(name, parm) zcfgFeTr98ObjNameGet(name, parm)
++#define zcfgFeTr98QueryAttrObjNameGet(name, parm, attrlist) zcfgFeTr98ObjNameGet(name, parm)
++#endif
+ int zcfgFeTr98ParamAttrGetByName(char *, char *);
+ zcfgRet_t zcfgFeTr98AllParamAttrGetByObjName(const char *, struct json_object *);
+ int zcfgFeTr98ObjParamAttrGetByName(const char *tr98ObjName, const char *name);
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-03-20 14:20:57.504427500 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-03-20 14:21:10.878427500 +0800
+@@ -160,6 +160,10 @@
+ CFLAGS += -DZCFG_TR98_PARAM_GUARD
+ endif
+ 
++ifeq ($(CONFIG_ZCFG_QUERY_TR98_PARM_ATTR_LIST),y)
++CFLAGS += -DZCFG_QUERY_TR98_PARM_ATTR_LIST
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98

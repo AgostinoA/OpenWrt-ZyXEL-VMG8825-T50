@@ -1,0 +1,93 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2019-07-04 17:50:44.854045169 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2019-07-04 18:17:34.816116500 +0800
+@@ -495,6 +495,7 @@
+ static json_object *zcfgTr98GpnSpeedObjs = NULL;
+ static json_object *zcfgTr98GpvSpeedObjs = NULL;
+ 
++static struct json_object *rpcObjPathNameList = NULL;
+ static json_object *zcfgTr98AttrList = NULL;
+ 
+ static zcfgRet_t zcfgObjIidToMappingName(uint32_t objnum, objIndex_t *objIid, char *mappingName);
+@@ -1487,6 +1488,32 @@
+ 	return linkOid;
+ }
+ 
++void zcfgRpcSpeedObjsRpcObjectListInit()
++{
++	if(rpcObjPathNameList){
++		json_object_put(rpcObjPathNameList);
++	}
++	rpcObjPathNameList = json_object_new_object();
++}
++
++void zcfgRpcSpeedObjsAddRpcObject(const char *rpcObjPathName)
++{
++	json_object_object_add(rpcObjPathNameList, rpcObjPathName, json_object_new_int(1));
++
++}
++
++static int zcfgRpcSpeedObjsAskRpcObject(const char *objPathName)
++{
++	int rpcObj = 0;
++
++	if(rpcObjPathNameList){
++
++		rpcObj = !json_object_object_get(rpcObjPathNameList, objPathName) ? 0 : 1;
++	}
++
++	return rpcObj;
++}
++
+ 
+ static zcfgRet_t zcfgFeTr98ObjQueryAndSpeed(char *tr98ObjName, struct json_object **value, int enableSaveSpeedObj)
+ {
+@@ -1515,12 +1542,15 @@
+ 		return ZCFG_INVALID_OBJECT;
+ 	}
+ 
++	int rpcAppliedObj = zcfgRpcSpeedObjsAskRpcObject(tr98ObjName);
++
+ 	//printf("%s: seqnum %u, %hhu.%hhu.%hhu\n", __FUNCTION__, seqnum, tr98ObjIid.idx[0], tr98ObjIid.idx[0], tr98ObjIid.idx[0]);
+ 	if(zcfgTr98GpvSpeedObjs){
+-		struct json_object *speedObj = zcfgTr98SpeedObjsRetObj(zcfgTr98GpvSpeedObjs, seqnum, &tr98ObjIid);
++		struct json_object *speedObj = (rpcAppliedObj) ? zcfgTr98SpeedObjsRetrieve(zcfgTr98GpvSpeedObjs, seqnum, &tr98ObjIid) :
++				zcfgTr98SpeedObjsRetObj(zcfgTr98GpvSpeedObjs, seqnum, &tr98ObjIid);
+ 		if(speedObj){
+ 			ztrdbg(ZTR_DL_INFO, "%s: speedobj %s retrieved\n", __FUNCTION__, tr98ObjName);
+-			*value = speedObj;
++			*value = rpcAppliedObj ? JSON_OBJ_COPY(speedObj) : speedObj;
+ 
+ 			return ZCFG_SUCCESS;
+ 		}
+@@ -1530,11 +1560,12 @@
+ 		struct json_object *queryObj = NULL;
+ 		rst = tr98Obj[handler].getObj(tr98ObjNamePtr, handler, &queryObj, TR98_GET_UPDATE);
+ 		//printf("%s: %s   query handle rout, rst=%d\n", __FUNCTION__, tr98ObjNamePtr, rst);
+-
++		enableSaveSpeedObj = !rpcAppliedObj ? enableSaveSpeedObj : 1;
+ 		if((rst == ZCFG_SUCCESS) && zcfgTr98GpvSpeedObjs && enableSaveSpeedObj){
+ 			zcfgTr98SpeedObjsAddObj(zcfgTr98GpvSpeedObjs, seqnum, &tr98ObjIid, queryObj);
+ 		}
+-		*value = queryObj;
++		//*value = queryObj;
++		*value = rpcAppliedObj ? JSON_OBJ_COPY(queryObj) : queryObj;
+ 
+ 		return rst;
+ 	}
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2019-07-04 17:50:44.854045169 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2019-07-04 18:13:36.710116500 +0800
+@@ -453,6 +453,10 @@
+ 
+ void zcfgFeTr98GuiCustomizationSet(char *, void *);
+ 
++void zcfgRpcSpeedObjsRpcObjectListInit();
++void zcfgRpcSpeedObjsAddRpcObject(const char *);
++
++
+ // utilize GpnSpeedObjs to sync the same objects/params
+ #define zcfgRpcTr98GpaSpeedEnable() zcfgRpcTr98GpnSpeedObjsEnable()
+ #define zcfgRpcTr98GpaSpeedClear() zcfgRpcTr98GpnSpeedObjsClear()

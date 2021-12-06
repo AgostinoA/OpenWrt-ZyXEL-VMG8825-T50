@@ -1,0 +1,192 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-11-12 11:30:00.849465453 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-11-12 13:35:31.242720700 +0800
+@@ -815,7 +815,7 @@
+ extern zcfgRet_t WANDslIfaceCfgTtlObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+-	char tr181PathName[128] = {0};
++	char tr181PathName[MAX_TR181_PATHNAME] = {0};
+ 	char tr181Obj[128] = {0};
+ 	tr98Parameter_t *paramList = NULL;
+ 	objIndex_t dslLineIid;
+@@ -876,7 +876,7 @@
+ extern zcfgRet_t WANDslIfaceCfgStObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+-	char tr181PathName[128] = {0};
++	char tr181PathName[MAX_TR181_PATHNAME] = {0};
+ 	char tr181Obj[128] = {0};
+ 	tr98Parameter_t *paramList = NULL;
+ 	objIndex_t dslLineIid;
+@@ -929,6 +929,88 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.SubPathNames
++
++    Related object in TR181:
++    Device.DSL.Line.i.Stats.SubPathNames.
++*/
++extern zcfgRet_t WANDslIfaceCfgStatsSubObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181PathName[MAX_TR181_PATHNAME] = {0};
++	char tr181Obj[128] = {0};
++	tr98Parameter_t *paramList = NULL;
++	objIndex_t dslLineIid;
++	uint32_t  dslLineOid = 0;
++	struct json_object *dslStatsObj = NULL;
++	struct json_object *paramValue = NULL;
++	char vendorParamName[32] = {0};
++	struct json_object *vendorParamValue = NULL;
++	int n = 0;
++	bool subPathNameMatch = false;
++	const char *subPathNames[] = { "Stats.CurrentDay", "Stats.QuarterHour", "Stats.LastShowtime", 0 };
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, tr181PathName)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get TR181 mapping name fail.\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s: Tr181 mapping name: %s\n", __FUNCTION__, tr181PathName);
++
++	while(subPathNames[n]) {
++		char subPathName[30] = {0};
++		strcpy(subPathName, subPathNames[n]);
++		if(strstr(tr98FullPathName, subPathName)) {
++			subPathNameMatch = true;
++			if(!strstr(tr181PathName, subPathName)) {
++				zcfgLog(ZCFG_LOG_INFO, "%s : Tr98/Tr181 mapping not match\n", __FUNCTION__);
++				return ZCFG_INTERNAL_ERROR;
++			}
++		}
++		n++;
++	}
++
++	if(!subPathNameMatch) {
++		zcfgLog(ZCFG_LOG_INFO, "%s : Tr98/Tr181 mapping not match\n", __FUNCTION__);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	IID_INIT(dslLineIid);
++	sprintf(tr181Obj, "Device.%s", tr181PathName);
++	dslLineOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
++	if((ret = feObjJsonGet(dslLineOid, &dslLineIid, &dslStatsObj, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get dslStatsObj obj fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		sprintf(vendorParamName, "X_ZYXEL_%s", paramList->name);
++		paramValue = json_object_object_get(dslStatsObj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		else if( (vendorParamValue = json_object_object_get(dslStatsObj, vendorParamName)) != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(vendorParamValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++
++	json_object_put(dslStatsObj);	
++	return ZCFG_SUCCESS;
++}
+ 
+ /*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANEthernetInterfaceConfig
+  *
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2015-11-12 11:30:00.709465448 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2015-11-12 13:36:52.405859400 +0800
+@@ -7,6 +7,7 @@
+ extern tr98Parameter_t para_WANDslIfTestParam[];
+ extern tr98Parameter_t para_WANDslIfaceCfgStatTotal[];
+ extern tr98Parameter_t para_WANDslIfaceCfgStatSt[];
++extern tr98Parameter_t para_WANDslIfaceCfgStatObjs[];
+ extern tr98Parameter_t para_WANEthIntfConf[];
+ extern tr98Parameter_t para_WANEthIntfConfStat[];
+ extern tr98Parameter_t para_WANDslLinkConf[];
+@@ -76,6 +77,8 @@
+ extern zcfgRet_t WANDslIfaceCfgTtlObjGet(char *, int, struct json_object **, bool);
+ /* InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.Showtime */
+ extern zcfgRet_t WANDslIfaceCfgStObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t WANDslIfaceCfgStatsSubObjGet(char *, int , struct json_object **, bool );
++
+ extern zcfgRet_t WANEthIfaceCfgObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t WANEthIfaceCfgObjSet(char *, int, struct json_object *, struct json_object *);
+ 
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2015-11-12 11:30:00.709465448 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2015-11-12 13:37:26.272796500 +0800
+@@ -310,6 +310,29 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_WANDslIfaceCfgStatObjs[] = {
++	{ "ReceiveBlocks", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "TransmitBlocks", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CellDelin", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LinkRetrain", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "InitErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LInit", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "InitTimeouts", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LossOfFraming", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LOF", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "ErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "SeverelyErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCSeverelyErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "FECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCFECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "HECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCHECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CRCErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCCRCErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WANEthIntfConf[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-11-12 11:30:00.825465452 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-11-12 13:38:09.509269400 +0800
+@@ -170,7 +170,7 @@
+ {e_TR98_TTL                     , &tr98Obj[e_TR98_TTL                     -e_TR98_START]},
+ {e_TR98_ST                      , &tr98Obj[e_TR98_ST                      -e_TR98_START]},
+ //{e_TR98_LST_SHOWTIME            , &tr98Obj[e_TR98_LST_SHOWTIME            -e_TR98_START]},
+-//{e_TR98_CURRENT_DAY             , &tr98Obj[e_TR98_CURRENT_DAY             -e_TR98_START]},
++{e_TR98_CURRENT_DAY             , &tr98Obj[e_TR98_CURRENT_DAY             -e_TR98_START]},
+ //{e_TR98_QTR_HR                  , &tr98Obj[e_TR98_QTR_HR                  -e_TR98_START]},
+ {e_TR98_WAN_ETH_INTF_CONF       , &tr98Obj[e_TR98_WAN_ETH_INTF_CONF       -e_TR98_START]},
+ {e_TR98_WAN_ETH_INTF_CONF_STAT  , &tr98Obj[e_TR98_WAN_ETH_INTF_CONF_STAT  -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-11-12 11:30:00.777465451 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-11-12 13:39:23.035474900 +0800
+@@ -370,7 +370,7 @@
+ {TR98_TTL,                      0,              para_WANDslIfaceCfgStatTotal,  WANDslIfaceCfgTtlObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_ST,                       0,              para_WANDslIfaceCfgStatSt,     WANDslIfaceCfgStObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LST_SHOWTIME,             0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_CURRENT_DAY,              0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_CURRENT_DAY,              0,              para_WANDslIfaceCfgStatObjs,   WANDslIfaceCfgStatsSubObjGet,                    NULL,                   NULL,             NULL,            NULL, NULL, NULL},
+ //{TR98_QTR_HR,                   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_ETH_INTF_CONF,        0,              para_WANEthIntfConf,    WANEthIfaceCfgObjGet,	 WANEthIfaceCfgObjSet,   NULL,             NULL,            NULL},
+ {TR98_WAN_ETH_INTF_CONF_STAT,   0,              para_WANEthIntfConfStat,WANEthIfaceCfgStObjGet,  NULL,                   NULL,             NULL,            NULL},

@@ -1,0 +1,203 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_acl.c	2017-02-06 13:50:39.006448304 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c	2017-02-06 13:52:48.455652400 +0800
+@@ -52,6 +52,35 @@
+ 	{NULL, 					0, 				0, 	0, 	NULL}
+ };
+ 
++void zcfgFeDalShowFirewallACL(struct json_object *Jarray){
++	int i, len = 0;
++	int j = 1;
++	struct json_object *obj = NULL;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-7s %-10s %-41s %-41s %-40s %-12s\n",
++		    "Order", "Name", "Source IP", "Destination IP", "Service", "Action");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		int k = 0;
++		while(atoi(json_object_get_string(json_object_object_get(json_object_array_get_idx(Jarray, k), "Order"))) != j){
++			k=k+1;
++		}
++		j=j+1;
++		obj = json_object_array_get_idx(Jarray, k);
++			printf("%-7s %-10s %-41s %-41s %-40s %-12s\n",
++		    json_object_get_string(json_object_object_get(obj, "Order")),
++		    json_object_get_string(json_object_object_get(obj, "Name")),
++		    json_object_get_string(json_object_object_get(obj, "SourceIP")),
++		    json_object_get_string(json_object_object_get(obj, "DestIP")),
++		    json_object_get_string(json_object_object_get(obj, "Protocol")),
++		    json_object_get_string(json_object_object_get(obj, "Action")));
++	}
++}
++
++
+ static objIndex_t chainIid = {0};
+ 
+ bool getChainRuleIid(){
+@@ -87,6 +116,53 @@
+ 	return found;
+ }
+ 
++char* ICMPv6_type( int icmptype, int icmptypecode){
++	char *v6type = NULL;
++	if(icmptype == 1 && icmptypecode == 0)
++		v6type = "1/No-Rute";
++	else if(icmptype == 1 && icmptypecode == 1)
++		v6type = "1/Communication-Prohibited";
++	else if(icmptype == 1 && icmptypecode == 3)
++		v6type = "1/Address-Unreachable";
++	else if(icmptype == 1 && icmptypecode == 4)
++		v6type = "1/Port-Unreachable";
++	else if(icmptype == 2 && icmptypecode == 0)
++		v6type = "2/Packet too Big";
++	else if(icmptype == 3 && icmptypecode == 0)
++		v6type = "3/Time Exceeded (ttl-zero-during-transit)";
++	else if(icmptype == 3 && icmptypecode == 1)
++		v6type = "3/Time Exceeded (ttl-zero-during-reassembly)";
++	else if(icmptype == 4 && icmptypecode == 0)
++		v6type = "4/Parameter Problem (bad-header)";
++	else if(icmptype == 4 && icmptypecode == 1)
++		v6type = "4/Parameter Problem (unknown-header-type)";
++	else if(icmptype == 4 && icmptypecode == 2)
++		v6type = "4/Parameter Problem (unknown-option)";
++	else if(icmptype == 128)
++		v6type = "128/Echo Request";
++	else if(icmptype == 129)
++		v6type = "129/Echo Response";
++	else if(icmptype == 130)
++		v6type = "130/Listener Query";
++	else if(icmptype == 131)
++		v6type = "131/Listener Report";
++	else if(icmptype == 132)
++		v6type = "132/Listener Done";
++	else if(icmptype == 143)
++		v6type = "143/Listener Report v2";
++	else if(icmptype == 133)
++		v6type = "133/Router Solicitation";
++	else if(icmptype == 134)
++		v6type = "134/Router Advertisement";
++	else if(icmptype == 135)
++		v6type = "135/Neighbor Solicitation";
++	else if(icmptype == 136)
++		v6type = "136/Neighbor Advertisement";
++	else if(icmptype == 137)
++		v6type = "137/Redirect";
++	return v6type;
++}
++
+ zcfgRet_t zcfgFeDal_Firewall_ACL_Add(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *aclObj = NULL;
+@@ -179,6 +255,78 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDal_Firewall_ACL_Get(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *FiremallACLJobj = NULL;
++	char Protocol[32] = {0};
++	const char *SourceIP = NULL;
++	const char *DestIP = NULL;
++	int SourceMask = 0;
++	int DestMask = 0;
++	int Order = 0;
++	int SourcePort = 0;
++	int DestPort = 0;
++	int icmptype = 0;
++	int icmptypecode = 0;
++	const char *tmp = NULL;
++	objIndex_t FiremallACLIid = {0};
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_FIREWALL_CHAIN_RULE, &FiremallACLIid, &FiremallACLJobj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++
++		json_object_object_add(paramJobj, "Protocol", json_object_object_get(FiremallACLJobj, "Protocol"));
++		if(!strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"-2")){
++			json_object_object_add(paramJobj, "Protocol", json_object_new_string("ALL"));
++		}else if(!strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"17") || !strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"6")){
++			SourcePort = json_object_get_int(json_object_object_get(FiremallACLJobj, "SourcePort"));
++			DestPort = json_object_get_int(json_object_object_get(FiremallACLJobj, "DestPort"));
++			if(!strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"17")){
++				sprintf(Protocol,"UDP:%d-->%d",SourcePort,DestPort);
++				json_object_object_add(paramJobj, "Protocol", json_object_new_string(Protocol));
++			}else{
++				sprintf(Protocol,"TCP:%d-->%d",SourcePort,DestPort);
++				json_object_object_add(paramJobj, "Protocol", json_object_new_string(Protocol));
++			}
++		}else if(!strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"1")){
++			json_object_object_add(paramJobj, "Protocol", json_object_new_string("ICMP"));
++		}else if(!strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"58")){
++			json_object_object_add(paramJobj, "Protocol", json_object_new_string("ICMPV6"));
++			icmptype = json_object_get_int(json_object_object_get(FiremallACLJobj,"X_ZYXEL_ICMPType"));
++			icmptypecode = json_object_get_int(json_object_object_get(FiremallACLJobj,"X_ZYXEL_ICMPTypeCode"));
++			tmp = ICMPv6_type(icmptype,icmptypecode);
++			sprintf(Protocol,"ICMPv6:%s",tmp);
++			json_object_object_add(paramJobj, "Protocol", json_object_new_string(Protocol));
++
++		}else if(!strcmp(json_object_get_string(json_object_object_get(FiremallACLJobj, "Protocol")),"-1")){
++			json_object_object_add(paramJobj, "Protocol", json_object_new_string("ALL"));
++		}
++		Order = json_object_get_int(json_object_object_get(FiremallACLJobj, "Order"));
++		json_object_object_add(paramJobj, "Name", json_object_object_get(FiremallACLJobj, "Description"));
++		json_object_object_add(paramJobj, "Order", json_object_new_int(Order));
++		SourceIP = json_object_get_string(json_object_object_get(FiremallACLJobj, "SourceIP"));
++		DestIP = json_object_get_string(json_object_object_get(FiremallACLJobj, "DestIP"));
++		if(!strcmp(SourceIP,""))
++			json_object_object_add(paramJobj, "SourceIP", json_object_new_string("Any"));
++		else{
++			SourceMask = json_object_get_int(json_object_object_get(FiremallACLJobj, "SourceMask"));
++			sprintf(SourceIP, "%s%s%d",SourceIP,"/",SourceMask);
++			json_object_object_add(paramJobj, "SourceIP", json_object_new_string(SourceIP));
++		}
++		if(!strcmp(DestIP,""))
++			json_object_object_add(paramJobj, "DestIP", json_object_new_string("Any"));
++		else{
++			DestMask = json_object_get_int(json_object_object_get(FiremallACLJobj, "DestMask"));
++			sprintf(DestIP, "%s%s%d",DestIP,"/",DestMask);
++			json_object_object_add(paramJobj, "DestIP", json_object_new_string(SourceIP));
++		}
++		json_object_object_add(paramJobj, "Action", json_object_object_get(FiremallACLJobj, "Target"));
++		json_object_array_add(Jobj, JSON_OBJ_COPY(paramJobj));
++		zcfgFeJsonObjFree(paramJobj);
++	}	
++	zcfgFeJsonObjFree(FiremallACLJobj);
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalFirewallACL(const char *method, struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+@@ -191,6 +339,8 @@
+ 		ret = zcfgFeDal_Firewall_ACL_Add(Jobj, NULL);
+ 	}else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDal_Firewall_ACL_Delete(Jobj, NULL);
++	}else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_Firewall_ACL_Get(Jobj, NULL);
+ 	}else
+ 		printf("Unknown method:%s\n", method);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-02-06 13:50:39.862448308 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-02-06 13:52:37.420652400 +0800
+@@ -152,6 +152,7 @@
+ extern void zcfgFeDalShowMgmtSrv(struct json_object *Jarray);
+ extern void zcfgFeDalShowPortFwd(struct json_object *Jarray);
+ extern void zcfgFeDalShowNetworkMAP(struct json_object *Jarray);
++extern void zcfgFeDalShowFirewallACL(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -184,7 +185,7 @@
+ {"FIREWALL",		FIREWALL_param, 	zcfgFeDalFirewall,		NULL,						"add|edit",			"Firewall"}, //why no delete?
+ {"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	NULL,						"edit",				"Firewall"},
+ {"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,NULL,				"add|edit|delete", "Firewall"},
+-{"ACL", 			FIREWALL_ACL_param, zcfgFeDalFirewallACL,	NULL,						"add|edit|delete",	"Firewall"},
++{"ACL", 			FIREWALL_ACL_param, zcfgFeDalFirewallACL,	zcfgFeDalShowFirewallACL,	"add|edit|delete|get",	"Firewall"},
+ {"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,	NULL,						"edit",				"Wireless"},
+ {"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter,		NULL,						"edit",				"MAC_Filter"},
+ {"QOS_GENERAL",		QosGeneral_param,	zcfgFeDalQosGeneral,	NULL,						"add|edit|delete",	"QoS"},

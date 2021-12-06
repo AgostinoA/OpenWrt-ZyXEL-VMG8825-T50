@@ -1,0 +1,74 @@
+Index: linux-3.18.21/net/netfilter/nf_conntrack_core.c
+===================================================================
+--- linux-3.18.21.orig/net/netfilter/nf_conntrack_core.c	2018-06-01 13:43:23.606280081 +0800
++++ linux-3.18.21/net/netfilter/nf_conntrack_core.c	2018-06-01 13:46:42.278313564 +0800
+@@ -915,7 +915,69 @@
+ 			return ERR_PTR(-ENOMEM);
+ 		}
+ 	}
++#ifdef CONFIG_ZYXEL_NF_SESSION_CTL
++	/*	== ZYXEL, Session_Control max num judgement function. /proc/net/nf_session_ctl ==*/
++	/*		0					session max number						*/
++	/*		|--------|--|--------------................|				*/
++	/*			0.8*session_max number         conntrack max number		*/
++	if(nf_session_ctl_max != nf_conntrack_max)
++	{
+ 
++		struct nf_sess_ref_count *h_max;
++		struct nf_conntrack_tuple_hash *h_full_cone;		/* look for tuple match by "iga igp" for full_cone NAT*/
++		union nf_inet_addr check_ip;
++		unsigned int hash_max = hash_sesscnt(&orig->src.u3);
++		int cone_session_control = 0,known_port;
++		struct hlist_nulls_node *n;
++
++
++
++		/* The check_ip is change to LAN IP and Reserved for well known services(known_port<1024)*/
++		if(cone_session_control == 0){	//For the LAN init packet, Normal packets
++			check_ip.ip = orig->src.u3.ip;
++			known_port = orig->dst.u.all;
++		}else{				//For the WAN init packet, Cone NAT used
++			check_ip.ip = h_full_cone->tuple.src.u3.ip;
++			known_port = orig->src.u.all;
++		}
++
++		rcu_read_lock();
++		hlist_nulls_for_each_entry_rcu(h_max, n, &net->ct.session_control_table[hash_max], hnnode){
++			if(check_ip.ip == h_max->u3.ip){
++				/* MAX Session Per Host */
++				if(h_max->sess_Cnt >= nf_session_ctl_max){
++					unsigned int hash1 = hash_conntrack(net, zone, orig);
++					if (!early_drop(net, hash1)){
++					    atomic_dec(&net->ct.count);
++					    if (net_ratelimit()){
++							printk(KERN_WARNING "NAT WARNING: %u.%u.%u.%u exceeds the max. number of session per host!\n"
++								,NIPQUAD(orig->src.u3.ip));	/* Modified nat log for system log*/
++					    }
++					    rcu_read_unlock();
++					    return ERR_PTR(-ENOMEM);
++					}
++				}
++
++				/* Reserved for well known services(known_port<1024) */
++				if(h_max->sess_Cnt >= (nf_session_ctl_max*8/10) &&  known_port > 1024){
++					unsigned int hash2 = hash_conntrack(net, zone, orig);
++					if (!early_drop(net, hash2)){
++						atomic_dec(&net->ct.count);
++						if (net_ratelimit()){
++							printk(KERN_WARNING
++								"unknown services(port>1024) session full [max=%d], dropping"
++								" packet.\n",(nf_session_ctl_max*8/10));
++						}
++						rcu_read_unlock();
++						return ERR_PTR(-ENOMEM);
++					}
++				}
++			}
++		}
++		rcu_read_unlock();
++	}
++	/*	== ZYXEL, Session_Control max num judgement function. /proc/net/nf_session_ctl ==*/
++#endif
+ 	/*
+ 	 * Do not use kmem_cache_zalloc(), as this cache uses
+ 	 * SLAB_DESTROY_BY_RCU.

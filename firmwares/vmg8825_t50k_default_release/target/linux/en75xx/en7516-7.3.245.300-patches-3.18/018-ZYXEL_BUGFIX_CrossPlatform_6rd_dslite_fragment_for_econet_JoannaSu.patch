@@ -1,0 +1,74 @@
+Index: linux-3.18.21/net/ipv4/ip_output.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/ip_output.c	2018-05-03 10:31:24.037925261 +0800
++++ linux-3.18.21/net/ipv4/ip_output.c	2018-05-03 10:31:31.925925243 +0800
+@@ -538,6 +538,17 @@
+ 		return -EMSGSIZE;
+ 	}
+ 
++#if defined(ZYXEL)
++   /*
++    * Do not fragment the packets going to 4in6 tunnel:
++    * RFC2473 sec 7.2: fragmentation should happen in tunnel
++    */
++    if (strstr(dev->name, "ip6tnl"))
++    {
++        return output(skb);
++    }
++#endif
++
+ 	/*
+ 	 *	Setup starting values.
+ 	 */
+Index: linux-3.18.21/net/ipv6/ip6_output.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv6/ip6_output.c	2018-04-27 16:51:10.000000000 +0800
++++ linux-3.18.21/net/ipv6/ip6_output.c	2018-05-03 10:55:40.418019104 +0800
+@@ -833,6 +833,9 @@
+ 	kfree_skb(skb);
+ 	return err;
+ }
++#if defined(ZYXEL)
++EXPORT_SYMBOL_GPL(ip6_fragment);
++#endif
+ 
+ static inline int ip6_rt_check(const struct rt6key *rt_key,
+ 			       const struct in6_addr *fl_addr,
+Index: linux-3.18.21/net/ipv6/ip6_tunnel.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv6/ip6_tunnel.c	2018-04-27 16:51:10.000000000 +0800
++++ linux-3.18.21/net/ipv6/ip6_tunnel.c	2018-05-03 11:12:23.046293692 +0800
+@@ -77,6 +77,10 @@
+ module_param(log_ecn_error, bool, 0644);
+ MODULE_PARM_DESC(log_ecn_error, "Log packets received with corrupted ECN");
+ 
++#if defined(ZYXEL)
++extern int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *));
++#endif
++
+ static u32 HASH(const struct in6_addr *addr1, const struct in6_addr *addr2)
+ {
+ 	u32 hash = ipv6_addr_hash(addr1) ^ ipv6_addr_hash(addr2);
+@@ -967,6 +971,9 @@
+ 	unsigned int max_headroom = sizeof(struct ipv6hdr);
+ 	u8 proto;
+ 	int err = -1;
++#if defined(ZYXEL)
++	u8 needFrag = 0;
++#endif
+ 
+ 	if (!fl6->flowi6_mark)
+ 		dst = ip6_tnl_dst_check(t);
+@@ -1003,8 +1010,12 @@
+ 		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
+ 	if (skb->len > mtu) {
+ 		*pmtu = mtu;
++#if defined(ZYXEL)
++		needFrag = 1;
++#else
+ 		err = -EMSGSIZE;
+ 		goto tx_err_dst_release;
++#endif
+ 	}
+ 
+ 	skb_scrub_packet(skb, !net_eq(t->net, dev_net(dev)));

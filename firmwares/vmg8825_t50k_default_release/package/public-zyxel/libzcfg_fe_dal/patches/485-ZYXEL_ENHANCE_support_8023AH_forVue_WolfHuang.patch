@@ -1,0 +1,115 @@
+Index: libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_8023ah.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/diagnostic/zcfg_fe_dal_8023ah.c	2018-02-27 15:09:35.449812689 +0800
++++ libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_8023ah.c	2018-02-27 15:15:06.391571375 +0800
+@@ -10,6 +10,7 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_webgui_flag.h"
++#include "zlog_api.h"
+ 
+ dal_param_t IEEE_8023AH_param[]={
+ 	{"Enabled",								dalType_boolean,0,	0,	NULL},
+@@ -58,7 +59,6 @@
+ 	ActiveModeEnabled = json_object_get_boolean(json_object_object_get(Jobj, "ActiveModeEnabled"));
+ 	AutoEventEnabled = json_object_get_boolean(json_object_object_get(Jobj, "AutoEventEnabled"));
+ 
+-	return;
+ }
+ 
+ zcfgRet_t zcfgFeDal8023ahCfg(struct json_object *Jobj){
+@@ -66,7 +66,7 @@
+ 
+ 	IID_INIT(ieee8023ahIid);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8023AH, &ieee8023ahIid, &ieee8023ahobj)) != ZCFG_SUCCESS) {
+-		printf("%s():(ERROR) Get IEEE 802.3ah Obj fail\n", __FUNCTION__);
++		ZLOG_INFO("(ERROR) Get IEEE 802.3ah Obj fail\n");
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
+@@ -81,7 +81,7 @@
+ 		json_object_object_add(ieee8023ahobj, "AutoEventEnabled", json_object_new_boolean(AutoEventEnabled));
+ 
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_IEEE8023AH, &ieee8023ahIid, ieee8023ahobj, NULL)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) Set IEEE 802.3ah fail\n", __FUNCTION__);
++			ZLOG_INFO("(ERROR) Set IEEE 802.3ah fail\n");
+ 			return ZCFG_INTERNAL_ERROR;
+ 		}
+ 	}
+@@ -91,12 +91,12 @@
+ 
+ zcfgRet_t zcfgFeDal8023ahEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	ZLOG_INFO(" input --- %s \n ",json_object_to_json_string(Jobj));
+ 	init8023ahGlobalObjects();
+ 	get8023ahBasicInfo(Jobj);
+ 
+ 	if((ret = zcfgFeDal8023ahCfg(Jobj)) != ZCFG_SUCCESS){
+-		printf("%s():(ERROR) config 8023ah fail\n", __FUNCTION__);
++		ZLOG_INFO("(ERROR) config 8023ah fail\n");
+ 			goto exit;
+ 	}
+ 
+@@ -105,6 +105,51 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDal8023ahGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	int maxLength = 30;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj, *interfaceList;
++	char pathString[30] = "";
++	objIndex_t objIid;
++	interfaceList = json_object_new_object();
++
++	IID_INIT(objIid);
++	while(ZCFG_SUCCESS == zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ATM_LINK, &objIid, &obj)){
++		 sprintf(pathString, "ATM.Link.%d", objIid.idx[0]);
++		json_object_object_add(interfaceList, pathString, json_object_new_string(json_object_get_string(json_object_object_get(obj, "X_ZYXEL_IfName"))) );
++		json_object_put(obj);
++	}
++	IID_INIT(objIid);
++	while(ZCFG_SUCCESS == zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_PTM_LINK, &objIid, &obj)){
++		sprintf(pathString, "PTM.Link.%d",  objIid.idx[0]);
++		json_object_object_add(interfaceList, pathString, json_object_new_string(json_object_get_string(json_object_object_get(obj, "X_ZYXEL_IfName"))) );
++		json_object_put(obj);
++	}
++	IID_INIT(objIid);
++	while(ZCFG_SUCCESS == zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ETH_IFACE, &objIid, &obj)){
++		if( true == json_object_get_boolean(json_object_object_get(obj, "X_ZYXEL_Upstream"))  ){
++			sprintf(pathString, "Ethernet.Interface.%d", objIid.idx[0]);
++			json_object_object_add(interfaceList, pathString, json_object_new_string(json_object_get_string(json_object_object_get(obj, "Name"))) );
++		}
++
++		json_object_put(obj);
++	}
++
++
++	IID_INIT(ieee8023ahIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8023AH, &ieee8023ahIid, &ieee8023ahobj)) != ZCFG_SUCCESS) {
++		ZLOG_INFO("(ERROR) Get IEEE 802.3ah Obj fail\n");
++		return ZCFG_INTERNAL_ERROR;
++	}
++	json_object_object_add(ieee8023ahobj, "interfaceList",JSON_OBJ_COPY(interfaceList));;
++	json_object_array_add(Jarray, JSON_OBJ_COPY(ieee8023ahobj));
++
++	if(interfaceList) json_object_put(interfaceList);
++exit:
++	freeAll8023ahObjects();
++	return ret;
++}
++
+ zcfgRet_t zcfgFe8023ah(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -115,6 +160,9 @@
+ 	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDal8023ahEdit(Jobj, NULL);
+ 	}
++	if(!strcmp(method, "GET")) {
++		ret = zcfgFeDal8023ahGet(Jobj, Jarray, NULL);
++	}
+ 
+ 	return ret;
+ }

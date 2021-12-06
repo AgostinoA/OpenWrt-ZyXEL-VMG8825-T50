@@ -1,0 +1,397 @@
+Index: u-boot-2009.11/net/tftp.c
+===================================================================
+--- u-boot-2009.11.orig/net/tftp.c	2012-11-04 20:28:57.445143014 +0800
++++ u-boot-2009.11/net/tftp.c	2012-11-04 20:28:57.501141772 +0800
+@@ -487,6 +487,13 @@
+ static void
+ TftpTimeout (void)
+ {
++#ifdef CONFIG_ZYXEL_ZLOADER
++	char *nretry;
++	nretry = getenv("netretry");
++	if (nretry && (!strcmp(nretry, "no"))) {
++		TftpTimeoutCount = TftpTimeoutCountMax;
++	}
++#endif
+ 	if (++TftpTimeoutCount > TftpTimeoutCountMax) {
+ 		puts ("\nRetry count exceeded; starting again\n");
+ #ifdef CONFIG_MCAST_TFTP
+Index: u-boot-2009.11/common/cmd_bootm.c
+===================================================================
+--- u-boot-2009.11.orig/common/cmd_bootm.c	2012-11-04 20:28:57.469146912 +0800
++++ u-boot-2009.11/common/cmd_bootm.c	2012-11-04 20:29:25.269171163 +0800
+@@ -421,6 +421,7 @@
+ 		return BOOTM_ERR_OVERLAP;
+ 	}
+ 
++    flush_cache(load, *load_end-load);
+ 	return 0;
+ }
+ 
+Index: u-boot-2009.11/common/exports.c
+===================================================================
+--- u-boot-2009.11.orig/common/exports.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/common/exports.c	2012-11-04 20:28:57.501141772 +0800
+@@ -46,4 +46,55 @@
+ 	gd->jt[XF_spi_release_bus] = (void *) spi_release_bus;
+ 	gd->jt[XF_spi_xfer] = (void *) spi_xfer;
+ #endif
++#ifdef CONFIG_ZYXEL_ZLOADER
++#define SETUP_JUMP_TBL(x)	gd->jt[XF_ ##x ] = (void *) x
++	SETUP_JUMP_TBL(memcmp);
++	SETUP_JUMP_TBL(memset);
++	SETUP_JUMP_TBL(memcpy);
++    SETUP_JUMP_TBL(strcpy);
++#if defined(CONFIG_CMD_NET)
++	SETUP_JUMP_TBL(do_tftpb);
++	SETUP_JUMP_TBL(eth_init);
++	SETUP_JUMP_TBL(eth_rx);
++	SETUP_JUMP_TBL(eth_halt);
++	SETUP_JUMP_TBL(NetSetHandler);
++#endif
++#ifdef CONFIG_ZYXEL_MULTIBOOT
++	SETUP_JUMP_TBL(NetPacketInit);
++	SETUP_JUMP_TBL(getNetBootFileXferSize);
++  #ifdef CONFIG_LZMA
++	SETUP_JUMP_TBL(lzmaBuffToBuffDecompress);
++  #endif
++#endif
++#ifdef CONFIG_NET_MULTI
++	SETUP_JUMP_TBL(eth_set_current);
++#endif
++	SETUP_JUMP_TBL(strlen);
++	SETUP_JUMP_TBL(strncmp);
++	SETUP_JUMP_TBL(sprintf);
++	SETUP_JUMP_TBL(do_bootm);
++	SETUP_JUMP_TBL(readline);
++	SETUP_JUMP_TBL(get_user_command_buffer);
++    SETUP_JUMP_TBL(zflash_init);
++    SETUP_JUMP_TBL(zflash_read);
++    SETUP_JUMP_TBL(zflash_write);
++    SETUP_JUMP_TBL(zflash_erase);
++#ifdef CONFIG_CMD_NAND
++    SETUP_JUMP_TBL(znand_init);
++    SETUP_JUMP_TBL(znand_read);
++    SETUP_JUMP_TBL(znand_write);
++    SETUP_JUMP_TBL(znand_erase);
++#endif
++    SETUP_JUMP_TBL(saveenv);
++    SETUP_JUMP_TBL(do_run);
++    SETUP_JUMP_TBL(do_reset);
++    SETUP_JUMP_TBL(flush_cache);
++    SETUP_JUMP_TBL(image_check_hcrc);
++    SETUP_JUMP_TBL(image_check_dcrc);
++    SETUP_JUMP_TBL(clear_ctrlc);
++    SETUP_JUMP_TBL(configure_pio);
++    SETUP_JUMP_TBL(set_pio);
++    SETUP_JUMP_TBL(get_pio);
++    SETUP_JUMP_TBL(max_pio_num);
++#endif /* #ifdef CONFIG_ZYXEL_ZLOADER */
+ }
+Index: u-boot-2009.11/common/main.c
+===================================================================
+--- u-boot-2009.11.orig/common/main.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/common/main.c	2012-11-04 20:30:39.677729062 +0800
+@@ -40,7 +40,7 @@
+ 
+ #include <post.h>
+ 
+-#if defined(CONFIG_SILENT_CONSOLE) || defined(CONFIG_POST) || defined(CONFIG_CMDLINE_EDITING)
++#if defined(CONFIG_SILENT_CONSOLE) || defined(CONFIG_POST) || defined(CONFIG_CMDLINE_EDITING) || defined(CONFIG_ZYXEL_ZLOADER)
+ DECLARE_GLOBAL_DATA_PTR;
+ #endif
+ 
+@@ -270,6 +270,32 @@
+ #endif	/* CONFIG_BOOTDELAY >= 0  */
+ 
+ /****************************************************************************/
++#ifdef CONFIG_ZYXEL_ZLOADER
++void fake_sys_halt(void)
++{
++    int i=0;
++    char passwd[]={'q','u','i','t'}, ch;
++    ulong timer;
++    puts("Reset your board! system halt...");
++    timer=get_timer(0);
++    do {
++        if ( tstc() ) {
++            ch=getc();
++            if (ch==passwd[i]) {
++                i++;
++                timer=get_timer(0);
++            } else {
++                i=0;
++            }
++        }
++        if ( get_timer(timer)>160 /*ms*/ ) {
++            i=0;
++            timer = get_timer(0);
++        }
++    } while (i<sizeof(passwd));
++    putc('\n');
++}
++#endif
+ 
+ void main_loop (void)
+ {
+@@ -436,6 +462,23 @@
+ 	}
+ #endif
+ 
++#ifdef CONFIG_ZYXEL_ZLOADER
++  #include <zgpio.h>
++    gd->flags |= GD_FLG_DISABLE_CONSOLE;
++	/* load & boot zloader */
++ #ifdef CONFIG_ZFLASH_CMD
++    zflash_init();
++ #endif
++    setenv("boot_zld", CONFIG_BOOT_ZLOADER_CMD);
++    if ( run_command("run boot_zld", 0) == -1 ) {
++        gd->flags &= (~GD_FLG_DISABLE_CONSOLE);
++        printf("\n!!!!! fail to boot zloader !!!!!\n");
++        /* should not return here */
++        ZLOADER_EXEC_FAILED_LED_INDICATE;
++        fake_sys_halt();
++    }
++#endif
++
+ 	/*
+ 	 * Main Loop for Monitor Command Processing
+ 	 */
+@@ -1329,8 +1372,11 @@
+ #ifdef DEBUG_PARSER
+ 	printf ("[PROCESS_SEPARATORS] %s\n", cmd);
+ #endif
++#ifdef CONFIG_ZYXEL_ZLOADER
++	while (*str && rc==0) {
++#else
+ 	while (*str) {
+-
++#endif
+ 		/*
+ 		 * Find separator, or string end
+ 		 * Allow simple escape of ';' by writing "\;"
+@@ -1446,3 +1492,10 @@
+ 	return 0;
+ }
+ #endif
++
++#ifdef CONFIG_ZYXEL_ZLOADER
++char  *get_user_command_buffer(void)
++{
++	return &console_buffer[0];
++}
++#endif
+Index: u-boot-2009.11/include/_exports.h
+===================================================================
+--- u-boot-2009.11.orig/include/_exports.h	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/include/_exports.h	2012-11-04 20:28:57.505172453 +0800
+@@ -30,3 +30,42 @@
+ EXPORT_FUNC(spi_claim_bus)
+ EXPORT_FUNC(spi_release_bus)
+ EXPORT_FUNC(spi_xfer)
++// add for ZyXEL zloader/multiboot
++EXPORT_FUNC(memcmp)
++EXPORT_FUNC(memset)
++EXPORT_FUNC(memcpy)
++EXPORT_FUNC(strcpy)
++EXPORT_FUNC(do_tftpb)
++EXPORT_FUNC(eth_init)
++EXPORT_FUNC(eth_halt)
++EXPORT_FUNC(eth_rx)
++EXPORT_FUNC(eth_set_current)
++EXPORT_FUNC(NetSetHandler)
++EXPORT_FUNC(getNetBootFileXferSize)
++EXPORT_FUNC(NetPacketInit)
++EXPORT_FUNC(lzmaBuffToBuffDecompress)
++EXPORT_FUNC(strlen)
++EXPORT_FUNC(strncmp)
++EXPORT_FUNC(sprintf)
++EXPORT_FUNC(do_bootm)
++EXPORT_FUNC(readline)
++EXPORT_FUNC(get_user_command_buffer)
++EXPORT_FUNC(zflash_init)
++EXPORT_FUNC(zflash_read)
++EXPORT_FUNC(zflash_write)
++EXPORT_FUNC(zflash_erase)
++EXPORT_FUNC(znand_init)
++EXPORT_FUNC(znand_read)
++EXPORT_FUNC(znand_write)
++EXPORT_FUNC(znand_erase)
++EXPORT_FUNC(saveenv)
++EXPORT_FUNC(do_run)
++EXPORT_FUNC(flush_cache)
++EXPORT_FUNC(image_check_hcrc)
++EXPORT_FUNC(image_check_dcrc)
++EXPORT_FUNC(clear_ctrlc)
++EXPORT_FUNC(configure_pio)
++EXPORT_FUNC(set_pio)
++EXPORT_FUNC(get_pio)
++EXPORT_FUNC(max_pio_num)
++
+Index: u-boot-2009.11/include/exports.h
+===================================================================
+--- u-boot-2009.11.orig/include/exports.h	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/include/exports.h	2012-11-04 20:28:57.505172453 +0800
+@@ -19,13 +19,14 @@
+ void udelay(unsigned long);
+ unsigned long get_timer(unsigned long);
+ void vprintf(const char *, va_list);
+-void do_reset (void);
++//void do_reset (void);
+ unsigned long simple_strtoul(const char *cp,char **endp,unsigned int base);
+ char *getenv (char *name);
+ int setenv (char *varname, char *varvalue);
+ long simple_strtol(const char *cp,char **endp,unsigned int base);
+ int strcmp(const char * cs,const char * ct);
+ int ustrtoul(const char *cp, char **endp, unsigned int base);
++int saveenv(void);
+ #ifdef CONFIG_HAS_UID
+ void forceenv (char *varname, char *varvalue);
+ #endif
+@@ -34,6 +35,23 @@
+ int i2c_read (uchar, uint, int , uchar* , int);
+ #endif
+ #include <spi.h>
++// for zloader & multiboot
++#include <net.h>
++#include <command.h>
++#include <zflash.h>
++#include <zgpio.h>
++int lzmaBuffToBuffDecompress (unsigned char *outStream, size_t *uncompressedSize,
++			      unsigned char *inStream, size_t length);
++ulong getNetBootFileXferSize(void);
++volatile uchar *getNetTxPacketAddr(void);
++int setNetRxPacketsAddr(int num, volatile uchar *address);
++int readline (const char *const prompt);
++char *get_user_command_buffer(void);
++int do_run (cmd_tbl_t * cmdtp, int flag, int argc, char *argv[]);
++int do_reset(cmd_tbl_t *cmdtp, int flag, int argc, char *argv[]);
++int do_tftpb (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[]);
++int do_bootm (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[]);
++void flush_cache(ulong start_addr, ulong size);
+ 
+ void app_startup(char **);
+ 
+@@ -47,7 +65,7 @@
+ 	XF_MAX
+ };
+ 
+-#define XF_VERSION	6
++#define XF_VERSION	1
+ 
+ #if defined(CONFIG_I386)
+ extern gd_t *global_data;
+Index: u-boot-2009.11/include/net.h
+===================================================================
+--- u-boot-2009.11.orig/include/net.h	2012-11-04 20:28:57.445143014 +0800
++++ u-boot-2009.11/include/net.h	2012-11-04 20:29:25.609141308 +0800
+@@ -404,6 +404,9 @@
+ };
+ #endif
+ 
++/* Initialize the network buffer for tx/rx */
++extern int NetPacketInit(void);
++
+ /* Initialize the network adapter */
+ extern int	NetLoop(proto_t);
+ 
+Index: u-boot-2009.11/net/net.c
+===================================================================
+--- u-boot-2009.11.orig/net/net.c	2012-11-04 20:28:57.489138566 +0800
++++ u-boot-2009.11/net/net.c	2012-11-04 20:29:25.625755156 +0800
+@@ -310,29 +310,9 @@
+ 	return;
+ }
+ 
+-/**********************************************************************/
+-/*
+- *	Main network processing loop.
+- */
+-
+ int
+-NetLoop(proto_t protocol)
++NetPacketInit(void)
+ {
+-	bd_t *bd = gd->bd;
+-
+-#ifdef CONFIG_NET_MULTI
+-	NetRestarted = 0;
+-	NetDevExists = 0;
+-#endif
+-
+-	/* XXX problem with bss workaround */
+-	NetArpWaitPacketMAC = NULL;
+-	NetArpWaitTxPacket = NULL;
+-	NetArpWaitPacketIP = 0;
+-	NetArpWaitReplyIP = 0;
+-	NetArpWaitTxPacket = NULL;
+-	NetTryCount = 1;
+-
+ #if defined(CONFIG_RT2880_ETH)
+ 	if (!NetTxPacket) {
+ 		int     i;
+@@ -371,6 +351,34 @@
+ 	}
+ #endif
+ 
++	return 0;
++}
++
++/**********************************************************************/
++/*
++ *	Main network processing loop.
++ */
++
++int
++NetLoop(proto_t protocol)
++{
++	bd_t *bd = gd->bd;
++
++#ifdef CONFIG_NET_MULTI
++	NetRestarted = 0;
++	NetDevExists = 0;
++#endif
++
++	/* XXX problem with bss workaround */
++	NetArpWaitPacketMAC = NULL;
++	NetArpWaitTxPacket = NULL;
++	NetArpWaitPacketIP = 0;
++	NetArpWaitReplyIP = 0;
++	NetArpWaitTxPacket = NULL;
++	NetTryCount = 1;
++
++	NetPacketInit();
++
+ 	if (!NetArpWaitTxPacket) {
+ 		NetArpWaitTxPacket = &NetArpWaitPacketBuf[0] + (PKTALIGN - 1);
+ 		NetArpWaitTxPacket -= (ulong)NetArpWaitTxPacket % PKTALIGN;
+@@ -1593,6 +1601,16 @@
+ 		}
+ 		/* If it is not for us, ignore it */
+ 		tmp = NetReadIP(&ip->ip_dst);
++#ifdef CONFIG_ZYXEL_MULTIBOOT
++		//printf("tmp=%08lX(%08lX)\n", tmp, htonl(tmp));
++		if (tmp == htonl(0xe1000000) && packetHandler != NULL){
++			(*packetHandler)((uchar *)ip +IP_HDR_SIZE,
++					ntohs(ip->udp_dst),
++					ntohs(ip->udp_src),
++					ntohs(ip->udp_len) - 8);
++			return;
++		}
++#endif
+ 		if (NetOurIP && tmp != NetOurIP && tmp != 0xFFFFFFFF) {
+ #ifdef CONFIG_MCAST_TFTP
+ 			if (Mcast_addr != tmp)
+@@ -1998,3 +2016,11 @@
+ {
+ 	return (string_to_VLAN(getenv(var)));
+ }
++
++#ifdef CONFIG_ZYXEL_ZLOADER
++ulong getNetBootFileXferSize(void)
++{
++	return (NetBootFileXferSize);
++}
++#endif
++

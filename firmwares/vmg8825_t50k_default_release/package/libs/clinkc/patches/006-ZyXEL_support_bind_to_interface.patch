@@ -1,0 +1,233 @@
+Index: clinkc/include/cybergarage/net/csocket.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/csocket.h	2014-04-25 14:24:11.145369598 +0800
++++ clinkc/include/cybergarage/net/csocket.h	2014-04-25 14:51:09.258592600 +0800
+@@ -170,9 +170,16 @@
+ 
+ BOOL cg_socket_listen(CgSocket *socket);
+ 
+-BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, BOOL bindFlag, BOOL reuseFlag);
+ BOOL cg_socket_accept(CgSocket *sock, CgSocket *clientSock);
++#ifdef ZYXEL_PATCH /*support binding interface*/
++BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, BOOL bindFlag, BOOL reuseFlag);
++
++BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName);
++#else
++BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, BOOL bindFlag, BOOL reuseFlag);
++
+ BOOL cg_socket_connect(CgSocket *sock, char *addr, int port);
++#endif
+ int cg_socket_read(CgSocket *sock, char *buffer, int bufferLen);
+ int cg_socket_write(CgSocket *sock, char *buffer, int bufferLen);
+ int cg_socket_readline(CgSocket *sock, char *buffer, int bufferLen);
+Index: clinkc/src/cybergarage/http/chttp_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_request.c	2014-04-25 14:24:11.217369601 +0800
++++ clinkc/src/cybergarage/http/chttp_request.c	2014-04-25 14:24:11.265369603 +0800
+@@ -334,7 +334,11 @@
+ #endif
+ 
+ 	cg_socket_settimeout(sock, cg_http_request_gettimeout(httpReq));
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	if (cg_socket_connect(sock, ipaddr, port, NULL) == FALSE) {
++#else
+ 	if (cg_socket_connect(sock, ipaddr, port) == FALSE) {
++#endif
+ 		cg_socket_delete(sock);
+ 		return httpReq->httpRes;		
+ 	}
+Index: clinkc/src/cybergarage/net/csocket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/csocket.c	2014-04-25 14:24:11.169369599 +0800
++++ clinkc/src/cybergarage/net/csocket.c	2014-04-25 14:49:21.434400700 +0800
+@@ -99,6 +99,9 @@
+ #include <unistd.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
++#ifdef ZYXEL_PATCH /*support binding interface*/
++#include <net/if.h>
++#endif
+ #include <netdb.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
+@@ -525,8 +528,11 @@
+ /****************************************
+ * cg_socket_bind
+ ****************************************/
+-
+-BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr,  BOOL bindFlag, BOOL reuseFlag)
++#ifdef ZYXEL_PATCH
++BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, BOOL bindFlag, BOOL reuseFlag)
++#else
++BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, BOOL bindFlag, BOOL reuseFlag)
++#endif
+ {
+ #if defined(BTRON) || defined(TENGINE)
+ 	struct sockaddr_in sockaddr;
+@@ -540,6 +546,12 @@
+ 	int ret;
+ #endif
+ 
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	int sockOptRet;
++	struct ifreq boundIf;
++#endif
++
++
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	if (bindPort <= 0 /* || bindAddr == NULL*/)
+@@ -628,6 +640,15 @@
+ 	optval = 1;
+ 	setsockopt(sock->id, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+ #endif
++#ifdef ZYXEL_PATCH /*support binding interface*/
++		if (boundIfName != NULL && strlen(boundIfName) > 0){
++			strncpy(boundIf.ifr_name, boundIfName, IFNAMSIZ);
++	
++			printf("cg_socket_bind() Bind to interface %s\n", boundIf.ifr_name);
++			sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_BINDTODEVICE, (char *)&boundIf,  sizeof(boundIf)); 
++			printf("Ret=%d\n", sockOptRet);
++		}
++#endif
+ 
+ 	ret = bind(sock->id, addrInfo->ai_addr, addrInfo->ai_addrlen);
+ 	freeaddrinfo(addrInfo);
+@@ -732,8 +753,11 @@
+ /****************************************
+ * cg_socket_connect
+ ****************************************/
+-
++#ifdef ZYXEL_PATCH /*support binding interface*/
++BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName)
++#else
+ BOOL cg_socket_connect(CgSocket *sock, char *addr, int port)
++#endif
+ {
+ #if defined(BTRON) || (defined(TENGINE) && !defined(CG_TENGINE_NET_KASAGO))
+ 	ERR ret;
+@@ -786,6 +810,11 @@
+ 	int valopt;
+ #endif
+ 
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	int sockOptRet;
++	struct ifreq boundIf;
++#endif
++
+ 	if (cg_socket_tosockaddrinfo(cg_socket_getrawtype(sock), addr, port, &toaddrInfo, TRUE) == FALSE)
+ 		return FALSE;
+ 	if (cg_socket_isbound(sock) == FALSE)
+@@ -797,6 +826,16 @@
+ 	fcntl(sock->id, F_SETFL, flags | O_NONBLOCK);
+ #endif
+ 
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	if (boundIfName != NULL && strlen(boundIfName) > 0){
++		strncpy(boundIf.ifr_name, boundIfName, IFNAMSIZ);
++
++		printf("Bind to interface %s\n", boundIf.ifr_name);
++		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_BINDTODEVICE, (char *)&boundIf,  sizeof(boundIf));	
++		printf("Ret=%d\n", sockOptRet);
++	}
++#endif
++
+ 	ret = connect(sock->id, toaddrInfo->ai_addr, toaddrInfo->ai_addrlen);
+ #ifdef ZYXEL_PATCH /*non-blocking mode connect, ZyXEL 2013*/
+ 	if (ret < 0) {
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-04-25 14:24:11.249369602 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-04-25 14:33:30.812687100 +0800
+@@ -605,7 +605,7 @@
+ CgHttpServer *cg_http_server_new();
+ void cg_http_server_delete(CgHttpServer *httpServer);
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+-BOOL cg_http_server_open(CgHttpServer * httpServer,int bindPort,char * bindAddr,BOOL isSecure,void * ctxdata);
++BOOL cg_http_server_open(CgHttpServer * httpServer,int bindPort,char * bindAddr, char* boundIfName, BOOL isSecure,void * ctxdata);
+ #else
+ BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr);
+ #endif
+Index: clinkc/include/cybergarage/upnp/ssdp/cssdp_server.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/ssdp/cssdp_server.h	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/include/cybergarage/upnp/ssdp/cssdp_server.h	2014-04-25 14:52:02.835896100 +0800
+@@ -96,7 +96,11 @@
+ #define cg_upnp_httpu_socket_delete(sock) cg_socket_delete(sock)
+ #define cg_upnp_httpu_socket_close(sock) cg_socket_close(sock)
+ #define cg_upnp_httpu_socket_new() cg_socket_dgram_new()
++#ifdef ZYXEL_PATCH /*support binding interface*/
++#define cg_upnp_httpu_socket_bind(sock, bindPort, bindAddr) cg_socket_bind(sock, bindPort, bindAddr, NULL, FALSE, FALSE)
++#else
+ #define cg_upnp_httpu_socket_bind(sock, bindPort, bindAddr) cg_socket_bind(sock, bindPort, bindAddr, FALSE, FALSE)
++#endif
+ int cg_upnp_httpu_socket_recv(CgUpnpHttpUSocket *sock, CgUpnpSSDPPacket *ssdpPkt);
+ 
+ /****************************************
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2014-04-25 14:24:11.165369599 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2014-04-25 14:43:57.945322800 +0800
+@@ -104,7 +104,7 @@
+ * cg_http_server_delete
+ ****************************************/
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+-BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr, BOOL isSecure, void *ctxdata)
++BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr, char *boundIfName, BOOL isSecure, void *ctxdata)
+ #else
+ BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr)
+ #endif
+@@ -129,7 +129,11 @@
+ 	httpServer->sock = cg_socket_stream_new();
+ #endif
+ 
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	if (cg_socket_bind(httpServer->sock, bindPort, bindAddr, boundIfName, TRUE, FALSE) == FALSE) {
++#else
+ 	if (cg_socket_bind(httpServer->sock, bindPort, bindAddr, TRUE, FALSE) == FALSE) {
++#endif
+ 		cg_socket_delete(httpServer->sock);
+ 		httpServer->sock = NULL;
+ 		return FALSE;
+Index: clinkc/src/cybergarage/http/chttp_server_list.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server_list.c	2014-04-25 14:24:11.165369599 +0800
++++ clinkc/src/cybergarage/http/chttp_server_list.c	2014-04-25 14:44:57.029325500 +0800
+@@ -97,7 +97,7 @@
+ 		httpServer = cg_http_server_new();
+ 
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013, charisse*/
+-		if (cg_http_server_open(httpServer, port, bindAddr, isSecure, ctxdata) == FALSE) {
++		if (cg_http_server_open(httpServer, port, bindAddr, NULL, isSecure, ctxdata) == FALSE) {
+ #else
+ 		if (cg_http_server_open(httpServer, port, bindAddr) == FALSE) {
+ #endif
+Index: clinkc/src/cybergarage/upnp/ssdp/chttpmu_socket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/ssdp/chttpmu_socket.c	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/src/cybergarage/upnp/ssdp/chttpmu_socket.c	2014-04-25 14:46:44.003409500 +0800
+@@ -29,7 +29,11 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++#ifdef ZYXEL_PATCH 
++	if (cg_socket_bind(sock, port, bindAddr, NULL, FALSE, TRUE) == FALSE)
++#else
+ 	if (cg_socket_bind(sock, port, bindAddr, FALSE, TRUE) == FALSE)
++#endif
+ 		return FALSE;
+ 		
+ 	if (cg_socket_joingroup(sock, mcastAddr, bindAddr) == FALSE) {
+Index: clinkc/ztest_https/ztest.c
+===================================================================
+--- clinkc.orig/ztest_https/ztest.c	2014-04-25 14:24:11.181369599 +0800
++++ clinkc/ztest_https/ztest.c	2014-04-25 14:52:35.365026700 +0800
+@@ -84,7 +84,7 @@
+ #if SERVER
+         /**** HTTP Server ****/
+         CgHttpServer *httpServer = cg_http_server_new();
+-        cg_http_server_open(httpServer, CLINK_TESTCASE_HTTP_PORT, SERVER_ADDR, isSecure, (void*)s_ctxdata);
++        cg_http_server_open(httpServer, CLINK_TESTCASE_HTTP_PORT, SERVER_ADDR, NULL, isSecure, (void*)s_ctxdata);
+         cg_http_server_setlistener(httpServer, ClinkTestcaseHttpRequestRecieved);
+         cg_http_server_start(httpServer);
+ #endif

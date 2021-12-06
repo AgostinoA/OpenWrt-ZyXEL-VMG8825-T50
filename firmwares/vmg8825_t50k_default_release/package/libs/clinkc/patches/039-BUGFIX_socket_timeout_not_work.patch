@@ -1,0 +1,107 @@
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2014-12-03 10:47:38.857285929 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2014-12-03 10:47:49.469475442 +0800
+@@ -268,13 +268,16 @@
+ 	CgSocket *activeSock;
+ 	int maxFd, nReturn, nread, clientThreadSize;
+ 	CgSocketList *clientSocks;
++	struct timeval timeout;
+ #endif	
+ 	CgSocket *clientSock;
+ 	void *httpServerUserData;
+ 	CgHttpRequest *httpReq;
+ 	char *version = NULL;
+-
++	
+ 	cg_log_debug_l4("Entering...\n");
++	
++	
+ #ifdef ZYXEL_PATCH //set thread un-joinabled, by Mark 20140903
+ 	pthread_detach(pthread_self());
+ #endif
+@@ -292,7 +295,10 @@
+ #ifdef ZYXEL_PATCH	
+ 	while (cg_thread_isrunnable(thread) == TRUE) {
+ 		cg_thread_lock(thread);
+-		if(clientData->_clientSockSize <= 0) break;	
++
++		if(clientData->_clientSockSize <= 0){
++			break;
++		}
+ 		FD_ZERO(&activeFds); 
+ 		maxFd = -1;
+ 		for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL; activeSock = cg_socket_next(activeSock)){
+@@ -300,14 +306,26 @@
+ 			maxFd = (maxFd < activeSock->id) ? activeSock->id+1 : maxFd;
+ 		}
+ 		cg_thread_unlock(thread);
+-		
+-		nReturn = select(maxFd, &activeFds, NULL, NULL, NULL); 
++
++		timeout.tv_sec = CG_HTTP_SERVER_READ_TIMEOUT + 60;
++		timeout.tv_usec = 0;
++		nReturn = select(maxFd, &activeFds, NULL, NULL, &timeout); 
+ 		if(nReturn < 0) {
+ 			if (errno == EINTR){
+ 				continue; 
+ 			}
+             break; 
+ 		}
++		else if(nReturn == 0){ //Yuru@2014.12.03, workaround, SO_RCVTIMEO sometimes doesn't work. force delete socket.
++			//printf("clinkc: cg_http_server_clientthread() select timeout\n");
++			cg_thread_lock(thread);
++			cg_list_remove((CgList*)clientSock);
++			clientData->_clientSockSize--;
++			cg_thread_unlock(thread);
++			cg_socket_delete(clientSock);
++			clientSock = NULL;
++			continue;
++		}
+ 		else if(nReturn){
+ 			clientSock = NULL;
+ 			for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL, nReturn > 0; ){
+@@ -423,6 +441,7 @@
+ 	cg_thread_remove(thread);
+ 	cg_http_server_unlock(httpServer);
+ #endif
++	
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	cg_thread_delete(thread);
+@@ -450,7 +469,6 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	httpServer = (CgHttpServer *)cg_thread_getuserdata(thread);
+-
+ 	if (cg_http_server_isopened(httpServer) == FALSE)
+ 		return;
+ 
+@@ -495,8 +513,9 @@
+ 			cg_socket_delete(clientSock);
+ 			continue;
+ 		}
++		cg_socket_settimeout(clientSock, cg_http_server_gettimeout(httpServer));
+ #ifdef ZYXEL_PATCH
+-					cg_socketlist_add(httpServer->clientSocks, clientSock);		
++					cg_socketlist_add(httpServer->clientSocks, clientSock);
+ 				}
+ 			}
+ 			if(nReturn){
+@@ -548,7 +567,6 @@
+ 						}
+ 						else{
+ #endif
+-		cg_socket_settimeout(clientSock, cg_http_server_gettimeout(httpServer));
+ 		clientData = cg_http_server_clientdata_new(httpServer, clientSock);
+ 		httpClientThread = cg_thread_new();
+ 		cg_thread_setaction(httpClientThread, cg_http_server_clientthread);
+@@ -568,7 +586,7 @@
+ 		}
+ #endif
+ 	}
+-
++	
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 

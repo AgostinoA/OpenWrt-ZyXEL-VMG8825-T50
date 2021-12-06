@@ -1,0 +1,150 @@
+Index: clinkc/src/cybergarage/net/csocket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/csocket.c	2014-07-14 14:32:29.748957025 +0800
++++ clinkc/src/cybergarage/net/csocket.c	2014-07-14 20:10:00.576778868 +0800
+@@ -298,6 +298,8 @@
+ 		sock->remoteIpAddr = cg_string_new();
+ 		cg_socket_setremoteaddress(sock, "");
+ 		cg_socket_setremoteport(sock, -1);
++		sock->if_name = cg_string_new();
++		cg_socket_setifname(sock, "");
+ #endif
+ 
+ 
+@@ -334,6 +336,8 @@
+ 	cg_socket_freewindowbuffer(sock);
+ #endif
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
++	cg_string_delete(sock->remoteIpAddr);
++	cg_string_delete(sock->if_name);
+ #if defined(CG_USE_OPENSSL)
+ 	if (cg_socket_isssl(sock) == TRUE){
+ 		//EVP_cleanup(); /* Clear memory allocated in SSL_library_init()*/
+@@ -675,8 +679,18 @@
+ BOOL cg_socket_accept(CgSocket *serverSock, CgSocket *clientSock)
+ {
+ 	struct sockaddr_in sockaddr;
++#if 1 //__ZYXEL__, Mark
++	struct sockaddr_in6 sockaddr6;
++	struct sockaddr *sock_addr;
++	char *tmp_addr;
++	char ipAddrBuf[INET6_ADDRSTRLEN];
++#endif	
+ 	socklen_t socklen;
++#if 1 //__ZYXEL__, Mark
++	char localAddr[INET6_ADDRSTRLEN];
++#else
+ 	char localAddr[CG_NET_SOCKET_MAXHOST];
++#endif
+ 	char localPort[CG_NET_SOCKET_MAXSERV];
+ #if defined(BTRON) || (defined(TENGINE) && !defined(CG_TENGINE_NET_KASAGO))
+ 	struct sockaddr_in sockaddr;
+@@ -724,11 +738,55 @@
+ #endif
+ 
+ #ifdef ZYXEL_PATCH /* for session mgmt, ZyXEL, John */
++#if 1 //__ZYXEL__, Mark
++	if(sockClientAddr.ss_family == AF_INET6){
++		inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&sockClientAddr)->sin6_addr, ipAddrBuf, sizeof(ipAddrBuf));
++		if (strchr(ipAddrBuf, '.') && strstr(ipAddrBuf, ":ffff:")){
++			tmp_addr = strrchr(ipAddrBuf, ':') + 1;
++			memmove(ipAddrBuf, tmp_addr, strlen(tmp_addr));
++			ipAddrBuf[strlen(tmp_addr)] = '\0';
++		}
++	}
++	else
++		inet_ntop(AF_INET, &((struct sockaddr_in *)&sockClientAddr)->sin_addr, ipAddrBuf, sizeof(ipAddrBuf));
++
++	cg_socket_setremoteaddress(clientSock, ipAddrBuf);
++#else	
+ 	cg_socket_setremoteaddress(clientSock, inet_ntoa(((struct sockaddr_in *)&sockClientAddr)->sin_addr));
++#endif	
+ 	cg_socket_setremoteport(clientSock, ((struct sockaddr_in *)&sockClientAddr)->sin_port);
+ #endif
+ 	cg_socket_setaddress(clientSock, cg_socket_getaddress(serverSock));
+ 	cg_socket_setport(clientSock, cg_socket_getport(serverSock));
++#ifdef ZYXEL_PATCH  //__ZYXEL__, Mark
++	if(sockClientAddr.ss_family == AF_INET6){
++		socklen = sizeof(struct sockaddr_in6);
++		sock_addr = (struct sockaddr *)&sockaddr6;
++	}
++	else{
++		socklen = sizeof(struct sockaddr_in);
++		sock_addr = (struct sockaddr *)&sockaddr;
++	}
++	
++	if (getsockname(clientSock->id, sock_addr, &socklen) == 0 &&
++	    getnameinfo(sock_addr, socklen, localAddr, sizeof(localAddr), 
++			localPort, sizeof(localPort), NI_NUMERICHOST | NI_NUMERICSERV) == 0) 
++	{
++		if(sockClientAddr.ss_family == AF_INET6){
++			if (strchr(localAddr, '.') && strstr(localAddr, ":ffff:")){
++				tmp_addr = strrchr(localAddr, ':') + 1;
++				memmove(localAddr, tmp_addr, strlen(tmp_addr));
++				localAddr[strlen(tmp_addr)] = '\0';
++			}
++			else if ((tmp_addr = strchr(localAddr, '%'))){
++				*tmp_addr = '\0';
++				cg_socket_setifname(clientSock, tmp_addr+1);
++			}
++		}
++		/* Set address for the sockaddr to real addr */	
++		cg_socket_setaddress(clientSock, localAddr);
++	}
++#else
+ 	socklen = sizeof(struct sockaddr_in);
+ 	
+ 	if (getsockname(clientSock->id, (struct sockaddr *)&sockaddr, &socklen) == 0 &&
+@@ -738,7 +796,7 @@
+ 		/* Set address for the sockaddr to real addr */
+ 		cg_socket_setaddress(clientSock, localAddr);
+ 	}
+-	
++#endif
+ #ifdef SOCKET_DEBUG
+ cg_log_debug_s("clientSock->id = %s\n", cg_socket_getaddress(clientSock));
+ cg_log_debug_s("clientSock->id = %d\n", cg_socket_getport(clientSock));
+Index: clinkc/include/cybergarage/net/csocket.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/csocket.h	2014-07-14 14:32:29.736957025 +0800
++++ clinkc/include/cybergarage/net/csocket.h	2014-07-14 20:16:05.600225962 +0800
+@@ -50,6 +50,10 @@
+ #define CG_NET_SOCKET_MAXHOST 32
+ #define CG_NET_SOCKET_MAXSERV 32
+ 
++#ifndef INET6_ADDRSTRLEN
++#define INET6_ADDRSTRLEN 48
++#endif
++
+ #if defined(BTRON) || defined(TENGINE)
+ typedef W SOCKET;
+ #elif defined(ITRON)
+@@ -99,6 +103,7 @@
+ 	int port;
+ #ifdef ZYXEL_PATCH /* for session mgmt, ZyXEL, John */
+ 	CgString *remoteIpAddr;
++	CgString *if_name;
+ 	int remotePort;
+ #endif
+ #if defined(ITRON)
+@@ -157,6 +162,8 @@
+ #define cg_socket_setremoteport(socket, value) (socket->remotePort = value)
+ #define cg_socket_getremoteaddress(socket) cg_string_getvalue(socket->remoteIpAddr)
+ #define cg_socket_getremoteport(socket) (socket->remotePort)
++#define cg_socket_setifname(socket, value) cg_string_setvalue(socket->if_name, value)
++#define cg_socket_getifname(socket) cg_string_getvalue(socket->if_name)
+ #endif
+ 
+ 
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-07-14 14:32:29.800957024 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-07-14 19:53:03.397660261 +0800
+@@ -517,6 +517,7 @@
+ /**** Remote Address/Port ****/
+ #define cg_http_request_getremoteaddress(httpReq) cg_socket_getremoteaddress(httpReq->sock)
+ #define cg_http_request_getremoteport(httpReq) cg_socket_getremoteport(httpReq->sock)
++#define cg_http_request_getifname(httpReq) cg_socket_getifname(httpReq->sock)
+ #endif
+ #ifdef ZYXEL_PATCH  /*for form data, ZyXEL 2014*/
+ #define cg_http_request_get_GET(httpReq, name) (CgHttpVal *)cg_http_vallist_get(httpReq->form._GET, name)

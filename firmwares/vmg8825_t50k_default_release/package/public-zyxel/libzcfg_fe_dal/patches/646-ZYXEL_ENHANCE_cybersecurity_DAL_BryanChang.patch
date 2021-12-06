@@ -1,0 +1,1602 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2018-12-13 10:36:18.818053096 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2018-12-13 11:00:10.578805821 +0800
+@@ -34,7 +34,12 @@
+ SECURITY_FIREWALL_PATH = ./security/firewall
+ SECURITY_MACFILTER_PATH = ./security/macFilter
+ SECURITY_PARENTALCTL_PATH = ./security/parentalControl
++SECURITY_CYBERSECURE_PATH = ./security/cyberSecure
+ SECURITY_SCHEDULERRULE_PATH = ./security/schedulerRule
++SECURITY_CONTENTFILTER_PATH = ./security/contentFilter
++SECURITY_URLFilter_PATH = ./security/URLFilter
++SECURITY_URLWHITELIST_PATH = ./security/URLWhiteList
++SECURITY_URLBLACKLIST_PATH = ./security/URLBlackList
+ SECURITY_CERTIFICATE_PATH = ./security/certificate
+ MONITOR_PATH = ./monitor
+ JS_PATH = ./js
+@@ -77,6 +82,13 @@
+ endif
+ SOURCES += $(wildcard $(SECURITY_SCHEDULERRULE_PATH)/*.c)
+ SOURCES += $(wildcard $(SECURITY_CERTIFICATE_PATH)/*.c)
++ifeq ($(CONFIG_ZYXEL_HOME_CYBER_SECURITY_FSECURE),y)
++SOURCES += $(wildcard $(SECURITY_CYBERSECURE_PATH)/*.c)
++SOURCES += $(wildcard $(SECURITY_CONTENTFILTER_PATH)/*.c)
++SOURCES += $(wildcard $(SECURITY_URLFilter_PATH)/*.c)
++SOURCES += $(wildcard $(SECURITY_URLWHITELIST_PATH)/*.c)
++SOURCES += $(wildcard $(SECURITY_URLBLACKLIST_PATH)/*.c)
++endif
+ SOURCES += $(wildcard $(MONITOR_PATH)/*.c)
+ SOURCES += $(wildcard $(JS_PATH)/*.c)
+ OBJS = $(patsubst %.c, %.o, $(SOURCES))
+Index: libzcfg_fe_dal-1.0/security/URLBlackList/zcfg_fe_dal_URLBlackList.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/security/URLBlackList/zcfg_fe_dal_URLBlackList.c	2018-11-28 12:22:48.623913100 +0800
+@@ -0,0 +1,289 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++#define URL_NAME_UD "UserDefined"
++
++dal_param_t URLBlack_FILTER_param[]={
++	{"Index",				dalType_int,	0,	0,	NULL, NULL, dal_Add|dal_Delete},
++	{"Name",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"BlackList",		dalType_string,		0,	0,	NULL,	NULL,	0},
++	{"FilterIndex",		dalType_string,		0,	0,	NULL,	NULL,	0},	
++	{NULL,		0,	0,	0,	NULL}
++};
++
++void zcfgFeDalShowURLBlackFilter(struct json_object *Jarray){
++
++	int i, len = 0;
++	int index = 0;
++	char settingStr [32] = {0};
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-6s %-6s %-15s %-30s %-30s\n", "Index", "Enable","Filter Name", "BlackList","FilterIndex");
++	printf("-----------------------------------------------------------------------------------------\n");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj!=NULL){
++			printf("%-6d ",i+1);
++			//printf("%-6d ",json_object_get_int(json_object_object_get(obj, "Enable")));			
++			printf("%-15s ",json_object_get_string(json_object_object_get(obj, "Name")));
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "BlackList")));
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "FilterIndex")));			
++			printf("\n");
++		}
++		else{
++			printf("ERROR!\n");
++		}
++	}
++}
++
++zcfgRet_t zcfgFeDalURLBlackFilterGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t URBlackFilterobjIid;
++	struct json_object *URLBlackFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	int index = 0;
++	struct json_object *name = NULL;
++	struct json_object *description = NULL;
++	char TR181Path[64] = {0};
++	int obj_MaxLength = 0;
++
++	IID_INIT(URBlackFilterobjIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_BLACK_U_R_L_FILTER, &URBlackFilterobjIid, &URLBlackFilterJobj) == ZCFG_SUCCESS){
++		index++;
++		obj_MaxLength = zcfgFeObjMaxLenGet(RDM_OID_BLACK_U_R_L_FILTER);
++		//sprintf(TR181Path, "X_ZYXEL_URLBlackFilter.%u", URBlackFilterobjIid.idx[0]);
++
++		pramJobj = json_object_new_object();		
++		json_object_object_add(pramJobj, "Name",JSON_OBJ_COPY(json_object_object_get(URLBlackFilterJobj, "Name")));
++		json_object_object_add(pramJobj, "BlackList",JSON_OBJ_COPY(json_object_object_get(URLBlackFilterJobj, "Blacklist")));
++		json_object_object_add(pramJobj, "FilterIndex",JSON_OBJ_COPY(json_object_object_get(URLBlackFilterJobj, "FilterIndex")));
++
++		if(json_object_object_get(Jobj, "Index")) {
++			if(index == json_object_get_int(json_object_object_get(Jobj, "Index"))) {
++				json_object_array_add(Jarray, pramJobj);
++				zcfgFeJsonObjFree(URLBlackFilterJobj);
++				break;
++			}
++		}
++		else{
++				json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++		}
++		if(pramJobj) zcfgFeJsonObjFree(pramJobj);
++		if(URLBlackFilterJobj) zcfgFeJsonObjFree(URLBlackFilterJobj);
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLBlackFilterEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	struct json_object *URLBlackFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++	struct json_object *pramJobjcopy = NULL;
++	int objIndex;
++	char *newName= NULL;
++	char *oldName=NULL;
++	char msg[30]={0};
++
++	objIndex_t objIid={0};
++	pramJobj = json_object_new_object();
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_BLACK_U_R_L_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		if(pramJobj) zcfgFeJsonObjFree(pramJobj);
++		printf("Wrong index..\n");
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGet(RDM_OID_BLACK_U_R_L_FILTER, &objIid, &URLBlackFilterJobj)) != ZCFG_SUCCESS) {
++		if(pramJobj) zcfgFeJsonObjFree(pramJobj);	
++		return ret;
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "Name")) != NULL){
++		newName = json_object_get_string(pramJobj);
++		oldName = json_object_get_string(json_object_object_get(URLBlackFilterJobj, "Name"));
++		if(strcmp(newName,oldName)!=0){ // if newName != oldName
++			ret = dalcmdParamCheck(&objIid, newName, RDM_OID_BLACK_U_R_L_FILTER, "Name", "Name", msg);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(URLBlackFilterJobj, "Name", JSON_OBJ_COPY(pramJobjcopy));
++				//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);			
++			}
++			else{
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLBlackFilter.Input.pop_name_duplicate"));
++				if(URLBlackFilterJobj) zcfgFeJsonObjFree(URLBlackFilterJobj);
++				if(pramJobj) zcfgFeJsonObjFree(pramJobj);	
++				//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);	
++				return ret;
++			}
++		}
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "FilterIndex")) != NULL){
++		json_object_object_add(URLBlackFilterJobj, "FilterIndex", JSON_OBJ_COPY(pramJobjcopy));
++		//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "BlackList")) != NULL){
++		json_object_object_add(URLBlackFilterJobj, "Blacklist", JSON_OBJ_COPY(pramJobjcopy));
++		//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);
++	}
++	if((ret = zcfgFeObjJsonSet(RDM_OID_BLACK_U_R_L_FILTER, &objIid, URLBlackFilterJobj, NULL)) != ZCFG_SUCCESS);
++	if(pramJobj) zcfgFeJsonObjFree(pramJobj);
++	if(URLBlackFilterJobj) zcfgFeJsonObjFree(URLBlackFilterJobj);
++	return ret;
++}
++
++
++bool getURLFilterIid_black(objIndex_t *URLFilterIid){
++	struct json_object *URLFilterObj = NULL;
++	objIndex_t indexIid = {0};
++	const char *name = NULL, *filter = NULL;
++
++	IID_INIT(*URLFilterIid);	
++	IID_INIT(indexIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_U_R_L_FILTER, &indexIid, &URLFilterObj) == ZCFG_SUCCESS) {
++		name = json_object_get_string(json_object_object_get(URLFilterObj, "Name"));
++		if(!strcmp(name, URL_NAME_UD)){
++			filter = json_object_get_string(json_object_object_get(URLFilterObj, "FilterIndex"));
++			URLFilterIid->level = 1;
++			if(sscanf(filter, "X_ZYXEL_URLFilter.%hhu", &(URLFilterIid->idx[0])) == 1){
++				zcfgFeJsonObjFree(URLFilterObj);
++				return true;
++			}			
++			zcfgFeJsonObjFree(URLFilterObj);
++			break;
++		}
++		zcfgFeJsonObjFree(URLFilterObj);
++	}
++	return false;
++}
++zcfgRet_t zcfgFeDalURLBlackFilterAdd(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++
++		zcfgRet_t ret = ZCFG_SUCCESS;
++		objIndex_t objIid = {0};		
++		objIndex_t FilterIid = {0};
++		struct json_object *URLBlackFilterJobj = NULL;
++		struct json_object *pramJobj = NULL;
++		char *name = NULL;
++		char msg[30]={0};
++		char path[32] = {0};
++		struct json_object *retJobj = NULL;
++		struct json_object *pramJobjcopy = NULL;
++		int idx = 1;
++#if 0		
++		if(!ISSET("DontCheckDupName") && json_object_object_get(Jobj, "Name")){
++			name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++			ret = dalcmdParamCheck(NULL,name, RDM_OID_BLACK_U_R_L_FILTER, "Name", "Name", msg);
++			if(ret != ZCFG_SUCCESS){
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLBlackFilter.Input.pop_name_duplicate"));
++				return ret;
++			}
++		}
++#endif
++		IID_INIT(objIid);
++		pramJobj = json_object_new_object();	
++		if(((json_object_object_get(Jobj, "BlackList")) == NULL)||!(json_object_get_boolean(json_object_object_get(Jobj, "BlackList")))){
++			ret = ZCFG_INTERNAL_ERROR;
++			if(pramJobj) json_object_put(pramJobj); 	
++			return ret; 		
++		}		
++		if(getURLFilterIid_black(&FilterIid)){
++			objIid.idx[1] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++			ret = zcfgFeObjJsonBlockedAdd(RDM_OID_BLACK_U_R_L_FILTER, &FilterIid, NULL);
++			if(ret == ZCFG_SUCCESS){
++				memcpy(&objIid, &FilterIid, sizeof(objIndex_t));
++				ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BLACK_U_R_L_FILTER, &objIid, &URLBlackFilterJobj);
++			}		
++			if(ret == ZCFG_SUCCESS){
++#if 0				
++				json_object_object_foreach(Jobj, key, val){
++					if(!strcmp(key, "Index")){
++						continue;
++					}
++					json_object_object_add(URLBlackFilterJobj, key, val);
++				}
++#endif				
++				json_object_object_add(URLBlackFilterJobj, "Name", JSON_OBJ_COPY(json_object_object_get(Jobj, "Name")));		
++				if((pramJobjcopy = json_object_object_get(Jobj, "BlackList")) != NULL){
++					json_object_object_add(URLBlackFilterJobj, "Blacklist", JSON_OBJ_COPY(pramJobjcopy));
++					//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);
++				}
++				if((pramJobjcopy = json_object_object_get(Jobj, "FilterIndex")) == NULL){					
++					sprintf(path, "X_ZYXEL_URLFilter.%d",objIid.idx[0]);
++					json_object_object_add(URLBlackFilterJobj, "FilterIndex", json_object_new_string(path));					
++				}else{
++					json_object_object_add(URLBlackFilterJobj, "FilterIndex", JSON_OBJ_COPY(pramJobjcopy));
++					//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);					
++				}
++				if((ret = zcfgFeObjJsonSet(RDM_OID_BLACK_U_R_L_FILTER, &objIid, URLBlackFilterJobj, NULL)) != ZCFG_SUCCESS){
++					if(pramJobj) zcfgFeJsonObjFree(pramJobj);
++					if(URLBlackFilterJobj) zcfgFeJsonObjFree(URLBlackFilterJobj);				
++					return ret;
++				}				
++				if(pramJobj) zcfgFeJsonObjFree(pramJobj);
++				if(URLBlackFilterJobj) zcfgFeJsonObjFree(URLBlackFilterJobj);			}			
++		}
++	return ret;
++}
++zcfgRet_t zcfgFeDalURLBlackFilterDelete(struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid={0};
++	int objIndex;
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_BLACK_U_R_L_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		printf("Wrong index..\n");
++		return ret;
++	}
++	ret = zcfgFeObjJsonDel(RDM_OID_BLACK_U_R_L_FILTER, &objIid, NULL);
++	if(ret == ZCFG_DELETE_REJECT){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLBlackFilter.delete_pcp_sch_err_msg"));
++		printf("%s %s %d \n",json_object_to_json_string(Jobj),__func__,__LINE__);
++		return ret;
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLBlackFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalURLBlackFilterEdit(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalURLBlackFilterAdd(Jobj, Jarray, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalURLBlackFilterDelete(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalURLBlackFilterGet(Jobj, Jarray, NULL);
++	}
++	else{
++		printf("Unknown method:%s\n", method);
++	}
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/security/URLFilter/zcfg_fe_dal_URLFilter.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/security/URLFilter/zcfg_fe_dal_URLFilter.c	2018-11-28 12:22:48.615913100 +0800
+@@ -0,0 +1,255 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t URL_FILTER_param[]={
++	{"Index",				dalType_int,	0,	0,	NULL, NULL, dal_Add|dal_Delete},
++	{"Name",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"Enable",	dalType_boolean,	0,	0,	NULL, NULL, 0},	
++	{"Description",		dalType_string,		0,	0,	NULL,	NULL,	0},
++	{"FilterIndex",		dalType_string,		0,	0,	NULL,	NULL,	0},	
++	{NULL,		0,	0,	0,	NULL}
++};
++	
++void zcfgFeDalShowURLFilter(struct json_object *Jarray){
++
++	int i, len = 0;
++	int index = 0;
++	char settingStr [32] = {0};
++	struct json_object *obj;
++	bool Enable;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-6s %-6s %-15s %-30s %-30s\n", "Index", "Enable","Filter Name", "Description", "FilterIndex");
++	printf("----------------------------------------------------------------------------------------------\n");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj!=NULL){
++			Enable = json_object_get_boolean(json_object_object_get(obj, "Enable"));
++			printf("%-6d ",i+1);
++			printf("%-6d ",Enable);
++			printf("%-15s ",json_object_get_string(json_object_object_get(obj, "Name")));
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "Description")));
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "FilterIndex")));			
++			printf("\n");
++		}
++		else{
++			printf("ERROR!\n");
++		}
++	}
++}
++
++zcfgRet_t zcfgFeDalURLFilterGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *URLFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	int index = 0;
++	struct json_object *name = NULL;
++	struct json_object *description = NULL;
++	char TR181Path[64] = {0};
++	int obj_MaxLength = 0;
++
++
++	IID_INIT(objIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_U_R_L_FILTER, &objIid, &URLFilterJobj) == ZCFG_SUCCESS){
++		index++;
++		obj_MaxLength = zcfgFeObjMaxLenGet(RDM_OID_U_R_L_FILTER);
++		sprintf(TR181Path, "X_ZYXEL_URLFilter.%u", objIid.idx[0]);
++
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Name",JSON_OBJ_COPY(json_object_object_get(URLFilterJobj, "Name")));
++		json_object_object_add(pramJobj, "Description",JSON_OBJ_COPY(json_object_object_get(URLFilterJobj, "Description")));
++		json_object_object_add(pramJobj, "Enable",json_object_object_get(URLFilterJobj, "Enable"));
++		json_object_object_add(pramJobj, "FilterIndex",json_object_object_get(URLFilterJobj, "FilterIndex"));
++		if(json_object_object_get(Jobj, "Index")) {
++			if(index == json_object_get_int(json_object_object_get(Jobj, "Index"))) {
++				json_object_array_add(Jarray, pramJobj);
++				if(URLFilterJobj) json_object_put(URLFilterJobj);
++				if(pramJobj) json_object_put(pramJobj); 
++				break;
++			}
++		}
++		else {
++			json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++		}
++		if(URLFilterJobj) json_object_put(URLFilterJobj);
++		if(pramJobj) json_object_put(pramJobj);	
++
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLFilterEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	struct json_object *URLFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++	struct json_object *pramJobjcopy = NULL;	
++	int objIndex;
++	char *newName= NULL;
++	char *oldName=NULL;
++	char msg[30]={0};
++
++	bool URLFilterEnable;
++	objIndex_t objIid={0};
++	pramJobj = json_object_new_object();
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_U_R_L_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		if(pramJobj) json_object_put(pramJobj);	
++		printf("Wrong index..\n");
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGet(RDM_OID_U_R_L_FILTER, &objIid, &URLFilterJobj)) != ZCFG_SUCCESS) {
++		if(pramJobj) json_object_put(pramJobj);		
++		return ret;
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "Name")) != NULL){
++		newName = json_object_get_string(pramJobj);
++		oldName = json_object_get_string(json_object_object_get(URLFilterJobj, "Name"));
++		if(strcmp(newName,oldName)!=0){ // if newName != oldName
++			ret = dalcmdParamCheck(&objIid, newName, RDM_OID_U_R_L_FILTER, "Name", "Name", msg);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(URLFilterJobj, "Name", JSON_OBJ_COPY(pramJobjcopy));
++				//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++			}
++			else{
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLFilter.Input.pop_name_duplicate"));
++				if(URLFilterJobj) json_object_put(URLFilterJobj);
++				if(pramJobj) json_object_put(pramJobj);	
++				//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++				return ret;
++			}
++		}
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "Description")) != NULL){
++		json_object_object_add(URLFilterJobj, "Description", JSON_OBJ_COPY(pramJobjcopy));
++		//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "FilterIndex")) != NULL){
++		json_object_object_add(URLFilterJobj, "FilterIndex", JSON_OBJ_COPY(pramJobjcopy));	
++		//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++	}
++	URLFilterEnable = json_object_get_boolean(json_object_object_get(Jobj,"Enable"));
++	json_object_object_add(URLFilterJobj, "Enable",json_object_new_boolean(URLFilterEnable));
++	if((ret = zcfgFeObjJsonSet(RDM_OID_U_R_L_FILTER, &objIid, URLFilterJobj, NULL)) != ZCFG_SUCCESS);
++	if(URLFilterJobj) json_object_put(URLFilterJobj);
++	if(pramJobj) json_object_put(pramJobj); 
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalURLFilterAdd(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++
++		zcfgRet_t ret = ZCFG_SUCCESS;
++		objIndex_t objIid;
++		struct json_object *URLFilterJobj = NULL;
++		struct json_object *pramJobj = NULL;
++		struct json_object *pramJobjcopy = NULL;
++		char *name = NULL;
++		char msg[30]={0};
++		char path[32] = {0};
++		struct json_object *retJobj = NULL;
++		int idx = 1;
++#if 0
++		if(!ISSET("DontCheckDupName") && json_object_object_get(Jobj, "Name")){
++			name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++			ret = dalcmdParamCheck(NULL,name, RDM_OID_U_R_L_FILTER, "Name", "Name", msg);
++			if(ret != ZCFG_SUCCESS){
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLFilter.Input.pop_name_duplicate"));
++				return ret;
++			}
++		}
++#endif
++		IID_INIT(objIid);
++		if((ret = zcfgFeObjJsonAdd(RDM_OID_U_R_L_FILTER, &objIid, NULL)) != ZCFG_SUCCESS){
++			if(ret == ZCFG_EXCEED_MAX_INS_NUM){
++				printf("Cannot add entry since the maximum number of entries has been reached.\n");
++			}
++			return ret;
++		}
++		if((ret = zcfgFeObjJsonGet(RDM_OID_U_R_L_FILTER, &objIid, &URLFilterJobj)) != ZCFG_SUCCESS) {
++			printf("%s: Object retrieve fail\n", __FUNCTION__);
++			return ret;
++		}
++		json_object_object_add(URLFilterJobj, "Enable", json_object_new_boolean(true));
++		json_object_object_add(URLFilterJobj, "Name", JSON_OBJ_COPY(json_object_object_get(Jobj, "Name")));
++		if((pramJobjcopy = json_object_object_get(Jobj, "Description")) != NULL){
++			json_object_object_add(URLFilterJobj, "Description", JSON_OBJ_COPY(pramJobjcopy));
++			//if(pramJobjcopy) json_object_put(pramJobjcopy);			
++		}
++		objIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		sprintf(path, "X_ZYXEL_URLFilter.%d",json_object_get_int(json_object_object_get(Jobj, "Index")));	
++		json_object_object_add(URLFilterJobj, "FilterIndex", json_object_new_string(path));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_U_R_L_FILTER, &objIid, URLFilterJobj, NULL)) != ZCFG_SUCCESS){
++			return ret;
++		}
++		if(URLFilterJobj) json_object_put(URLFilterJobj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLFilterDelete(struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid={0};
++	int objIndex;
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_U_R_L_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		printf("Wrong index..\n");
++		return ret;
++	}
++	ret = zcfgFeObjJsonDel(RDM_OID_U_R_L_FILTER, &objIid, NULL);
++	if(ret == ZCFG_DELETE_REJECT){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLFilter.delete_pcp_sch_err_msg"));
++		printf("%s %s %d \n",json_object_to_json_string(Jobj),__func__,__LINE__);
++		return ret;
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalURLFilterEdit(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalURLFilterAdd(Jobj, Jarray, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalURLFilterDelete(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalURLFilterGet(Jobj, Jarray, NULL);
++	}
++	else{
++		printf("Unknown method:%s\n", method);
++	}
++	return ret;
++}
++
++
++
+Index: libzcfg_fe_dal-1.0/security/URLWhiteList/zcfg_fe_dal_URLWhiteList.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/security/URLWhiteList/zcfg_fe_dal_URLWhiteList.c	2018-11-28 12:22:48.623913100 +0800
+@@ -0,0 +1,291 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++#define URL_NAME_UD "UserDefined"
++
++dal_param_t URLWhite_FILTER_param[]={
++	{"Index",				dalType_int,	0,	0,	NULL, NULL, dal_Add|dal_Delete},
++	{"Name",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"WhiteList",		dalType_string,		0,	0,	NULL,	NULL,	0},
++	{"FilterIndex",		dalType_string,		0,	0,	NULL,	NULL,	0},	
++	{NULL,		0,	0,	0,	NULL}
++};
++
++void zcfgFeDalShowURLWhiteFilter(struct json_object *Jarray){
++
++	int i, len = 0;
++	int index = 0;
++	char settingStr [32] = {0};
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-6s %-6s %-15s %-30s %-30s\n", "Index", "Enable","Filter Name", "WhiteList","FilterIndex");
++	printf("-----------------------------------------------------------------------------------------\n");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++
++		obj = json_object_array_get_idx(Jarray, i);
++		
++		if(obj!=NULL){
++			printf("%-6d ",i+1);
++			//printf("%-6d ",json_object_get_int(json_object_object_get(obj, "Enable")));			
++			printf("%-15s ",json_object_get_string(json_object_object_get(obj, "Name")));
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "WhiteList")));
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "FilterIndex")));			
++			printf("\n");
++		}
++		else{			
++			printf("ERROR!\n");
++		}
++	}
++}
++
++zcfgRet_t zcfgFeDalURLWhiteFilterGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t URWhiteFilterobjIid;
++	struct json_object *URLWhiteFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	int index = 0;
++	struct json_object *name = NULL;
++	struct json_object *description = NULL;
++	char TR181Path[64] = {0};
++	int obj_MaxLength = 0;
++
++	IID_INIT(URWhiteFilterobjIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_WHITE_U_R_L_FILTER, &URWhiteFilterobjIid, &URLWhiteFilterJobj) == ZCFG_SUCCESS){
++		index++;
++		obj_MaxLength = zcfgFeObjMaxLenGet(RDM_OID_WHITE_U_R_L_FILTER);
++		sprintf(TR181Path, "X_ZYXEL_URLWhiteFilter.%u", URWhiteFilterobjIid.idx[0]);
++
++		pramJobj = json_object_new_object();		
++		json_object_object_add(pramJobj, "Name",JSON_OBJ_COPY(json_object_object_get(URLWhiteFilterJobj, "Name")));
++		json_object_object_add(pramJobj, "WhiteList",JSON_OBJ_COPY(json_object_object_get(URLWhiteFilterJobj, "Whitelist")));
++		json_object_object_add(pramJobj, "FilterIndex",JSON_OBJ_COPY(json_object_object_get(URLWhiteFilterJobj, "FilterIndex")));
++
++
++		if(json_object_object_get(Jobj, "Index")) {
++			if(index == json_object_get_int(json_object_object_get(Jobj, "Index"))) {
++				json_object_array_add(Jarray, pramJobj);
++				zcfgFeJsonObjFree(URLWhiteFilterJobj);
++				break;
++			}
++		}
++		else{
++				json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++		}
++		if(URLWhiteFilterJobj) json_object_put(URLWhiteFilterJobj);
++		if(pramJobj) json_object_put(pramJobj); 
++
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLWhiteFilterEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	struct json_object *URLWhiteFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++	struct json_object *pramJobjcopy = NULL;	
++	int objIndex;
++	char *newName= NULL;
++	char *oldName=NULL;
++	char msg[30]={0};
++
++	objIndex_t objIid={0};
++	pramJobj = json_object_new_object();	
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_WHITE_U_R_L_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		if(pramJobj) json_object_put(pramJobj);
++		printf("Wrong index..\n");
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WHITE_U_R_L_FILTER, &objIid, &URLWhiteFilterJobj)) != ZCFG_SUCCESS) {
++		if(pramJobj) json_object_put(pramJobj);	
++		return ret;
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "Name")) != NULL){
++		newName = json_object_get_string(pramJobj);
++		oldName = json_object_get_string(json_object_object_get(URLWhiteFilterJobj, "Name"));
++		if(strcmp(newName,oldName)!=0){ // if newName != oldName
++			ret = dalcmdParamCheck(&objIid, newName, RDM_OID_WHITE_U_R_L_FILTER, "Name", "Name", msg);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(URLWhiteFilterJobj, "Name", JSON_OBJ_COPY(pramJobjcopy));
++				//if(pramJobjcopy) json_object_put(pramJobjcopy); 
++			}
++			else{
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLWhiteFilter.Input.pop_name_duplicate"));
++				if(URLWhiteFilterJobj) json_object_put(URLWhiteFilterJobj);
++				if(pramJobj) json_object_put(pramJobj);
++				//if(pramJobjcopy) zcfgFeJsonObjFree(pramJobjcopy);	
++				return ret;
++			}
++		}
++	}	
++	if((pramJobjcopy = json_object_object_get(Jobj, "FilterIndex")) != NULL){
++		json_object_object_add(URLWhiteFilterJobj, "FilterIndex", JSON_OBJ_COPY(pramJobjcopy));
++		//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "WhiteList")) != NULL){
++		json_object_object_add(URLWhiteFilterJobj, "Whitelist", JSON_OBJ_COPY(pramJobjcopy));
++	}
++	if((ret = zcfgFeObjJsonSet(RDM_OID_WHITE_U_R_L_FILTER, &objIid, URLWhiteFilterJobj, NULL)) != ZCFG_SUCCESS);
++	if(URLWhiteFilterJobj) json_object_put(URLWhiteFilterJobj);
++	if(pramJobj) json_object_put(pramJobj);	
++	return ret;
++}
++
++
++bool getURLFilterIid(objIndex_t *URLFilterIid){
++	struct json_object *URLFilterObj = NULL;
++	objIndex_t indexIid = {0};
++	const char *name = NULL, *filter = NULL;
++
++	IID_INIT(*URLFilterIid);	
++	IID_INIT(indexIid);
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_U_R_L_FILTER, &indexIid, &URLFilterObj) == ZCFG_SUCCESS) {
++		name = json_object_get_string(json_object_object_get(URLFilterObj, "Name"));
++		if(!strcmp(name, URL_NAME_UD)){
++			filter = json_object_get_string(json_object_object_get(URLFilterObj, "FilterIndex"));
++			URLFilterIid->level = 1;
++			if(sscanf(filter, "X_ZYXEL_URLFilter.%hhu", &(URLFilterIid->idx[0])) == 1){
++				zcfgFeJsonObjFree(URLFilterObj);
++				return true;
++			}			
++			if(URLFilterObj) json_object_put(URLFilterObj);
++			break;
++		}
++		if(URLFilterObj) json_object_put(URLFilterObj);
++	}
++	return false;
++}
++zcfgRet_t zcfgFeDalURLWhiteFilterAdd(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++
++		zcfgRet_t ret = ZCFG_SUCCESS;
++		objIndex_t objIid = {0};		
++		objIndex_t FilterIid = {0};
++		struct json_object *URLWhiteFilterJobj = NULL;
++		struct json_object *pramJobj = NULL;
++		struct json_object *pramJobjcopy = NULL;		
++		char *name = NULL;
++		char msg[30]={0};
++		char path[32] = {0};
++		struct json_object *retJobj = NULL;
++		int idx = 1;
++#if 0
++		if(!ISSET("DontCheckDupName") && json_object_object_get(Jobj, "Name")){
++			name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++			ret = dalcmdParamCheck(NULL,name, RDM_OID_WHITE_U_R_L_FILTER, "Name", "Name", msg);
++			if(ret != ZCFG_SUCCESS){
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLWhiteFilter.Input.pop_name_duplicate"));
++				return ret;
++			}
++		}
++#endif
++		IID_INIT(objIid);
++		pramJobj = json_object_new_object();		
++		if(((json_object_object_get(Jobj, "WhiteList")) == NULL)||!(json_object_get_boolean(json_object_object_get(Jobj, "WhiteList")))){
++			ret = ZCFG_INTERNAL_ERROR;
++			if(pramJobj) json_object_put(pramJobj); 	
++			return ret; 		
++		}		
++		if(getURLFilterIid(&FilterIid)){
++			objIid.idx[1] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++			ret = zcfgFeObjJsonBlockedAdd(RDM_OID_WHITE_U_R_L_FILTER, &FilterIid, NULL);
++			if(ret == ZCFG_SUCCESS){
++				memcpy(&objIid, &FilterIid, sizeof(objIndex_t));
++				ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WHITE_U_R_L_FILTER, &objIid, &URLWhiteFilterJobj);
++			}		
++			if(ret == ZCFG_SUCCESS){
++#if 0				
++				json_object_object_foreach(Jobj, key, val){
++					if(!strcmp(key, "Index")){
++						continue;
++					}
++					json_object_object_add(URLWhiteFilterJobj, key, val);
++				}
++#endif				
++				json_object_object_add(URLWhiteFilterJobj, "Name", JSON_OBJ_COPY(json_object_object_get(Jobj, "Name")));		
++				if((pramJobjcopy = json_object_object_get(Jobj, "WhiteList")) != NULL){
++					json_object_object_add(URLWhiteFilterJobj, "Whitelist", JSON_OBJ_COPY(pramJobjcopy));
++					//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++				}
++				if((pramJobjcopy = json_object_object_get(Jobj, "FilterIndex")) == NULL){					
++					sprintf(path, "X_ZYXEL_URLFilter.%d",objIid.idx[0]);
++					json_object_object_add(URLWhiteFilterJobj, "FilterIndex", json_object_new_string(path));					
++				}else{
++					json_object_object_add(URLWhiteFilterJobj, "FilterIndex", JSON_OBJ_COPY(pramJobjcopy));	
++					//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++				}
++				if((ret = zcfgFeObjJsonSet(RDM_OID_WHITE_U_R_L_FILTER, &objIid, URLWhiteFilterJobj, NULL)) != ZCFG_SUCCESS){
++					return ret;
++				}
++				if(URLWhiteFilterJobj) json_object_put(URLWhiteFilterJobj);
++				if(pramJobj) json_object_put(pramJobj);	
++			}
++		}
++	return ret;
++}
++zcfgRet_t zcfgFeDalURLWhiteFilterDelete(struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid={0};
++	int objIndex;
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_WHITE_U_R_L_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		printf("Wrong index..\n");
++		return ret;
++	}
++	ret = zcfgFeObjJsonDel(RDM_OID_WHITE_U_R_L_FILTER, &objIid, NULL);
++	if(ret == ZCFG_DELETE_REJECT){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.URLWhiteFilter.delete_pcp_sch_err_msg"));
++		printf("%s %s %d \n",json_object_to_json_string(Jobj),__func__,__LINE__);
++		return ret;
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalURLWhiteFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalURLWhiteFilterEdit(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalURLWhiteFilterAdd(Jobj, Jarray, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalURLWhiteFilterDelete(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalURLWhiteFilterGet(Jobj, Jarray, NULL);
++	}
++	else{
++		printf("Unknown method:%s\n", method);
++	}
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/security/contentFilter/zcfg_fe_dal_contentFilter.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/security/contentFilter/zcfg_fe_dal_contentFilter.c	2018-11-28 12:22:48.615913100 +0800
+@@ -0,0 +1,518 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++
++dal_param_t CONTENT_FILTER_param[]={
++	{"Index",				dalType_int,	0,	0,	NULL, NULL, dal_Add|dal_Delete},
++	{"Name",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"Description",		dalType_string,		0,	0,	NULL,	NULL,	0},
++	{"ContentFilterEnable",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"adultContent",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"drugs",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"alcoholandTobacco",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"disturbing",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"gambling",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"illegal",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"illegalDownloads",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"violence",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"hate",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"weapons",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"dating",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"timeShoppingandAuctions",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"videoStreamingServices",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"socialNetworks",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"anonymizers",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{"unknown",	dalType_boolean,	0,	0,	NULL, NULL, 0},
++	{NULL,		0,	0,	0,	NULL}
++};
++
++
++void zcfgFeDalShowContentFilter(struct json_object *Jarray){
++
++	int i, len = 0;
++	int index = 0;
++	char settingStr [64] = {0};
++	struct json_object *obj;
++	bool ContentFilterEnable;
++	bool adultContentEnable;
++	bool drugsEnable;
++	bool alcoholandTobaccoEnable;
++	bool disturbingEnable;
++	bool gamblingEnable;
++	bool illegalEnable;
++	bool illegalDownloadsEnable;
++	bool violenceEnable;
++	bool hateEnable;
++	bool weaponsEnable;
++	bool datingEnable;
++	bool timeShoppingandAuctionsEnable;
++	bool videoStreamingServicesEnable;
++	bool socialNetworksEnable;
++	bool anonymizersEnable;
++	bool unknownEnable;
++
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-6s %-6s %-15s %-64s %-30s\n", "Index", "Enable","Filter Name", "Setting(bolean)", "Description");
++	printf("%-6s %-6s %-15s %-64s %-30s\n", "------", "------","---------------", "ad:dr:al:ds:ga:il:il:vi:ha:we:da:ti:vi:so:an:un", "--");	
++	printf("--------------------------------------------------------------------------------\n");
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj!=NULL){
++			ContentFilterEnable = json_object_get_boolean(json_object_object_get(obj, "ContentFilterEnable"));
++			adultContentEnable = json_object_get_boolean(json_object_object_get(obj, "adultContent"));
++			drugsEnable = json_object_get_boolean(json_object_object_get(obj, "drugs"));
++			alcoholandTobaccoEnable = json_object_get_boolean(json_object_object_get(obj, "alcoholandTobacco"));
++			disturbingEnable = json_object_get_boolean(json_object_object_get(obj, "disturbing"));
++			gamblingEnable = json_object_get_boolean(json_object_object_get(obj, "gambling"));
++			illegalEnable = json_object_get_boolean(json_object_object_get(obj, "illegal"));
++			illegalDownloadsEnable = json_object_get_boolean(json_object_object_get(obj, "illegalDownloads"));
++			violenceEnable = json_object_get_boolean(json_object_object_get(obj, "violence"));
++			hateEnable = json_object_get_boolean(json_object_object_get(obj, "hate"));
++			weaponsEnable = json_object_get_boolean(json_object_object_get(obj, "weapons"));
++			datingEnable = json_object_get_boolean(json_object_object_get(obj, "dating"));
++			timeShoppingandAuctionsEnable = json_object_get_boolean(json_object_object_get(obj, "timeShoppingandAuctions"));
++			videoStreamingServicesEnable = json_object_get_boolean(json_object_object_get(obj, "videoStreamingServices"));
++			socialNetworksEnable = json_object_get_boolean(json_object_object_get(obj, "socialNetworks"));
++			anonymizersEnable = json_object_get_boolean(json_object_object_get(obj, "anonymizers"));
++			unknownEnable = json_object_get_boolean(json_object_object_get(obj, "unknown"));
++			memset(settingStr, '\0', sizeof(settingStr));
++			sprintf(settingStr, "%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d:%-2d",adultContentEnable,drugsEnable,alcoholandTobaccoEnable,disturbingEnable,
++				gamblingEnable,illegalEnable,illegalDownloadsEnable,violenceEnable,hateEnable,weaponsEnable,datingEnable,
++				timeShoppingandAuctionsEnable,videoStreamingServicesEnable,socialNetworksEnable,anonymizersEnable,unknownEnable);
++
++			printf("%-6d ",i+1);
++			printf("%-6d ",ContentFilterEnable);
++			printf("%-15s ",json_object_get_string(json_object_object_get(obj, "Name")));
++			printf("%-64s ",settingStr);
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "Description")));
++			printf("\n");
++
++		}
++		else{
++			printf("ERROR!\n");
++		}
++
++	}
++
++
++}
++
++zcfgRet_t zcfgFeDalContentFilterGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *ContentFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	int index = 0;
++	struct json_object *name = NULL;
++	struct json_object *description = NULL;
++	char TR181Path[64] = {0};
++	int obj_MaxLength = 0;
++
++
++	IID_INIT(objIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_CONTENT_FILTER, &objIid, &ContentFilterJobj) == ZCFG_SUCCESS){
++		index++;
++
++		obj_MaxLength = zcfgFeObjMaxLenGet(RDM_OID_CONTENT_FILTER);
++		//sprintf(TR181Path, "X_ZYXEL_ContentFilter.%u", objIid.idx[0]);
++
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Name",JSON_OBJ_COPY(json_object_object_get(ContentFilterJobj, "Name")));
++		json_object_object_add(pramJobj, "Description",JSON_OBJ_COPY(json_object_object_get(ContentFilterJobj, "Description")));
++
++		json_object_object_add(pramJobj, "ContentFilterEnable",json_object_object_get(ContentFilterJobj, "Enable"));
++		json_object_object_add(pramJobj, "adultContent",json_object_object_get(ContentFilterJobj, "AdultContent"));
++		json_object_object_add(pramJobj, "drugs",json_object_object_get(ContentFilterJobj, "Drugs"));
++		json_object_object_add(pramJobj, "alcoholandTobacco",json_object_object_get(ContentFilterJobj, "AlcoholandTobacco"));
++		json_object_object_add(pramJobj, "disturbing",json_object_object_get(ContentFilterJobj, "Disturbing"));
++		json_object_object_add(pramJobj, "gambling",json_object_object_get(ContentFilterJobj, "Gambling"));
++		json_object_object_add(pramJobj, "illegal",json_object_object_get(ContentFilterJobj, "Illegal"));
++		json_object_object_add(pramJobj, "illegalDownloads",json_object_object_get(ContentFilterJobj, "IllegalDownloads"));
++		json_object_object_add(pramJobj, "violence",json_object_object_get(ContentFilterJobj, "Violence"));
++		json_object_object_add(pramJobj, "hate",json_object_object_get(ContentFilterJobj, "Hate"));
++		json_object_object_add(pramJobj, "weapons",json_object_object_get(ContentFilterJobj, "Weapons"));
++		json_object_object_add(pramJobj, "dating",json_object_object_get(ContentFilterJobj, "Dating"));
++		json_object_object_add(pramJobj, "timeShoppingandAuctions",json_object_object_get(ContentFilterJobj, "TimeShoppingandAuctions"));
++		json_object_object_add(pramJobj, "videoStreamingServices",json_object_object_get(ContentFilterJobj, "VideoStreamingServices"));
++		json_object_object_add(pramJobj, "socialNetworks",json_object_object_get(ContentFilterJobj, "SocialNetworks"));
++		json_object_object_add(pramJobj, "anonymizers",json_object_object_get(ContentFilterJobj, "Anonymizers"));
++		json_object_object_add(pramJobj, "unknown",json_object_object_get(ContentFilterJobj, "Unknown"));
++
++
++		if(json_object_object_get(Jobj, "Index")) {
++			if(index == json_object_get_int(json_object_object_get(Jobj, "Index"))) {
++				json_object_array_add(Jarray, pramJobj);
++				if(pramJobj) json_object_put(pramJobj);
++				if(ContentFilterJobj) json_object_put(ContentFilterJobj);	
++				break;
++			}
++		}
++		else {
++			json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++		}		
++	if(ContentFilterJobj) json_object_put(ContentFilterJobj);
++	if(pramJobj) json_object_put(pramJobj);
++	}
++	return ret;
++
++
++
++}
++
++zcfgRet_t zcfgFeDalContentFilterEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	struct json_object *ContentFilterJobj = NULL;
++	struct json_object *pramJobj = NULL;
++	struct json_object *pramJobjcopy = NULL;
++	int objIndex;
++	char *newName= NULL;
++	char *oldName=NULL;
++	char msg[30]={0};
++
++	bool ContentFilterEnable;
++	bool adultContentEnable;
++	bool drugsEnable;
++	bool alcoholandTobaccoEnable;
++	bool disturbingEnable;
++	bool gamblingEnable;
++	bool illegalEnable;
++	bool illegalDownloadsEnable;
++	bool violenceEnable;
++	bool hateEnable;
++	bool weaponsEnable;
++	bool datingEnable;
++	bool timeShoppingandAuctionsEnable;
++	bool videoStreamingServicesEnable;
++	bool socialNetworksEnable;
++	bool anonymizersEnable;
++	bool unknownEnable;
++
++	objIndex_t objIid={0};
++	IID_INIT(objIid);
++	pramJobj = json_object_new_object();
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_CONTENT_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		if(pramJobj) json_object_put(pramJobj);		
++		printf("Wrong index..\n");
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGet(RDM_OID_CONTENT_FILTER, &objIid, &ContentFilterJobj)) != ZCFG_SUCCESS) {
++		if(pramJobj) json_object_put(pramJobj);		
++		printf("Get json fail..\n");
++		return ret;
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "Name")) != NULL){
++		newName = json_object_get_string(pramJobj);
++		oldName = json_object_get_string(json_object_object_get(ContentFilterJobj, "Name"));
++		if(strcmp(newName,oldName)!=0){ // if newName != oldName
++			ret = dalcmdParamCheck(&objIid, newName, RDM_OID_CONTENT_FILTER, "Name", "Name", msg);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(ContentFilterJobj, "Name", JSON_OBJ_COPY(pramJobjcopy));
++				//if(pramJobjcopy) json_object_put(pramJobjcopy);	
++			}
++			else{
++				printf("%s\n",msg);
++				json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.ContentFilter.Input.pop_name_duplicate"));
++				if(pramJobj) json_object_put(pramJobj); 	
++				if(ContentFilterJobj) json_object_put(ContentFilterJobj);
++				//if(pramJobjcopy) json_object_put(pramJobjcopy);
++				return ret;
++			}
++		}
++	}
++	if((pramJobjcopy = json_object_object_get(Jobj, "Description")) != NULL){
++		json_object_object_add(ContentFilterJobj, "Description", JSON_OBJ_COPY(pramJobjcopy));
++		//if(pramJobjcopy) json_object_put(pramJobjcopy);
++	}
++	
++	ContentFilterEnable = json_object_get_boolean(json_object_object_get(Jobj,"ContentFilterEnable"));
++	json_object_object_add(ContentFilterJobj, "Enable",json_object_new_boolean(ContentFilterEnable));
++
++	adultContentEnable = json_object_get_boolean(json_object_object_get(Jobj,"adultContent"));
++	json_object_object_add(ContentFilterJobj, "AdultContent",json_object_new_boolean(adultContentEnable));
++
++	drugsEnable = json_object_get_boolean(json_object_object_get(Jobj,"drugs"));
++	json_object_object_add(ContentFilterJobj, "Drugs",json_object_new_boolean(drugsEnable));
++
++	alcoholandTobaccoEnable = json_object_get_boolean(json_object_object_get(Jobj,"alcoholandTobacco"));
++	json_object_object_add(ContentFilterJobj, "AlcoholandTobacco",json_object_new_boolean(alcoholandTobaccoEnable));
++
++	disturbingEnable = json_object_get_boolean(json_object_object_get(Jobj,"disturbing"));
++	json_object_object_add(ContentFilterJobj, "Disturbing",json_object_new_boolean(disturbingEnable));
++
++	gamblingEnable = json_object_get_boolean(json_object_object_get(Jobj,"gambling"));
++	json_object_object_add(ContentFilterJobj, "Gambling",json_object_new_boolean(gamblingEnable));
++
++	illegalEnable = json_object_get_boolean(json_object_object_get(Jobj,"illegal"));
++	json_object_object_add(ContentFilterJobj, "Illegal",json_object_new_boolean(illegalEnable));
++
++	illegalDownloadsEnable = json_object_get_boolean(json_object_object_get(Jobj,"illegalDownloads"));
++	json_object_object_add(ContentFilterJobj, "IllegalDownloads",json_object_new_boolean(illegalDownloadsEnable));
++
++	violenceEnable = json_object_get_boolean(json_object_object_get(Jobj,"violence"));
++	json_object_object_add(ContentFilterJobj, "Violence",json_object_new_boolean(violenceEnable));
++
++	hateEnable = json_object_get_boolean(json_object_object_get(Jobj,"hate"));
++	json_object_object_add(ContentFilterJobj, "Hate",json_object_new_boolean(hateEnable));
++
++
++	weaponsEnable = json_object_get_boolean(json_object_object_get(Jobj,"weapons"));	
++	json_object_object_add(ContentFilterJobj, "Weapons",json_object_new_boolean(weaponsEnable));
++
++	datingEnable = json_object_get_boolean(json_object_object_get(Jobj,"dating"));
++	json_object_object_add(ContentFilterJobj, "Dating",json_object_new_boolean(datingEnable));
++
++	timeShoppingandAuctionsEnable = json_object_get_boolean(json_object_object_get(Jobj,"timeShoppingandAuctions"));
++	json_object_object_add(ContentFilterJobj, "TimeShoppingandAuctions",json_object_new_boolean(timeShoppingandAuctionsEnable));
++
++	videoStreamingServicesEnable = json_object_get_boolean(json_object_object_get(Jobj,"videoStreamingServices"));	
++	json_object_object_add(ContentFilterJobj, "VideoStreamingServices",json_object_new_boolean(videoStreamingServicesEnable));
++
++	socialNetworksEnable = json_object_get_boolean(json_object_object_get(Jobj,"socialNetworks"));
++	json_object_object_add(ContentFilterJobj, "SocialNetworks",json_object_new_boolean(socialNetworksEnable));
++
++	anonymizersEnable = json_object_get_boolean(json_object_object_get(Jobj,"anonymizers"));
++	json_object_object_add(ContentFilterJobj, "Anonymizers",json_object_new_boolean(anonymizersEnable));
++
++	unknownEnable = json_object_get_boolean(json_object_object_get(Jobj,"unknown"));	
++	json_object_object_add(ContentFilterJobj, "Unknown",json_object_new_boolean(unknownEnable));
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_CONTENT_FILTER, &objIid, ContentFilterJobj, NULL)) != ZCFG_SUCCESS);{
++	 	if(ContentFilterJobj) json_object_put(ContentFilterJobj);
++		if(pramJobj) json_object_put(pramJobj); 			
++		printf("Wrong jason set..\n");
++		return ret;
++		}	
++
++	if(ContentFilterJobj) json_object_put(ContentFilterJobj);
++	if(pramJobj) json_object_put(pramJobj); 	
++}
++
++
++zcfgRet_t zcfgFeDalContentFilterAdd(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++
++		zcfgRet_t ret = ZCFG_SUCCESS;
++		objIndex_t objIid;
++		struct json_object *ContentFilterJobj = NULL;
++		struct json_object *pramJobj = NULL;
++		struct json_object *pramJobjcopy = NULL;		
++		char *name = NULL;
++		char msg[30]={0};
++		char path[64] = {0};
++		struct json_object *retJobj = NULL;
++
++		bool ContentFilterEnable;
++		bool adultContentEnable;
++		bool drugsEnable;
++		bool alcoholandTobaccoEnable;
++		bool disturbingEnable;
++		bool gamblingEnable;
++		bool illegalEnable;
++		bool illegalDownloadsEnable;
++		bool violenceEnable;
++		bool hateEnable;
++		bool weaponsEnable;
++		bool datingEnable;
++		bool timeShoppingandAuctionsEnable;
++		bool videoStreamingServicesEnable;
++		bool socialNetworksEnable;
++		bool anonymizersEnable;
++		bool unknownEnable;		
++
++		IID_INIT(objIid);
++		pramJobj = json_object_new_object();
++		if((ret = zcfgFeObjJsonAdd(RDM_OID_CONTENT_FILTER, &objIid, NULL)) != ZCFG_SUCCESS){
++			if(ret == ZCFG_EXCEED_MAX_INS_NUM){
++				printf("Cannot add entry since the maximum number of entries has been reached.\n");
++			}
++			if(pramJobj) json_object_put(pramJobj);				
++			return ret;
++		}
++
++		if((ret = zcfgFeObjJsonGet(RDM_OID_CONTENT_FILTER, &objIid, &ContentFilterJobj)) != ZCFG_SUCCESS) {
++			if(pramJobj) json_object_put(pramJobj);	
++			printf("%s: Object retrieve fail\n", __FUNCTION__);
++			return ret;
++		}
++
++		json_object_object_add(ContentFilterJobj, "Enable", json_object_new_boolean(true));
++		json_object_object_add(ContentFilterJobj, "Name", JSON_OBJ_COPY(json_object_object_get(Jobj, "Name")));		
++		if((pramJobjcopy = json_object_object_get(Jobj, "Description")) != NULL){
++			json_object_object_add(ContentFilterJobj, "Description", JSON_OBJ_COPY(pramJobjcopy));
++			//if(pramJobjcopy) json_object_put(pramJobjcopy);				
++		}else{
++			sprintf(path, "X_ZYXEL_ContentFilter.%d",objIid.idx[0]);
++			json_object_object_add(ContentFilterJobj, "Description", json_object_new_string(path));	
++			//if(pramJobjcopy) json_object_put(pramJobjcopy);
++		}
++		
++		json_object_object_add(ContentFilterJobj, "AdultContent",json_object_new_boolean(json_object_get_boolean(json_object_object_get(Jobj, "adultContent"))));				
++
++		adultContentEnable = json_object_get_boolean(json_object_object_get(Jobj,"adultContent"));
++		json_object_object_add(ContentFilterJobj, "AdultContent",json_object_new_boolean(adultContentEnable));
++
++		drugsEnable = json_object_get_boolean(json_object_object_get(Jobj,"drugs"));
++		json_object_object_add(ContentFilterJobj, "Drugs",json_object_new_boolean(drugsEnable));
++
++		alcoholandTobaccoEnable = json_object_get_boolean(json_object_object_get(Jobj,"alcoholandTobacco"));
++		json_object_object_add(ContentFilterJobj, "AlcoholandTobacco",json_object_new_boolean(alcoholandTobaccoEnable));
++		
++		disturbingEnable = json_object_get_boolean(json_object_object_get(Jobj,"disturbing"));
++		json_object_object_add(ContentFilterJobj, "Disturbing",json_object_new_boolean(disturbingEnable));
++		
++		gamblingEnable = json_object_get_boolean(json_object_object_get(Jobj,"gambling"));
++		json_object_object_add(ContentFilterJobj, "Gambling",json_object_new_boolean(gamblingEnable));
++		
++		illegalEnable = json_object_get_boolean(json_object_object_get(Jobj,"illegal"));
++		json_object_object_add(ContentFilterJobj, "Illegal",json_object_new_boolean(illegalEnable));
++		
++		illegalDownloadsEnable = json_object_get_boolean(json_object_object_get(Jobj,"illegalDownloads"));
++		json_object_object_add(ContentFilterJobj, "IllegalDownloads",json_object_new_boolean(illegalDownloadsEnable));
++		
++		violenceEnable = json_object_get_boolean(json_object_object_get(Jobj,"violence"));
++		json_object_object_add(ContentFilterJobj, "Violence",json_object_new_boolean(violenceEnable));
++		
++		hateEnable = json_object_get_boolean(json_object_object_get(Jobj,"hate"));
++		json_object_object_add(ContentFilterJobj, "Hate",json_object_new_boolean(hateEnable));		
++		
++		weaponsEnable = json_object_get_boolean(json_object_object_get(Jobj,"weapons"));	
++		json_object_object_add(ContentFilterJobj, "Weapons",json_object_new_boolean(weaponsEnable));
++		
++		datingEnable = json_object_get_boolean(json_object_object_get(Jobj,"dating"));
++		json_object_object_add(ContentFilterJobj, "Dating",json_object_new_boolean(datingEnable));
++		
++		timeShoppingandAuctionsEnable = json_object_get_boolean(json_object_object_get(Jobj,"timeShoppingandAuctions"));
++		json_object_object_add(ContentFilterJobj, "TimeShoppingandAuctions",json_object_new_boolean(timeShoppingandAuctionsEnable));
++		
++		videoStreamingServicesEnable = json_object_get_boolean(json_object_object_get(Jobj,"videoStreamingServices"));	
++		json_object_object_add(ContentFilterJobj, "VideoStreamingServices",json_object_new_boolean(videoStreamingServicesEnable));
++		
++		socialNetworksEnable = json_object_get_boolean(json_object_object_get(Jobj,"socialNetworks"));
++		json_object_object_add(ContentFilterJobj, "SocialNetworks",json_object_new_boolean(socialNetworksEnable));
++		
++		anonymizersEnable = json_object_get_boolean(json_object_object_get(Jobj,"anonymizers"));
++		json_object_object_add(ContentFilterJobj, "Anonymizers",json_object_new_boolean(anonymizersEnable));
++		
++		unknownEnable = json_object_get_boolean(json_object_object_get(Jobj,"unknown"));	
++		json_object_object_add(ContentFilterJobj, "Unknown",json_object_new_boolean(unknownEnable));
++		
++		if((ret = zcfgFeObjJsonSet(RDM_OID_CONTENT_FILTER, &objIid, ContentFilterJobj, NULL)) != ZCFG_SUCCESS){
++			if(ContentFilterJobj) json_object_put(ContentFilterJobj);
++			if(pramJobj) json_object_put(pramJobj);	
++			printf("%s: Object retrieve fail\n", __FUNCTION__);			
++			return ret;
++		}
++		if(Jarray != NULL){
++			sprintf(path, "X_ZYXEL_ContentFilter.%d",objIid.idx[0]);
++			retJobj = json_object_new_object();
++			Jadds(retJobj, "path", path);
++			json_object_array_add(Jarray, retJobj);
++		}
++
++	if(ContentFilterJobj) json_object_put(ContentFilterJobj);
++	if(pramJobj) json_object_put(pramJobj);	
++	if(retJobj) json_object_put(retJobj);
++	return ret;
++}
++zcfgRet_t zcfgFeDalContentFilterDelete(struct json_object *Jobj, char *replyMsg)
++{
++
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//objIndex_t objIid={0};
++	struct json_object *cfObjIidArray = NULL;
++	uint8_t iidIdx =0;
++	int objIndex;
++	objIndex_t cfObjIid = {0};
++	struct json_object *cfObj = NULL;
++
++	IID_INIT(cfObjIid);
++	cfObjIidArray = json_object_object_get(Jobj, "ConteFilterObjIid");
++	if(cfObjIidArray != NULL){//request form GUI
++		for(iidIdx=0; iidIdx < json_object_array_length(cfObjIidArray); iidIdx++){
++			cfObjIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(cfObjIidArray, iidIdx));
++			if(cfObjIid.idx[iidIdx] != 0)
++				cfObjIid.level = iidIdx+1;
++		}
++	}else{
++		cfObjIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		cfObjIid.level = 1;
++	}	
++	
++
++#if 0
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_CONTENT_FILTER, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS){
++		printf("Wrong index..\n");
++		return ret;
++	}
++#endif	
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_CONTENT_FILTER, &cfObjIid, &cfObj)) != ZCFG_SUCCESS){
++		if(replyMsg)
++			sprintf(replyMsg, "Can't find --Index %d", cfObjIid.idx[0]);
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.ContentFilter.delete_pcp_sch_err_msg"));
++		if(cfObj) json_object_put(cfObj);
++		return ret;
++	}
++
++	ret = zcfgFeObjJsonDel(RDM_OID_CONTENT_FILTER, &cfObjIid, NULL);
++	if(ret == ZCFG_DELETE_REJECT){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.ContentFilter.delete_pcp_sch_err_msg"));
++		printf("%s %s %d \n",json_object_to_json_string(Jobj),__func__,__LINE__);
++		if(cfObj) json_object_put(cfObj);		
++		return ret;
++	}
++	if(cfObj) json_object_put(cfObj);
++	ret = ZCFG_SUCCESS;
++	return ret;
++
++}
++
++zcfgRet_t zcfgFeDalContentFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalContentFilterEdit(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalContentFilterAdd(Jobj, Jarray, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalContentFilterDelete(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalContentFilterGet(Jobj, Jarray, NULL);
++	}
++	else{
++		printf("Unknown method:%s\n", method);
++	}
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/security/parentalControl/zcfg_fe_dal_parentalControl.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/parentalControl/zcfg_fe_dal_parentalControl.c	2018-12-13 10:36:17.686053088 +0800
++++ libzcfg_fe_dal-1.0/security/parentalControl/zcfg_fe_dal_parentalControl.c	2018-12-13 11:09:25.983939668 +0800
+@@ -32,6 +32,9 @@
+ 	{"TimeRangeList",		dalType_TimeRangeList,	1,	3,	NULL, NULL, dal_Add},
+ 	{"URLFilter",			dalType_URLFilterList,	0,	580,	NULL, "Empty"},
+ 	{"NetworkServiceList",	dalType_ParenCtlServiceList,	1,	12,	NULL, "Empty"},
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++	{"ContentFilterList",	dalType_string,	0,	0,	NULL, NULL},
++#endif		
+ 	//Schedule
+ #if 0
+ 	{"Enable",				dalType_boolean,	0,	0,	NULL},
+@@ -64,6 +67,9 @@
+ char ScheduleRuleList[512] = {0};
+ const char* URLFilter;
+ const char* NetworkServiceList;
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++const char* ContentFilterList;
++#endif
+ //Parental Ctl
+ bool PrentalCtlEnable;
+ 
+@@ -101,7 +107,9 @@
+ 	MACAddressList = json_object_get_string(json_object_object_get(Jobj, "MACAddressList"));
+ 	URLFilter = json_object_get_string(json_object_object_get(Jobj, "URLFilter"));
+ 	NetworkServiceList = json_object_get_string(json_object_object_get(Jobj, "NetworkServiceList"));
+-		
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE	
++	ContentFilterList = json_object_get_string(json_object_object_get(Jobj, "ContentFilterList"));
++#endif	
+ 	//Parental Ctl
+ 	PrentalCtlEnable = json_object_get_boolean(json_object_object_get(Jobj, "PrentalCtlEnable"));
+ 	
+@@ -172,6 +180,9 @@
+ 	replaceParam(pramJobj, "ScheduleRuleList", tr181Jobj, "ScheduleRuleList");
+ 	replaceParam(pramJobj, "URLFilter", tr181Jobj, "URLFilter");
+ 	replaceParam(pramJobj, "NetworkServiceList", tr181Jobj, "NetworkServiceList");
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE	
++	replaceParam(pramJobj, "ContentFilterList", tr181Jobj, "ContentFilterList");
++#endif	
+ 
+ 	schJarray = json_object_new_array();
+ 	zcfgFeDalScheduleGet(NULL, schJarray, NULL);
+@@ -244,6 +255,7 @@
+ 	//struct json_object *reqSchRuleObj= NULL;
+ 	uint8_t iidIdx =0;
+ 	char buf[128] = {0};
++	char path[32] = {0};
+ 	char *ptr, *tmp;
+ 	int count, startHour, startMin, stopHour, stopMin;
+ 	char schRuleName[64] = {0};
+@@ -381,6 +393,13 @@
+ 		Jadds(pcpObj, "NetworkServiceList", "");
+ 	else
+ 		replaceParam(pcpObj, "NetworkServiceList", Jobj, "NetworkServiceList");
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++	if((ContentFilterList = Jgets(Jobj, "ContentFilterList")) == NULL){
++		sprintf(path, "X_ZYXEL_ContentFilter.%d",pcpObjIid.idx[0]);
++		Jadds(pcpObj, "ContentFilterList", path);
++	}else
++		replaceParam(pcpObj, "ContentFilterList", Jobj, "ContentFilterList");
++#endif
+ 	
+ 	if(ScheduleRuleList != NULL)
+ 		json_object_object_add(pcpObj, "ScheduleRuleList", json_object_new_string(ScheduleRuleList));
+@@ -644,6 +663,13 @@
+ 		Jadds(pcpObj, "NetworkServiceList", "");
+ 	else
+ 		replaceParam(pcpObj, "NetworkServiceList", Jobj, "NetworkServiceList");
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++	ContentFilterList = Jgets(Jobj,"ContentFilterList");
++	if(ContentFilterList && !strcmp(ContentFilterList, "Empty"))
++		Jadds(pcpObj, "ContentFilterList", "");
++	else
++		replaceParam(pcpObj, "ContentFilterList", Jobj, "ContentFilterList");	
++#endif		
+ 	
+ 	if(strlen(ScheduleRuleList)>0)
+ 		json_object_object_add(pcpObj, "ScheduleRuleList", json_object_new_string(ScheduleRuleList));
+@@ -754,6 +780,10 @@
+ 	  }
+ 		printf("\n");
+ 		printf("%-35s %s\n", "Network Service Setting", Jgets(Jobj, "ServicePolicy"));
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++		printf("\n");
++		printf("%-35s %s\n", "ContentFilterList", Jgets(Jobj, "ContentFilterList"));
++#endif		
+ #if 1
+ 		strcpy(buf, Jgets(Jobj, "NetworkServiceList"));
+ 		ptr = strtok_r(buf, "/", &tmp);
+@@ -912,6 +942,9 @@
+ 	const char * scheduleRules = NULL;
+ 	char* buffer = NULL;
+ 	
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE	
++	IID_INIT(pcpObjIid);
++#endif	
+ 	pctlObjIidArray = json_object_object_get(Jobj, "PctlObjIid");
+ 	if(pctlObjIidArray != NULL){//request form GUI
+ 		for(iidIdx=0; iidIdx < json_object_array_length(pctlObjIidArray); iidIdx++){
+Index: libzcfg_fe_dal-1.0/security/schedulerRule/zcfg_fe_dal_schedulerRule.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/schedulerRule/zcfg_fe_dal_schedulerRule.c	2018-12-13 10:36:19.370053100 +0800
++++ libzcfg_fe_dal-1.0/security/schedulerRule/zcfg_fe_dal_schedulerRule.c	2018-12-13 11:12:35.984314104 +0800
+@@ -233,6 +233,9 @@
+ 	char path[32] = {0};
+ 	struct json_object *retJobj = NULL;
+ 
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++#if 0
++#endif
+ 	// Name validation
+ 	if(!ISSET("DontCheckDupName") && json_object_object_get(Jobj, "Name")){
+ 		name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+@@ -243,7 +246,9 @@
+ 			return ret; 		
+ 		}
+ 	}
+-
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE	
++#endif
++#endif
+ 	// Time autofill
+ 	if(!json_object_object_get(Jobj, "TimeStartHour") || !json_object_object_get(Jobj, "TimeStartMin")){
+ 		json_object_object_add(Jobj, "TimeStartHour", json_object_new_int(0));
+@@ -337,7 +342,12 @@
+ 
+ 	objIndex_t objIid={0};
+ 	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE	
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_SCHEDULE, NULL, NULL, replyMsg);
++#else	
+ 	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_SCHEDULE, NULL, NULL, replyMsg, json_object_get_string(json_object_object_get(Jobj, "cmdtype")) );
++#endif
++	
+ 	if(ret != ZCFG_SUCCESS){
+ 		printf("Wrong index..\n");
+ 		return ret;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-12-13 10:36:18.982053097 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-12-13 11:03:15.960622384 +0800
+@@ -98,6 +98,11 @@
+ extern dal_param_t USB_MEDIASERVER_param[];
+ extern dal_param_t USB_PRINTSERVER_param[];
+ extern dal_param_t PAREN_CTL_param[];
++extern dal_param_t CYBER_SECURE_param[];
++extern dal_param_t CONTENT_FILTER_param[];
++extern dal_param_t URL_FILTER_param[];
++extern dal_param_t URLWhite_FILTER_param[];
++extern dal_param_t URLBlack_FILTER_param[];
+ extern dal_param_t SCHEDULE_param[];
+ extern dal_param_t DEV_SEC_CERT_param[];
+ extern dal_param_t HOME_CONNECTIVYITY_param[];
+@@ -200,6 +205,13 @@
+ extern zcfgRet_t zcfgFeDalUsbMediaserver(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUsbPrintserver(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalParentCtl(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++extern zcfgRet_t zcfgFeDalCyberSecure(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalContentFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalURLFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalURLWhiteFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalURLBlackFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#endif
+ extern zcfgRet_t zcfgFeDalSchedule(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDevSecCert(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalHomeConnectivity(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -287,6 +299,13 @@
+ extern void zcfgFeDalShowWifiWmm(struct json_object *Jarray);
+ extern void zcfgFeDalShowLanSetup(struct json_object *Jarray);
+ extern void zcfgFeDalShowParentCtl(struct json_object *Jarray);
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++extern void zcfgFeDalShowCyberSecure(struct json_object *Jarray);
++extern void zcfgFeDalShowContentFilter(struct json_object *Jarray);
++extern void zcfgFeDalShowURLFilter(struct json_object *Jarray);
++extern void zcfgFeDalShowURLWhiteFilter(struct json_object *Jarray);
++extern void zcfgFeDalShowURLBlackFilter(struct json_object *Jarray);
++#endif
+ extern void zcfgFeDalShowTime(struct json_object *Jarray);
+ extern void zcfgFeDalShowSysLog(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiMACFilter(struct json_object *Jarray);
+@@ -378,6 +397,13 @@
+ {"media_server", 	USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver,	zcfgFeDalShowUsbMediaserver,"edit|get", 	"USB_Service"},
+ {"print_server",	USB_PRINTSERVER_param,	zcfgFeDalUsbPrintserver,	NULL,				"edit|get", 			"USB_Service"},
+ {"paren_ctl", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		zcfgFeDalShowParentCtl,						"get|add|edit|delete",	"Parental_Control"},//Parental_Control
++#ifdef ZYXEL_HOME_CYBER_SECURITY_FSECURE
++{"cyber_secure", 	CYBER_SECURE_param,	zcfgFeDalCyberSecure,	zcfgFeDalShowCyberSecure,						"get|edit",	"Parental_Control"},//Cyber_security
++{"content_filter", 	CONTENT_FILTER_param,	zcfgFeDalContentFilter,	zcfgFeDalShowContentFilter,						"get|add|edit|delete",	"Parental_Control"},//Cyber_security
++{"URL_filter", 		URL_FILTER_param,	zcfgFeDalURLFilter,	zcfgFeDalShowURLFilter,						"get|add|edit|delete",	"Parental_Control"},//Cyber_security
++{"URL_WhiteList", 	URLWhite_FILTER_param,	zcfgFeDalURLWhiteFilter,	zcfgFeDalShowURLWhiteFilter,	"get|add|edit|delete",	"Parental_Control"},//Cyber_security
++{"URL_BlackList", 	URLBlack_FILTER_param,	zcfgFeDalURLBlackFilter,	zcfgFeDalShowURLBlackFilter,	"get|add|edit|delete",	"Parental_Control"},//Cyber_security
++#endif
+ {"scheduler",		SCHEDULE_param, 	zcfgFeDalSchedule,		zcfgFeDalShowSchedule,		"get|add|edit|delete",	"Scheduler_Rule"},
+ {"dev_sec_cert", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"get|add|edit|delete", 	""},//Certificates
+ {"one_connect", 	HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity

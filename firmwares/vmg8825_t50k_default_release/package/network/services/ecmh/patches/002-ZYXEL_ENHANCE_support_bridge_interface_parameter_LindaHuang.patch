@@ -1,0 +1,126 @@
+Index: ecmh-2005.02.09/src/Makefile
+===================================================================
+--- ecmh-2005.02.09.orig/src/Makefile	2017-01-17 17:35:37.930918672 +0800
++++ ecmh-2005.02.09/src/Makefile	2017-01-17 17:35:37.954918672 +0800
+@@ -30,11 +30,12 @@
+ EXTRA   = -g
+ #EXTRA	= -O3
+ 
+-CFLAGS	= $(WARNS) $(EXTRA) -D_GNU_SOURCE -D'ECMH_VERSION="$(ECMH_VERSION)"' $(ECMH_OPTIONS) -I../../../../linux-2.6.36/include/
++CFLAGS	= $(WARNS) $(EXTRA) -D_GNU_SOURCE -D'ECMH_VERSION="$(ECMH_VERSION)"' $(ECMH_OPTIONS) -I$(LINUX_DIR)/include/
+ ifneq ($(TC_CFLAGS), )
+ 	CFLAGS += $(TC_CFLAGS)
+ endif
+ LDFLAGS	= $(ECMH_LDFREEBSD)
++LDFLAGS += -lrt
+ CC	:= @echo "[Compiling] $$@"; $(CC)
+ 
+ all:	$(BINS)
+Index: ecmh-2005.02.09/src/ecmh.c
+===================================================================
+--- ecmh-2005.02.09.orig/src/ecmh.c	2017-01-17 17:35:37.934918672 +0800
++++ ecmh-2005.02.09/src/ecmh.c	2017-01-17 17:36:03.130918721 +0800
+@@ -2572,6 +2572,9 @@
+ static struct option const long_options[] = {
+ 	{"foreground",		no_argument,		NULL, 'f'},
+ 	{"upstream",		required_argument,	NULL, 'i'},
++#if 1//ZYXEL	
++	{"downstream",		required_argument,	NULL, 'd'},
++#endif
+ 	{"promisc",		no_argument,		NULL, 'p'},
+ 	{"nopromisc",		no_argument,		NULL, 'P'},
+ 	{"user",		required_argument,	NULL, 'u'},
+@@ -2599,7 +2602,11 @@
+ 	init();
+ 
+ 	/* Handle arguments */
++#if 1//ZYXEL
++	while ((i = getopt_long(argc, argv, "fi:d:pPu:"
++#else
+ 	while ((i = getopt_long(argc, argv, "fi:pPu:"
++#endif
+ #if 1//econet
+ 		"g:"
+ #endif
+@@ -2630,7 +2637,16 @@
+ 			}
+ 			g_conf->upstream = strdup(optarg);
+ 			break;
+-			
++#if 1//ZYXEL	
++		case 'd':
++			if (g_conf->downstream)
++			{
++				fprintf(stderr, "Only one downstream interface (was: %s) can be specified\n", g_conf->downstream);
++				return -1;
++			}
++			g_conf->downstream = strdup(optarg);
++			break;
++#endif
+ 		case 'p':
+ 			g_conf->promisc = true;
+ 			break;
+@@ -2703,6 +2719,9 @@
+ 				"-f, --foreground           don't daemonize\n"
+ 				"-u, --user username        drop (setuid+setgid) to user after startup\n"
+ 				"-i, --upstream interface   upstream interface\n"
++#if 1//ZYXEL	
++				"-d, --downstream interface downstream interface\n"
++#endif
+ #ifdef ECMH_BPF
+ 				"-t, --tunnelmode           Don't attach to tunnels, but use proto-41 decapsulation (default)\n"
+ 				"-T, --notunnelmode         Attach to tunnels seperatly\n"
+@@ -2783,7 +2802,12 @@
+ 	{
+ 		dolog(LOG_INFO, "Using %s as an upstream interface\n", g_conf->upstream);
+ 	}
+-
++#if 1//ZYXEL	
++	if (g_conf->downstream)
++	{
++		dolog(LOG_INFO, "Using %s as an downstream interface\n", g_conf->downstream);
++	}
++#endif
+ #ifdef ECMH_SUPPORT_MLD2
+ 	if (g_conf->mld1only)
+ 	{
+Index: ecmh-2005.02.09/src/interfaces.c
+===================================================================
+--- ecmh-2005.02.09.orig/src/interfaces.c	2017-01-17 17:35:37.934918672 +0800
++++ ecmh-2005.02.09/src/interfaces.c	2017-01-17 17:35:37.954918672 +0800
+@@ -249,7 +249,19 @@
+ 			return NULL;
+ 		}
+ 	}
+-#endif	
++#endif
++#if 1//ZYXEL
++	/*Check downsteam interface*/
++	if(strstr(intn->name, "br") != NULL){
++		if (g_conf->downstream && strcasecmp(intn->name, g_conf->downstream) != 0){
++			//dolog(LOG_ERR, "tclinux:Bridge interface: %s is not downsteam interface\n", intn->name);
++			int_destroy(intn);
++			close(sock);
++			return NULL;
++		}
++	}
++#endif
++
+ #ifdef ECMH_BPF
+ 	memcpy(&intn->name, &ifreq.ifr_name, sizeof(intn->name));
+ #else
+Index: ecmh-2005.02.09/src/ecmh.h
+===================================================================
+--- ecmh-2005.02.09.orig/src/ecmh.h	2017-01-17 17:35:37.934918672 +0800
++++ ecmh-2005.02.09/src/ecmh.h	2017-01-17 17:35:37.954918672 +0800
+@@ -95,7 +95,9 @@
+ 
+ 	char			*upstream;			/* Upstream interface */
+ 	unsigned int		upstream_id;			/* Interface ID of upstream interface */
+-
++#if 1//ZYXEL
++	char			*downstream;			/* Downstream interface */
++#endif
+ 	bool			daemonize;			/* To Daemonize or to not to Daemonize */
+ 	bool			verbose;			/* Verbose Operation ? */
+ 	bool			quit;				/* Global Quit signal */

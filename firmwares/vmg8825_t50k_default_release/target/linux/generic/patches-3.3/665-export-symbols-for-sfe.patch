@@ -1,0 +1,64 @@
+Index: linux-3.3.8/net/core/dev.c
+===================================================================
+--- linux-3.3.8.orig/net/core/dev.c	2013-10-25 12:12:06.078321501 -0500
++++ linux-3.3.8/net/core/dev.c	2013-10-25 12:12:08.001745414 -0500
+@@ -3183,6 +3183,9 @@
+ }
+ EXPORT_SYMBOL_GPL(netdev_rx_handler_unregister);
+ 
++int (*athrs_fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
++EXPORT_SYMBOL_GPL(athrs_fast_nat_recv);
++
+ static int __netif_receive_skb(struct sk_buff *skb)
+ {
+ 	struct packet_type *ptype, *pt_prev;
+@@ -3192,6 +3195,7 @@
+ 	bool deliver_exact = false;
+ 	int ret = NET_RX_DROP;
+ 	__be16 type;
++	int (*fast_recv)(struct sk_buff *skb);
+ 
+ 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
+ 
+@@ -3209,10 +3213,18 @@
+ 	skb_reset_transport_header(skb);
+ 	skb_reset_mac_len(skb);
+ 
+-	pt_prev = NULL;
+-
+ 	rcu_read_lock();
+ 
++	fast_recv = rcu_dereference(athrs_fast_nat_recv);
++	if (fast_recv) {
++		if (fast_recv(skb)) {
++			rcu_read_unlock();
++			return NET_RX_SUCCESS;
++		}
++	}
++
++	pt_prev = NULL;
++
+ another_round:
+ 
+ 	__this_cpu_inc(softnet_data.processed);
+Index: linux-3.3.8/net/netfilter/nf_conntrack_proto_tcp.c
+===================================================================
+--- linux-3.3.8.orig/net/netfilter/nf_conntrack_proto_tcp.c	2013-10-25 12:12:32.508393502 -0500
++++ linux-3.3.8/net/netfilter/nf_conntrack_proto_tcp.c	2013-10-25 12:12:38.538749521 -0500
+@@ -30,12 +30,14 @@
+ #include <net/netfilter/ipv6/nf_conntrack_ipv6.h>
+ 
+ /* Do not check the TCP window for incoming packets  */
+-static int nf_ct_tcp_no_window_check __read_mostly = 1;
++int nf_ct_tcp_no_window_check __read_mostly = 0;
++EXPORT_SYMBOL_GPL(nf_ct_tcp_no_window_check);
+ 
+ /* "Be conservative in what you do,
+     be liberal in what you accept from others."
+     If it's non-zero, we mark only out of window RST segments as INVALID. */
+-static int nf_ct_tcp_be_liberal __read_mostly = 0;
++int nf_ct_tcp_be_liberal __read_mostly = 0;
++EXPORT_SYMBOL_GPL(nf_ct_tcp_be_liberal);
+ 
+ /* If it is set to zero, we disable picking up already established
+    connections. */

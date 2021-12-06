@@ -1,0 +1,311 @@
+Index: busybox-1_20_1/networking/traceroute.c
+===================================================================
+--- busybox-1_20_1.orig/networking/traceroute.c	2015-08-28 23:57:21.843079171 +0800
++++ busybox-1_20_1/networking/traceroute.c	2015-08-28 23:57:39.525430000 +0800
+@@ -264,7 +264,6 @@
+ //#undef CONFIG_FEATURE_TRACEROUTE_USE_ICMP
+ //#define CONFIG_FEATURE_TRACEROUTE_USE_ICMP
+ 
+-
+ #include <net/if.h>
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+@@ -282,6 +281,11 @@
+ #include "libbb.h"
+ #include "inet_common.h"
+ 
++#ifdef ENABLE_TRACEROUTE6
++#undef ENABLE_TRACEROUTE6
++#define ENABLE_TRACEROUTE6   1
++#endif
++
+ #ifndef IPPROTO_ICMP
+ # define IPPROTO_ICMP 1
+ #endif
+@@ -394,6 +398,25 @@
+ #define outicmp ((struct icmp *)(outip + 1))
+ #define outudp  ((struct udphdr *)(outip + 1))
+ 
++#ifdef ZCFG_SUPPORT
++static struct json_object *tracert_msg = NULL;
++
++static void outputDiagResult(void)
++{
++	const char *payload = NULL;
++	int payloadLen = 0;
++
++	json_object_object_add(tracert_msg, "DiagnosticsState", json_object_new_string("None"));
++
++	payload = json_object_to_json_string(tracert_msg);
++
++	payloadLen = strlen(payload) + 1;
++	tracertMsgSend(ZCFG_MSG_TRACERT_MSG, payloadLen, payload);
++	json_object_put(tracert_msg);
++
++	exit(0);
++}
++#endif
+ 
+ /* libbb candidate? tftp uses this idiom too */
+ static len_and_sockaddr* dup_sockaddr(const len_and_sockaddr *lsa)
+@@ -490,7 +511,14 @@
+ 	if (dest_lsa->u.sa.sa_family == AF_INET6) {
+ 		res = setsockopt(sndsock, SOL_IPV6, IPV6_UNICAST_HOPS, &ttl, sizeof(ttl));
+ 		if (res < 0)
++#ifdef ZCFG_SUPPORT
++			{
++				printf("Error: setsockopt UNICAST_HOPS %d", ttl);
++				outputDiagResult();
++			}
++#else
+ 			bb_perror_msg_and_die("setsockopt UNICAST_HOPS %d", ttl);
++#endif
+ 		out = outip;
+ 		len = packlen;
+ 	} else
+@@ -499,8 +527,15 @@
+ #if defined IP_TTL
+ 		res = setsockopt(sndsock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+ 		if (res < 0)
++#ifdef ZCFG_SUPPORT
++			{
++				printf("Error: setsockopt ttl %d", ttl);
++				outputDiagResult();
++			}
++#else
+ 			bb_perror_msg_and_die("setsockopt ttl %d", ttl);
+ #endif
++#endif
+ 		out = outicmp;
+ 		len = packlen - sizeof(*outip);
+ 		if (!(option_mask32 & OPT_USE_ICMP)) {
+@@ -894,7 +929,8 @@
+ 	struct sockaddr *lastaddr;
+ 	struct sockaddr *to;
+ #ifdef ZCFG_SUPPORT
+-        struct json_object *tracert_msg = NULL, *rt_hops = NULL, *result = NULL;
++        //struct json_object *tracert_msg = NULL, *rt_hops = NULL, *result = NULL;
++		struct json_object *rt_hops = NULL, *result = NULL;
+         const char *payload = NULL;
+         int payloadLen = 0;
+ #endif
+@@ -911,6 +947,10 @@
+ 	);
+ 	argv += optind;
+ 
++#ifdef ZCFG_SUPPORT
++	tracert_msg = json_object_new_object(); 
++#endif
++
+ #if 0 /* IGNORED */
+ 	if (op & OPT_IP_CHKSUM)
+ 		bb_error_msg("warning: ip checksums disabled");
+@@ -929,7 +969,14 @@
+ 		 * probe (e.g., on a multi-homed host).
+ 		 */
+ 		if (getuid() != 0)
++#ifdef ZCFG_SUPPORT
++			{
++				printf("Internal Error!");
++				outputDiagResult();
++			}
++#else
+ 			bb_error_msg_and_die(bb_msg_you_must_be_root);
++#endif
+ 	}
+ 	if (op & OPT_WAITTIME)
+ 		waittime = xatou_range(waittime_str, 1, 24 * 60 * 60);
+@@ -944,7 +991,14 @@
+ 			len_and_sockaddr *lsa;
+ 
+ 			if (lsrr >= NGATEWAYS)
++#ifdef ZCFG_SUPPORT
++				{
++					printf("no more than %d gateways", NGATEWAYS);
++					outputDiagResult();
++				}
++#else
+ 				bb_error_msg_and_die("no more than %d gateways", NGATEWAYS);
++#endif
+ 			lsa = xhost_and_af2sockaddr(llist_pop(&source_route_list), 0, AF_INET);
+ 			gwlist[lsrr] = lsa->u.sin.sin_addr.s_addr;
+ 			free(lsa);
+@@ -1009,7 +1063,14 @@
+ 	if (af == AF_INET6) {
+ 		static const int two = 2;
+ 		if (setsockopt(rcvsock, SOL_RAW, IPV6_CHECKSUM, &two, sizeof(two)) < 0)
++#ifdef ZCFG_SUPPORT
++			{
++				printf("Error: setsockopt RAW_CHECKSUM");
++				outputDiagResult();
++			}
++#else
+ 			bb_perror_msg_and_die("setsockopt RAW_CHECKSUM");
++#endif
+ 		xmove_fd(xsocket(af, SOCK_DGRAM, 0), sndsock);
+ 	} else
+ #endif
+@@ -1039,7 +1100,14 @@
+ 
+ 			if (setsockopt(sndsock, IPPROTO_IP, IP_OPTIONS,
+ 					(char *)optlist, size + sizeof(gwlist[0])) < 0) {
++#ifdef ZCFG_SUPPORT
++				{
++					printf("Error: set ip options");
++					outputDiagResult();
++				}
++#else
+ 				bb_perror_msg_and_die("IP_OPTIONS");
++#endif
+ 			}
+ 		}
+ #endif
+@@ -1047,12 +1115,27 @@
+ 
+ #ifdef SO_SNDBUF
+ 	if (setsockopt(sndsock, SOL_SOCKET, SO_SNDBUF, &packlen, sizeof(packlen)) < 0) {
++#ifdef ZCFG_SUPPORT
++		{
++			printf("Error: set send buf");
++			outputDiagResult();
++		}
++#else
++
+ 		bb_perror_msg_and_die("SO_SNDBUF");
++#endif
+ 	}
+ #endif
+ #ifdef IP_TOS
+ 	if ((op & OPT_TOS) && setsockopt(sndsock, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) < 0) {
++#ifdef ZCFG_SUPPORT
++		{
++			printf("Error: setsockopt tos %d", tos);
++			outputDiagResult();
++		}
++#else
+ 		bb_perror_msg_and_die("setsockopt tos %d", tos);
++#endif
+ 	}
+ #endif
+ #ifdef IP_DONTFRAG
+@@ -1098,7 +1181,14 @@
+ 		if (af == AF_INET)
+ 			if (setsockopt(sndsock, IPPROTO_IP, IP_MULTICAST_IF,
+ 					&source_lsa->u.sa, source_lsa->len))
++#ifdef ZCFG_SUPPORT
++				{
++					printf("can't set multicast source interface");
++					outputDiagResult();
++				}
++#else
+ 				bb_error_msg_and_die("can't set multicast source interface");
++#endif
+ //TODO: we can query source port we bound to,
+ // and check it in replies... if we care enough
+ 		xbind(sndsock, &source_lsa->u.sa, source_lsa->len);
+@@ -1114,14 +1204,25 @@
+ 			setsockopt_bindtodevice(probe_fd, device);
+ 		set_nport(&dest_lsa->u.sa, htons(1025));
+ 		/* dummy connect. makes kernel pick source IP (and port) */
++#ifdef ZCFG_SUPPORT
++		if(zcfg_xconnect(probe_fd, &dest_lsa->u.sa, dest_lsa->len) < 0)
++			outputDiagResult();
++#else
+ 		xconnect(probe_fd, &dest_lsa->u.sa, dest_lsa->len);
++#endif
+ 		set_nport(&dest_lsa->u.sa, htons(port));
+ 
+ 		/* read IP and port */
+ 		source_lsa = get_sock_lsa(probe_fd);
+ 		if (source_lsa == NULL)
++#ifdef ZCFG_SUPPORT
++			{
++				printf("can't get probe addr");
++				outputDiagResult();
++			}
++#else
+ 			bb_error_msg_and_die("can't get probe addr");
+-
++#endif
+ 		close(probe_fd);
+ 
+ 		/* bind our sockets to this IP (but not port) */
+@@ -1149,16 +1250,18 @@
+ 	seq = 0;
+ 
+ #ifdef ZCFG_SUPPORT
+-	tracert_msg = json_object_new_object(); 
++	//tracert_msg = json_object_new_object(); 
+ 	rt_hops = json_object_new_array();
+ 	json_object_object_add(tracert_msg, "RouteHops", rt_hops);
+ #endif
+-	for (ttl = first_ttl; ttl <= max_ttl; ++ttl) {
++	for (ttl = first_ttl; ttl <= (max_ttl+1); ++ttl) {
+ 		int probe;
+ 		int unreachable = 0; /* counter */
+ 		int gotlastaddr = 0; /* flags */
+ 		int got_there = 0;
+ 
++		if(ttl > max_ttl)
++			break;
+ #ifdef ZCFG_SUPPORT
+ 		char rtt[272] = {0};
+ 		result = json_object_new_object();
+@@ -1320,6 +1423,12 @@
+ 	}
+ 
+ #ifdef ZCFG_SUPPORT
++	int err = json_object_get_int(json_object_object_get(result, "ErrorCode"));
++	if((err == ICMP_UNREACH_NET_UNKNOWN) || (err == ICMP_UNREACH_HOST_UNKNOWN))
++		json_object_object_add(tracert_msg, "DiagnosticsState", json_object_new_string("Error_CannotResolveHostName "));
++	else if(ttl > max_ttl)
++		json_object_object_add(tracert_msg, "DiagnosticsState", json_object_new_string("Error_MaxHopCountExceeded "));
++	else
+ 	json_object_object_add(tracert_msg, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
+ 
+ 	payload = json_object_to_json_string(tracert_msg);
+Index: busybox-1_20_1/include/libbb.h
+===================================================================
+--- busybox-1_20_1.orig/include/libbb.h	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/include/libbb.h	2015-08-28 23:57:21.915079172 +0800
+@@ -527,6 +527,9 @@
+ void xbind(int sockfd, struct sockaddr *my_addr, socklen_t addrlen) FAST_FUNC;
+ void xlisten(int s, int backlog) FAST_FUNC;
+ void xconnect(int s, const struct sockaddr *s_addr, socklen_t addrlen) FAST_FUNC;
++#ifdef ZCFG_SUPPORT
++int zcfg_xconnect(int s, const struct sockaddr *s_addr, socklen_t addrlen) FAST_FUNC;
++#endif
+ ssize_t xsendto(int s, const void *buf, size_t len, const struct sockaddr *to,
+ 				socklen_t tolen) FAST_FUNC;
+ /* SO_REUSEADDR allows a server to rebind to an address that is already
+Index: busybox-1_20_1/libbb/xconnect.c
+===================================================================
+--- busybox-1_20_1.orig/libbb/xconnect.c	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/libbb/xconnect.c	2015-08-28 23:57:21.915079172 +0800
+@@ -90,6 +90,26 @@
+ 	}
+ }
+ 
++#ifdef ZCFG_SUPPORT
++int FAST_FUNC zcfg_xconnect(int s, const struct sockaddr *s_addr, socklen_t addrlen)
++{
++	if (connect(s, s_addr, addrlen) < 0) {
++		if (ENABLE_FEATURE_CLEAN_UP)
++			close(s);
++		if (s_addr->sa_family == AF_INET) {
++			printf("%s (%s)",
++				"can't connect to remote host",
++				inet_ntoa(((struct sockaddr_in *)s_addr)->sin_addr));
++			return -1;
++		}
++		printf("can't connect to remote host");
++		return -1;
++	}
++
++	return 0;
++}
++#endif
++
+ /* Return port number for a service.
+  * If "port" is a number use it as the port.
+  * If "port" is a name it is looked up in /etc/services,

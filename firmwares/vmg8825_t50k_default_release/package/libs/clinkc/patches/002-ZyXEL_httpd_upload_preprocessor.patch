@@ -1,0 +1,127 @@
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2014-03-12 17:16:35.629952190 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2014-03-12 17:17:53.337950243 +0800
+@@ -58,6 +58,10 @@
+ 
+ #define READBUF_LENGTH 1024
+ 
++#ifdef ZYXEL_PATCH
++#define BOUNDARY_SIZE 256
++#endif
++
+ /****************************************
+ * cg_http_packet_new
+ ****************************************/
+@@ -554,32 +558,52 @@
+ {
+ 	long readLen;
+ 	int conLen;
+-	char readBuf[READBUF_LENGTH + 1];
++	char readBuf[READBUF_LENGTH + 1]={0};
+ 	int tries = 0;
+ 	FILE *fp = NULL;
+ 	int length;
++	char *contentType = NULL;
++	char *fileStart = NULL;
++	char boundary[BOUNDARY_SIZE] = {0};
++	int parseFlag = 0;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
+ 	if (0 < conLen) {
+-
+-	fp = fopen( savedFile, "wb" );
+-	if (!fp) {
+-		cg_log_debug_l4( "fopen %s fail", savedFile );
+-		return FALSE;
+-	}
++		fp = fopen( savedFile, "wb" );
++		if (!fp) {
++			cg_log_debug_l4( "fopen %s fail", savedFile );
++			return FALSE;
++		}
+ 
+ 		readLen = 0;
+ 
+ 		/* Read content until conLen is reached, or tired of trying */
+ 		while (readLen < conLen && tries < 20)
+ 		{
++			memset(readBuf, '\0', sizeof(readBuf));
+ 			length = cg_socket_read(sock, readBuf, READBUF_LENGTH);
++
++			/*for http server to parse upload multipart/form-data packet boundary and get the binary file start pointer*/
++			contentType = cg_http_packet_getheadervalue(httpPkt, CG_HTTP_CONTENT_TYPE);
++			if((contentType = strstr(contentType, "boundary=")) != NULL){
++				contentType += strlen("boundary=");
++				snprintf(boundary, BOUNDARY_SIZE, "--%s", contentType);
++				if((strstr(readBuf, boundary) != NULL) && (strstr(readBuf, "Content-Disposition") != NULL)){
++					/*the first boundary carry from browser end with '\r\n\r\n' */
++					fileStart = strstr(readBuf, "\r\n\r\n") + 4;
++					parseFlag = 1;
++				}
++				else
++					parseFlag = 0;
++			}
++
+ 			readLen += length;
+-			if (length <= 0){
++			if (length <= 0)
+ 				tries++;
+-			}
++			else if (parseFlag)
++				fwrite(fileStart, sizeof(char), length-(fileStart-readBuf), fp);
+ 			else
+ 				fwrite(readBuf, length, 1, fp);
+ 		}
+Index: clinkc/src/cybergarage/http/chttp_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_request.c	2014-03-12 17:16:35.629952190 +0800
++++ clinkc/src/cybergarage/http/chttp_request.c	2014-03-12 17:16:35.637952190 +0800
+@@ -65,6 +65,13 @@
+ long int cg_total_elapsed_time;
+ #endif
+ 
++#ifdef ZYXEL_PATCH
++#define FIRMWARE_STORE_PATH "/var/firmwareUpgrade"
++#define CONFIG_STORE_PATH "/var/restoreConfig"
++#define LOCAL_CERT_STORE_PATH "/var/local_cert"
++#define WWAN_STORE_PATH "/var/wwan/tmp_wwanpackage"
++#endif
++
+ /****************************************
+ * cg_http_request_new
+ ****************************************/
+@@ -770,7 +777,8 @@
+ 	int readLen;
+ 	CgNetURI *uri = NULL;
+ 	BOOL failed = FALSE;
+-	
++	char *requestUri = NULL;
++
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	cg_http_request_clear(httpReq);
+@@ -819,7 +827,20 @@
+ 	/* Read headers */
+ 	cg_http_packet_clear((CgHttpPacket *)httpReq);
+ 	cg_http_packet_read_headers((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf));
+-	
++
++#ifdef ZYXEL_PATCH
++	/*File upload preprocessor*/
++	requestUri = cg_http_request_geturi(httpReq);
++	if(strstr(requestUri, "/cgi-bin/Firmware_Upgrade") != NULL)
++		cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), FIRMWARE_STORE_PATH);
++	else if (strstr(requestUri, "/cgi-bin/Backup_Restore?action=Restore") != NULL)
++		cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), CONFIG_STORE_PATH);
++	else if (strstr(requestUri, "/cgi-bin/Certificates?action=import_local") != NULL)
++		cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), LOCAL_CERT_STORE_PATH);
++	else if (strstr(requestUri, "/cgi-bin/System?action=Wwan_Upgrade") != NULL)
++                cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), WWAN_STORE_PATH);
++	else
++#endif
+ 	/* HTTP-request must have Content-Length or Transfer-Encoding header
+ 	   in order to have body */
+ 	if (cg_http_packet_hasheader((CgHttpPacket *)httpReq, CG_HTTP_CONTENT_LENGTH) ||

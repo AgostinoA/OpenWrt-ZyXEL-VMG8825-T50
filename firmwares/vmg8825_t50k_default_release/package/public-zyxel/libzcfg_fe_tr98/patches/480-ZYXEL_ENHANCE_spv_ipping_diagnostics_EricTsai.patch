@@ -1,0 +1,97 @@
+Index: libzcfg_fe_tr98-1.0/diag.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag.c	2017-07-05 15:34:10.800682010 +0800
++++ libzcfg_fe_tr98-1.0/diag.c	2017-07-05 15:27:01.923494300 +0800
+@@ -107,10 +107,10 @@
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char iface[40] = {0};
++	char devIpIface[100] = {0};
+ 	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char tmpTr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char higherLayer[32] = {0};
++	//char higherLayer[32] = {0};
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -118,11 +118,16 @@
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_DIAG_IPPING, &objIid, &ipPingObj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++
+ 	if(multiJobj){
++		//zcfgFeSessMultiObjSetUtilize(multiJobj);
++
+ 		tmpObj = ipPingObj;
+ 		ipPingObj = NULL;
+ 		ipPingObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_DIAG_IPPING, &objIid, multiJobj, tmpObj);
+ 		json_object_put(tmpObj);
++		zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_IP_DIAG_IPPING, &objIid, "partialset", json_object_new_boolean(true));
+ 	}
+ 
+ 	paramList = tr98Obj[handler].parameter;
+@@ -136,6 +141,16 @@
+ 				strcpy(tmpTr98ConnObjName, json_object_get_string(paramValue));
+ 				strcpy(tr98ConnObjName, tmpTr98ConnObjName);
+ 				ReplaceWANDeviceIndex(tmpTr98ConnObjName, tr98ConnObjName); //recover the active wan from WANDEV.1 back to it original WANDEV.
++				if(zcfgFe98To181IpIface(tr98ConnObjName, devIpIface) == ZCFG_SUCCESS){
++					json_object_object_add(ipPingObj, paramList->name, json_object_new_string(devIpIface));
++				}else{
++					if(!multiJobj)
++						json_object_put(ipPingObj);
++
++					sprintf(paramfault, "%s.%s", tr98FullPathName, paramList->name);
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++#if 0
+ 				if(!strcmp(tr98ConnObjName, ""))
+ 					emptyIface = true;
+ 				else if(strcmp(tr98ConnObjName, "") && (zcfgFe98To181MappingNameGet(tr98ConnObjName, iface) != ZCFG_SUCCESS)) {
+@@ -166,6 +181,7 @@
+ 				}
+ 				else if(emptyIface)
+ 					json_object_object_add(ipPingObj, paramList->name, json_object_new_string(""));
++#endif
+ 			}
+ 			strcpy(paramfault, "");
+ 			paramList++;
+@@ -174,6 +190,16 @@
+ 
+ 		if(!strcmp(paramList->name, "DiagnosticsState")) {
+ 			paramValue = json_object_object_get(tr98Jobj, "DiagnosticsState");
++			const char *spvParamStr = json_object_get_string(paramValue);
++
++			if(spvParamStr && strcmp(spvParamStr, "Requested"))
++				return ZCFG_INVALID_PARAM_VALUE;
++
++			if(paramValue)
++				json_object_object_add(ipPingObj, paramList->name, JSON_OBJ_COPY(paramValue));
++			else
++				json_object_object_del(ipPingObj, paramList->name);
++#if 0
+ 			if(paramValue != NULL) {
+ 				if(!strcmp(json_object_get_string(paramValue), "Requested")){
+ 					if(myEid == ZCFG_EID_TR69){
+@@ -181,6 +207,8 @@
+ 					}
+ 				}
+ 			}
++#endif
++
+ 		}
+ 
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+@@ -203,7 +231,10 @@
+ 		//json_object_put(tmpObj);
+ 	}
+ 	else{
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_DIAG_IPPING, &objIid, ipPingObj, NULL)) != ZCFG_SUCCESS ) {
++		//if((ret = zcfgFeObjJsonSet(RDM_OID_IP_DIAG_IPPING, &objIid, ipPingObj, NULL)) != ZCFG_SUCCESS ) {
++		const char *ipping;
++		ipping = json_object_to_json_string(ipPingObj);
++		if((ret = zcfgFeObjWrite(RDM_OID_IP_DIAG_IPPING, &objIid, ipping, REQUEST_SET_OBJ | ZCFG_PARTIAL_OBJECT_SET, NULL)) != ZCFG_SUCCESS ) {
+ 			json_object_put(ipPingObj);
+ 			return ret;
+ 		}

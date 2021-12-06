@@ -1,0 +1,139 @@
+Index: busybox-1_20_1/networking/ftpgetput.c
+===================================================================
+--- busybox-1_20_1.orig/networking/ftpgetput.c	2018-05-25 14:02:05.568245673 +0800
++++ busybox-1_20_1/networking/ftpgetput.c	2018-05-25 14:03:38.894133000 +0800
+@@ -115,14 +115,16 @@
+ static unsigned int testSendLength = 0;
+ static char ipDscp = 0, ePriority = 0;
+ static int diagStateErrCode = 0;
+-static unsigned long ifBytesReceivedStart = 0;
+-static unsigned long ifBytesReceivedEnd = 0;
+-static unsigned long ifBytesSentStart = 0;
+-static unsigned long ifBytesSentEnd = 0;
++
++static unsigned long long ifBytesReceivedStart = 0;
++static unsigned long long ifBytesReceivedEnd = 0;
++
++static unsigned long long ifBytesSentStart = 0;
++static unsigned long long ifBytesSentEnd = 0;
+ 
+ static void outputDiagUlData(int);
+-extern unsigned long getReceiveByte(char *ifName);
+-extern unsigned long getSentByte(char *ifName);
++extern unsigned long long getReceiveByte(const char *ifName);
++extern unsigned long long getSentByte(const char *ifName);
+ #endif
+ 
+ 
+@@ -366,6 +368,20 @@
+ 		}
+ 	}
+ 
++	struct json_object *ulDiagObjParams = json_object_new_object();
++	json_object_object_add(ulDiagObjParams, "DiagnosticsState", json_object_new_string(ipDiagUlObj->DiagnosticsState));
++
++	if(!strcmp(ipDiagUlObj->DiagnosticsState, "Completed")){
++		json_object_object_add(ulDiagObjParams, "ROMTime", json_object_new_string(ipDiagUlObj->ROMTime));
++		json_object_object_add(ulDiagObjParams, "BOMTime", json_object_new_string(ipDiagUlObj->BOMTime));
++		json_object_object_add(ulDiagObjParams, "EOMTime", json_object_new_string(ipDiagUlObj->EOMTime));
++		json_object_object_add(ulDiagObjParams, "TCPOpenRequestTime", json_object_new_string(ipDiagUlObj->TCPOpenRequestTime));
++		json_object_object_add(ulDiagObjParams, "TCPOpenResponseTime", json_object_new_string(ipDiagUlObj->TCPOpenResponseTime));
++		json_object_object_add(ulDiagObjParams, "TestBytesSent", json_object_new_int(ipDiagUlObj->TestBytesSent));
++		json_object_object_add(ulDiagObjParams, "TotalBytesReceived", json_object_new_int(ipDiagUlObj->TotalBytesReceived));
++		json_object_object_add(ulDiagObjParams, "TotalBytesSent", json_object_new_int(ipDiagUlObj->TotalBytesSent));
++	}
++
+ 	printf("DiagnosticsState: %s\n", ipDiagUlObj->DiagnosticsState);
+ 	printf("Interface: %s\n", ipDiagUlObj->Interface);
+ 	printf("UploadURL: %s\n", ipDiagUlObj->UploadURL);
+@@ -382,7 +398,10 @@
+ 	printf("TCPOpenRequestTime: %s\n", ipDiagUlObj->TCPOpenRequestTime);
+ 	printf("TCPOpenResponseTime: %s\n", ipDiagUlObj->TCPOpenResponseTime);
+ 
+-	rst = sendEsmdMsg((const char *)ipDiagUlObj, sizeof(rdm_IpDiagUlDiag_t));
++	const char *ulDiagObjParamsStr = json_object_to_json_string(ulDiagObjParams);
++	rst = sendEsmdMsg(ulDiagObjParamsStr, strlen(ulDiagObjParamsStr));
++	json_object_put(ulDiagObjParams);
++	//rst = sendEsmdMsg((const char *)ipDiagUlObj, sizeof(rdm_IpDiagUlDiag_t));
+ 	if((rst != ZCFG_SUCCESS) && (rst != ZCFG_SUCCESS_AND_NO_REPLY)) {
+ 		printf("'ftpput' sending Esmd message failed!\n");
+ 	}
+Index: busybox-1_20_1/networking/wget.c
+===================================================================
+--- busybox-1_20_1.orig/networking/wget.c	2018-05-25 14:02:05.548245672 +0800
++++ busybox-1_20_1/networking/wget.c	2018-05-25 14:02:05.688245673 +0800
+@@ -123,10 +123,10 @@
+ static unsigned long BOMTimeMs = 0;
+ static unsigned long EOMTimeMs = 0;
+ #endif
+-static unsigned long ifBytesReceivedStart = 0;
+-static unsigned long ifBytesReceivedEnd = 0;
+-static unsigned long ifBytesSentStart = 0;
+-static unsigned long ifBytesSentEnd = 0;
++static unsigned long long ifBytesReceivedStart = 0;
++static unsigned long long ifBytesReceivedEnd = 0;
++static unsigned long long ifBytesSentStart = 0;
++static unsigned long long ifBytesSentEnd = 0;
+ 
+ static char ipDscp = 0;
+ 
+@@ -135,8 +135,8 @@
+ int priorityMark=0;
+ char dstIP[32]={0};
+ 
+-unsigned long getReceiveByte(char *ifName);
+-unsigned long getSentByte(char *ifName);
++unsigned long long getReceiveByte(const char *ifName);
++unsigned long long getSentByte(const char *ifName);
+ 
+ void set_priorityMark(int act);
+ #endif
+@@ -342,10 +342,10 @@
+ #endif
+ }
+ 
+-unsigned long getReceiveByte(char *ifName)
++unsigned long long getReceiveByte(const char *ifName)
+ {
+ 		FILE *fp;
+-		unsigned long receiveBytes;
++		unsigned long long receiveBytes;
+ 		char interfaceName[32]={0};
+ 		char buf[512];
+ 
+@@ -356,10 +356,10 @@
+ 			
+ 			if ( (ptr = strchr(buf, ':')) == NULL )
+ 				continue;
+-			else
++			else{
+ 				*ptr = ' ';
+-				
+-			sscanf(buf, "%s %ld", interfaceName, &receiveBytes); //receiveBytes may overflow!
++			}
++			sscanf(buf, "%s %llu", interfaceName, &receiveBytes); //receiveBytes may overflow!
+ 			
+ 			if( !strcmp(interfaceName, ifName) ){
+ 				//printf("interfaceName:%s, receiveBytes:%ld\n", interfaceName, receiveBytes);
+@@ -371,10 +371,10 @@
+ 		return 0;
+ }
+ 
+-unsigned long getSentByte(char *ifName)
++unsigned long long getSentByte(const char *ifName)
+ {
+                 FILE *fp;
+-                unsigned long sentBytes, trash;
++                unsigned long long sentBytes, trash;
+                 char interfaceName[32]={0};
+                 char buf[512];
+ 
+@@ -388,7 +388,7 @@
+                         else
+                                 *ptr = ' ';
+ 
+-                        sscanf(buf, "%s %ld %ld %ld %ld %ld %ld %ld %ld %ld ", interfaceName, &trash, &trash, &trash, &trash, &trash, &trash, &trash, &trash, &sentBytes);
++                        sscanf(buf, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu", interfaceName, &trash, &trash, &trash, &trash, &trash, &trash, &trash, &trash, &sentBytes);
+ 
+                         if( !strcmp(interfaceName, ifName) ){
+                                 //printf("interfaceName:%s, sentBytes:%ld\n", interfaceName, sentBytes);

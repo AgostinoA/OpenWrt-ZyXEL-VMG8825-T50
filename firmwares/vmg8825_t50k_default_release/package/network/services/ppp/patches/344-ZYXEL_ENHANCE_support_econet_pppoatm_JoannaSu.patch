@@ -1,0 +1,213 @@
+Index: ppp-2.4.3/pppd/plugins/pppoatm/pppoatm.c
+===================================================================
+--- ppp-2.4.3.orig/pppd/plugins/pppoatm/pppoatm.c	2016-09-19 08:41:56.609843485 +0800
++++ ppp-2.4.3/pppd/plugins/pppoatm/pppoatm.c	2016-09-19 09:52:42.580402358 +0800
+@@ -21,15 +21,22 @@
+ #include "fsm.h" /* Needed for lcp.h to include cleanly */
+ #include "lcp.h"
+ #include <atm.h>
+-#if 1 /* uses kernel include path, ZyXEL, John*/
++//#if 1 /* uses kernel include path, ZyXEL, John*/
++#ifdef BROADCOM_PLATFORM
+ #define __user /* get rid of compile error with new kernel */
+ #include <include/linux/atmdev.h>
++#else
++#include <linux/atmdev.h>
+ #endif
+ #include <linux/atmppp.h>
+ #include <sys/stat.h>
+ #include <net/if.h>
+ #include <sys/ioctl.h>
+ 
++#ifdef ECONET_PLATFORM
++#define BBU
++#endif
++
+ const char pppd_version[] = VERSION;
+ 
+ static struct sockaddr_atmpvc pvcaddr;
+@@ -40,8 +47,21 @@
+ static int pppoatm_max_mtu, pppoatm_max_mru;
+ static int setdevname_pppoatm(const char *cp, const char **argv, int doit);
+ struct channel pppoa_channel;
+-#if 1 /* pppoa brcm, ZyXEL, John */
++//#if 1 /* pppoa brcm, ZyXEL, John */
++#ifdef BROADCOM_PLATFORM
+ static int fd_pppoa=0;
++#else
++static int pppoa_fd = -1;
++#endif
++
++#ifdef BBU
++static void pppoatm_close_fds();
++static void cleanup_pppoatm();
++static void pppoatm_extra_options();
++static char    *qos_pcr;
++static char    *qos_scr;
++static char    *qos_mbs;
++#define _PATH_ETHOPT         _ROOT_PATH "/etc/ppp/options."
+ #endif
+ 
+ static option_t pppoa_options[] = {
+@@ -55,6 +75,14 @@
+ 	  "use VC multiplexing for PPPoATM (default)", 1},
+ 	{ "qos", o_string, &qosstr,
+ 	  "set QoS for PPPoATM connection", 1},
++#ifdef BBU
++	{ "qos_pcr", o_string, &qos_pcr,
++	  "set QoS PCR for PPPoATM connection", 1},
++	{ "qos_scr", o_string, &qos_scr,
++	  "set QoS SCR for PPPoATM connection", 1},
++	{ "qos_mbs", o_string, &qos_mbs,
++	  "set QoS MBS for PPPoATM connection", 1},
++#endif
+ 	{ NULL }
+ };
+ 
+@@ -120,6 +148,18 @@
+ 		lcp_wantoptions[0].neg_asyncmap = 0;
+ 		lcp_allowoptions[0].neg_asyncmap = 0;
+ 		lcp_wantoptions[0].neg_pcompression = 0;
++#ifdef BBU
++		lcp_allowoptions[0].neg_pcompression = 0;
++
++		//ccp_allowoptions[0].deflate = 0 ;
++		//ccp_wantoptions[0].deflate = 0 ;
++
++		//ipcp_allowoptions[0].neg_vj=0;
++		//ipcp_wantoptions[0].neg_vj=0;
++
++		//ccp_allowoptions[0].bsd_compress = 0;
++		//ccp_wantoptions[0].bsd_compress = 0;
++#endif
+ 	}
+ 	device_got_set = 1;
+ 	return 1;
+@@ -127,7 +167,8 @@
+ 
+ #define pppoatm_overhead() (llc_encaps ? 6 : 2)
+ 
+-#if 1 /* pppoa brcm, ZyXEL, John */
++//#if 1 /* pppoa brcm, ZyXEL, John */
++#ifdef BROADCOM_PLATFORM
+ static void disconnect_pppoatm(int fd)
+ {
+ #if 1
+@@ -160,11 +201,13 @@
+ static void set_line_discipline_pppoatm(int fd)
+ {
+ 	struct atm_backend_ppp be;
+-#if 1 /* pppoa brcm, ZyXEL, John */
++//#if 1 /* pppoa brcm, ZyXEL, John */
++#ifdef BROADCOM_PLATFORM
+ 	be.backend_num = ATM_BACKEND_PPP_BCM;
+ #else
+ 	be.backend_num = ATM_BACKEND_PPP;
+ #endif
++
+ 	if (!llc_encaps)
+ 		be.encaps = PPPOATM_ENCAPS_VC;
+ 	else if (!vc_encaps)
+@@ -173,6 +216,7 @@
+ 		be.encaps = PPPOATM_ENCAPS_AUTODETECT;
+ 	if (ioctl(fd, ATM_SETBACKEND, &be) < 0)
+ 		fatal("ioctl(ATM_SETBACKEND): %m");
++
+ }
+ 
+ #if 0
+@@ -184,7 +228,8 @@
+ }
+ #endif
+ 
+-#if 1	/* pppoa brcm, ZyXEL, John */
++#ifdef BROADCOM_PLATFORM
++//#if 1	/* pppoa brcm, ZyXEL, John */
+ static int open_device_pppoatm(void)
+ {
+ 	int fd;
+@@ -259,12 +304,26 @@
+ 	memset(&qos, 0, sizeof qos);
+ 	qos.txtp.traffic_class = qos.rxtp.traffic_class = ATM_UBR;
+ 	/* TODO: support simplified QoS setting */
+-	if (qosstr != NULL)
++	if (qosstr != NULL){
+ 		if (text2qos(qosstr, &qos, 0))
+ 			fatal("Can't parse QoS: \"%s\"");
++#ifdef BBU
++	  fprintf(stderr, "qos.rxtp.traffic_class = %d\n", qos.rxtp.traffic_class);
++
++	  qos.txtp.pcr = qos.rxtp.pcr = atoi(qos_pcr);
++	  info("qos.txtp.pcr = qos.rxtp.pcr = %d", qos.txtp.pcr);
++	  if ((strcmp(qosstr, "VBR") == 0) || (strcmp(qosstr, "NRTVBR") == 0)) {
++	       	qos.txtp.scr = qos.rxtp.scr = atoi(qos_scr);
++	        info("glb.qos.txtp.scr = glb.qos.rxtp.scr = %d", qos.txtp.scr);
++	      	qos.txtp.mbs = qos.rxtp.mbs = atoi(qos_mbs);
++	        info("qos.txtp.mbs = qos.rxtp.mbs = %d", qos.txtp.mbs);
++	  }
++#endif
++	}
+ 	qos.txtp.max_sdu = lcp_allowoptions[0].mru + pppoatm_overhead();
+ 	qos.rxtp.max_sdu = lcp_wantoptions[0].mru + pppoatm_overhead();
+ 	qos.aal = ATM_AAL5;
++
+ 	if (setsockopt(fd, SOL_ATM, SO_ATMQOS, &qos, sizeof(qos)) < 0)
+ 		fatal("setsockopt(SO_ATMQOS): %m");
+ 	/* TODO: accept on SVCs... */
+@@ -337,9 +396,14 @@
+ 
+ struct channel pppoa_channel = {
+     options: pppoa_options,
++#ifdef BBU
++    process_extra_options: &pppoatm_extra_options,
++#else
+     process_extra_options: NULL,
++#endif
+     check_options: NULL,
+-#if 1	/* pppoa brcm, ZyXEL, John */
++//#if 1	/* pppoa brcm, ZyXEL, John */
++#ifdef BROADCOM_PLATFORM
+     connect: &open_device_pppoatm,
+     disconnect: &close_device_pppoatm,
+ #else
+@@ -350,10 +414,40 @@
+     disestablish_ppp: &generic_disestablish_ppp,
+     send_config: &send_config_pppoa,
+     recv_config: &recv_config_pppoa,
++#ifdef BBU
++    close: &pppoatm_close_fds,
++    cleanup: &cleanup_pppoatm
++#else
+     close: NULL,
+     cleanup: NULL
++#endif
+ #if 1 // ZYXEL_RECEIVE_PADT
+ 	, get_discovery_sock: NULL,
+ 	receive_padt: NULL
+ #endif
+ };
++
++#ifdef BBU
++static void pppoatm_close_fds()
++{
++  	if (pppoa_fd >= 0) {
++    		close(pppoa_fd);
++    		pppoa_fd = -1;
++  	}
++}
++
++static void cleanup_pppoatm()
++{
++  	pppoatm_close_fds();
++}
++
++static void pppoatm_extra_options()
++{
++	int ret;
++	char buf[256];
++	snprintf(buf, 256, _PATH_ETHOPT "%s",devnam);
++	info("Options file - %s.\n", buf);
++	if(!options_from_file(buf, 0, 0, 1))
++	exit(EXIT_OPTION_ERROR);
++}
++#endif

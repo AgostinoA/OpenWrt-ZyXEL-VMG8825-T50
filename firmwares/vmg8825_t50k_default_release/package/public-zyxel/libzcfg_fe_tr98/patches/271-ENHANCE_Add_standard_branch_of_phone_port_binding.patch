@@ -1,0 +1,89 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2015-12-21 11:12:02.671722938 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2015-12-18 19:50:01.608427500 +0800
+@@ -173,4 +173,13 @@
+ #WIND
+ ifeq ($(CONFIG_BUILD_ZYXEL_VOICE_CONFIG_TR069_FAXT38_ENABLE_MAPPING_TO_FAXMODE),y)
+ CFLAGS += -DZYXEL_VOICE_CONFIG_TR069_FAXT38_ENABLE_MAPPING_TO_FAXMODE
++endif
++
++## Wind ##
++ifeq ($(CONFIG_WIND_CUSTOMIZATION),y)
++CFLAGS += -DZYPRJ_CUSTOMER_WIND=1
++endif
++
++ifeq ($(strip $(CONFIG_BUILD_ZYXEL_VOICE_CONFIG_TR069_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST)),y)
++CFLAGS += -DZYXEL_VOICE_CONFIG_TR069_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST=1
+ endif
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/voice.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.c	2015-12-21 11:12:02.695722937 +0800
++++ libzcfg_fe_tr98-1.0/voice.c	2015-12-21 14:44:47.863235846 +0800
+@@ -782,6 +782,65 @@
+     	return ZCFG_NO_SUCH_PARAMETER;  
+     }
+ 
++#if ZYXEL_VOICE_CONFIG_TR069_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST
++    /*Brady 20151127.To support phone port binding by standard branches of TR104.To avoid bind the same phone port*/
++    printf("%s(): Check PHY_REFERENCE_LIST..\n",__FUNCTION__);
++    struct json_object *lineObj = NULL;
++    char *PhyReferenceList = NULL;
++    char *LineSelect = NULL;
++    char List[256]={0};
++    int phyPort;
++    char *tmpStr=NULL;
++    objIndex_t Iid;
++    uint32_t referenceList = 0;
++    uint32_t readyList = 0;
++
++    PhyReferenceList = json_object_get_string(json_object_object_get(tr98Jobj,"PhyReferenceList"));
++
++    strcpy(List,PhyReferenceList);
++    tmpStr = strtok(List,",");
++    while (tmpStr != NULL){ //1.To parse list of input
++        if(true != sscanf(tmpStr,"%d",&phyPort)){
++            zcfgLog(ZCFG_LOG_ERR, "%s : parse phone port num fail!!\n", __FUNCTION__);
++            return ZCFG_INTERNAL_ERROR;
++        }
++#if ZYPRJ_CUSTOMER_WIND//0-base
++        phyPort= phyPort+1;
++#endif
++        referenceList |=phyPort;
++        tmpStr = strtok (NULL, ",");
++	}
++
++	//2. To parse all of already binding.
++	IID_INIT(Iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_VOICE_LINE, &Iid, &lineObj) == ZCFG_SUCCESS) {
++	    LineSelect = json_object_get_string(json_object_object_get(lineObj, "PhyReferenceList"));
++	    //2.1 Don't check the same index of sip account.
++	    if(Iid.idx[2] == lineIid.idx[2]){
++	        continue;
++	    }
++	    strcpy(List,LineSelect);
++	    tmpStr = strtok(List,",");
++	    while (tmpStr != NULL){
++	        if(true != sscanf(tmpStr,"%d",&phyPort)){
++	            zcfgLog(ZCFG_LOG_ERR, "%s : parse phone port num fail!!\n", __FUNCTION__);
++	            return ZCFG_INTERNAL_ERROR;
++	        }
++#if ZYPRJ_CUSTOMER_WIND//0-base
++	        phyPort= phyPort+1;
++#endif
++	        readyList |=phyPort;
++	        tmpStr = strtok (NULL, ",");
++	    }
++
++	    json_object_put(lineObj);
++	}
++	//3. If "other" sip bind the same port, reject this request.
++	if((readyList&referenceList) != 0 && readyList !=0){
++	    return ZCFG_INTERNAL_ERROR;
++	}
++	/*Brady end*/
++#endif
+ 	if((ret = setVoiceConfig(RDM_OID_VOICE_LINE, &lineIid, handler, tr98Jobj, multiJobj)) != ZCFG_SUCCESS){
+ 		zcfgLog(ZCFG_LOG_ERR, "%s: fail to set config to tr181 for object RDM_OID_VOICE_LINE with ret=%d", __FUNCTION__, ret);
+ 		return ret;

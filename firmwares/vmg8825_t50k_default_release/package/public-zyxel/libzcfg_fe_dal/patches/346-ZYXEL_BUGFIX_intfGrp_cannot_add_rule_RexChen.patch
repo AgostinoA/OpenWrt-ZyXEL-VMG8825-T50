@@ -1,0 +1,151 @@
+Index: libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2017-09-25 14:06:31.815274168 +0800
++++ libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2017-09-25 14:10:05.596745300 +0800
+@@ -1098,7 +1098,10 @@
+ 	criteria = json_object_new_object();
+ 	currArray = json_object_new_array();
+ 	zcfgFeDalIntrGrpGet(NULL, currArray, NULL);
+-	idx = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	if(json_object_object_get(Jobj, "Index"))	//	add case no Index
++		idx = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	else
++		idx = 1;
+ 	currObj = json_object_array_get_idx(currArray, idx-1);
+ 	origcriteria = json_object_get_string(json_object_object_get(currObj, "Criteria"));
+ 	tmp = json_object_get_string(json_object_object_get(Jobj, "type"));
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_macflt.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_macflt.c	2017-09-25 14:06:31.803274168 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_macflt.c	2017-09-25 14:10:46.581745300 +0800
+@@ -164,12 +164,13 @@
+ 	objIndex_t objIid;
+ 	struct json_object *WifiMACFilterJobj = NULL, *curObj = NULL, *wifissidObj = NULL, *obj = NULL;
+ 
+-	int index, len=0, j, rrr, objLen = 0, i, idx = 0;
++	int index, len=0, j, rrr, objLen = 0, i, idx = 0, count = 0;
+ 	char *macAddr=NULL;
+ 
+ 	char *curlist;
+ 	char newlist[512]={0};
+ 	const char *ssid = NULL;
++	char *tmp = NULL, *ptr = NULL, *macString = NULL;
+ 
+ 	if(!json_object_object_get(Jobj, "Index")){
+ 		ssid = json_object_get_string(json_object_object_get(Jobj, "SSID"));
+@@ -199,6 +200,21 @@
+ 	curlist = json_object_get_string(json_object_object_get(WifiMACFilterJobj, "FilterLists"));
+ 	rrr = StrToJarray(curlist,",",curObj);
+ 	
++	tmp = strdup(curlist);
++	macString = strtok_r(tmp, ",", &ptr);
++	while(macString != NULL){
++		count++;
++		macString = strtok_r(NULL, ",", &ptr);
++	}
++	if(count>24){
++		if(replyMsg)
++			strcat(replyMsg, "A maximum of 25 MAC Authentication rules can be configured.");
++		free(tmp);
++		json_object_put(WifiMACFilterJobj);
++		json_object_put(curObj);
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++	
+ 	if(!findInList(curlist,macAddr,",")){
+ 		json_object_array_add(curObj,json_object_new_string(macAddr));
+ 	}
+@@ -209,6 +225,7 @@
+ 
+ 	if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_STA_FILTER, &objIid, WifiMACFilterJobj, NULL)) != ZCFG_SUCCESS);
+ 
++	free(tmp);
+ 	json_object_put(WifiMACFilterJobj);
+ 	json_object_put(curObj);
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_others.c	2017-09-25 14:06:31.907274169 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c	2017-09-25 14:10:58.296745300 +0800
+@@ -28,7 +28,7 @@
+ 	{"wlMode",						dalType_wlanMode,	0,	0,	NULL,	NULL,	0},
+ 	{"wlProtect",					dalType_string,		0,	0,	NULL,	"auto|off",	0},
+ 	//{"wlRifsAdvert",				dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+-	{"wlPreamble",					dalType_string, 	0,	0,	NULL,	"long|short",	0},
++	{"wlPreamble",					dalType_string, 	0,	0,	NULL,	"long|short",	dalcmd_Forbid},
+ 	{"wlRxChainPwrSave",			dalType_int, 		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	//{"wlObssCox",					dalType_boolean, 	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{"wlFrameburst",				dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-09-25 14:06:31.907274169 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-09-25 14:09:46.709745300 +0800
+@@ -1931,7 +1931,7 @@
+ 	char *ptr = NULL, *ptr_buf = NULL, *tmp_ptr = NULL, *nameList = NULL, *intfName = NULL, *tmp = NULL, *LANName = NULL, *sipname = NULL, *account = NULL, *mode = NULL;
+ 	char buf[64] = {0}, parenCtlServiceList[1024] = {0}, parenCtlService[128], tr181PathList[256] = {0}, route[32] = {0}, duplicateName[128] = {0}, brPath[32] = {0}, intfList[256] = {0}, queue[32] = {0}, voipList[1024] = {0}, usnAccount[256] = {0}, wlmode[16] = {0}, buff[128] = {0};
+ 	int intValue = 0, len = 0, valid = 0, count = 0, len1 = 0, Num = 0, CLIidx = 0, icmptye = 0, icmptypecode = 0, def = 0;
+-	bool ret = false, changetype = false, foundIntf = false, RtWanWWANDefault = false;
++	bool ret = true, changetype = false, foundIntf = false, RtWanWWANDefault = false;
+ 	bool AtmUsed = false, PtmUsed = false, EthUsed = false, PonUsed = false, UsbUsed = false, ReUsed = false, wanIntf = false;
+ 	char *macAddrDelim = NULL; // MAC address delimiter
+ 	unsigned char brIndex;
+@@ -2378,15 +2378,13 @@
+ 						if(!strncmp("IP.Interface.", stringPtr, 13)){
+ 							json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 						break;
+-				}
++						}
+ 						nameList = strdup(stringPtr);
+ 						if(findDuplicate(nameList, duplicateName, ",")){
+ 							printf("Duplicate WAN interface name %s\n", duplicateName);
+ 							free(nameList);
+ 							return false;
+ 						}
+-						
+-						nameList = strdup(stringPtr);
+ 						Group_WAN_IpIface = NULL;
+ 						getWanLanList(&WanLanListJarray);
+ 						obj = json_object_new_array();
+@@ -2410,16 +2408,16 @@
+ 										printf("wanIntf error.\n");
+ 										return false;
+ 									}
+-			}			
+-		}
+-	}
++								}			
++							}
++					 	}
+ 						intfName = strtok_r(nameList, ",", &tmp_ptr);
+ 						while(intfName != NULL){
+ 							if(*intfName != '\0'){
+ 								foundIntf = false;
+ 								len = json_object_array_length(WanLanListJarray);
+ 								for(j=0; j<len; j++){
+-									WanLanObj = json_object_array_get_idx(WanLanListJarray, k);
++									WanLanObj = json_object_array_get_idx(WanLanListJarray, j);
+ 									IpIfacePath = json_object_get_string(json_object_object_get(WanLanObj, "IpIfacePath"));
+ 									Name = json_object_get_string(json_object_object_get(WanLanObj, "Name"));
+ 									Type = json_object_get_string(json_object_object_get(WanLanObj, "Type"));
+@@ -2465,7 +2463,7 @@
+ 										if(ReUsed){
+ 											printf("Only allow one WAN interface for each link type.");
+ 											ret = false;
+-}
++										}
+ 
+ 										foundIntf = true;
+ 										strcat(tr181PathList, IpIfacePath);
+@@ -2480,11 +2478,11 @@
+ 								}
+ 							}
+ 							intfName = strtok_r(NULL, ",", &tmp_ptr);
+-
+ 						}
+ 						free(nameList);
+ 						json_object_put(WanLanListJarray);
+ 						WanLanListJarray = NULL;
++						len = strlen(tr181PathList);
+ 						if(len>0){
+ 							if(tr181PathList[len-1] == ',')
+ 								tr181PathList[len-1] = '\0';

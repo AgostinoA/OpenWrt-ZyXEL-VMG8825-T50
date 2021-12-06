@@ -1,0 +1,259 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2018-08-27 21:40:43.930388946 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2018-08-27 21:40:44.030388947 +0800
+@@ -33,6 +33,10 @@
+ CFLAGS += -DTR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
+ endif
+ 
++#ifeq ($(CONFIG_ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT),y)
++CFLAGS += -DZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++#endif
++
+ #Generic
+ ifneq ($(strip $(CONFIG_PACKAGE_ZyIMS)),)
+ CFLAGS += -DCONFIG_PACKAGE_ZyIMS
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2018-08-27 21:40:43.930388946 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2018-08-27 21:40:58.291722900 +0800
+@@ -399,6 +399,20 @@
+ 
+ static zcfgRet_t zcfgFeTr98ClassNameGet(char *objName, char *className);
+ 
++
++#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++
++static zcfgRet_t spvDhcpv4SrvOptRout(uint32_t , objIndex_t *, struct json_object *, struct json_object *, char *);
++
++static tr181SpvHandleRout_t spvHandleRoutList[] = {
++{RDM_OID_DHCPV4_SRV_POOL_OPT, spvDhcpv4SrvOptRout},
++{0, NULL}
++};
++
++static struct json_object *tr181SpvHandleRoutObj = NULL;
++
++#endif
++
+ #ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+ static zcfgRet_t spvSntDhcpOptSubRout(const char *, objIndex_t *, struct json_object *, struct json_object *);
+ 
+@@ -1642,6 +1656,108 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++
++#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++void zcfgFeTr181SpvHandleRoutInit()
++{
++	bool running;
++	int n = 0;
++	uint32_t oid;
++	char oidStr[30] = {0};
++
++	printf("%s\n", __FUNCTION__);
++
++	if(tr181SpvHandleRoutObj)
++		return;
++
++	tr181SpvHandleRoutObj = json_object_new_object();
++	running = spvHandleRoutList[n].rout ? true : false;
++
++	while(running){
++		oid = spvHandleRoutList[n].oid;
++		sprintf(oidStr, "%u", oid);
++
++		json_object_object_add(tr181SpvHandleRoutObj, oidStr, json_object_new_int((int)(spvHandleRoutList[n].rout)));
++		n++;
++		running = spvHandleRoutList[n].rout ? true : false;
++	}
++
++}
++
++zcfgRet_t zcfgFeMultiObjJsonSpvHandleRout(struct json_object *multiJobj, char *faultString)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS, faultrst = ZCFG_SUCCESS;
++	uint32_t oid;
++	objIndex_t objIid;
++	spvHandleRout handleRout;
++	struct json_object *spvHdlRoutObj;
++
++	//printf("%s\n", __FUNCTION__);
++
++	json_object_object_foreach(multiJobj, objnumStr, objnumJobj) {
++		if(!objnumJobj)
++			continue;
++
++		if(!(spvHdlRoutObj = json_object_object_get(tr181SpvHandleRoutObj, objnumStr)))
++			continue;
++
++		handleRout = (spvHandleRout )json_object_get_int(spvHdlRoutObj);
++		sscanf(objnumStr, "%u", &oid);
++		printf("%s: object %u has spv rout\n", __FUNCTION__, oid);
++
++		json_object_object_foreach(objnumJobj, objIndexStr, objIdxJObj) {
++			if(!objIdxJObj)
++				continue;
++
++			IID_INIT(objIid);
++			if(sscanf(objIndexStr, "%hhu.%hhu.%hhu.%hhu.%hhu.%hhu.%hhu", &objIid.level, &objIid.idx[0],
++					&objIid.idx[1], &objIid.idx[2], &objIid.idx[3], &objIid.idx[4], &objIid.idx[5]) <= 0 ){
++				continue;
++			}
++			rst = handleRout(oid, &objIid, multiJobj, objIdxJObj, faultString);
++			if(rst != ZCFG_SUCCESS && rst != ZCFG_OBJECT_UPDATED)
++				faultrst = rst;	
++		}
++
++	}
++	rst = (faultrst != ZCFG_SUCCESS) ? faultrst : rst;
++	return rst;
++}
++
++static zcfgRet_t spvDhcpv4SrvOptRout(uint32_t oid, objIndex_t *objIid, struct json_object *multiJobj, struct json_object *spvObj, char *faultString)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	struct json_object *paramObj = NULL;
++	const char *paramValueStr;
++
++	//printf("%s\n", __FUNCTION__);
++
++	paramObj = json_object_object_get(spvObj, "Value");
++	if(paramObj && json_object_get_type(paramObj) == json_type_hex){
++		char ascStr[256+1] = {0}, paramstr[256+1] = {0}, *paramValueStrP = NULL;
++
++		paramValueStr = json_object_get_string(paramObj);
++		int paramValueStrLen = strlen(paramValueStr);
++		if(paramValueStr[0] == 34 && paramValueStr[paramValueStrLen-1] == 34){
++			strncpy(paramstr, paramValueStr+1, paramValueStrLen-2);
++			paramValueStrP = paramstr;
++		}else{
++			paramValueStrP = paramValueStr;
++		}
++		printf("%s: param value: %s\n", __FUNCTION__, paramValueStrP);
++		if(hexStr2AscStr(paramValueStrP, ascStr) >= 0){
++			json_object_object_add(spvObj, "Value", json_object_new_string(ascStr));
++			rst = ZCFG_OBJECT_UPDATED;
++			printf("%s: asc str: %s\n", __FUNCTION__, ascStr);
++		}else{
++			rst = ZCFG_REQUEST_REJECT;
++		}
++	}
++
++	return rst;
++}
++#endif
++
+ #ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+ //e_TR98_SENT_DHCP_OPT
+ static zcfgRet_t spvSntDhcpOptSubRout(const char *objPathName, objIndex_t *objIid, struct json_object *tr98SpvObj, struct json_object *sessTr98SpvObj)
+@@ -2201,6 +2317,56 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++
++int charHex2Int(char hex)
++{
++	//printf("hex: %hhu\n", hex);
++
++	if (hex >= 0x30 && hex < 0x3a)
++		return hex-0x30;
++
++	else if (hex >= 0x41 && hex <= 0x46)
++		return 10+(hex-0x41);
++
++	else if (hex >= 0x61 && hex <= 0x66)
++		return 10+(hex-0x61);
++
++	else return -1;
++}
++
++int hexStr2AscStr(const char *hexStr, char *ascStr)
++{
++	int outputStrLen = 0;
++	int digit1, digit2;
++	int n = 0, len = 0;
++	int running, nothex;
++
++
++	if(!hexStr || !(len = strlen(hexStr)) || !ascStr)
++		return 0;
++
++	if((len%2) != 0)
++		return -1;
++
++	digit1 = charHex2Int(*(hexStr + n));
++	digit2 = charHex2Int(*(hexStr + n + 1));
++	nothex = (digit1 == -1 || digit2 == -1) ? 1 : 0;
++	running = (digit1 >= 0 && digit2 >= 0) ? 1 : 0;
++
++	while (running) {
++		*(ascStr+outputStrLen) = (digit1 << 4)+digit2;
++		outputStrLen += 1;
++		n += 2;
++
++		digit1 = charHex2Int(*(hexStr + n));
++		digit2 = charHex2Int(*(hexStr + n + 1));
++		nothex = (len > n && (digit1 == -1 || digit2 == -1)) ? 1 : 0;
++		running = (len > n && digit1 >= 0 && digit2 >= 0) ? 1 : 0;
++	}
++
++	return outputStrLen = (nothex) ? -1 : ((outputStrLen*2 == len) ? outputStrLen : 0);
++}
++
+ char *base64_encode(unsigned char *input, int length)
+ {
+ 	BIO *bmem, *b64;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2018-08-27 21:40:43.154388943 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2018-08-27 21:40:44.030388947 +0800
+@@ -208,6 +208,16 @@
+ 	rpcSubRout rout;
+ }tr98RpcSubRout_t;
+ 
++
++#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++typedef zcfgRet_t (*spvHandleRout)(uint32_t , objIndex_t *, struct json_object *, struct json_object *, char *);
++
++typedef struct tr181SpvHandleRout_s {
++	uint32_t oid;
++	spvHandleRout rout;
++}tr181SpvHandleRout_t;
++#endif
++
+ #define TR98_MAX_OBJ_NAME_LENGTH 257
+ #define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+ 
+@@ -241,6 +251,15 @@
+ zcfgRet_t zcfgTr98MappingConvert(struct json_object *, struct json_object *);
+ zcfgRet_t zcfgTr181MappingConvert(struct json_object *, struct json_object *);
+ #endif
++int charHex2Int(char );
++int hexStr2AscStr(const char *, char *);
++#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++void zcfgFeTr181SpvHandleRoutInit();
++zcfgRet_t zcfgFeMultiObjJsonSpvHandleRout(struct json_object *multiJobj, char *faultString);
++#else
++#define zcfgFeTr181SpvHandleRoutInit() { }
++#define zcfgFeMultiObjJsonSpvHandleRout(multiJobj, faultString) ZCFG_SUCCESS
++#endif
+ char *csvStringStripTerm(const char *csv, const char *term);
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );
+ zcfgRet_t zcfgFeTr98ObjNameObjGet(char *, struct json_object **);
+@@ -341,13 +360,13 @@
+ void zcfgFeJsonMultiObjSetParamk(const char *);
+ struct json_object *zcfgFeJsonMultiObjParamkRetrieve();
+ #else
+-#define zcfgFeSessMultiObjSet() { }
++#define zcfgFeSessMultiObjSet() { }
+ #define zcfgFeSessMultiObjSetClear() { }
+ #define zcfgFeSessMultiObjSetRetrieve() NULL
+ #define zcfgFeSessMultiObjSetSave(obj) { }
+ #define zcfgFeSessMultiObjSetUtilize(obj) obj
+ #define zcfgFeJsonMultiObjSetParamk(paramk) { }
+-#define zcfgFeJsonMultiObjParamkRetrieve() NULL
++#define zcfgFeJsonMultiObjParamkRetrieve() NULL
+ #endif
+ 
+ #ifdef ZCFG_RPC_REQUEST_ADDITIONS

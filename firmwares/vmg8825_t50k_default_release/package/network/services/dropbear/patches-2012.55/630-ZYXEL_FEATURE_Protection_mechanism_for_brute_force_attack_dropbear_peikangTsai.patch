@@ -1,0 +1,174 @@
+Index: dropbear-2012.55/Makefile.in
+===================================================================
+--- dropbear-2012.55.orig/Makefile.in	2017-05-24 13:35:41.722594746 +0800
++++ dropbear-2012.55/Makefile.in	2017-05-24 13:35:41.750594747 +0800
+@@ -20,7 +20,7 @@
+ ifeq (@BUNDLED_LIBTOM@, 1)
+ LIBTOM_DEPS=$(LTC) $(LTM)
+ CFLAGS+=-I$(srcdir)/libtomcrypt/src/headers/ 
+-LIBS+=$(LTC) $(LTM)
++LIBS+=$(LTC) $(LTM) -ljson -lzcfg_msg -lzcmd_tool -lzcfg_fe_rdm_access -lzcfg_fe_rdm_struct
+ endif
+ 
+ COMMONOBJS=dbutil.o buffer.o \
+Index: dropbear-2012.55/svr-authpasswd.c
+===================================================================
+--- dropbear-2012.55.orig/svr-authpasswd.c	2017-05-24 13:35:41.734594747 +0800
++++ dropbear-2012.55/svr-authpasswd.c	2017-05-24 13:36:20.762595070 +0800
+@@ -30,7 +30,67 @@
+ #include "dbutil.h"
+ #include "auth.h"
+ #include <syslog.h>
++#include "zcfg_common.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_fe_rdm_struct.h"
++enum{
++	GROUP_IID = 0,
++	ACCOUNT_IID = 1, 
++	SIZE_OF_INTEGER = sizeof("2147483648")-1,
++	SIZE_OF_PATH = sizeof("/tmp/login_tmp_")+ SIZE_OF_INTEGER + SIZE_OF_INTEGER -1,
++	SIZE_OF_VALUE = 64,	// maximum supported username length is 64
++};
++
++
+ #ifdef ENABLE_SVR_PASSWORD_AUTH
++void add_authorize_fail_cnt(int *cur_user_idx, int login_fail_cnt){	 
++	FILE *fd = NULL;
++	char path[SIZE_OF_PATH+1] = {0};
++	struct timespec ts;
++	
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	sprintf(path, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]); 
++	fd = fopen(path, "w");
++	if(fd == NULL){
++		return;
++	}
++	fprintf(fd, "%d:%d", login_fail_cnt, ts.tv_sec);
++	fclose(fd);
++}
++
++void reset_authorize_fail_cnt(int *cur_user_idx){ 
++	char path[SIZE_OF_PATH+1] = {0};
++	sprintf(path, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]); 
++	remove(path);
++}
++int chk_account_is_locked(int *cur_user_idx, int *login_fail_cnt, int last_login_time, int retry_times, int lock_period){ 
++	FILE* fd = NULL;
++	char value[SIZE_OF_VALUE+1] = {0};
++	struct timespec ts;		
++	sprintf(value, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]); 
++	fd = fopen(value, "r");
++	if(fd == NULL || fscanf(fd, "%d:%d", login_fail_cnt, &last_login_time) != 2){
++		// not in monitoring period or incorrect format
++		return 0;
++	}
++	fclose(fd);
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	if((ts.tv_sec - last_login_time) < lock_period){ // in monitoring period
++		if((*login_fail_cnt < retry_times) || retry_times == 0){
++			return 0; // unlock stat
++		}
++		else{
++			return 1; // lock stat
++		}
++	}
++	else{ // out of monitoring period, reset cnt and remove tmp file					
++		*login_fail_cnt = 0;
++		reset_authorize_fail_cnt(cur_user_idx);
++		return 0;
++	}
++	return 0;
++}
+ 
+ /* Process a password auth request, sending success or failure messages as
+  * appropriate */
+@@ -38,13 +98,17 @@
+ 	
+ #ifdef HAVE_SHADOW_H
+ 	struct spwd *spasswd = NULL;
+-#endif
++#endif 
+ 	char * passwdcrypt = NULL; /* the crypt from /etc/passwd or /etc/shadow */
+ 	char * testcrypt = NULL; /* crypt generated from the user's password sent */
+ 	unsigned char * password;
+ 	int success_blank = 0;
+ 	unsigned int passwordlen;
+-
++	int retry_times = 0;
++	int lock_period = 0;
++	int cur_user_idx[2] = {-1};
++	int login_fail_cnt = 0;
++	int last_login_time = 0;
+ 	unsigned int changepw;
+ 
+ 	char * username = NULL;
+@@ -52,6 +116,27 @@
+ 	username = ses.authstate.username;
+ 	remoteaddr = svr_ses.addrstring;
+ 	passwdcrypt = ses.authstate.pw_passwd;
++	objIndex_t logAccountObjIid;
++	rdm_ZyLogCfgGpAccount_t *accountObj = NULL;
++	IID_INIT(logAccountObjIid);
++	while(zcfgFeObjStructGetNext(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &logAccountObjIid, (void **) &accountObj) == ZCFG_SUCCESS) {
++		if (!strcmp(accountObj->Username, username)){
++			retry_times = accountObj->AccountRetryTime;
++			lock_period = accountObj->AccountLockTime;
++			cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ; 
++			cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ; 
++		}
++		free(accountObj);
++	}
++
++	if(chk_account_is_locked(cur_user_idx, &login_fail_cnt, last_login_time, retry_times, lock_period)){
++		dropbear_log(LOG_WARNING, "user '%s' has been locked temporarily, rejected",
++				ses.authstate.pw_name);
++		syslog(LOG_WARNING, "Account: user '%s' has been locked temporarily, rejected.", ses.authstate.pw_name);
++		ses.authstate.failcount = MAX_AUTH_TRIES;
++		send_msg_userauth_failure(0, 1);
++		return;
++	}
+ #ifdef HAVE_SHADOW_H
+ 	/* get the shadow password if possible */
+ 	spasswd = getspnam(ses.authstate.pw_name);
+@@ -102,6 +187,7 @@
+ 				"Password auth succeeded for '%s' from %s",
+ 				ses.authstate.pw_name,
+ 				svr_ses.addrstring);
++		reset_authorize_fail_cnt(cur_user_idx);
+ 		send_msg_userauth_success();
+ 	} else {
+ 		syslog(LOG_INFO, "Account: Enter an invalid password for User '%s' from the host(%s).",username,remoteaddr);
+@@ -109,6 +195,8 @@
+ 				"Bad password attempt for '%s' from %s",
+ 				ses.authstate.pw_name,
+ 				svr_ses.addrstring);
++		login_fail_cnt++;
++		add_authorize_fail_cnt(cur_user_idx, login_fail_cnt);
+ 		send_msg_userauth_failure(0, 1);
+ 	}
+ }
+Index: dropbear-2012.55/svr-main.c
+===================================================================
+--- dropbear-2012.55.orig/svr-main.c	2012-02-23 21:47:06.000000000 +0800
++++ dropbear-2012.55/svr-main.c	2017-05-24 13:35:41.750594747 +0800
+@@ -29,6 +29,10 @@
+ #include "signkey.h"
+ #include "runopts.h"
+ #include "random.h"
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
+ 
+ static size_t listensockets(int *sock, size_t sockcount, int *maxfd);
+ static void sigchld_handler(int dummy);
+@@ -53,7 +57,7 @@
+ 	_dropbear_log = svr_dropbear_log;
+ 
+ 	disallow_core();
+-
++	zcfgEidInit(ZCFG_EID_DROPBEAR, NULL);
+ 	/* get commandline options */
+ 	svr_getopts(argc, argv);
+ 

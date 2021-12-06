@@ -1,0 +1,125 @@
+Index: libzcfg_fe_dal-1.0/voip/callRule/zcfg_fe_dal_call_rule_speed_dial.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/callRule/zcfg_fe_dal_call_rule_speed_dial.c	2017-12-11 16:12:51.924204577 +0800
++++ libzcfg_fe_dal-1.0/voip/callRule/zcfg_fe_dal_call_rule_speed_dial.c	2017-12-11 16:15:13.585533600 +0800
+@@ -64,14 +64,16 @@
+ 
+ zcfgRet_t zcfgFeDalCallRuleObjEditIidGet(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	cleanAll = json_object_get_boolean(json_object_object_get(Jobj, "CleanAll"));
+-	if(cleanAll == TRUE){
+-		callRuleType = CLEANALL;
+-	}else{
+-		callRuleType = SETRULE;
++	if(json_object_object_get(Jobj, "CleanAll")){
++		cleanAll = json_object_get_boolean(json_object_object_get(Jobj, "CleanAll"));
++		if(cleanAll == TRUE){
++			callRuleType = CLEANALL;
++		}else{
++			callRuleType = SETRULE;
++		}
+ 	}
+-
++	else 	// by default callRuleType = 0
++		callRuleType = SETRULE;
+ 	return ret;
+ }
+ 
+@@ -119,17 +121,33 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	//printf("%s() Enter \n ",__FUNCTION__);
+ 	struct json_object *callRule = NULL;
+-	int index;
++	int index, cmdIndex = 0;
++	const char *number = NULL, *name = NULL;
+ 
+ 	IID_INIT(CallRuleIid);
++	if(json_object_object_get(Jobj, "Index"))
++		cmdIndex = 	json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_SPEED_DIAL_BOOK_LIST, &CallRuleIid, &speedDailListJobj) == ZCFG_SUCCESS) {
+-		index = CallRuleIid.idx[1];
+-		callRule = json_object_array_get_idx(Jobj, index-1);
+-		OrigNumber = json_object_get_string(json_object_object_get(callRule, "Number"));
+-		Name = json_object_get_string(json_object_object_get(callRule, "Name"));
+-		json_object_object_add(speedDailListJobj, "OrigNumber", json_object_new_string(OrigNumber));
+-		json_object_object_add(speedDailListJobj, "Name", json_object_new_string(Name));
+-
++		if(cmdIndex != 0){	//	This condition is for CLI used
++			if(CallRuleIid.idx[1] == cmdIndex){
++				if(json_object_object_get(Jobj, "Number")){
++					number = json_object_get_string(json_object_object_get(Jobj, "Number"));
++					json_object_object_add(speedDailListJobj, "OrigNumber", json_object_new_string(number));
++				}
++				if(json_object_object_get(Jobj, "Name")){
++					name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++					json_object_object_add(speedDailListJobj, "Name", json_object_new_string(name));
++				}
++			}
++		}
++		else{	//	This condition is for GUI used
++			index = CallRuleIid.idx[1];
++			callRule = json_object_array_get_idx(Jobj, index-1);
++			OrigNumber = json_object_get_string(json_object_object_get(callRule, "Number"));
++			Name = json_object_get_string(json_object_object_get(callRule, "Name"));
++			json_object_object_add(speedDailListJobj, "OrigNumber", json_object_new_string(OrigNumber));
++			json_object_object_add(speedDailListJobj, "Name", json_object_new_string(Name));
++		}
+ 		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_SPEED_DIAL_BOOK_LIST, &CallRuleIid, multiJobj, speedDailListJobj)) == NULL){
+ 			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_SPEED_DIAL_BOOK_LIST);
+ 			zcfgFeJsonObjFree(speedDailListJobj);
+@@ -153,7 +171,6 @@
+ 	const char *number = NULL;
+ 	const char *name = NULL;
+ 
+-	if(json_object_object_get(Jobj, "type") || json_object_object_get(Jobj, "CleanAll")){	// for GUI 
+ 	initSpeedDialGlobalObjects();
+ 	zcfgFeDalCallRuleObjEditIidGet(Jobj);
+ 	multiJobj = zcfgFeJsonObjNew();
+@@ -163,10 +180,13 @@
+ 			printf("%s:(ERROR) fail to clean all of speed dial rule \n", __FUNCTION__);
+ 			goto exit;
+ 		}
+-
+ 	}else if(callRuleType == SETRULE){
+ 		speedDialObj = json_object_object_get(Jobj, "speedDial");
+-		if(speedDialObj != NULL){
++		if(json_object_object_get(Jobj, "Index")){
++			idx = json_object_get_string(json_object_object_get(Jobj, "Index"));
++			speedDialObj = JSON_OBJ_COPY(Jobj);
++		}
++		if(speedDialObj != NULL || idx != 0){
+ 			if((ret = zcfgFeDalVoipSetAllCallRule(speedDialObj)) != ZCFG_SUCCESS){
+ 				printf("%s:(ERROR) fail to set all of speed dial rule \n", __FUNCTION__);
+ 				goto exit;
+@@ -183,30 +203,6 @@
+ 	freeAllSpeedDialObjects();
+ 	return ret;
+ }
+-	else if(json_object_object_get(Jobj, "Index")){	// for dalcmd
+-		idx = json_object_get_int(json_object_object_get(Jobj, "Index"));
+-		if(idx < 10)
+-			sprintf(speednum,"\#0%d",idx);
+-		else
+-			sprintf(speednum,"\#%d",idx);
+-		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_SPEED_DIAL_BOOK_LIST, &speedDialLid, &speedDialObj) == ZCFG_SUCCESS){
+-			if(!strcmp(json_object_get_string(json_object_object_get(speedDialObj, "SpeedNumber")),speednum)){
+-				number = json_object_get_string(json_object_object_get(Jobj, "Number"));
+-				name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+-				if(json_object_object_get(Jobj, "Number"))
+-					json_object_object_add(speedDialObj, "OrigNumber", json_object_new_string(number));
+-				if(json_object_object_get(Jobj, "Name"))
+-					json_object_object_add(speedDialObj, "Name", json_object_new_string(name));
+-				zcfgFeObjJsonSet(RDM_OID_SPEED_DIAL_BOOK_LIST, &speedDialLid, speedDialObj, NULL);
+-				zcfgFeJsonObjFree(speedDialObj);
+-				break;
+-			}
+-			zcfgFeJsonObjFree(speedDialObj);
+-		}
+-		return ret;
+-	}
+-	
+-}
+ 
+ zcfgRet_t zcfgFeDalVoipCallRuleDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;

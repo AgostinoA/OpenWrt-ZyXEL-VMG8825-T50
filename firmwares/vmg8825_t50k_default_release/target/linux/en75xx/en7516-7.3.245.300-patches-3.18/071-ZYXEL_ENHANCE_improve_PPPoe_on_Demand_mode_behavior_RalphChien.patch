@@ -1,0 +1,154 @@
+Index: linux-3.18.21/drivers/net/ppp/ppp_generic.c
+===================================================================
+--- linux-3.18.21.orig/drivers/net/ppp/ppp_generic.c	2018-07-31 09:52:39.179536199 +0800
++++ linux-3.18.21/drivers/net/ppp/ppp_generic.c	2018-07-31 09:52:39.399646193 +0800
+@@ -1215,6 +1215,20 @@
+ 	struct sk_buff *new_skb;
+ 	int len;
+ 	unsigned char *cp;
++#if 1
++	int timestamp = 1;
++
++	if (proto == PPP_IP || proto == PPP_IPV6) {
++        if (ppp->debug)
++            printk(KERN_DEBUG "%s:%d skb->dev->name:%s  skb->original_dev->name:%s", __FUNCTION__, __LINE__, skb->dev->name, skb->original_dev->name);
++        /*
++        * only record timestamp when tx packet is from LAN.
++        * and if packet is from LAN, original_dev->name will be br0, br1, etc..., otherwise null.
++        */
++		timestamp = (skb->original_dev->name != NULL) ? 1 : 0;
++	}
++#endif
++
+ 
+ 	if (proto < 0x8000) {
+ #ifdef CONFIG_PPP_FILTER
+@@ -1234,10 +1248,16 @@
+ 		/* if this packet passes the active filter, record the time */
+ 		if (!(ppp->active_filter &&
+ 		      BPF_PROG_RUN(ppp->active_filter, skb) == 0))
++    #if 1
++	        if (timestamp)
++    #endif
+ 			ppp->last_xmit = jiffies;
+ 		skb_pull(skb, 2);
+ #else
+ 		/* for data packets, record the time */
++    #if 1
++        if (timestamp)
++    #endif
+ 		ppp->last_xmit = jiffies;
+ #endif /* CONFIG_PPP_FILTER */
+ 	}
+@@ -1308,6 +1328,10 @@
+ 	if (ppp->flags & SC_LOOP_TRAFFIC) {
+ 		if (ppp->file.rq.qlen > PPP_MAX_RQLEN)
+ 			goto drop;
++    #if 1
++        if (!timestamp)
++            goto drop;
++    #endif
+ 		skb_queue_tail(&ppp->file.rq, skb);
+ 		wake_up_interruptible(&ppp->file.rwait);
+ 		return;
+@@ -1754,11 +1778,31 @@
+ 		slhc_toss(ppp->vj);
+ }
+ 
++#if 1
++static int
++ppp_rx_filter(char *data)
++{
++    struct iphdr *encap;
++
++    encap = (struct iphdr *)(data + 2);
++    /* Multicast */
++    if (ipv4_is_multicast(encap->daddr) && !ipv4_is_local_multicast(encap->daddr))
++        return 1;
++
++    return 0;
++}
++#endif
++
+ static void
+ ppp_receive_nonmp_frame(struct ppp *ppp, struct sk_buff *skb)
+ {
+ 	struct sk_buff *ns;
+ 	int proto, len, npi;
++#if 1
++	struct sk_buff *tmp;
++	int timestamp = 0;
++	unsigned char *data;
++#endif	
+ 
+ 	/*
+ 	 * Decompress the frame, if compressed.
+@@ -1773,6 +1817,13 @@
+ 		goto err;
+ 
+ 	proto = PPP_PROTO(skb);
++
++#if 1
++    if (proto == PPP_IP) {
++		data = skb->data;
++		timestamp = ppp_rx_filter(data);
++	}
++#endif	
+ 	switch (proto) {
+ 	case PPP_VJC_COMP:
+ 		/* decompress VJ compressed packets */
+@@ -1848,6 +1899,34 @@
+ 	} else {
+ 		/* network protocol frame - give it to the kernel */
+ 
++#if 1
++    #ifdef CONFIG_PPP_FILTER
++        /* check if the packet passes the pass and active filters */
++        /* the filter instructions are constructed assuming
++           a four-byte PPP header on each packet */
++		if (skb_headroom(skb) < 2) {
++            tmp = alloc_skb(skb->len+2,GFP_ATOMIC); 
++            skb_reserve(tmp, 2); 
++            memcpy(skb_put(tmp, skb->len), skb->data, skb->len); 
++            kfree_skb(skb); 
++            skb = tmp; 
++        } 
++        *skb_push(skb, 2) = 0;
++        if (ppp->pass_filter && sk_run_filter(skb, ppp->pass_filter, ppp->active_len) == 0) {
++            if (ppp->debug & 1)
++                printk(KERN_DEBUG "PPP: inbound frame not passed\n");
++            kfree_skb(skb);
++            return;
++        }
++        if (!(ppp->active_filter && sk_run_filter(skb, ppp->active_filter, ppp->active_len) == 0))
++            if (timestamp)
++                ppp->last_recv = jiffies;
++        skb_pull(skb, 2);
++    #else
++        if (timestamp)
++            ppp->last_recv = jiffies;
++    #endif /* CONFIG_PPP_FILTER */
++#else
+ #ifdef CONFIG_PPP_FILTER
+ 		/* check if the packet passes the pass and active filters */
+ 		/* the filter instructions are constructed assuming
+@@ -1873,6 +1952,7 @@
+ 		} else
+ #endif /* CONFIG_PPP_FILTER */
+ 			ppp->last_recv = jiffies;
++#endif
+ 
+ 		if ((ppp->dev->flags & IFF_UP) == 0 ||
+ 		    ppp->npmode[npi] != NPMODE_PASS) {
+Index: linux-3.18.21/net/core/dev.c
+===================================================================
+--- linux-3.18.21.orig/net/core/dev.c	2018-07-31 09:52:39.391642193 +0800
++++ linux-3.18.21/net/core/dev.c	2018-08-01 08:50:19.134172300 +0800
+@@ -3663,6 +3663,7 @@
+ 	trace_netif_receive_skb(skb);
+ 
+ 	orig_dev = skb->dev;
++    skb->original_dev = skb->dev;
+ 
+ #if defined(ZYXEL_KF_TMS)
+ 	/*******************************

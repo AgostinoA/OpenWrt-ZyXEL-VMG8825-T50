@@ -1,0 +1,135 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_dos.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_dos.c	2017-05-18 10:44:14.368660195 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_dos.c	2017-05-18 10:46:44.106850866 +0800
+@@ -12,11 +12,62 @@
+ 
+ dal_param_t FIREWALL_DOS_param[]={
+ 	{"enableDos", 		dalType_boolean,	0,	0,	NULL},
+-	{"enablePingRes",	dalType_boolean,	0,	0,	NULL},
++	//{"enablePingRes",	dalType_boolean,	0,	0,	NULL},
+ 	{NULL,					0,	0,	0,	NULL},
+ 
+ };
+ 
++void zcfgFeDalShowFirewallDos(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray,i);
++
++		if(json_object_get_boolean(json_object_object_get(obj,"enableDos")))
++			printf("DoS Protection Blocking is Enabled \n");
++		else
++			printf("DoS Protection Blocking is Disabled \n");
++		/*
++		if(json_object_get_boolean(json_object_object_get(obj,"enablePingRes")))
++			printf("Deny ping is Enabled \n");
++		else
++			printf("Deny ping is Disabled \n");
++		*/
++	}
++}
++
++zcfgRet_t zcfgFeDal_DOS_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *dosObj = NULL;
++	struct json_object *obj = NULL;
++	objIndex_t dosIid = {0};
++	bool enableDos = false;
++	//bool enablePingRes = false;
++
++	IID_INIT(dosIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FIREWALL, &dosIid, &obj);
++	if(ret == ZCFG_SUCCESS){
++		dosObj = json_object_new_object();
++		enableDos = json_object_get_boolean(json_object_object_get(obj, "X_ZYXEL_Dos_Enable"));
++		json_object_object_add(dosObj, "enableDos", json_object_new_boolean(enableDos));
++		/*
++		enablePingRes = json_object_get_boolean(json_object_object_get(obj, "X_ZYXEL_DenyPing"));
++		json_object_object_add(dosObj, "enablePingRes", json_object_new_boolean(enablePingRes));
++		*/
++		json_object_array_add(Jarray, dosObj);
++		zcfgFeJsonObjFree(obj);
++	}
++	
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDal_DOS_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *dosObj = NULL;
+@@ -28,25 +79,36 @@
+ 	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FIREWALL, &dosIid, &dosObj);
+ 
+ 	if(ret == ZCFG_SUCCESS){
+-		enableDos = json_object_get_boolean(json_object_object_get(Jobj, "enableDos"));
+-		enablePingRes = json_object_get_boolean(json_object_object_get(Jobj, "enablePingRes"));
+-		json_object_object_add(dosObj, "X_ZYXEL_Dos_Enable", json_object_new_boolean(enableDos));
+-		json_object_object_add(dosObj, "X_ZYXEL_DenyPing", json_object_new_boolean(enablePingRes));
++		if(json_object_object_get(Jobj, "enableDos")){
++			enableDos = json_object_get_boolean(json_object_object_get(Jobj, "enableDos"));
++				json_object_object_add(dosObj, "X_ZYXEL_Dos_Enable", json_object_new_boolean(enableDos));
++		}
++		/*
++		if(json_object_object_get(Jobj, "enablePingRes")){
++			enablePingRes = json_object_get_boolean(json_object_object_get(Jobj, "enablePingRes"));
++			json_object_object_add(dosObj, "X_ZYXEL_DenyPing", json_object_new_boolean(enablePingRes));
++		}
++		*/
+ 		ret = zcfgFeObjJsonSet(RDM_OID_FIREWALL, &dosIid, dosObj, NULL);
++		zcfgFeJsonObjFree(dosObj);
+ 	}
+ 	
+-	zcfgFeJsonObjFree(dosObj);
++	
+ 	return ret;
+ }
+ 
+ zcfgRet_t zcfgFeDalFirewallDos(const char *method, struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+-	if(!strcmp(method, "PUT"))
++	if(!strcmp(method, "PUT")){
+ 		ret = zcfgFeDal_DOS_Edit(Jobj, NULL);
+-	else
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_DOS_Get(Jobj, NULL);
++	}
++	else{
+ 		printf("Unknown method:%s\n", method);
+-
++	}
++	
+ 	return ret;
+ }
+-
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-18 10:44:16.236660161 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-18 10:57:56.752964601 +0800
+@@ -186,6 +186,7 @@
+ extern void zcfgFeDalShowSystemInfo(struct json_object *Jarray);
+ extern void zcfgFeDalShowSNMP(struct json_object *Jarray);
+ extern void zcfgFeDalShowPolicyRoute(struct json_object *Jarray);
++extern void zcfgFeDalShowFirewallDos(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -215,7 +216,7 @@
+ {"VLANGRP", 		VLANGRP_param,		zcfgFeDalVlanGroup,		zcfgFeDalShowVlanGroup,		"get|add|edit|delete",	"Vlan Group"},//Vlan_Group
+ {"IGMPMLD", 		IGMPMLD_param,		zcfgFeDalIGMPMLD,		zcfgFeDalShowIGMPMLD,		"get|edit",			"IGMP/MLD"},//IGMP_MLD
+ {"FIREWALL",		FIREWALL_param, 	zcfgFeDalFirewall,		zcfgFeDalShowFirewall,		"get|add|edit",			"Firewall"}, //Firewall
+-{"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	NULL,						"edit",				""},//Firewall
++{"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	zcfgFeDalShowFirewallDos,	"get|edit",				"Firewall"},
+ {"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,NULL,				"add|edit|delete", 	""},//Firewall
+ {"FirewallAcl", 	FIREWALL_ACL_param, zcfgFeDalFirewallACL,	zcfgFeDalShowFirewallACL,	"add|edit|delete|get",	"Firewall"},
+ {"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,   zcfgFeDalShowWifiGeneral,	"edit|get",			"Wireless"},

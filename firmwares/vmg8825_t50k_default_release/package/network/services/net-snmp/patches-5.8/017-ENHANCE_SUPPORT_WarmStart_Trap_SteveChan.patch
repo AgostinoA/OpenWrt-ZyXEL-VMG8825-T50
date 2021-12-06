@@ -1,0 +1,133 @@
+diff -urN net-snmp-5.8.org/agent/snmpd.c net-snmp-5.8/agent/snmpd.c
+--- net-snmp-5.8.org/agent/snmpd.c	2019-04-11 10:29:44.646737700 +0800
++++ net-snmp-5.8/agent/snmpd.c	2019-04-11 14:13:10.769166295 +0800
+@@ -202,6 +202,8 @@
+ #include <mibgroup/smux/smux.h>
+ #endif /* USING_SMUX_MODULE */
+ 
++/*Zyxel Porting for WarmStart trap -- 2017.01.06 Steve*/
++#define ZYXEL_SNMP_WARMSTART_FEATURE 1
+ /*
+  * Prototypes.
+  */
+@@ -322,6 +324,9 @@
+            "  -X\t\t\trun as an AgentX subagent rather than as an\n"
+ 	   "\t\t\t  SNMP master agent\n"
+ #endif
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++     "  -w OPTION\t\tSend2 ColdStart/WarmStart trap (OPTION 0:ColdStart 1:WarmStart)\n"
++#endif
+            ,
+            "\nDeprecated options:\n"
+            "  -l FILE\t\tuse -Lf <FILE> instead\n"
+@@ -431,6 +436,9 @@
+ #ifdef USING_AGENTX_SUBAGENT_MODULE
+         "X"
+ #endif
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++        "w:"
++#endif
+         ;
+     int             arg, i, ret, exit_code = 1;
+     int             dont_fork = 0, do_help = 0;
+@@ -445,9 +453,11 @@
+     int fd;
+     FILE           *PID;
+ #endif
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++  unsigned char coldstart = 0;
++#endif
+ 
+     SOCK_STARTUP;
+-
+ #ifndef NETSNMP_NO_SYSTEMD
+     /* check if systemd has sockets for us and don't close them */
+     prepared_sockets = netsnmp_sd_listen_fds(0);
+@@ -460,7 +470,6 @@
+     if (!prepared_sockets)
+         netsnmp_close_fds(2);
+ #endif
+-    
+     /*
+      * register signals ASAP to prevent default action (usually core)
+      * for signals during startup...
+@@ -487,7 +496,6 @@
+ #ifdef SIGXFSZ
+     signal(SIGXFSZ, SnmpdCatchRandomSignal);
+ #endif
+-
+ #ifdef NETSNMP_NO_ROOT_ACCESS
+     /*
+      * Default to no.  
+@@ -833,13 +841,32 @@
+         case 'Y':
+             netsnmp_config_remember(optarg);
+             break;
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++        case 'w': //ColdStart
++        /*-w 1 ---- WarmStart     *
++        *-w 0 ---- ColdStart     */
++          if(optarg != NULL){
++            char           *warmecp;
++            int             warmvalue;
++
++            warmvalue = strtoul(optarg, &warmecp, 10);
++
++            if(*warmecp){ //Parsing not complete, data error
++
++              fprintf(stderr, "Bad WarmStart Option: %s\n", optarg);
++              exit(1);
++            }
++            coldstart = !warmvalue;
++          }
++        break;
++#endif
++
+ 
+         default:
+             usage(argv[0]);
+             break;
+         }
+     }
+-
+     if (do_help) {
+         netsnmp_ds_set_boolean(NETSNMP_DS_APPLICATION_ID, 
+                                NETSNMP_DS_AGENT_NO_ROOT_ACCESS, 1);
+@@ -884,7 +911,6 @@
+         goto out;
+ #endif /* NETSNMP_NO_LISTEN_SUPPORT */
+     }
+-
+ #if defined(NETSNMP_DAEMONS_DEFAULT_LOG_SYSLOG)
+     if (0 == log_set)
+         snmp_enable_syslog();
+@@ -953,7 +979,6 @@
+   zcfgEidInit(ZCFG_EID_SNMPD, "snmpd");
+ #endif
+     init_snmp(app_name);
+-
+     if ((ret = init_master_agent()) != 0) {
+         /*
+          * Some error opening one of the specified agent transports.  
+@@ -1091,7 +1116,6 @@
+      * Store persistent data immediately in case we crash later.  
+      */
+     snmp_store(app_name);
+-
+ #ifdef SIGHUP
+     DEBUGMSGTL(("signal", "registering SIGHUP signal handler\n"));
+     signal(SIGHUP, SnmpdReconfig);
+@@ -1100,8 +1124,12 @@
+     /*
+      * Send coldstart trap if possible.  
+      */
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++  if(!coldstart)
++    send_easy_trap(1, 0);
++  else
++#endif
+     send_easy_trap(0, 0);
+-
+     /*
+      * We're up, log our version number.  
+      */

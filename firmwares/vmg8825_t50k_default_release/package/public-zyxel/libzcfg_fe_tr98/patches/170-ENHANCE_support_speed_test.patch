@@ -1,0 +1,246 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-07-14 14:27:30.893977153 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-07-14 14:34:08.678778900 +0800
+@@ -240,6 +240,9 @@
+ {e_TR98_MACFILTER_WHITELIST	     , &tr98Obj[e_TR98_MACFILTER_WHITELIST	     -e_TR98_START]},
+ {e_TR98_PAREN_CTL             , &tr98Obj[e_TR98_PAREN_CTL             -e_TR98_START]},
+ {e_TR98_PAREN_CTL_PROF            , &tr98Obj[e_TR98_PAREN_CTL_PROF            -e_TR98_START]},
++#ifdef ONECONNECT
++{e_TR98_ONECONNECT_SPEEDTESTINFO            , &tr98Obj[e_TR98_ONECONNECT_SPEEDTESTINFO            -e_TR98_START]},
++#endif
+ #endif
+ #if OBSOLETED
+ #else
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-07-14 14:27:30.893977153 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-07-14 14:32:33.230993785 +0800
+@@ -203,7 +203,7 @@
+ 
+ #ifdef ONECONNECT
+ #define TR98_ONECONNECT_EXT            	   "InternetGatewayDevice.LANDevice.i.Hosts.Host.i.X_ZYXEL_EXT"
+-//#define TR98_ONECONNECT_SPEEDTEST          "InternetGatewayDevice.X_ZYXEL_EXT.SpeedTestInfo"
++#define TR98_ONECONNECT_SPEEDTESTINFO          "InternetGatewayDevice.X_ZYXEL_EXT.SpeedTestInfo"
+ #endif
+ #ifdef ZyXEL_IPP_PRINTSERVER
+ #define TR98_PRINT_SERVER           "InternetGatewayDevice.X_ZYXEL_EXT.PrintServer"
+@@ -421,6 +421,9 @@
+ {TR98_MACFILTER_WHITELIST,		    ATTR_INDEX_CREA, 	para_MacFilter_WhiteList,		zyExtMacFilterWhiteListObjGet,		 zyExtMacFilterWhiteListObjSet,		   zyExtMacFilterWhiteListObjAdd,             zyExtMacFilterWhiteListObjDel,            NULL, NULL, NULL},
+ {TR98_PAREN_CTL,                 0,              para_ParenCtl,          zyExtParenCtlObjGet,          zyExtParenCtlObjSet,         NULL,             NULL,            NULL, NULL, NULL},
+ {TR98_PAREN_CTL_PROF,           ATTR_INDEX_CREA,para_ParenCtlProf,     zyExtParenCtlProfObjGet,     zyExtParenCtlProfObjSet,    zyExtParenCtlProfObjAdd,zyExtParenCtlProfObjDel,NULL, NULL, NULL},
++#ifdef ONECONNECT
++{TR98_ONECONNECT_SPEEDTESTINFO,		    0, 	para_SpeedTestInfo,		zyExtSpeedTestInfoObjGet,		 zyExtSpeedTestInfoObjSet,		   NULL,             NULL,            NULL},
++#endif
+ #endif
+ #if OBSOLETED
+ #else
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2015-07-14 14:27:30.793977156 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2015-07-14 14:33:04.006260108 +0800
+@@ -13,6 +13,14 @@
+ #include "zcfg_fe_tr98.h"
+ #include "zyExt_parameter.h"
+ 
++#ifdef ONECONNECT
++#define DOWNLOAD_FORMAT "SpeedTest -c %d -a %s -p %d -s %s -u %s &"
++#define MDOWNLOAD_FORMAT "SpeedTest -c %d -f %s -p %d -s %s -u %s &"
++#define UPLOAD_FORMAT "SpeedTest -c %d -a %s -p %d -s %s -l %d &"
++#define MUPLOAD_FORMAT "SpeedTest -c %d -f %s -p %d -s %s -l %d &"
++#define RESULT_FILE_DIR "/tmp/SpeedTestInfo"
++#endif
++
+ extern tr98Object_t tr98Obj[];
+ 
+ /*
+@@ -2040,6 +2048,143 @@
+ 
+ 	return zcfgFeObjStructDel(RDM_OID_PAREN_CTL_PROF, &objIid, NULL);;
+ }
++
++#ifdef ONECONNECT
++/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTest */
++zcfgRet_t zyExtSpeedTestInfoObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	tr98Parameter_t *paramList = NULL;
++	char url[256] = {0}, action[256] = {0}, condition[32] = {0}, downSpeed[16] = {0}, upSpeed[16] = {0};
++	char line[512] = {0};
++	int fin = 1;
++	FILE *fp = NULL;
++	
++	printf("%s : Enter\n", __FUNCTION__);
++	
++	fp = fopen(RESULT_FILE_DIR, "r");
++
++	if(fp != NULL){
++		while(fgets(line, sizeof(line), fp)){
++			if(strstr(line, "URL") != 0){
++				sscanf(line, "%*[^ ]%s", url);
++			}
++			else if(strstr(line, "action") != 0){
++				sscanf(line, "%*[^ ]%s", action);
++			}
++			else if(strstr(line, "condition") != 0){
++				sscanf(line, "%*[^ ]%s", condition);
++				if(strncmp(condition, "running", sizeof(condition)) == 0)
++					fin = 0;
++			}
++			else if(strstr(line, "upload speed") != 0){
++				sscanf(line, "%*[^:]%*[^ ]%s", upSpeed);
++			}
++			else if(strstr(line, "download speed") != 0){
++				sscanf(line, "%*[^:]%*[^ ]%s", downSpeed);
++			}
++		}
++	
++		fclose(fp);
++	}
++	
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++
++	while(paramList->name != NULL) {
++		if(!strcmp(paramList->name, "URL")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(url));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "ActionType")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(action));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "End")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(fin));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "UploadSpeed")) {
++			if(strcmp(upSpeed, "") == 0)
++				strcpy(upSpeed, "0");
++				
++			sprintf(upSpeed, "%s Mbits", upSpeed);
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(upSpeed));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "DownloadSpeed")) {
++			if(strcmp(downSpeed, "") == 0)
++				strcpy(downSpeed, "0");
++				
++			sprintf(downSpeed, "%s Mbits", downSpeed);
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(downSpeed));
++			paramList++;
++			continue;
++		}
++		
++		paramList++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTest */
++zcfgRet_t zyExtSpeedTestInfoObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	int limitedTestCount = 10, protocol = 80, start = 0 , end = 0;
++	unsigned int testFileLength = 5;
++	char url_Tmp[256] = {0}, host[256] = {0}, fileName[256] = {0}, action[256] = {0}, cmd[512];
++	char *front = NULL, *rear = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if(strcmp(paramList->name, "URL") == 0){
++				strcpy(url_Tmp, json_object_get_string(paramValue));
++				sscanf(url_Tmp, "http://%n%*[^/]%n", &start, &end);
++				
++				front = url_Tmp + start;
++				rear =  url_Tmp + end;
++				
++				strncpy(fileName, rear, sizeof(fileName) - 1);
++				
++				if(*rear != '\0')
++					*rear = '\0';
++				
++				strncpy(host, front, sizeof(host) - 1);	
++			}
++			else if(strcmp(paramList->name, "ActionType") == 0){
++				strcpy(action, json_object_get_string(paramValue));
++			}
++		}
++		paramList++;
++	}
++	
++	
++	if(strncasecmp(action, "Upload", sizeof(action) - 1) == 0){
++		sprintf(cmd, UPLOAD_FORMAT, limitedTestCount, host, protocol, "up", testFileLength);	
++	}
++	else if(strncasecmp(action, "Download", sizeof(action) - 1) == 0){
++		sprintf(cmd, DOWNLOAD_FORMAT, limitedTestCount, host, protocol, "down", fileName);
++	}
++	else
++		return ZCFG_INVALID_ARGUMENTS;
++	
++	printf("%s:cmd is %s\n", __FUNCTION__, cmd);
++	system(cmd);
++	
++	return ZCFG_SUCCESS;
++}
++#endif
++
+ /*
+  *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_EXT.PrintServer
+  *
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2015-07-14 14:27:30.793977156 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2015-07-14 14:33:33.043213199 +0800
+@@ -21,6 +21,11 @@
+ #ifdef ZyXEL_IPP_PRINTSERVER
+ extern tr98Parameter_t para_Ipp_PrintServer[];
+ #endif
++
++#ifdef ONECONNECT
++extern tr98Parameter_t para_SpeedTestInfo[];
++#endif
++
+ /*Handler Function*/
+ 
+ /*InternetGatewayDevice.X_ZYXEL_EXT.DNSRouteEntry.i*/
+@@ -95,3 +100,8 @@
+ extern zcfgRet_t zyExtIppPrintServObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtIppPrintServObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ #endif
++
++#ifdef ONECONNECT
++extern zcfgRet_t zyExtSpeedTestInfoObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtSpeedTestInfoObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++#endif
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2015-07-14 14:27:30.793977156 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2015-07-14 14:31:29.185916315 +0800
+@@ -120,4 +120,15 @@
+ 	{ "IppMake", PARAMETER_ATTR_WRITE, 32, json_type_string},
+ 	{ NULL, 0, 0}
+ };
++#endif
++
++#ifdef ONECONNECT
++tr98Parameter_t para_SpeedTestInfo[] = {
++	{ "URL", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "ActionType", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "End", PARAMETER_ATTR_READONLY, 0, json_type_int},
++	{ "UploadSpeed", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "DownloadSpeed", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ NULL, 0, 0, 0}
++};
+ #endif
+\ No newline at end of file

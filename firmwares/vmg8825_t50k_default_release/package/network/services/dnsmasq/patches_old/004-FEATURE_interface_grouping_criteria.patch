@@ -1,0 +1,274 @@
+Index: dnsmasq-2.67/src/dhcp-protocol.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dhcp-protocol.h	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/dhcp-protocol.h	2014-08-22 08:04:24.210432561 +0800
+@@ -94,3 +94,19 @@
+   u8 chaddr[DHCP_CHADDR_MAX], sname[64], file[128];
+   u8 options[312];
+ };
++
++#ifdef ZYXEL_DHCP
++enum dhcp_option {
++	FLAG_OPTION_VENDOR_ID = 2, // OPTION 60
++	FLAG_OPTION_CLIENT_ID, // OPTION 61
++	FLAG_OPTION_VENDOR_IDENT_OPT // OPTION 125
++};
++
++#define SET_FLAG_OPTION_60(x) ((x) |= (1 << FLAG_OPTION_VENDOR_ID))
++#define SET_FLAG_OPTION_61(x) ((x) |= (1 << FLAG_OPTION_CLIENT_ID))
++#define SET_FLAG_OPTION_125(x) ((x) |= (1 << FLAG_OPTION_VENDOR_IDENT_OPT))
++
++#define CLIENT_HAVE_OPTION_60(x) ((x) & (1 << FLAG_OPTION_VENDOR_ID))
++#define CLIENT_HAVE_OPTION_61(x) ((x) & (1 << FLAG_OPTION_CLIENT_ID))
++#define CLIENT_HAVE_OPTION_125(x) ((x) & (1 << FLAG_OPTION_VENDOR_IDENT_OPT))
++#endif /* ZYXEL_DHCP */
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2014-08-22 07:51:27.746462288 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2014-08-22 08:04:36.506432090 +0800
+@@ -1328,7 +1328,7 @@
+ #ifdef ZYXEL_DHCP
+ extern void dnsmasq_eid_register(void);
+ extern void handle_op125_request(unsigned char *oui,unsigned char *serial,unsigned char *pclass);
+-extern void send_dhcp_option_request(char *ifName, char *vendorID, unsigned char *chaddr, char reply[]);
++extern void send_dhcp_option_request(char *ifName, char *vendorID, unsigned char *chaddr, unsigned char *oui, unsigned char *serial, unsigned char *pclass, char *opt61Val, char reply[]);
+ extern void handle_STB_Vendor_ID_request();
+ #endif
+ 
+Index: dnsmasq-2.67/src/extern.c
+===================================================================
+--- dnsmasq-2.67.orig/src/extern.c	2014-08-22 07:51:27.690462290 +0800
++++ dnsmasq-2.67/src/extern.c	2014-08-22 08:05:11.258430759 +0800
+@@ -91,31 +91,53 @@
+ 
+ }
+ 
+-void send_dhcp_option_request(char *ifName, char *vendorID, unsigned char *chaddr, char reply[])
++void
++send_dhcp_option_request(
++	char *ifName,
++	char *vendorID,
++	unsigned char *chaddr,
++	unsigned char *oui,
++	unsigned char *serial,
++	unsigned char *pclass,
++	char *opt61Val,
++	char reply[]
++)
+ {
+ 	zcfgRet_t ret = 0;
+ 	dnsmasqOption_t dnsmasqInfo;
+-	
++
+ 	my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
+ 
+ 	memset(&dnsmasqInfo, '\0', sizeof(dnsmasqInfo));
+-	
++
++	if(oui)
++		strncpy(dnsmasqInfo.ManufacturerOUI, (char *)(&oui[2]), oui[1]);
++
++	if(serial)
++		strncpy(dnsmasqInfo.SerialNumber, (char *)(&serial[2]), serial[1]);
++
++	if(pclass)
++		strncpy(dnsmasqInfo.ProductClass, (char *)(&pclass[2]), pclass[1]);
++
+ 	if(ifName)
+ 		strncpy(dnsmasqInfo.ifName, (char *)ifName, sizeof(dnsmasqInfo.ifName));
+-	
++
+ 	if(chaddr)
+ 		memcpy(dnsmasqInfo.chaddr, (char *)chaddr, 32);
+-	
++
+ 	if(vendorID)
+ 		strncpy(dnsmasqInfo.op60, (char *)vendorID, sizeof(dnsmasqInfo.op60));
+ 
++	if(opt61Val)
++		strncpy(dnsmasqInfo.op61, (char *)opt61Val, sizeof(dnsmasqInfo.op61));
++
+ 	/* send ZCFG_MSG_DHCPD_OPTION to ESMD for DHCP option  */
+ 	ret = dnsmasq_msg_send(ZCFG_MSG_DHCPD_OPTION, sizeof(dnsmasqOption_t), (const char *)&dnsmasqInfo, reply);
+ 	my_syslog(MS_DHCP | LOG_INFO, "%s esmd reply=%s", __func__, reply);
+-	
++
+ 	if(ret != ZCFG_SUCCESS && ret != ZCFG_SUCCESS_AND_NO_REPLY){
+ 		my_syslog(MS_DHCP | LOG_ERR, "%s dnsmasq_msg_send fail,ret=%d", __func__, ret);
+-		strcpy(reply, "accept");//default pass any port any service 
++		strcpy(reply, "accept");//default pass any port any service
+ 	}
+ }
+ 
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2014-08-22 07:51:27.734462289 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2014-08-22 08:08:27.534423245 +0800
+@@ -100,10 +100,14 @@
+   unsigned char pxe_uuid[17];
+   unsigned char *oui = NULL, *serial = NULL, *class = NULL;
+ #ifdef ZYXEL_DHCP
++  unsigned int option_flag = 1; // always check MAC address
+   char *s_ret = NULL, *macEmpty = NULL;
++  int i;
+   int j;
+   char vendorId[256] = "";
+   char intfGrpOptionCheck[16] = "";
++  char opt61Val[256] = "\0";
++  char *p = NULL;
+ #endif
+   subnet_addr.s_addr = override.s_addr = 0;
+ 
+@@ -130,61 +134,43 @@
+       mess_type = option_uint(opt, 0, 1);
+ 
+ #ifdef ZYXEL_DHCP
+-	if ((opt = option_find(mess, sz, OPTION_VENDOR_ID, 2))){	//get dhcp option 60
+-		if(dhcpclientnum <= DHCP_CLIENT_NUM && 0<= dhcpclientnum){
++	opt = option_find(mess, sz, OPTION_VENDOR_ID, 2);
++	if ( opt ) {
++		SET_FLAG_OPTION_60(option_flag);
++	}
++
++	if(dhcpclientnum <= DHCP_CLIENT_NUM && 0<= dhcpclientnum){
++		if ( CLIENT_HAVE_OPTION_60(option_flag) ) {
+ 			emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
+ 			vendor_class_len = option_len(opt);
+ 			memset(daemon->dhcp_buff3, '\0', strlen(daemon->dhcp_buff3));
+ 			memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
+ 			strncpy(vendorId, option_ptr(opt, 0), option_len(opt));
+-			for(j=0; j<dhcpclientnum; j++){
+-				my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-				my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
+-				s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len)); //get client MAC Address
+-				if(s_ret != NULL) //client MAC already exist in mac table
+-					break;
+-			}
+-			my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
+-			my_syslog(LOG_INFO, _("daemon->dhcp_buff3 = %s"), vendorId);
+-			my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-			my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
+-			my_syslog(MS_DHCP | LOG_WARNING, _("inet_ntoa(mess->giaddr)=%s"),inet_ntoa(mess->giaddr));
+-
+-			macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
+-			if(s_ret == NULL && macEmpty == NULL){ //client MAC doesn't exist in mac table, means this client is newer
+-				strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
+-				if(strcmp(daemon->dhcp_buff3, ""))
+-					strcpy(vendorid[dhcpclientnum], daemon->dhcp_buff3);
+-				else
+-					strcpy(vendorid[dhcpclientnum], "*");
+-				my_syslog(LOG_INFO, _("dhcp client number ++"));
+-				dhcpclientnum++; //means total number that connect to DHCP server
+-			}
+-			my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-			my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
+ 		}
+-	}
+-	else{ //DHCP packet don't have option 60
+-		if(dhcpclientnum <= DHCP_CLIENT_NUM && 0<= dhcpclientnum){
+-			for(j=0; j<dhcpclientnum; j++){
+-				my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-				my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
+-				s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len));
+-				if(s_ret != NULL)
+-					break;
+-			}
+-			my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
+-			macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
+-			if(s_ret == NULL && macEmpty == NULL){
+-				strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
++
++		for(j=0; j<dhcpclientnum; j++){
++			my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++			my_syslog(LOG_INFO, _("print_mac = %s len = %d"), print_mac(daemon->namebuff, emac, emac_len), emac_len);
++			my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
++			s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len)); //get client MAC Address
++			if(s_ret != NULL) //client MAC already exist in mac table
++				break;
++		}
++
++		macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
++		if(s_ret == NULL && macEmpty == NULL){
++			strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
++			if ( CLIENT_HAVE_OPTION_60(option_flag) ) {
++				if(strcmp(daemon->dhcp_buff3, "")) strcpy(vendorid[dhcpclientnum], daemon->dhcp_buff3);
++				else strcpy(vendorid[dhcpclientnum], "*");
++			} else {
+ 				strcpy(vendorid[dhcpclientnum], "*");
+-				my_syslog(LOG_INFO, _("dhcp client number ++"));
+-				dhcpclientnum++;
+ 			}
+-			my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-			my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
+-			my_syslog(LOG_INFO, _("option 60 doesn't exist"));
++			my_syslog(LOG_INFO, _("dhcp client number ++"));
++			dhcpclientnum++;
+ 		}
++		my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
++		my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
+ 	}
+ #endif
+       
+@@ -229,7 +215,8 @@
+ 		  class = option_find1(x, y, 3, 1);
+ 
+ #ifdef ZYXEL_DHCP /*save the DHCP option to Gateway , by charisse*/
+-		  handle_op125_request( oui, serial, class);
++		  SET_FLAG_OPTION_125(option_flag);
++		  handle_op125_request(oui, serial, class);
+ #endif
+ 		  
+ 		  /* If TR069-id is present set the tag "cpewan-id" to facilitate echoing 
+@@ -303,6 +290,17 @@
+ 	{
+ 	  clid_len = option_len(opt);
+ 	  clid = option_ptr(opt, 0);
++
++#ifdef ZYXEL_DHCP  // for Interface Grouping Criteria
++	  /* only for type2 "ff $IAID 0002 $DUID" */
++		if ( clid_len < 255 ) {
++			SET_FLAG_OPTION_61(option_flag);
++			p = opt61Val;
++			for ( i = 0 ; i < clid_len ; i++ ) {
++				p += sprintf(p, "%X", *(clid+i));
++			}
++		}
++#endif
+ 	}
+ 
+       /* do we have a lease in store? */
+@@ -982,20 +980,23 @@
+  
+ #ifdef ZYXEL_DHCP
+ 	my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-	
++
+ 	my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
+ 	my_syslog(MS_DHCP | LOG_WARNING, _("vendorId=%s"),  vendorId);
+-  /*send option 60 information for any port any service*/
+-if(strcmp(vendorId, "")){
+-	send_dhcp_option_request(iface_name, vendorId, emac, intfGrpOptionCheck);
+-my_syslog(MS_DHCP | LOG_WARNING, _("intfGrpOptionCheck=%s"),  intfGrpOptionCheck);
+-	  /*check interface grouping creteria*/
+-	if((intfGrpOptionCheck != NULL) && (strcmp(intfGrpOptionCheck, ""))){
+-		if(!strcmp(intfGrpOptionCheck, "decline") || !strcmp(intfGrpOptionCheck, "redirect"))
+-			return 0;
+-	}
+-}
+ 
++	/*send DHCP option information for any port any service*/
++	if ( option_flag ) {
++		//unsigned char *oui = NULL, *serial = NULL, *class = NULL;
++		send_dhcp_option_request(iface_name, vendorId, emac, oui, serial, class, opt61Val, intfGrpOptionCheck);
++		my_syslog(MS_DHCP | LOG_WARNING, _("intfGrpOptionCheck=%s"),  intfGrpOptionCheck);
++
++		/*check interface grouping creteria*/
++		if((intfGrpOptionCheck != NULL) && (strcmp(intfGrpOptionCheck, ""))){
++			if(!strcmp(intfGrpOptionCheck, "decline") || !strcmp(intfGrpOptionCheck, "redirect")) {
++				return 0;
++			}
++		}
++	}
+ #endif
+  
+   switch (mess_type)

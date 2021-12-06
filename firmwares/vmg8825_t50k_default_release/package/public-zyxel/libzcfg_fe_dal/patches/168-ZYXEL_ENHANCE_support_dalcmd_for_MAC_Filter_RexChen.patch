@@ -1,0 +1,289 @@
+Index: libzcfg_fe_dal-1.0/security/macFilter/zcfg_fe_dal_mac_filter.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/macFilter/zcfg_fe_dal_mac_filter.c	2017-05-04 14:54:15.670125913 +0800
++++ libzcfg_fe_dal-1.0/security/macFilter/zcfg_fe_dal_mac_filter.c	2017-05-04 14:57:47.366316100 +0800
+@@ -12,14 +12,45 @@
+ 
+ dal_param_t MAC_Filter_param[] =
+ {
+-	{"Index", 			dalType_int, 		0, 	0, 	NULL},
+-	{"Filter_Enable", 			dalType_boolean, 	0, 	0, 	NULL},
+-	{"Restrict", 		dalType_boolean, 	0, 	0, 	NULL},
+-	{"List_Enable", 	dalType_boolean, 	0, 	0, 	NULL},
+-	{"HostName", 		dalType_string, 	0, 	0, 	NULL},
+-	{"MACAddress", 		dalType_string, 	0, 	0, 	NULL},
++	{"Filter_Enable", 	dalType_boolean, 	0, 	0, 	NULL,	NULL,	NULL},
++	{"Restrict", 		dalType_boolean, 	0, 	0, 	NULL,	NULL,	NULL},
++	{"Index", 			dalType_int, 		0, 	0, 	NULL,	NULL,	dal_Edit|dal_Delete},
++	{"Enable", 			dalType_boolean, 	0, 	0, 	NULL,	NULL,	dal_Add},
++	{"HostName", 		dalType_string, 	0, 	0, 	NULL,	NULL,	dal_Add},
++	{"MACAddress", 		dalType_string, 	0, 	0, 	NULL,	NULL,	dal_Add},
+ 	{NULL, 					0, 				0, 	0, 	NULL}
+ };
++void zcfgFeDalShowMACFilter(struct json_object *Jarray){
++	int len = 0, i;
++	struct json_object *obj = NULL;
++	struct json_object *obj1 = NULL;
++	struct json_object *MACObj = NULL;
++	struct json_object *whilelistObj = NULL;
++	const char *RestrictMode = NULL;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray, 0);
++	MACObj = json_object_object_get(obj, "MAC");
++	whilelistObj = json_object_object_get(obj, "whitelist");
++
++	printf("MACObj = %s \n",json_object_to_json_string(MACObj));
++	printf("whilelistObj = %s \n",json_object_to_json_string(whilelistObj));
++	printf("%-30s %s \n","MAC Address Filter :", json_object_get_string(json_object_object_get(MACObj, "MAC Filter")));
++	printf("%-30s %s \n","MAC Restrict Mode :", json_object_get_string(json_object_object_get(MACObj, "Restrict Mode")));
++	printf("%-10s %-10s %-25s %-10s\n","Index", "Status", "Host Name", "Mac Address");
++	len = json_object_array_length(whilelistObj);
++	for(i=0;i<len;i++){
++		obj1 = json_object_array_get_idx(whilelistObj, i);
++		printf("%-10s %-10s %-25s %-10s\n",
++			json_object_get_string(json_object_object_get(obj1, "Index")),
++			json_object_get_string(json_object_object_get(obj1, "Enable")),
++			json_object_get_string(json_object_object_get(obj1, "HostName")),
++			json_object_get_string(json_object_object_get(obj1, "MACAddress")));
++	}
++}
++
+ 
+ zcfgRet_t setMACFilterEnable(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -35,7 +66,6 @@
+ 	 
+ 	reqObject = json_object_array_get_idx(Jobj, reqObjIdx);
+ 
+-	
+ 	if(reqObject && ret == ZCFG_SUCCESS){
+ 		filterEnable = json_object_get_boolean(json_object_object_get(reqObject, "Filter_Enable"));
+ 		restrictMode = json_object_get_boolean(json_object_object_get(reqObject, "Restrict"));
+@@ -49,17 +79,100 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDal_MAC_Filter_Add(struct json_object *Jobj, char *replyMsg){	//for dalcmd 
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *whiteListObj = NULL;
++	objIndex_t whiteListIid = {0};
++	bool enable = false;
++	const char *macaddr = NULL;
++	const char *hostname = NULL;
++	zcfg_offset_t oid;
++	
++	enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	macaddr = json_object_get_string(json_object_object_get(Jobj, "MACAddress"));
++	hostname = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++	oid = RDM_OID_ZY_MAC_FILTER_WHITE_LIST;
++	ret = dalcmdParamCheck(hostname, oid, "HostName", replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	ret = dalcmdParamCheck(macaddr, oid, "MACAddress", replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	
++	ret = zcfgFeObjJsonAdd(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, NULL);
++	if(ret == ZCFG_SUCCESS){
++		ret = zcfgFeObjJsonGet(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, &whiteListObj);
++		if(ret == ZCFG_SUCCESS){
++			json_object_object_add(whiteListObj, "Enable", json_object_new_boolean(enable));
++			json_object_object_add(whiteListObj, "MACAddress", json_object_new_string(macaddr));
++			json_object_object_add(whiteListObj, "HostName", json_object_new_string(hostname));
++
++			ret = zcfgFeObjJsonSet(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, whiteListObj, NULL);
++			zcfgFeJsonObjFree(whiteListObj);
++		}		
++	}
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDal_MAC_Filter_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *whiteListObj = NULL;
+ 	struct json_object *reqObject = NULL;
++	struct json_object *macObj = NULL;
+ 	objIndex_t whiteListIid = {0};
++	objIndex_t macIid = {0};
+ 	int reqObjIdx = 1;
+ 	const char *hostName = NULL;
+ 	const char *MACAddress = NULL;
+ 	const char *action = NULL;
+ 	bool listEnable = false;
+ 	int index = 0;
++	bool filterEnable = false;
++	bool restrictMode = false;
++	zcfg_offset_t oid;
++
++	if(json_object_get_type(Jobj) == json_type_object){// set by dalcmd
++		if(json_object_object_get(Jobj, "Filter_Enable") || json_object_object_get(Jobj, "Restrict")){
++
++			if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_MAC_FILTER, &macIid, &macObj) == ZCFG_SUCCESS){
++				filterEnable = json_object_get_boolean(json_object_object_get(Jobj, "Filter_Enable"));
++				restrictMode = json_object_get_boolean(json_object_object_get(Jobj, "Restrict"));
++
++				if(json_object_object_get(Jobj, "Filter_Enable"))
++					json_object_object_add(macObj, "Enable", json_object_new_boolean(filterEnable));
++				if(json_object_object_get(Jobj, "Restrict"))
++					json_object_object_add(macObj, "Restrict", json_object_new_boolean(restrictMode));
++				ret = zcfgFeObjJsonSet(RDM_OID_ZY_MAC_FILTER, &macIid, macObj, NULL);
++				zcfgFeJsonObjFree(macObj);
++			}
++		}
++	
++		whiteListIid.level = 1;
++		whiteListIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		action = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++		hostName = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++		MACAddress = json_object_get_string(json_object_object_get(Jobj, "MACAddress"));
++		oid = RDM_OID_ZY_MAC_FILTER_WHITE_LIST;
++		ret = dalcmdParamCheck(hostName, oid, "HostName", replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		ret = dalcmdParamCheck(MACAddress, oid, "MACAddress", replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, &whiteListObj) == ZCFG_SUCCESS){
++			if(json_object_object_get(Jobj, "Enable"))
++				json_object_object_add(whiteListObj, "Enable", json_object_new_boolean(action));
++			if(json_object_object_get(Jobj, "MACAddress"))
++				json_object_object_add(whiteListObj, "MACAddress", json_object_new_string(MACAddress));
++			if(json_object_object_get(Jobj, "HostName"))
++				json_object_object_add(whiteListObj, "HostName", json_object_new_string(hostName));
++
++			ret = zcfgFeObjJsonSet(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, whiteListObj, NULL);
++			zcfgFeJsonObjFree(whiteListObj);
++		}
++		return ret;
++	}
++
+ 	
+ 	while((reqObject = json_object_array_get_idx(Jobj, reqObjIdx)) !=NULL){
+ 		IID_INIT(whiteListIid);
+@@ -97,11 +210,54 @@
+ 			json_object_object_add(whiteListObj, "MACAddress", json_object_new_string(MACAddress));
+ 			zcfgFeObjJsonSet(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, whiteListObj, NULL);
+ 		}
++		zcfgFeJsonObjFree(whiteListObj);
+ 	}
+ 	
++	setMACFilterEnable(Jobj);
++	return ret;
++	}
++	
++zcfgRet_t zcfgFeDal_MAC_Filter_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *paramJobj1 = NULL;
++	struct json_object *macfilterObj = NULL;
++	struct json_object *whiteListObj = NULL, *whiteListtmpObj = NULL;
++	struct json_object *allObj = NULL;
++	objIndex_t macfilterIid = {0};
++	objIndex_t whiteListIid = {0};
++	allObj = json_object_new_object();
++	whiteListtmpObj = json_object_new_array();
++
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_MAC_FILTER, &macfilterIid, &macfilterObj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++
++		json_object_object_add(paramJobj, "MAC Filter", JSON_OBJ_COPY(json_object_object_get(macfilterObj, "Enable")));
++		json_object_object_add(paramJobj, "Restrict Mode", JSON_OBJ_COPY(json_object_object_get(macfilterObj, "Restrict")));
++		json_object_object_add(allObj, "MAC", paramJobj);
++		zcfgFeJsonObjFree(macfilterObj);
++	}
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, &whiteListObj) == ZCFG_SUCCESS){
++		paramJobj1 = json_object_new_object();
++		json_object_object_add(paramJobj1, "Index", json_object_new_int(whiteListIid.idx[0]));
++		json_object_object_add(paramJobj1, "Enable", JSON_OBJ_COPY(json_object_object_get(whiteListObj, "Enable")));
++		json_object_object_add(paramJobj1, "MACAddress", JSON_OBJ_COPY(json_object_object_get(whiteListObj, "MACAddress")));
++		json_object_object_add(paramJobj1, "HostName", JSON_OBJ_COPY(json_object_object_get(whiteListObj, "HostName")));
++		json_object_array_add(whiteListtmpObj, paramJobj1);
+ 	zcfgFeJsonObjFree(whiteListObj);
++	}
++	json_object_object_add(allObj, "whitelist", whiteListtmpObj);
++	json_object_array_add(Jarray, allObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_MAC_Filter_Delete(struct json_object *Jobj, char *replyMsg){	//for dalcmd
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t whiteListIid = {0};
++	whiteListIid.level = 1;
++	whiteListIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	zcfgFeObjJsonDel(RDM_OID_ZY_MAC_FILTER_WHITE_LIST, &whiteListIid, NULL);
+ 
+-	setMACFilterEnable(Jobj);
+ 	return ret;
+ }
+ 
+@@ -111,10 +267,15 @@
+ 
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+-
+-	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDal_MAC_Filter_Edit(Jobj, NULL);
+-	}else
++	if(!strcmp(method, "POST"))
++		ret = zcfgFeDal_MAC_Filter_Add(Jobj, replyMsg);
++	else if(!strcmp(method, "PUT")) 
++		ret = zcfgFeDal_MAC_Filter_Edit(Jobj, replyMsg);
++	else if(!strcmp(method, "DELETE"))
++		ret = zcfgFeDal_MAC_Filter_Delete(Jobj, NULL);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDal_MAC_Filter_Get(Jobj, NULL);
++	else
+ 		printf("Unknown method:%s\n", method);
+ 
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-04 14:54:17.262125921 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-04 14:57:05.928316100 +0800
+@@ -172,6 +172,7 @@
+ extern void zcfgFeDalShowAddnl(struct json_object *Jarray);
+ extern void zcfgFeDalShowUsbFilesharing(struct json_object *Jarray);
+ extern void zcfgFeDalShowUsbSamba(struct json_object *Jarray);
++extern void zcfgFeDalShowMACFilter(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -205,7 +206,7 @@
+ {"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,NULL,				"add|edit|delete", 	""},//Firewall
+ {"FirewallAcl", 	FIREWALL_ACL_param, zcfgFeDalFirewallACL,	zcfgFeDalShowFirewallACL,	"add|edit|delete|get",	"Firewall"},
+ {"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,   zcfgFeDalShowWifiGeneral,	"edit|get",			"Wireless"},
+-{"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter,		NULL,						"edit",				""},//MAC_Filter
++{"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter,		zcfgFeDalShowMACFilter,		"get|add|edit|delete",	"MAC Filter"},//MAC_Filter
+ {"QOS_GENERAL",		QosGeneral_param,	zcfgFeDalQosGeneral,	NULL,						"add|edit|delete",	""},//QoS
+ {"QOS_QUEUE",		QosQueue_param,		zcfgFeDalQosQueue,		NULL,						"add|edit|delete",	""},//QoS
+ {"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass,		NULL,						"add|edit|delete",	""},//QoS
+@@ -261,6 +262,26 @@
+  *           Jarray.i.Group_WAN_IpIface = IP.Interface.i,IP.Interface.i,IP.Interface.i,... (For LAN only)
+  *           Jarray.i.BridgingBrPath = Bridging.Bridge.i (For LAN only)
+  */
++
++zcfgRet_t dalcmdParamCheck(const char *param, zcfg_offset_t oid, char *key, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL;
++	objIndex_t Iid = {0};
++	
++	while(zcfgFeObjJsonGetNextWithoutUpdate(oid, &Iid, &obj) == ZCFG_SUCCESS){
++		if(!strcmp(param, json_object_get_string(json_object_object_get(obj, key)))){
++			json_object_put(obj);
++			obj = NULL;
++			strcat(replyMsg, key);
++			strcat(replyMsg, " is duplicate.");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++		json_object_put(obj);
++		obj = NULL;
++	}	
++	return ret;
++}
++
+ zcfgRet_t getWanLanList(struct json_object **Jarray){
+ 	struct json_object *ipIfaceJarray, *pppIfaceJarray, *vlanTermJarray, *ethLinkJarray, *bridgeBrJarray;
+ 	struct json_object *ipIfaceObj, *pppIfaceObj, *vlanTermObj, *ethLinkObj, *bridgeBrObj;

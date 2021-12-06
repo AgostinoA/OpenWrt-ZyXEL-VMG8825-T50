@@ -1,0 +1,216 @@
+Index: libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_mgmt_srv.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/mgmt/zcfg_fe_dal_mgmt_srv.c	2017-01-25 15:31:20.569571597 +0800
++++ libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_mgmt_srv.c	2017-01-25 15:41:11.093317651 +0800
+@@ -14,19 +14,84 @@
+ #include "zcfg_fe_dal_common.h"
+ 
+ dal_param_t MGMT_SRV_param[]={		//RDM_OID_REMO_SRV
+-	{"BoundInterfaceList", 	 dalType_string,	0,	0,	NULL},
+-	{"Mode", 		 dalType_string,	0,	0,	NULL},
+-	{"Port", 	 dalType_int,	0,	0,	NULL},
+-	{"Index", 	 dalType_int,	0,	0,	NULL},
+-	{"Protocol", 		 dalType_string,	0,	0,	NULL},
+-	{"RestartDeamon", 		 dalType_boolean,	0,	0,	NULL},
++	{"Name", 					dalType_string,	0,	0,		NULL, NULL, 				dalcmd_Forbid},
++	{"BoundInterfaceList", 		dalType_string,	0,	0,		NULL, NULL, 				dalcmd_Forbid},
++	{"Mode", 					dalType_string,	0,	0,		NULL, "LAN_ONLY|WAN_ONLY|LAN_WAN|Trust_Dm|LAN_TstDm|None", 	0},
++	{"Port", 	 				dalType_int,	1,	65535,	NULL, NULL, 				0},
++	{"Index", 	 				dalType_int,	0,	0,		NULL, NULL, 				dal_Edit},
++	{"Protocol", 				dalType_string,	0,	0,		NULL, NULL, 				dalcmd_Forbid},
++	{"RestartDeamon", 		 	dalType_boolean,0,	0,		NULL, NULL, 				dalcmd_Forbid},
+ #ifdef	CBT_CUSTOMIZATION
+-	{"LifeTime", 	 dalType_int,	0,	0,	NULL},		//if(CustomerName.search("CBT") != -1)
++	{"LifeTime", 	 			dalType_int,	0,	0,		NULL, NULL, 				0},		//if(CustomerName.search("CBT") != -1)
+ #endif
+-	{NULL,					0,	0,	0,	NULL},
+-
++	{NULL,						0,				0,	0,		NULL, NULL, 				0},
+ };
+ 
++zcfgRet_t zcfgFeDal_mgmtSrv_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_REMO_SRV, &iid, &obj) == ZCFG_SUCCESS) {
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Index", json_object_new_int(iid.idx[0]));
++		json_object_object_add(pramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(obj, "Name")));
++		json_object_object_add(pramJobj, "Port", JSON_OBJ_COPY(json_object_object_get(obj, "Port")));
++		json_object_object_add(pramJobj, "Mode", JSON_OBJ_COPY(json_object_object_get(obj, "Mode")));
++		json_object_object_add(pramJobj, "BoundInterfaceList", JSON_OBJ_COPY(json_object_object_get(obj, "BoundInterfaceList")));
++		json_object_array_add(Jarray, pramJobj);
++		zcfgFeJsonObjFree(obj);
++	}
++	
++	return ret;
++}
++
++void zcfgFeDalShowMgmtSrv(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++	int Index, Port;
++	const char *Name, *Mode;
++	char mode[32] = {0};
++	char port[32] = {0};
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-7s %-10s %-12s %-10s\n",
++		    "Index", "Name", "Mode", "Port");
++	
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj != NULL){
++			Index = json_object_get_int(json_object_object_get(obj, "Index"));
++			Port = json_object_get_int(json_object_object_get(obj, "Port"));
++			Name = json_object_get_string(json_object_object_get(obj, "Name"));
++			Mode = json_object_get_string(json_object_object_get(obj, "Mode"));
++
++			if(strcmp(Mode, ""))
++				strcpy(mode, Mode);
++			else
++				strcpy(mode, "None");
++
++			if(strcmp(Name, "PING"))
++				sprintf(port, "%d", Port);
++			else
++				strcpy(port, "N/A");
++
++			printf("%-7u %-10s %-12s %-10s\n",Index,Name,mode,port);
++		}
++
++	}
++	
++}
++
++
+ zcfgRet_t zcfgFeDal_mgmtSrv_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *mgmtSrvObj = NULL;
+@@ -48,6 +113,49 @@
+ 	int tmp_idx[7] = {2,3,4,5,6,1,0};	//defalut order of json_object_array_get_idx
+ 	int *tmp = tmp_idx;
+ 
++	if(json_object_get_type(Jobj) == json_type_object){// set by dalcmd
++		const char *Name = NULL;
++		if((index = json_object_get_int(json_object_object_get(Jobj, "Index"))) != 0){
++			mode = json_object_get_string(json_object_object_get(Jobj, "Mode"));
++			port = json_object_get_int(json_object_object_get(Jobj, "Port"));
++			if(!mode && !port)//nothing changed
++				return ZCFG_SUCCESS;
++			
++			IID_INIT(mgmtSrvIid);
++			mgmtSrvIid.idx[0] = index;
++			mgmtSrvIid.level = 1;
++			if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_REMO_SRV, &mgmtSrvIid, &mgmtSrvObj) != ZCFG_SUCCESS){
++				if(replyMsg)
++					sprintf(replyMsg, "Can't find remote Mgmt rule of index %d\n", index);
++				return ZCFG_NOT_FOUND;
++			}
++
++			json_object_object_add(mgmtSrvObj, "RestartDeamon", json_object_new_boolean(false));
++			origport = json_object_get_int(json_object_object_get(mgmtSrvObj, "Port"));
++			if((port != 0) && (origport != port)){
++				json_object_object_add(mgmtSrvObj, "Port", json_object_new_int(port));
++				Name = json_object_get_string(json_object_object_get(mgmtSrvObj, "Name"));
++				if(!strcmp(Name, "HTTP") || !strcmp(Name, "HTTPS")){
++					json_object_object_add(mgmtSrvObj, "RestartDeamon", json_object_new_boolean(true));
++				}
++			}
++			if(mode != NULL){
++				if(!strcmp(mode, "None"))
++					json_object_object_add(mgmtSrvObj, "Mode", json_object_new_string(""));
++				else
++					json_object_object_add(mgmtSrvObj, "Mode", json_object_new_string(mode));
++			}
++
++			if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_REMO_SRV, &mgmtSrvIid, mgmtSrvObj, NULL)) != ZCFG_SUCCESS){
++				if(replyMsg)
++					sprintf(replyMsg, "Set remote Mgmt rule fail!");
++				return ret;
++			}
++			return ret;
++		}
++		return ZCFG_SUCCESS;
++	}
++
+ 	reqObject = json_object_array_get_idx(Jobj, 6);
+ 	protocol = json_object_get_string(json_object_object_get(reqObject, "Protocol"));
+ 	origport = json_object_get_int(json_object_object_get(reqObject, "origport"));
+@@ -128,6 +236,8 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	if(!strcmp(method, "PUT"))
+ 		ret = zcfgFeDal_mgmtSrv_Edit(Jobj, NULL);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDal_mgmtSrv_Get(Jobj, NULL);
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-01-25 15:31:20.921571600 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-01-25 15:31:20.937571600 +0800
+@@ -147,6 +147,8 @@
+ extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, char *replyMsg);
+ 
+ extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
++extern void zcfgFeDalShowMgmtSrv(struct json_object *Jarray);
++
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			NULL,						"add|edit|delete",	"Broadband"},
+@@ -214,7 +216,7 @@
+ {"SCHEDULE", 		SCHEDULE_param,	zcfgFeDalSchedule,			NULL,						"add|edit|delete",	"Scheduler_Rule"},
+ {"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	"Certificates"},
+ {"HOME_CONNECTIVYITY", HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,NULL, 			"edit", "Home_Connectivity"},
+-{"MGMT_SRV", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			NULL,						"edit",				"Remote_MGMT"},
++{"MGMT_SRV", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			zcfgFeDalShowMgmtSrv,		"edit|get",				"Remote_MGMT"},
+ {"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",		"root_only"},
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				"root_only"},
+ {"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount,	NULL,						"add|edit|delete",	"root_only"}, //temporarily root_only //User_Account
+@@ -338,18 +340,24 @@
+ 					case dalType_v4Addr:
+ 					case dalType_v4Mask:
+ 						stringPtr = json_object_get_string(pramJobj);
++						if(stringPtr == NULL || !strcmp(stringPtr, ""))
++							break;
+ 						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+ 						if(validateIPv4(stringPtr) == false)
+ 							return false;
+ 						break;
+ 					case dalType_v6Addr:
+ 						stringPtr = json_object_get_string(pramJobj);
++						if(stringPtr == NULL || !strcmp(stringPtr, ""))
++							break;
+ 						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+ 						if(validateIPv6(stringPtr) == false)
+ 							return false;
+ 						break;
+ 					case dalType_v6AddrPrefix: //ex. 2001:123::11:22:33/64
+ 						stringPtr = json_object_get_string(pramJobj);
++						if(stringPtr == NULL || !strcmp(stringPtr, ""))
++							break;
+ 						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+ 						strcpy(buf, stringPtr);
+ 						ptr = strchr(buf, '/');
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-01-25 15:31:20.921571600 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-01-25 15:31:20.937571600 +0800
+@@ -6,6 +6,7 @@
+ #define dal_Edit	1 << 1
+ #define dal_Delete	1 << 2
+ #define dal_Get		1 << 3
++#define dalcmd_Forbid  1 << 4
+ 
+ typedef struct dal_param_s {
+ 	char		*paraName;

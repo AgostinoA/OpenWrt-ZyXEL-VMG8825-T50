@@ -1,0 +1,145 @@
+Index: dnsmasq-2.67/src/lease.c
+===================================================================
+--- dnsmasq-2.67.orig/src/lease.c	2014-06-05 23:20:17.169582839 +0800
++++ dnsmasq-2.67/src/lease.c	2014-06-05 23:24:41.444989207 +0800
+@@ -267,11 +267,16 @@
+ 	  else
+ 	    ourprintf(&err, "* ");
+ 
+-#ifdef ZYXEL_DHCP	  
+-	  my_syslog(LOG_INFO, _("dhcpclientnum = %d"), dhcpclientnum);
+-	  my_syslog(LOG_INFO, _("j = %d , Vendor-ID = %s"), j, vendorid[dhcpclientnum - j - 1]);
+-	  ourprintf(&err, "%s\n", vendorid[dhcpclientnum - j - 1]);
+-	  j++;
++#ifdef ZYXEL_DHCP
++	  if(dhcpclientnum > 0 &&  dhcpclientnum <= DHCP_CLIENT_NUM && (dhcpclientnum - j - 1) >= 0){//work around, need to modify method of get vendor id
++		  my_syslog(LOG_INFO, _("dhcpclientnum = %d"), dhcpclientnum);
++		  my_syslog(LOG_INFO, _("j = %d , Vendor-ID = %s"), j, vendorid[dhcpclientnum - j - 1]);
++		  ourprintf(&err, "%s\n", vendorid[dhcpclientnum - j - 1]);
++		  j++;
++	  }
++	  else{
++		  ourprintf(&err, "%s\n", "* ");
++	  }
+ #endif
+ 	}
+       
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2014-06-05 23:20:17.177582839 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2014-06-05 23:25:11.156762705 +0800
+@@ -130,60 +130,62 @@
+       mess_type = option_uint(opt, 0, 1);
+ 
+ #ifdef ZYXEL_DHCP
+-      if ((opt = option_find(mess, sz, OPTION_VENDOR_ID, 2))){ //get dhcp option 60
+-	emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
+-      	vendor_class_len = option_len(opt);
+-	memset(daemon->dhcp_buff3, '\0', strlen(daemon->dhcp_buff3));
+-	memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
+-	strncpy(vendorId, option_ptr(opt, 0), option_len(opt));
+-	for(j=0; j<dhcpclientnum; j++){
+-           my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-           my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
+-	   s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len)); //get client MAC Address
+-	   if(s_ret != NULL) //client MAC already exist in mac table
+-		break;
+-	}
+-	my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
++	if ((opt = option_find(mess, sz, OPTION_VENDOR_ID, 2))){	//get dhcp option 60
++		if(dhcpclientnum <= DHCP_CLIENT_NUM && 0<= dhcpclientnum){
++			emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
++			vendor_class_len = option_len(opt);
++			memset(daemon->dhcp_buff3, '\0', strlen(daemon->dhcp_buff3));
++			memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
++			strncpy(vendorId, option_ptr(opt, 0), option_len(opt));
++			for(j=0; j<dhcpclientnum; j++){
++				my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++				my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
++				s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len)); //get client MAC Address
++				if(s_ret != NULL) //client MAC already exist in mac table
++					break;
++			}
++			my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
++			my_syslog(LOG_INFO, _("daemon->dhcp_buff3 = %s"), vendorId);
++			my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++			my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
++			my_syslog(MS_DHCP | LOG_WARNING, _("inet_ntoa(mess->giaddr)=%s"),inet_ntoa(mess->giaddr));
+ 
+-	my_syslog(LOG_INFO, _("daemon->dhcp_buff3 = %s"), vendorId);
+-	my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-	
+-	my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
+-	my_syslog(MS_DHCP | LOG_WARNING, _("inet_ntoa(mess->giaddr)=%s"),inet_ntoa(mess->giaddr));
+-	
+-	macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
+-	if(s_ret == NULL && macEmpty == NULL){ //client MAC doesn't exist in mac table, means this client is newer
+-	   strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
+-	   if(strcmp(daemon->dhcp_buff3, ""))
+-	   	strcpy(vendorid[dhcpclientnum], daemon->dhcp_buff3);
+-	   else
+-	 	strcpy(vendorid[dhcpclientnum], "*");
+-	   my_syslog(LOG_INFO, _("dhcp client number ++"));
+-	   dhcpclientnum++; //means total number that connect to DHCP server
++			macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
++			if(s_ret == NULL && macEmpty == NULL){ //client MAC doesn't exist in mac table, means this client is newer
++				strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
++				if(strcmp(daemon->dhcp_buff3, ""))
++					strcpy(vendorid[dhcpclientnum], daemon->dhcp_buff3);
++				else
++					strcpy(vendorid[dhcpclientnum], "*");
++				my_syslog(LOG_INFO, _("dhcp client number ++"));
++				dhcpclientnum++; //means total number that connect to DHCP server
++			}
++			my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
++			my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
++		}
++	}
++	else{ //DHCP packet don't have option 60
++		if(dhcpclientnum <= DHCP_CLIENT_NUM && 0<= dhcpclientnum){
++			for(j=0; j<dhcpclientnum; j++){
++				my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++				my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
++				s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len));
++				if(s_ret != NULL)
++					break;
++			}
++			my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
++			macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
++			if(s_ret == NULL && macEmpty == NULL){
++				strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
++				strcpy(vendorid[dhcpclientnum], "*");
++				my_syslog(LOG_INFO, _("dhcp client number ++"));
++				dhcpclientnum++;
++			}
++			my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
++			my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
++			my_syslog(LOG_INFO, _("option 60 doesn't exist"));
++		}
+ 	}
+-	my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-	my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
+-      }
+-      else{ //DHCP packet don't have option 60
+-	for(j=0; j<dhcpclientnum; j++){
+-	   my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-	   my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);	
+-           s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len));
+-           if(s_ret != NULL)
+-                break;
+-        }
+-        my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
+-	macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
+-        if(s_ret == NULL && macEmpty == NULL){
+-           strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
+-           strcpy(vendorid[dhcpclientnum], "*");
+-	   my_syslog(LOG_INFO, _("dhcp client number ++"));
+-           dhcpclientnum++;
+-        }
+-	my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-	my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
+-	my_syslog(LOG_INFO, _("option 60 doesn't exist"));
+-      }
+ #endif
+       
+       /* two things to note here: expand_buf may move the packet,

@@ -1,0 +1,124 @@
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2018-11-15 10:25:57.566725999 +0800
++++ udhcp-0.9.8/dhcpc.c	2018-11-15 10:39:41.666812491 +0800
+@@ -343,6 +343,10 @@
+ 	int isNew = FALSE;
+ #endif
+ 
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++int discoverSet = 0;
++#endif
++
+ 	static struct option arg_options[] = {
+ #if 0 /* ZyXEL DHCP options support, ZyXEL, John */
+ 		{"clientid",	required_argument,	0, 'c'},
+@@ -510,6 +514,13 @@
+ 			/* timeout dropped to zero */
+ 			switch (state) {
+ 			case INIT_SELECTING:
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++				if(discoverSet >= 2){
++					timeout = 0x7fffffff;
++					run_script(NULL, "fakeIP");
++				    continue;
++				}
++#endif
+ 				if (packet_num < 3) {
+ 					if (packet_num == 0)
+ 						xid = random_xid();
+@@ -542,6 +553,9 @@
+ 					/* wait to try again */
+ 					packet_num = 0;
+ 					timeout = now + INIT_TIMEOUT;
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++					discoverSet++;
++#endif
+ 				}
+ 				break;
+ 			case RENEW_REQUESTED:
+@@ -750,6 +764,9 @@
+ 						   ((state == RENEWING || state == REBINDING) ? "renew" : "bound"));
+ 
+ 					state = BOUND;
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++					discoverSet = 0;
++#endif
+ #ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
+ 					change_mode(LISTEN_KERNEL);
+ #else
+Index: udhcp-0.9.8/script.c
+===================================================================
+--- udhcp-0.9.8.orig/script.c	2018-11-15 10:25:57.534725840 +0800
++++ udhcp-0.9.8/script.c	2018-11-15 10:40:14.614975872 +0800
+@@ -29,6 +29,9 @@
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <errno.h>
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++#include <time.h>
++#endif
+ 
+ #include "options.h"
+ #include "dhcpd.h"
+@@ -415,6 +418,33 @@
+ 	return NULL;
+ }
+ 
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++static char **fill_envp_fakeIP(void)
++{
++	struct json_object *dhcpc_opt = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0;
++	char ip[16] = {0};
++
++	dhcpc_opt = json_object_new_object();
++
++	srand(time(NULL));
++	sprintf(ip, "169.254.%d.%d", rand() % 256, rand() % 254 + 1);
++	json_object_object_add(dhcpc_opt, "ip", json_object_new_string(ip));
++	json_object_object_add(dhcpc_opt, "subnet", json_object_new_string("255.255.0.0"));
++	json_object_object_add(dhcpc_opt, "addressAssigned", json_object_new_boolean(true));
++	json_object_object_add(dhcpc_opt, "pidfile", json_object_new_string(client_config.pidfile));
++
++	payload = json_object_to_json_string(dhcpc_opt);
++	payloadLen = strlen(payload) + 1;
++
++	dhcpMsgSend(ZCFG_MSG_DHCPC_BOUND, ZCFG_EID_ESMD, payloadLen, payload);
++
++	json_object_put(dhcpc_opt);
++	
++	return NULL;
++}
++#endif
+ 
+ /* Call a script with a par file and env vars */
+ void run_script(struct dhcpMessage *packet, const char *name)
+@@ -439,6 +469,11 @@
+ 		free(envp);
+ #endif
+ 	}
++#ifdef ZYXEL_FAKE_IP_169_254_X_X
++	else if (strcmp(name, "fakeIP") == 0) {
++		fill_envp_fakeIP();
++	}
++#endif
+ 	else if (strcmp(name, "deconfig") == 0) {
+ 		/* Expired, set the connection down */
+ 		printf("Expired, set the connection down\n");
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2018-11-15 10:25:57.550725920 +0800
++++ udhcp-0.9.8/Makefile	2018-11-15 10:38:42.586519527 +0800
+@@ -76,6 +76,10 @@
+ CFLAGS += -DSUPPORT_XPON
+ endif
+ 
++ifneq ($(strip $(CONFIG_ZYXEL_FAKE_IP_169_254_X_X)),)
++CFLAGS += -DZYXEL_FAKE_IP_169_254_X_X
++endif
++
+ #Sunrise customization
+ ifneq ($(strip $(SUNRISE_DHCP_FORCE_RENEW)),)
+ CFLAGS += -DSUNRISE_DHCP_FORCE_RENEW

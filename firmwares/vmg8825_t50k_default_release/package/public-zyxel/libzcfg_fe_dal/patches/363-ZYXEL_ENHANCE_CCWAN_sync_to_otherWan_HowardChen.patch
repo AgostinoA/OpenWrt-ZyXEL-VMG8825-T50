@@ -1,0 +1,123 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-10-24 17:18:13.139940906 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-10-25 09:52:06.048230296 +0800
+@@ -150,6 +150,10 @@
+ CFLAGS += -DELISA_NETWORKMAP_CUSTOMIZATION
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_SYNC_CCWAN_TO_ALL_DEFGW),y)
++CFLAGS += -DZYXEL_SYNC_CCWAN_TO_ALL_DEFGW
++endif
++
+ #HAWAII TELECOM
+ ifeq ($(HAWAIIAN_TELCOM),y)
+ CFLAGS += -DHAWAIIAN_TELCOM
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2017-10-24 17:18:13.383940907 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2017-10-25 09:53:58.866917215 +0800
+@@ -2285,6 +2285,13 @@
+ 	else
+ 		v6GwEnable = CurrV6GwEnable;
+ 
++#ifdef ZYXEL_SYNC_CCWAN_TO_ALL_DEFGW
++	if(v4GwEnable)
++		json_object_object_add(ipIfaceObj, "X_ZYXEL_DefaultGatewayIface", json_object_new_boolean(true));
++	else
++		json_object_object_add(ipIfaceObj, "X_ZYXEL_DefaultGatewayIface", json_object_new_boolean(false));
++#endif
++
+ 	dbg_printf("CurrV4GwEnable=%d v4GwEnable=%d\n", CurrV4GwEnable, v4GwEnable);
+ 	dbg_printf("CurrV6GwEnable=%d v6GwEnable=%d\n", CurrV6GwEnable, v6GwEnable);
+ 
+@@ -3374,6 +3381,9 @@
+ 	if((ret = addLayer3Objects(Jobj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 	setAllObjects(Jobj);
++#ifdef ZYXEL_SYNC_CCWAN_TO_ALL_DEFGW
++	syncCCWanSetting(Jobj);
++#endif
+ 	freeAllObjects();
+ 	
+ 	return ret;
+@@ -3585,6 +3595,9 @@
+ 		goto dalwan_edit_fail;
+ 
+ 	setAllObjects(Jobj);
++#ifdef ZYXEL_SYNC_CCWAN_TO_ALL_DEFGW
++	syncCCWanSetting(Jobj);
++#endif
+ 
+ dalwan_edit_fail:
+ 	freeAllObjects();
+@@ -4148,6 +4161,69 @@
+ 	return ret;
+ }
+ 
++#ifdef ZYXEL_SYNC_CCWAN_TO_ALL_DEFGW
++zcfgRet_t restartRunningWan(objIndex_t ccWanIid, struct json_object *ccWanObj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	printf("%s: Restart running wan!\n",__FUNCTION__);
++	json_object_object_add(ccWanObj, "Enable", json_object_new_boolean(false));
++	zcfgFeObjJsonBlockedSet(RDM_OID_IP_IFACE, &ccWanIid, ccWanObj, NULL);
++	json_object_object_add(ccWanObj, "Enable", json_object_new_boolean(true));
++	zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ccWanIid, ccWanObj, NULL);
++
++	return ret;
++}
++zcfgRet_t syncCCWanSetting(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	bool defaultGatewayIface = false;
++	int newCCWan = 0, CurCCWan = 0;
++	char *status = NULL;
++	struct json_object *subIpIfaceObj =   NULL;
++	struct json_object *ccWanObj = NULL;
++	objIndex_t ccWanIid = {0};
++	bool wanEnable = false, reRunningWan = false;
++	bool sysGwEnable = false;
++
++	newCCWan = json_object_get_int(json_object_object_get(Jobj, "ConcurrentWan"));
++	sysGwEnable = json_object_get_int(json_object_object_get(Jobj, "sysGwEnable"));
++
++	if(!sysGwEnable)
++		return ret;
++
++	/*Sync other default WAN*/
++	IID_INIT(ccWanIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ccWanIid, &ccWanObj) == ZCFG_SUCCESS){
++		status = json_object_get_string(json_object_object_get(ccWanObj, "Status"));
++		defaultGatewayIface = json_object_get_boolean(json_object_object_get(ccWanObj, "X_ZYXEL_DefaultGatewayIface"));
++		wanEnable = json_object_get_boolean(json_object_object_get(ccWanObj, "Enable"));
++		CurCCWan = json_object_get_int(json_object_object_get(ccWanObj, "X_ZYXEL_ConcurrentWan"));
++
++		if(ccWanIid.idx[0] == ipIfaceIid.idx[0] || ccWanIid.idx[0] <=2){
++			zcfgFeJsonObjFree(ccWanObj);
++			continue;
++		}
++
++		replaceParam(ccWanObj, "X_ZYXEL_ConcurrentWan", Jobj, "ConcurrentWan");
++		if(defaultGatewayIface && !strcmp("Up", status)){
++			if(wanEnable) {//restart running wan!
++				restartRunningWan(ccWanIid, ccWanObj);
++			}else{
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_IP_IFACE, &ccWanIid, ccWanObj, NULL);
++			}
++		}else if (defaultGatewayIface && strcmp("Up", status)){
++			zcfgFeObjJsonSetWithoutApply(RDM_OID_IP_IFACE, &ccWanIid, ccWanObj, NULL);
++		}else{
++			if(!defaultGatewayIface && CurCCWan !=0){
++				json_object_object_add(ccWanObj, "X_ZYXEL_ConcurrentWan", json_object_new_int(0));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_IP_IFACE, &ccWanIid, ccWanObj, NULL);
++			}
++		}
++		zcfgFeJsonObjFree(ccWanObj);
++	}
++
++	return ret;
++}
++#endif
+ zcfgRet_t zcfgFeDalWanGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	int count = 0, index = 0;

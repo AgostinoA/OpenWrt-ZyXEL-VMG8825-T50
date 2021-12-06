@@ -1,0 +1,132 @@
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2018-08-16 21:32:05.946031089 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2018-08-16 21:32:06.006031089 +0800
+@@ -156,7 +156,8 @@
+ tr98Parameter_t para_DhcpOpt[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Tag", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "Value", PARAMETER_ATTR_WRITE, json_type_base64},
++	//{ "Value", PARAMETER_ATTR_WRITE, json_type_base64},
++	{ "Value", PARAMETER_ATTR_WRITE, 256, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2018-08-16 21:32:05.990031089 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2018-08-16 21:33:38.917786600 +0800
+@@ -3186,7 +3186,16 @@
+ 	while(paramList->name != NULL) {
+ 		paramValue = json_object_object_get(dhcpOptJobj, paramList->name);
+ 		if(paramValue != NULL) {
+-			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			if(!strcmp(paramList->name, "Value")){
++				const char *paramObjStr = json_object_get_string(paramValue);
++				int paramObjStrLen = strlen(paramObjStr);
++				char *outputBase64 = base64_encode((unsigned char *)paramObjStr, paramObjStrLen);
++				printf("%s: encoded base64 value: %s\n", __FUNCTION__, outputBase64 ? outputBase64 : "null");
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(outputBase64));
++				free(outputBase64);
++			}else{
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -3210,17 +3219,18 @@
+ 	struct json_object *dhcpOptJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+-	struct json_object *tmpObj = NULL;
++	//struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+ 	}
+-
++	printf("%s: %s\n", __FUNCTION__, mappingPathName);
+ 	IID_INIT(dhcpOptIid);
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+ 	dhcpOptOid = zcfgFeObjNameToObjId(tr181Obj, &dhcpOptIid);
++#if 0
+ 	if((ret = zcfgFeObjJsonGet(dhcpOptOid, &dhcpOptIid, &dhcpOptJobj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 	if(multiJobj){
+@@ -3228,30 +3238,52 @@
+ 		dhcpOptJobj = NULL;
+ 		dhcpOptJobj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_SRV_POOL_OPT, &dhcpOptIid, multiJobj, tmpObj);
+ 	}
++#endif
++
++	printf("%s: %s\n", __FUNCTION__, tr181Obj);
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++	char optValue[256] = {0};
++	char *decodeOptValue = NULL;
++	int decodeOptValueLen = 0;
++	const char *valueStr = json_object_get_string(json_object_object_get(tr98Jobj, "Value"));
++	if(valueStr){
++		strncpy(optValue, valueStr, sizeof(optValue)-1);
++		decodeOptValue = base64_decode((unsigned char *)optValue, &decodeOptValueLen);
++		printf("%s: base64 decoded: %s\n", __FUNCTION__, decodeOptValueLen ? decodeOptValue : "null" );
++	}
++
++	dhcpOptJobj = json_object_new_object();
+ 
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-		if(paramValue != NULL){
+-			/*Write value from Config to Device.DHCPv4.Server.Pool.i.Option.i*/
+-			tr181ParamValue = json_object_object_get(dhcpOptJobj, paramList->name);
+-			if(tr181ParamValue != NULL) {
+-				json_object_object_add(dhcpOptJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				paramList++;
+-				continue;
+-			}		
++		if(!paramValue){
++			paramList++;
++			continue;
+ 		}
+ 
+-		paramList++;	
++		/*Write value from Config to Device.DHCPv4.Server.Pool.i.Option.i*/
++		if(!strcmp(paramList->name, "Value") && decodeOptValueLen){
++			json_object_object_add(dhcpOptJobj, paramList->name, json_object_new_string(decodeOptValue));
++		}else{
++			json_object_object_add(dhcpOptJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		}
++
++		paramList++;
+ 	} /*Edn while*/
+ 
++	if(decodeOptValue)
++		free(decodeOptValue);
++
+ 	/*Set DHCPv4.Server.Pool.i.Option.i */
+ 	if(multiJobj){
+-		json_object_put(tmpObj);
++		zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_SRV_POOL_OPT, &dhcpOptIid, multiJobj, dhcpOptJobj);
++		zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_DHCPV4_SRV_POOL_OPT, &dhcpOptIid, "partialset", json_object_new_boolean(true));
+ 	}
+ 	else{
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL_OPT, &dhcpOptIid, dhcpOptJobj, NULL)) != ZCFG_SUCCESS ) {
++		const char *dhcpOptJobjStr = json_object_to_json_string(dhcpOptJobj);
++		if((ret = zcfgFeObjWrite(RDM_OID_DHCPV4_SRV_POOL_OPT, &dhcpOptIid, dhcpOptJobjStr, REQUEST_SET_OBJ | ZCFG_PARTIAL_OBJECT_SET, NULL)) != ZCFG_SUCCESS ) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.DHCPv4.Server.Pool.i.StaticAddress.i Fail\n", __FUNCTION__);
+ 			json_object_put(dhcpOptJobj);
+ 			return ret;
+@@ -3259,8 +3290,9 @@
+ 		else {
+ 			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.DHCPv4.Server.Pool.i.StaticAddress.i Success\n", __FUNCTION__);
+ 		}
+-		json_object_put(dhcpOptJobj);
+ 	}
++	json_object_put(dhcpOptJobj);
++
+ 	return ZCFG_SUCCESS;
+ }
+ 

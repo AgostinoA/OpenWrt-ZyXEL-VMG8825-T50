@@ -1,0 +1,79 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2016-06-29 10:29:47.897145268 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2016-06-29 11:45:52.982847293 +0800
+@@ -13,6 +13,7 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_debug.h"
+ #include "zcfg_fe_tr98.h"
++#include "zcfg_net.h"
+ #include "l3fwd_parameter.h"
+ 
+ extern tr98Object_t tr98Obj[];
+@@ -27,9 +28,11 @@
+ {
+ 	objIndex_t objIid;
+ 	char iface[32] = {0};
+-	char lowerLayer[32] = {0};
+ 	rdm_RoutingRouter_t *routerObj = NULL;
++	rdm_IpIface_t *ipIfaceObj = NULL;
+ 	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
++	char X_ZYXEL_ActiveDefaultGateway[321] = {0};
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -37,20 +40,32 @@
+ 	IID_INIT(objIid);
+ 	objIid.level = 1;
+ 	objIid.idx[0] = 1;
+-
+-	if(feObjStructGet(RDM_OID_ROUTING_ROUTER, &objIid, (void **)&routerObj, updateFlag) != ZCFG_SUCCESS ) {
++	if(feObjStructGet(RDM_OID_ROUTING_ROUTER, &objIid, (void **)&routerObj, TR98_GET_WITHOUT_UPDATE) != ZCFG_SUCCESS ) {
+ 		printf("%s : Get Routing.Router.1 Fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
++	strcpy(X_ZYXEL_ActiveDefaultGateway, routerObj->X_ZYXEL_ActiveDefaultGateway);
+ 
+-
+-	zcfgFeTr181IfaceStackLowerLayerGet(routerObj->X_ZYXEL_ActiveDefaultGateway, lowerLayer);
+-	if(strstr(lowerLayer, "PPP.Interface") != NULL) {
+-		strcpy(iface, lowerLayer);
+-	}
+-	else {
+-		/*IP.Interface*/
+-		strcpy(iface, routerObj->X_ZYXEL_ActiveDefaultGateway);
++	intf = strtok_r(X_ZYXEL_ActiveDefaultGateway, ",", &tmp_ptr);
++	while(intf != NULL){
++		if(*intf != '\0' && strstr(intf, "IP.Interface.")){
++			IID_INIT(objIid);
++			objIid.level = 1;
++			sscanf(intf, "IP.Interface.%hhu", &objIid.idx[0]);
++			if(feObjStructGet(RDM_OID_IP_IFACE, &objIid, (void **)&ipIfaceObj, TR98_GET_WITHOUT_UPDATE) == ZCFG_SUCCESS ) {
++				if(!strcmp(ipIfaceObj->Status, TR181_UP)){
++					if(strstr(ipIfaceObj->LowerLayers, "PPP.Interface") != NULL)
++						strcpy(iface, ipIfaceObj->LowerLayers);
++					else
++						strcpy(iface, intf);
++					
++					zcfgFeObjStructFree(ipIfaceObj);
++					break;
++				}
++				zcfgFeObjStructFree(ipIfaceObj);
++			}
++		}
++		intf = strtok_r(NULL, ",", &tmp_ptr);
+ 	}
+ 
+ 	zcfgFe181To98MappingNameGet(iface, tr98ObjName);
+@@ -59,9 +74,8 @@
+ 	json_object_object_add(*tr98Jobj, "DefaultConnectionService", json_object_new_string(tr98ObjName));
+ 	json_object_object_add(*tr98Jobj, "ForwardNumberOfEntries", json_object_new_int(routerObj->IPv4ForwardingNumberOfEntries));
+ 	json_object_object_add(*tr98Jobj, "X_ZYXEL_AutoSecureDefaultIface", json_object_new_boolean(routerObj->X_ZYXEL_AutoSecureDefaultIface));
+-
+ 	zcfgFeObjStructFree(routerObj);
+-
++	
+ 	return ZCFG_SUCCESS;
+ }
+ 

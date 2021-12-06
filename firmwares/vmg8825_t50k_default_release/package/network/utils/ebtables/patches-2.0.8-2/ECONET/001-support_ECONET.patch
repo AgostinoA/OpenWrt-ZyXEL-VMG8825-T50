@@ -1,0 +1,3092 @@
+Index: ebtables-v2.0.8-2/Makefile
+===================================================================
+--- ebtables-v2.0.8-2.orig/Makefile	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/Makefile	2016-07-28 13:38:54.355200300 +0800
+@@ -14,11 +14,28 @@
+ INITDIR:=/etc/rc.d/init.d
+ SYSCONFIGDIR:=/etc/sysconfig
+ DESTDIR:=
++#RPATH:=/opt/CodeSourcery/mips-4.2/mips-linux-gnu/libc/uclibc/soft-float/usr/lib
++#SYSROOT:=/opt/CodeSourcery/mips-4.2/mips-linux-gnu/libc/uclibc/soft-float
++RPATH:=$(SYSROOT)/usr/lib
++
++#ECONET_SDK_PATH:=$(BUILD_DIR)/linux-mt75xx_pmg5317_t20a/econet-sdk-7.3.119.8
++SUBTARGETS=$(shell echo $(PRODUCT_NAME) | tr A-Z a-z)
++ECONET_SDK_PATH:=$(BUILD_DIR)/linux-$(ECONET_TARGET_VERSION)_$(SUBTARGETS)/econet-sdk-$(ECONET_SDK_VERSION)
++
++include $(ECONET_SDK_PATH)/profile/econet-sdk.profile
++include $(ECONET_SDK_PATH)/Project/dir.mak
++include $(ECONET_SDK_PATH)/Project/rule.mak
+ 
+-CFLAGS:=-Wall -Wunused
++CFLAGS:=-Wall -Wunused $(TC_CFLAGS)
+ CFLAGS_SH_LIB:=-fPIC
++#CC:=mips-linux-gcc
++#LD:=mips-linux-ld
++LD=$(CROSS)ld
+ CC:=gcc
+-LD:=ld
++
++ifneq ($(strip $(TCSUPPORT_CODE_SHRINK)),)
++CFLAGS += -Os
++endif
+ 
+ ifeq ($(shell uname -m),sparc64)
+ CFLAGS+=-DEBT_MIN_ALIGN=8 -DKERNEL_64_USERSPACE_32
+@@ -31,7 +48,8 @@
+ 
+ OBJECTS:=$(OBJECTS2) $(EXT_OBJS) $(EXT_LIBS)
+ 
+-KERNEL_INCLUDES?=include/
++KERNEL_INCLUDES:=$(KERNEL_DIR)/include/ -I./include
++#KERNEL_INCLUDES?=include/
+ 
+ ETHERTYPESPATH?=$(ETCDIR)
+ ETHERTYPESFILE:=$(ETHERTYPESPATH)/ethertypes
+@@ -62,6 +80,9 @@
+ #PROGSPECS+=-DEBT_DEBUG
+ #PROGSPECSD+=-DEBT_DEBUG
+ #CFLAGS+=-ggdb
++ifneq ($(strip $(TCSUPPORT_IPV6)),)
++CFLAGS+=$(TC_CFLAGS)
++endif
+ 
+ all: ebtables ebtables-restore
+ 
+@@ -85,10 +106,14 @@
+ 
+ .PHONY: libebtc
+ libebtc: $(OBJECTS2)
+-	$(LD) -shared -soname libebtc.so -o libebtc.so -lc $(OBJECTS2)
++ifeq ($(HOST),mips-linux-)
++	$(CC) -shared -soname libebtc.so -o libebtc.so -lc $(OBJECTS2)
++else
++	$(CC) --sysroot=$(SYSROOT) -shared -soname,libebtc.so -o libebtc.so -lc $(OBJECTS2) -L$(RPATH)
++endif
+ 
+ ebtables: $(OBJECTS) ebtables-standalone.o libebtc
+-	$(CC) $(CFLAGS) $(CFLAGS_SH_LIB) -o $@ ebtables-standalone.o -I$(KERNEL_INCLUDES) -L. -Lextensions -lebtc $(EXT_LIBSI) \
++	$(CC) $(CFLAGS) $(CFLAGS_SH_LIB) --verbose -o $@ ebtables-standalone.o -I$(KERNEL_INCLUDES) -L. -Lextensions -lebtc $(EXT_LIBSI) \
+ 	-Wl,-rpath,$(LIBDIR)
+ 
+ ebtablesu: ebtablesu.c
+@@ -107,6 +132,9 @@
+ ebtables-restore: $(OBJECTS) ebtables-restore.o libebtc
+ 	$(CC) $(CFLAGS) -o $@ ebtables-restore.o -I$(KERNEL_INCLUDES) -L. -Lextensions -lebtc $(EXT_LIBSI) \
+ 	-Wl,-rpath,$(LIBDIR)
++	$(STRIP) --strip-unneeded ebtables
++	$(STRIP) --strip-unneeded libebtc.so
++	$(STRIP) --strip-unneeded extensions/*.so
+ 
+ .PHONY: daemon
+ daemon: ebtablesd ebtablesu
+Index: ebtables-v2.0.8-2/communication.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/communication.c	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/communication.c	2016-07-28 13:37:12.618152818 +0800
+@@ -138,7 +138,16 @@
+ 			   sizeof(tmp->sourcemsk));
+ 			memcpy(tmp->destmac, e->destmac, sizeof(tmp->destmac));
+ 			memcpy(tmp->destmsk, e->destmsk, sizeof(tmp->destmsk));
+-
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++			memcpy(tmp->sourcemacstart, e->sourcemacstart,sizeof(tmp->sourcemacstart));
++			memcpy(tmp->sourcestartmsk, e->sourcestartmsk,sizeof(tmp->sourcestartmsk));
++			memcpy(tmp->sourcemacend, e->sourcemacend,sizeof(tmp->sourcemacend));
++			memcpy(tmp->sourceendmsk, e->sourceendmsk,sizeof(tmp->sourceendmsk));
++			memcpy(tmp->destmacstart, e->destmacstart, sizeof(tmp->destmacstart));
++			memcpy(tmp->deststartmsk, e->deststartmsk, sizeof(tmp->deststartmsk));
++			memcpy(tmp->destmacend, e->destmacend, sizeof(tmp->destmacend));
++			memcpy(tmp->destendmsk, e->destendmsk, sizeof(tmp->destendmsk));
++#endif
+ 			base = p;
+ 			p += sizeof(struct ebt_entry);
+ 			m_l = e->m_list;
+@@ -471,6 +480,17 @@
+ 		memcpy(new->sourcemsk, e->sourcemsk, sizeof(new->sourcemsk));
+ 		memcpy(new->destmac, e->destmac, sizeof(new->destmac));
+ 		memcpy(new->destmsk, e->destmsk, sizeof(new->destmsk));
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++		memcpy(new->sourcemacstart, e->sourcemacstart,sizeof(new->sourcemacstart));
++		memcpy(new->sourcestartmsk, e->sourcestartmsk,sizeof(new->sourcestartmsk));
++		memcpy(new->sourcemacend, e->sourcemacend,sizeof(new->sourcemacend));
++		memcpy(new->sourceendmsk, e->sourceendmsk,sizeof(new->sourceendmsk));
++		memcpy(new->destmacstart, e->destmacstart, sizeof(new->destmacstart));
++		memcpy(new->deststartmsk, e->deststartmsk, sizeof(new->deststartmsk));
++		memcpy(new->destmacend, e->destmacend, sizeof(new->destmacend));
++		memcpy(new->destendmsk, e->destendmsk, sizeof(new->destendmsk));
++#endif
++
+ 		if (*totalcnt >= u_repl->nentries)
+ 			ebt_print_bug("*totalcnt >= u_repl->nentries");
+ 		new->cnt = u_repl->counters[*totalcnt];
+Index: ebtables-v2.0.8-2/ebtables.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/ebtables.c	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/ebtables.c	2016-07-28 13:37:12.618152818 +0800
+@@ -47,6 +47,12 @@
+ #define OPT_COUNT	0x1000 /* This value is also defined in libebtc.c */
+ #define OPT_CNT_INCR	0x2000 /* This value is also defined in libebtc.c */
+ #define OPT_CNT_DECR	0x4000 /* This value is also defined in libebtc.c */
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++#define OPT_SOURCE_START 0x10000
++#define OPT_SOURCE_END 0x20000
++#define OPT_DEST_START 0x40000
++#define OPT_DEST_END 0x80000
++#endif
+ 
+ /* Default command line options. Do not mess around with the already
+  * assigned numbers unless you know what you are doing */
+@@ -81,6 +87,16 @@
+ 	{ "src"            , required_argument, 0, 's' },
+ 	{ "destination"    , required_argument, 0, 'd' },
+ 	{ "dst"            , required_argument, 0, 'd' },
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++	{ "source-start"  , required_argument, 0, 'u' },//s+2
++	{ "src-st"            , required_argument, 0, 'u' },
++	{ "source-end"  , required_argument, 0, 'v' },//s+3
++	{ "src-ed"            , required_argument, 0, 'v' },
++	{ "destination-start"    , required_argument, 0, 'f' },//d+2
++	{ "dst-st"            , required_argument, 0, 'f' },
++	{ "destination-end"    , required_argument, 0, 'g' },//d+3
++	{ "dst-ed"            , required_argument, 0, 'g' },
++#endif
+ 	{ "table"          , required_argument, 0, 't' },
+ 	{ "modprobe"       , required_argument, 0, 'M' },
+ 	{ "new-chain"      , required_argument, 0, 'N' },
+@@ -268,6 +284,36 @@
+ 			ebt_print_mac_and_mask(hlp->destmac, hlp->destmsk);
+ 			printf(" ");
+ 		}
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++		if (hlp->bitmask & EBT_SOURCEMACSTART) {
++			printf("-u ");
++			if (hlp->invflags & EBT_ISOURCESTART)
++				printf("! ");
++			ebt_print_mac_and_mask(hlp->sourcemacstart, hlp->sourcestartmsk);
++			printf(" ");
++		}
++		if (hlp->bitmask & EBT_SOURCEMACEND) {
++			printf("-v ");
++			if (hlp->invflags & EBT_ISOURCEEND)
++				printf("! ");
++			ebt_print_mac_and_mask(hlp->sourcemacend, hlp->sourceendmsk);
++			printf(" ");
++		}
++		if (hlp->bitmask & EBT_DESTMACSTART) {
++			printf("-f ");
++			if (hlp->invflags & EBT_IDESTSTART)
++				printf("! ");
++			ebt_print_mac_and_mask(hlp->destmacstart, hlp->deststartmsk);
++			printf(" ");
++		}
++		if (hlp->bitmask & EBT_DESTMACEND) {
++			printf("-g ");
++			if (hlp->invflags & EBT_IDESTEND)
++				printf("! ");
++			ebt_print_mac_and_mask(hlp->destmacend, hlp->destendmsk);
++			printf(" ");
++		}
++#endif
+ 		if (hlp->in[0] != '\0') {
+ 			printf("-i ");
+ 			if (hlp->invflags & EBT_IIN)
+@@ -579,7 +625,11 @@
+ 
+ 	/* Getopt saves the day */
+ 	while ((c = getopt_long(argc, argv,
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++	   "-A:D:C:I:N:E:X::L::Z::F::P:Vhi:o:j:c:p:s:d:u:v:f:g:t:M:", ebt_options, NULL)) != -1) {
++#else
+ 	   "-A:D:C:I:N:E:X::L::Z::F::P:Vhi:o:j:c:p:s:d:t:M:", ebt_options, NULL)) != -1) {
++#endif
+ 		switch (c) {
+ 
+ 		case 'A': /* Add a rule */
+@@ -790,6 +840,12 @@
+ 		case 'p': /* Net family protocol */
+ 		case 's': /* Source mac */
+ 		case 'd': /* Destination mac */
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++		case 'u': /* Source mac start*/
++		case 'v': /* Source mac end*/
++		case 'f':  /* Destination mac start*/
++		case 'g': /* Destination mac end*/
++#endif
+ 		case 'c': /* Set counters */
+ 			if (!OPT_COMMANDS)
+ 				ebt_print_error2("No command specified");
+@@ -846,7 +902,7 @@
+ 					goto big_iface_length;
+ 				strcpy(new_entry->logical_out, optarg);
+ 				if (parse_iface(new_entry->logical_out, "--logical-out"))
+-					return -1;    
++					return -1;
+ 				break;
+ 			} else if (c == 'j') {
+ 				ebt_check_option2(&(replace->flags), OPT_JUMP);
+@@ -898,7 +954,54 @@
+ 					ebt_print_error2("Problem with specified destination mac '%s'", optarg);
+ 				new_entry->bitmask |= EBT_DESTMAC;
+ 				break;
+-			} else if (c == 'c') {
++			}
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++			else if (c == 'u')
++			{
++				ebt_check_option2(&(replace->flags), OPT_SOURCE_START);
++				if (ebt_check_inverse2(optarg))
++					new_entry->invflags |= EBT_ISOURCESTART;
++
++				if (ebt_get_mac_and_mask(optarg, new_entry->sourcemacstart, new_entry->sourcestartmsk))
++					ebt_print_error2("Problem with specified source mac start '%s'", optarg);
++				new_entry->bitmask |= EBT_SOURCEMACSTART;
++				break;
++			}
++			else if (c == 'v')
++			{
++				ebt_check_option2(&(replace->flags), OPT_SOURCE_END);
++				if (ebt_check_inverse2(optarg))
++					new_entry->invflags |= EBT_ISOURCEEND;
++
++				if (ebt_get_mac_and_mask(optarg, new_entry->sourcemacend, new_entry->sourceendmsk))
++					ebt_print_error2("Problem with specified source mac end '%s'", optarg);
++				new_entry->bitmask |= EBT_SOURCEMACEND;
++				break;
++			}
++			else if (c == 'f')
++			{
++				ebt_check_option2(&(replace->flags), OPT_DEST_START);
++				if (ebt_check_inverse2(optarg))
++					new_entry->invflags |= EBT_IDESTSTART;
++
++				if (ebt_get_mac_and_mask(optarg, new_entry->destmacstart, new_entry->deststartmsk))
++					ebt_print_error2("Problem with specified destination mac start '%s'", optarg);
++				new_entry->bitmask |= EBT_DESTMACSTART;
++				break;
++			}
++			else if (c == 'g')
++			{
++				ebt_check_option2(&(replace->flags), OPT_DEST_END);
++				if (ebt_check_inverse2(optarg))
++					new_entry->invflags |= EBT_IDESTEND;
++
++				if (ebt_get_mac_and_mask(optarg, new_entry->destmacend, new_entry->destendmsk))
++					ebt_print_error2("Problem with specified destination mac end '%s'", optarg);
++				new_entry->bitmask |= EBT_DESTMACEND;
++				break;
++			}
++#endif
++			else if (c == 'c') {
+ 				ebt_check_option2(&(replace->flags), OPT_COUNT);
+ 				if (ebt_check_inverse2(optarg))
+ 					ebt_print_error2("Unexpected '!' after -c");
+@@ -935,7 +1038,6 @@
+ 				new_entry->ethproto = ent->e_ethertype;
+ 			} else
+ 				new_entry->ethproto = i;
+-
+ 			if (new_entry->ethproto < 0x0600)
+ 				ebt_print_error2("Sorry, protocols have values above or equal to 0x0600");
+ 			break;
+Index: ebtables-v2.0.8-2/extensions/Makefile
+===================================================================
+--- ebtables-v2.0.8-2.orig/extensions/Makefile	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/extensions/Makefile	2016-07-28 13:37:12.618152818 +0800
+@@ -1,7 +1,10 @@
+ #! /usr/bin/make
+ 
+-EXT_FUNC+=802_3 nat arp arpreply ip standard log redirect vlan mark_m mark \
+-          pkttype stp among limit ulog
++EXT_FUNC+=802_3 nat arp arpreply ip standard log redirect vlan mark_m mark AUTOMAP policer\
++          pkttype stp among limit ulog ftos
++ifneq ($(strip $(TCSUPPORT_IPV6)),)
++EXT_FUNC+=ip6 tc
++endif
+ EXT_TABLES+=filter nat broute
+ EXT_OBJS+=$(foreach T,$(EXT_FUNC), extensions/ebt_$(T).o)
+ EXT_OBJS+=$(foreach T,$(EXT_TABLES), extensions/ebtable_$(T).o)
+Index: ebtables-v2.0.8-2/extensions/ebt_AUTOMAP.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/extensions/ebt_AUTOMAP.c	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,136 @@
++/*
++ * Description: EBTables auto priority mapping module for userspace.
++ *  Authors:  Jeff Liu <Jeff.Liu@mitrastar.com.tw>
++ *           The following is the original disclaimer.
++ *
++ * Shared library add-on to ebtables for AUTOMAP
++ *
++ * (C) 2011 by Jeff Liu <Jeff.Liu@mitrastar.com.tw>
++ *
++ * This program is distributed under the terms of GNU GPL v2, 1991
++ *
++ */
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_AUTOMAP.h"
++
++static int automapType_supplied;
++
++#define AUTOMAP_TYPE  '1'
++
++static struct option opts[] =
++{
++	{ "automap-type" , required_argument, 0, AUTOMAP_TYPE },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"AUTOMAP target options:\n"
++	" --automap-type :\n"
++	"			 Auto priority mapping by defined type(1:802.1P 2:DSCP 4:IP Length)\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_automap_t_info *automapinfo =
++	   (struct ebt_automap_t_info *)target->data;
++
++	automapinfo->type = AUTOMAP_TYPE_PKTLEN;
++	automapinfo->marktable[0]=0x0;   /* Queue priority 0*/
++	automapinfo->marktable[1]=0x1;   /* Queue priority 1*/
++	automapinfo->marktable[2]=0x2;   /* Queue priority 2*/
++	automapinfo->marktable[3]=0x3;   /* Queue priority 3*/
++	automapinfo->marktable[4]=0x4;   /* Queue priority 4*/
++	automapinfo->marktable[5]=0x5;   /* Queue priority 5*/
++	automapinfo->marktable[6]=0x6;   /* Queue priority 6*/
++	automapinfo->marktable[6]=0x7;   /* Queue priority 7*/
++	automapType_supplied = 0;
++}
++
++static int
++parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_automap_t_info *automapinfo =
++	   (struct ebt_automap_t_info *)(*target)->data;
++	int type;
++
++	switch (c) {
++	case AUTOMAP_TYPE:
++		ebt_check_option2(flags, AUTOMAP_TYPE);
++		type = strtol(argv[optind - 1], NULL, 0);
++		if((type!=AUTOMAP_TYPE_DSCP)&&
++				(type!=AUTOMAP_TYPE_8021P)&&
++				(type!=AUTOMAP_TYPE_PKTLEN)){
++			ebt_print_error("Invalid mapping type (1:802.1P 2:DSCP 4:IP Length)");
++		}
++		automapinfo->type = type;
++		automapType_supplied = 1;
++		break;
++	 default:
++		return 0;
++	}
++	return 1;
++}
++
++static void
++final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	if (time == 0 && automapType_supplied == 0)
++		ebt_print_error("No automap type supplied");
++}
++
++
++/* Prints out the targinfo. */
++static void
++print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	const struct ebt_automap_t_info *automapinfo = (const struct ebt_automap_t_info*)target->data;
++	if(automapinfo->type == AUTOMAP_TYPE_DSCP)
++		printf("automap type is DSCP");
++	else if(automapinfo->type == AUTOMAP_TYPE_8021P)
++		printf("automap type is 8021P");
++	else if(automapinfo->type == AUTOMAP_TYPE_PKTLEN)
++		printf("automap type is PKTLEN");
++}
++
++static int
++compare(const struct ebt_entry_target *t1,
++  	 const struct ebt_entry_target *t2)
++{
++	struct ebt_automap_t_info *automapinfo1 =
++	   (struct ebt_automap_t_info *)t1->data;
++	struct ebt_automap_t_info *automapinfo2 =
++	   (struct ebt_automap_t_info *)t2->data;
++
++	return automapinfo1->type == automapinfo2->type;
++}
++
++static
++struct  ebt_u_target automap_target =
++{
++    EBT_AUTOMAP_TARGET,
++    sizeof(struct ebt_automap_t_info),
++    print_help,
++    init,
++    parse,
++    final_check,
++    print,
++    compare,
++    opts
++};
++
++void _init(void)
++{
++	ebt_register_target(&automap_target);
++}
+Index: ebtables-v2.0.8-2/extensions/ebt_ftos.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/extensions/ebt_ftos.c	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,125 @@
++/* ebt_ftos
++ *
++ * Authors:
++ *
++ */
++#if 1  /*Rodney_20090724*/
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include <linux/netfilter_bridge/ebt_ftos_t.h>
++
++static struct option opts[] =
++{
++	{ "set-ftos" , required_argument, 0, '1' },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"ftos target options:\n"
++	" --set-ftos value[/mask]     : Set tos value\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_ftos_info *ftosinfo =
++	   (struct ebt_ftos_info *)target->data;
++
++	ftosinfo->target = EBT_CONTINUE;
++	ftosinfo->mask = 0xff;
++}
++
++static void
++parse_ftos(const unsigned char *s, struct ebt_ftos_info *ftosinfo){
++	char *buffer;
++	char *end, *cp;
++
++	buffer = strdup(s);
++	if ((cp = strchr(buffer, '/')) == NULL){
++		ftosinfo->ftos = strtol(buffer, &end, 0);
++		ftosinfo->mask = 0xff;
++	}
++	else {
++		*cp = '\0';
++		cp++;
++		ftosinfo->ftos = buffer[0] ? strtol(buffer, &end, 0) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		ftosinfo->mask = cp[0] ? strtol(cp, &end, 0) : 0xFF;
++		if (ebt_errormsg[0] != '\0')
++			return;
++	}
++	free(buffer);
++}
++
++static int parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_ftos_info *ftosinfo =
++	   (struct ebt_ftos_info *)(*target)->data;
++	char *end;
++
++	switch (c) {
++	case '1':
++		parse_ftos(optarg, ftosinfo);
++		break;
++
++	 default:
++		return 0;
++	}
++
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	struct ebt_ftos_info *ftosinfo =
++	   (struct ebt_ftos_info *)target->data;
++
++	printf("--set-ftos 0x%x/0x%x", ftosinfo->ftos, ftosinfo->mask);
++
++}
++
++static int compare(const struct ebt_entry_target *t1,
++   const struct ebt_entry_target *t2)
++{
++	struct ebt_ftos_info *ftosinfo1 =
++	   (struct ebt_ftos_info *)t1->data;
++	struct ebt_ftos_info *ftosinfo2 =
++	   (struct ebt_ftos_info *)t2->data;
++
++	return ftosinfo1->ftos == ftosinfo2->ftos &&
++	ftosinfo1->mask == ftosinfo2->mask;
++}
++
++static struct ebt_u_target ftos_target =
++{
++	.name		= EBT_FTOS_TARGET,
++	.size		= sizeof(struct ebt_ftos_info),
++	.help		= print_help,
++	.init		= init,
++	.parse		= parse,
++	.final_check	= final_check,
++	.print		= print,
++	.compare	= compare,
++	.extra_ops	= opts,
++};
++
++void _init(void)
++{
++	ebt_register_target(&ftos_target);
++}
++#endif
+Index: ebtables-v2.0.8-2/extensions/ebt_ip.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/extensions/ebt_ip.c	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/extensions/ebt_ip.c	2016-07-28 13:37:12.618152818 +0800
+@@ -1,5 +1,5 @@
+ /* ebt_ip
+- * 
++ *
+  * Authors:
+  * Bart De Schuymer <bdschuym@pandora.be>
+  *
+@@ -24,6 +24,10 @@
+ #define IP_PROTO  '4'
+ #define IP_SPORT  '5'
+ #define IP_DPORT  '6'
++#if 1  /*Rodney_20090724*/
++#define IP_myIPP  '7'
++#define IP_myDSCP '8'
++#endif
+ 
+ static struct option opts[] =
+ {
+@@ -38,9 +42,39 @@
+ 	{ "ip-sport"            , required_argument, 0, IP_SPORT  },
+ 	{ "ip-destination-port" , required_argument, 0, IP_DPORT  },
+ 	{ "ip-dport"            , required_argument, 0, IP_DPORT  },
++#if 1 /*Rodney_20090724*/
++	{ "ip-ipp"              , required_argument, 0, IP_myIPP  },
++	{ "ip-dscp"             , required_argument, 0, IP_myDSCP },
++#endif
+ 	{ 0 }
+ };
+ 
++static void
++parse_ip_range(char *address, uint32_t *addr, uint32_t *msk)
++{
++	char *buffer;
++	char *cp;
++
++	buffer = strdup(address);
++	if ( (cp = strchr(buffer, '-')) == NULL ) {
++		ebt_parse_ip_address(address, &addr[0], &msk[0]);
++		ebt_parse_ip_address(address, &addr[1], &msk[1]);
++	}
++	else{
++		*cp = '\0';
++		cp++;
++		ebt_parse_ip_address(buffer, &addr[0], &msk[0]);
++		ebt_parse_ip_address(cp, &addr[1], &msk[1]);
++
++		if ( (addr[0] > addr[1]) || (msk[0] != msk[1]) ) {
++			ebt_print_error("Invalid ip range (min > max)");
++		}
++	}
++
++	free(buffer);
++	return;
++}
++
+ /* put the mask into 4 bytes */
+ /* transform a protocol and service name into a port number */
+ static uint16_t parse_port(const char *protocol, const char *name)
+@@ -51,14 +85,14 @@
+ 
+ 	port = strtol(name, &end, 10);
+ 	if (*end != '\0') {
+-		if (protocol && 
++		if (protocol &&
+ 		    (service = getservbyname(name, protocol)) != NULL)
+ 			return ntohs(service->s_port);
+ 	}
+ 	else if (port >= 0 || port <= 0xFFFF) {
+ 		return port;
+ 	}
+-	ebt_print_error("Problem with specified %s port '%s'", 
++	ebt_print_error("Problem with specified %s port '%s'",
+ 			protocol?protocol:"", name);
+ 	return 0;
+ }
+@@ -68,7 +102,7 @@
+ {
+ 	char *buffer;
+ 	char *cp;
+-	
++
+ 	buffer = strdup(portstring);
+ 	if ((cp = strchr(buffer, ':')) == NULL)
+ 		ports[0] = ports[1] = parse_port(protocol, buffer);
+@@ -81,7 +115,7 @@
+ 		ports[1] = cp[0] ? parse_port(protocol, cp) : 0xFFFF;
+ 		if (ebt_errormsg[0] != '\0')
+ 			return;
+-		
++
+ 		if (ports[0] > ports[1])
+ 			ebt_print_error("Invalid portrange (min > max)");
+ 	}
+@@ -95,15 +129,119 @@
+ 	else
+ 		printf("%d:%d ", ports[0], ports[1]);
+ }
++#if 1  /*Rodney_20090724*/
++static uint8_t parse_ipp(const char *name)
++{
++	struct servent *service;
++	char *end;
++	uint8_t ipp;
++
++	ipp = ((uint8_t)strtol(name, &end, 10) << 5);
++
++	if (ipp >= 0 || ipp <= 0xFF) {
++		return ipp;
++	}
++	ebt_print_error("Problem with specified ipp '%s'", name);
++
++	return 0;
++}
++static void
++parse_ipp_range(const char *portstring, uint8_t *ipp)
++{
++	char *buffer;
++	char *cp;
++
++	buffer = strdup(portstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		ipp[0] = ipp[1] = parse_ipp(buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		ipp[0] = buffer[0] ? parse_ipp(buffer) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		ipp[1] = cp[0] ? parse_ipp(cp) : 0xe0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++
++		if (ipp[0] > ipp[1])
++			ebt_print_error("Invalid ipprange (min > max)");
++	}
++	free(buffer);
++}
++static void print_ipp_range(uint8_t *ipp)
++{
++	if (ipp[0] == ipp[1])
++		printf("%d ", ipp[0]>>5);
++	else
++		printf("%d:%d ", ipp[0]>>5, ipp[1]>>5);
++}
++
++static uint8_t parse_dscp(const char *name)
++{
++	struct servent *service;
++	char *end;
++	uint8_t dscp;
++
++	dscp = ((uint8_t)strtol(name, &end, 10) << 2);
++
++	if (dscp >= 0 || dscp <= 0xFF) {
++		return dscp;
++	}
++	ebt_print_error("Problem with specified dscp '%s'", name);
++
++	return 0;
++}
++static void parse_dscp_range(const char *portstring, uint8_t *dscp)
++{
++	char *buffer;
++	char *cp;
+ 
++	buffer = strdup(portstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		dscp[0] = dscp[1] = parse_dscp(buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		dscp[0] = buffer[0] ? parse_dscp(buffer) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		dscp[1] = cp[0] ? parse_dscp(cp) : 0xfc;
++		if (ebt_errormsg[0] != '\0')
++			return;
++
++		if (dscp[0] > dscp[1])
++			ebt_print_error("Invalid dscprange (min > max)");
++	}
++	free(buffer);
++}
++static void print_dscp_range(uint8_t *dscp)
++{
++	if (dscp[0] == dscp[1])
++		printf("%d ", dscp[0]>>2);
++	else
++		printf("%d:%d ", dscp[0]>>2, dscp[1]>>2);
++}
++#endif
+ static void print_help()
+ {
+ 	printf(
+ "ip options:\n"
+-"--ip-src    [!] address[/mask]: ip source specification\n"
+-"--ip-dst    [!] address[/mask]: ip destination specification\n"
+-"--ip-tos    [!] tos           : ip tos specification\n"
++#if 0
++"--ip-src    		[!] address[/mask]: ip source specification\n"
++"--ip-dst    		[!] address[/mask]: ip destination specification\n"
++#else
++"--ip-src    		[!] address[/mask][-address[/mask]]: ip source specification\n"
++"--ip-dst    		[!] address[/mask][-address[/mask]]: ip destination specification\n"
++#endif
++"--ip-tos    		[!] tos           : ip tos specification\n"
++#if 1  /*Rodney_20090724*/
++"--ip-ipp    [!] ipp[:ipp]     : ip ip precedence specification\n"
++"--ip-dscp   [!] dscp[:dscp]   : ip dscp specification\n"
++"--ip-proto  [!] protocol[:protocol]    : ip protocol specification\n"
++#else
+ "--ip-proto  [!] protocol      : ip protocol specification\n"
++#endif
+ "--ip-sport  [!] port[:port]   : tcp/udp source port or port range\n"
+ "--ip-dport  [!] port[:port]   : tcp/udp destination port or port range\n");
+ }
+@@ -122,12 +260,21 @@
+ #define OPT_PROTO  0x08
+ #define OPT_SPORT  0x10
+ #define OPT_DPORT  0x20
++#if 1  /*Rodney_20090724*/
++#define OPT_IPP    0x40
++#define OPT_DSCP   0x80
++#endif
+ static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
+    unsigned int *flags, struct ebt_entry_match **match)
+ {
+ 	struct ebt_ip_info *ipinfo = (struct ebt_ip_info *)(*match)->data;
++#if 1  /*Rodney_20090724*/
++	char *end, *end2, *cp;
++	long int i, i2;
++#else
+ 	char *end;
+ 	long int i;
++#endif
+ 
+ 	switch (c) {
+ 	case IP_SOURCE:
+@@ -145,10 +292,15 @@
+ 			else
+ 				ipinfo->invflags |= EBT_IP_DEST;
+ 		}
+-		if (c == IP_SOURCE)
+-			ebt_parse_ip_address(optarg, &ipinfo->saddr, &ipinfo->smsk);
+-		else
+-			ebt_parse_ip_address(optarg, &ipinfo->daddr, &ipinfo->dmsk);
++
++		if (c == IP_SOURCE) {
++			//ebt_parse_ip_address(optarg, &ipinfo->saddr, &ipinfo->smsk);
++			parse_ip_range(optarg, ipinfo->saddr, ipinfo->smsk);
++		}
++		else {
++			//ebt_parse_ip_address(optarg, &ipinfo->daddr, &ipinfo->dmsk);
++			parse_ip_range(optarg, ipinfo->daddr, ipinfo->dmsk);
++		}
+ 		break;
+ 
+ 	case IP_SPORT:
+@@ -180,11 +332,65 @@
+ 		ipinfo->tos = i;
+ 		ipinfo->bitmask |= EBT_IP_TOS;
+ 		break;
++#if 1  /*Rodney_20090724*/
++	case IP_myIPP:
++		ebt_check_option2(flags, OPT_IPP);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP_IPP;
++		parse_ipp_range(optarg, ipinfo->ipp);
++		ipinfo->bitmask |= EBT_IP_IPP;
++		break;
++
++	case IP_myDSCP:
++		ebt_check_option2(flags, OPT_DSCP);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP_DSCP;
++		parse_dscp_range(optarg, ipinfo->dscp);
++		ipinfo->bitmask |= EBT_IP_DSCP;
++		break;
++#endif
+ 
+ 	case IP_PROTO:
+ 		ebt_check_option2(flags, OPT_PROTO);
+ 		if (ebt_check_inverse2(optarg))
+ 			ipinfo->invflags |= EBT_IP_PROTO;
++#if 1  /*Rodney_20090724*/
++		if((cp = strchr(optarg, ':')) == NULL){
++			i = strtoul(optarg, &end, 10);
++			if (*end != '\0') {
++				struct protoent *pe;
++
++				pe = getprotobyname(optarg);
++				if (pe == NULL)
++					ebt_print_error("Unknown specified IP protocol - %s", argv[optind - 1]);
++				ipinfo->protocol[0] = pe->p_proto;
++			} else {
++				ipinfo->protocol[0] = (unsigned char) i;
++			}
++			ipinfo->protocol[1] = ipinfo->protocol[0];
++		}
++		else{
++			*cp = '\0';
++			cp++;
++			i = strtoul(optarg, &end, 10);
++			i2 = strtoul(cp, &end2, 10);
++			if((*end != '\0') || (*end2 != '\0')) {
++				struct protoent *pe;
++				struct protoent *pe2;
++
++				pe = getprotobyname(optarg);
++				pe2 = getprotobyname(cp);
++				if ((pe == NULL) || (pe2 == NULL))
++					ebt_print_error("Unknown specified IP protocol - %s", argv[optind - 1]);
++				ipinfo->protocol[0] = pe->p_proto;
++				ipinfo->protocol[1] = pe2->p_proto;
++			}
++			else{
++				ipinfo->protocol[0] = (unsigned char) i;
++				ipinfo->protocol[1] = (unsigned char) i2;
++			}
++		}
++#else
+ 		i = strtoul(optarg, &end, 10);
+ 		if (*end != '\0') {
+ 			struct protoent *pe;
+@@ -196,6 +402,7 @@
+ 		} else {
+ 			ipinfo->protocol = (unsigned char) i;
+ 		}
++#endif
+ 		ipinfo->bitmask |= EBT_IP_PROTO;
+ 		break;
+ 	default:
+@@ -213,13 +420,24 @@
+ 	if (entry->ethproto != ETH_P_IP || entry->invflags & EBT_IPROTO) {
+ 		ebt_print_error("For IP filtering the protocol must be "
+ 		            "specified as IPv4");
+-	} else if (ipinfo->bitmask & (EBT_IP_SPORT|EBT_IP_DPORT) &&
++	}
++#if 1  /*Rodney_20090724*/
++	else if (ipinfo->bitmask & (EBT_IP_SPORT|EBT_IP_DPORT) &&
++		(!(ipinfo->bitmask & EBT_IP_PROTO) ||
++		ipinfo->invflags & EBT_IP_PROTO ||
++		(ipinfo->protocol[0]!=IPPROTO_TCP && ipinfo->protocol[1]!=IPPROTO_TCP &&
++		 ipinfo->protocol[0]!=IPPROTO_UDP && ipinfo->protocol[1]!=IPPROTO_UDP &&
++		 ipinfo->protocol[0]!=IPPROTO_SCTP && ipinfo->protocol[1]!=IPPROTO_SCTP &&
++		 ipinfo->protocol[0]!=IPPROTO_DCCP && ipinfo->protocol[1]!=IPPROTO_DCCP)))
++#else
++	else if (ipinfo->bitmask & (EBT_IP_SPORT|EBT_IP_DPORT) &&
+ 		(!(ipinfo->bitmask & EBT_IP_PROTO) ||
+ 		ipinfo->invflags & EBT_IP_PROTO ||
+ 		(ipinfo->protocol!=IPPROTO_TCP &&
+ 		 ipinfo->protocol!=IPPROTO_UDP &&
+ 		 ipinfo->protocol!=IPPROTO_SCTP &&
+ 		 ipinfo->protocol!=IPPROTO_DCCP)))
++#endif
+ 		ebt_print_error("For port filtering the IP protocol must be "
+ 				"either 6 (tcp), 17 (udp), 33 (dccp) or "
+ 				"132 (sctp)");
+@@ -231,23 +449,50 @@
+ 	struct ebt_ip_info *ipinfo = (struct ebt_ip_info *)match->data;
+ 	int j;
+ 
++/*modify by xyzhu_nj_20100413*/
+ 	if (ipinfo->bitmask & EBT_IP_SOURCE) {
+ 		printf("--ip-src ");
+ 		if (ipinfo->invflags & EBT_IP_SOURCE)
+ 			printf("! ");
+-		for (j = 0; j < 4; j++)
+-			printf("%d%s",((unsigned char *)&ipinfo->saddr)[j],
+-			   (j == 3) ? "" : ".");
+-		printf("%s ", ebt_mask_to_dotted(ipinfo->smsk));
++		if ( ipinfo->saddr[0] == ipinfo->saddr[1] ) {
++			for (j = 0; j < 4; j++)
++				printf("%d%s",((unsigned char *)&ipinfo->saddr[0])[j],
++				   (j == 3) ? "" : ".");
++			printf("%s ", ebt_mask_to_dotted(ipinfo->smsk[0]));
++		}
++		else {
++			for (j = 0; j < 4; j++)
++				printf("%d%s",((unsigned char *)&ipinfo->saddr[0])[j],
++				   (j == 3) ? "" : ".");
++			printf("%s ", ebt_mask_to_dotted(ipinfo->smsk[0]));
++			printf("-");
++			for (j = 0; j < 4; j++)
++				printf("%d%s",((unsigned char *)&ipinfo->saddr[1])[j],
++				   (j == 3) ? "" : ".");
++			printf("%s ", ebt_mask_to_dotted(ipinfo->smsk[1]));
++		}
+ 	}
+ 	if (ipinfo->bitmask & EBT_IP_DEST) {
+ 		printf("--ip-dst ");
+ 		if (ipinfo->invflags & EBT_IP_DEST)
+ 			printf("! ");
+-		for (j = 0; j < 4; j++)
+-			printf("%d%s", ((unsigned char *)&ipinfo->daddr)[j],
+-			   (j == 3) ? "" : ".");
+-		printf("%s ", ebt_mask_to_dotted(ipinfo->dmsk));
++		if ( ipinfo->daddr[0] == ipinfo->daddr[1] ) {
++			for (j = 0; j < 4; j++)
++				printf("%d%s", ((unsigned char *)&ipinfo->daddr[0])[j],
++				   (j == 3) ? "" : ".");
++			printf("%s ", ebt_mask_to_dotted(ipinfo->dmsk[0]));
++		}
++		else {
++			for (j = 0; j < 4; j++)
++				printf("%d%s", ((unsigned char *)&ipinfo->daddr[0])[j],
++				   (j == 3) ? "" : ".");
++			printf("%s ", ebt_mask_to_dotted(ipinfo->dmsk[0]));
++			printf("-");
++			for (j = 0; j < 4; j++)
++				printf("%d%s", ((unsigned char *)&ipinfo->daddr[1])[j],
++				   (j == 3) ? "" : ".");
++			printf("%s ", ebt_mask_to_dotted(ipinfo->dmsk[1]));
++		}
+ 	}
+ 	if (ipinfo->bitmask & EBT_IP_TOS) {
+ 		printf("--ip-tos ");
+@@ -255,18 +500,52 @@
+ 			printf("! ");
+ 		printf("0x%02X ", ipinfo->tos);
+ 	}
++#if 1  /*Rodney_20090724*/
++	if (ipinfo->bitmask & EBT_IP_IPP) {
++		printf("--ip-ipp ");
++		if (ipinfo->invflags & EBT_IP_IPP)
++			printf("! ");
++		print_ipp_range(ipinfo->ipp);
++	}
++	if (ipinfo->bitmask & EBT_IP_DSCP) {
++		printf("--ip-dscp ");
++		if (ipinfo->invflags & EBT_IP_DSCP)
++			printf("! ");
++		print_dscp_range(ipinfo->dscp);
++	}
++#endif
+ 	if (ipinfo->bitmask & EBT_IP_PROTO) {
+ 		struct protoent *pe;
+-
++#if 1  /*Rodney_20090724*/
++		struct protoent *pe2;
++#endif
+ 		printf("--ip-proto ");
+ 		if (ipinfo->invflags & EBT_IP_PROTO)
+ 			printf("! ");
++#if 1  /*Rodney_20090724*/
++		if(ipinfo->protocol[0] == ipinfo->protocol[1]){
++			pe = getprotobynumber(ipinfo->protocol[0]);
++			if(pe == NULL)
++				printf("%d ", ipinfo->protocol[0]);
++			else
++				printf("%s ", pe->p_name);
++		}
++		else{
++			pe = getprotobynumber(ipinfo->protocol[0]);
++			pe2 = getprotobynumber(ipinfo->protocol[1]);
++			if((pe == NULL) || (pe2 == NULL))
++				printf("%d:%d ", ipinfo->protocol[0], ipinfo->protocol[1]);
++			else
++				printf("%s:%s ", pe->p_name, pe2->p_name);
++		}
++#else
+ 		pe = getprotobynumber(ipinfo->protocol);
+ 		if (pe == NULL) {
+ 			printf("%d ", ipinfo->protocol);
+ 		} else {
+ 			printf("%s ", pe->p_name);
+ 		}
++#endif
+ 	}
+ 	if (ipinfo->bitmask & EBT_IP_SPORT) {
+ 		printf("--ip-sport ");
+@@ -292,6 +571,7 @@
+ 		return 0;
+ 	if (ipinfo1->invflags != ipinfo2->invflags)
+ 		return 0;
++#if 0
+ 	if (ipinfo1->bitmask & EBT_IP_SOURCE) {
+ 		if (ipinfo1->saddr != ipinfo2->saddr)
+ 			return 0;
+@@ -304,14 +584,54 @@
+ 		if (ipinfo1->dmsk != ipinfo2->dmsk)
+ 			return 0;
+ 	}
++#else
++	if ( ipinfo1->bitmask & EBT_IP_SOURCE ) {
++		if ( ipinfo1->saddr[0] != ipinfo2->saddr[0] ||
++			 ipinfo1->saddr[1] != ipinfo2->saddr[1] ) {
++			return 0;
++		}
++		if ( ipinfo1->smsk[0] != ipinfo2->smsk[0] ||
++			 ipinfo1->smsk[0] != ipinfo2->smsk[0] ) {
++			return 0;
++		}
++	}
++	if ( ipinfo2->bitmask & EBT_IP_DEST ) {
++		if ( ipinfo1->daddr[0] != ipinfo2->daddr[0] ||
++			 ipinfo1->daddr[1] != ipinfo2->daddr[1] ) {
++			return 0;
++		}
++		if ( ipinfo1->dmsk[0] != ipinfo2->dmsk[0] ||
++			 ipinfo1->dmsk[1] != ipinfo2->dmsk[1] ) {
++			return 0;
++		}
++	}
++#endif
+ 	if (ipinfo1->bitmask & EBT_IP_TOS) {
+ 		if (ipinfo1->tos != ipinfo2->tos)
+ 			return 0;
+ 	}
++#if 1  /*Rodney_20090724*/
++	if (ipinfo1->bitmask & EBT_IP_IPP) {
++		if (ipinfo1->ipp[0] != ipinfo2->ipp[0] ||
++			ipinfo1->ipp[1] != ipinfo2->ipp[1])
++			return 0;
++	}
++	if (ipinfo1->bitmask & EBT_IP_DSCP) {
++		if (ipinfo1->dscp[0] != ipinfo2->dscp[0] ||
++			ipinfo1->dscp[1] != ipinfo2->dscp[1])
++			return 0;
++	}
++	if (ipinfo1->bitmask & EBT_IP_PROTO) {
++		if (ipinfo1->protocol[0] != ipinfo2->protocol[0] ||
++			ipinfo1->protocol[1] != ipinfo2->protocol[1])
++			return 0;
++	}
++#else
+ 	if (ipinfo1->bitmask & EBT_IP_PROTO) {
+ 		if (ipinfo1->protocol != ipinfo2->protocol)
+ 			return 0;
+ 	}
++#endif
+ 	if (ipinfo1->bitmask & EBT_IP_SPORT) {
+ 		if (ipinfo1->sport[0] != ipinfo2->sport[0] ||
+ 		   ipinfo1->sport[1] != ipinfo2->sport[1])
+Index: ebtables-v2.0.8-2/extensions/ebt_ip6.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/extensions/ebt_ip6.c	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,498 @@
++/* ebt_ip6
++ *
++ * Authors:
++ * Kuo-Lang Tseng <kuo-lang.tseng@intel.com>
++ * Manohar Castelino <manohar.castelino@intel.com>
++ *
++ * Summary:
++ * This is just a modification of the IPv4 code written by
++ * Bart De Schuymer <bdschuym@pandora.be>
++ * with the changes required to support IPv6
++ *
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include <netdb.h>
++#include "../include/ebtables_u.h"
++#include <linux/netfilter_bridge/ebt_ip6.h>
++
++
++
++#define IP_SOURCE '1'
++#define IP_DEST   '2'
++#define IP_TCLASS '3'
++#define IP_PROTO  '4'
++#define IP_SPORT  '5'
++#define IP_DPORT  '6'
++
++static struct option opts[] =
++{
++	{ "ip6-source"           , required_argument, 0, IP_SOURCE },
++	{ "ip6-src"              , required_argument, 0, IP_SOURCE },
++	{ "ip6-destination"      , required_argument, 0, IP_DEST   },
++	{ "ip6-dst"              , required_argument, 0, IP_DEST   },
++	{ "ip6-traffic-class"    , required_argument, 0, IP_TCLASS },
++	{ "ip6-tclass"           , required_argument, 0, IP_TCLASS },
++	{ "ip6-protocol"         , required_argument, 0, IP_PROTO  },
++	{ "ip6-proto"            , required_argument, 0, IP_PROTO  },
++	{ "ip6-source-port"      , required_argument, 0, IP_SPORT  },
++	{ "ip6-sport"            , required_argument, 0, IP_SPORT  },
++	{ "ip6-destination-port" , required_argument, 0, IP_DPORT  },
++	{ "ip6-dport"            , required_argument, 0, IP_DPORT  },
++	{ 0 }
++};
++
++/* transform a protocol and service name into a port number */
++static uint16_t parse_port(const char *protocol, const char *name)
++{
++	struct servent *service;
++	char *end;
++	int port;
++
++	port = strtol(name, &end, 10);
++	if (*end != '\0') {
++		if (protocol &&
++		    (service = getservbyname(name, protocol)) != NULL)
++			return ntohs(service->s_port);
++	}
++	else if (port >= 0 || port <= 0xFFFF) {
++		return port;
++	}
++	ebt_print_error("Problem with specified %s port '%s'",
++			protocol?protocol:"", name);
++	return 0;
++}
++
++static void
++parse_port_range(const char *protocol, const char *portstring, uint16_t *ports)
++{
++	char *buffer;
++	char *cp;
++
++	buffer = strdup(portstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		ports[0] = ports[1] = parse_port(protocol, buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		ports[0] = buffer[0] ? parse_port(protocol, buffer) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		ports[1] = cp[0] ? parse_port(protocol, cp) : 0xFFFF;
++		if (ebt_errormsg[0] != '\0')
++			return;
++
++		if (ports[0] > ports[1])
++			ebt_print_error("Invalid portrange (min > max)");
++	}
++	free(buffer);
++}
++
++static void print_port_range(uint16_t *ports)
++{
++	if (ports[0] == ports[1])
++		printf("%d ", ports[0]);
++	else
++		printf("%d:%d ", ports[0], ports[1]);
++}
++
++#if 1
++/* support tclass range */
++static uint8_t parse_tc(const char *protocol, const char *name)
++{
++	char *end;
++	int tc;
++
++	tc = strtol(name, &end, 10);
++	if (tc >= 0 && tc <= 0xFF) {
++		return (uint8_t)tc;
++	}
++	ebt_print_error2("Problem with specified IPv6 traffic class");
++	return 0;
++}
++
++static void
++parse_tc_range(const char *protocol, const char *tcstring, uint8_t *tcs)
++{
++	char *buffer;
++	char *cp;
++
++	buffer = strdup(tcstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		tcs[0] = tcs[1] = parse_tc(protocol, buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		tcs[0] = buffer[0] ? parse_tc(protocol, buffer) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		tcs[1] = cp[0] ? parse_tc(protocol, cp) : 0xFFFF;
++		if (ebt_errormsg[0] != '\0')
++			return;
++
++		if (tcs[0] > tcs[1])
++			ebt_print_error("Invalid tcrange (min > max)");
++	}
++	free(buffer);
++}
++
++static void print_tc_range(uint8_t *tcs)
++{
++	if (tcs[0] == tcs[1])
++		printf("%d ", tcs[0]);
++	else
++		printf("%d:%d ", tcs[0], tcs[1]);
++}
++#endif
++
++static void print_help()
++{
++	printf(
++"ip6 options:\n"
++"--ip6-src    [!] address[/mask]: ipv6 source specification\n"
++"--ip6-dst    [!] address[/mask]: ipv6 destination specification\n"
++#if 0
++"--ip6-tclass [!] tclass        : ipv6 traffic class specification\n"
++#else
++"--ip6-tclass [!] tclass[:tclass]:ipv6 traffic class specification\n"
++#endif
++#if 0
++"--ip6-proto  [!] protocol      : ipv6 protocol specification\n"
++#else
++"--ip6-proto  [!] protocol[:protocol]    : ipv6 protocol specification\n"
++#endif
++"--ip6-sport  [!] port[:port]   : tcp/udp source port or port range\n"
++"--ip6-dport  [!] port[:port]   : tcp/udp destination port or port range\n"
++);
++}
++
++static void init(struct ebt_entry_match *match)
++{
++	struct ebt_ip6_info *ipinfo = (struct ebt_ip6_info *)match->data;
++
++	ipinfo->invflags = 0;
++	ipinfo->bitmask = 0;
++}
++
++#define OPT_SOURCE 0x01
++#define OPT_DEST   0x02
++#define OPT_TCLASS 0x04
++#define OPT_PROTO  0x08
++#define OPT_SPORT  0x10
++#define OPT_DPORT  0x20
++static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
++   unsigned int *flags, struct ebt_entry_match **match)
++{
++	struct ebt_ip6_info *ipinfo = (struct ebt_ip6_info *)(*match)->data;
++#if 0
++	char *end;
++	long int i;
++#else
++	char *end, *end2, *cp;
++	long int i, i2;
++#endif
++
++	switch (c) {
++	case IP_SOURCE:
++		ebt_check_option2(flags, OPT_SOURCE);
++		ipinfo->bitmask |= EBT_IP6_SOURCE;
++		if (ebt_check_inverse2(optarg)) {
++		    ipinfo->invflags |= EBT_IP6_SOURCE;
++		}
++		ebt_parse_ip6_address(optarg, &ipinfo->saddr, &ipinfo->smsk);
++		break;
++
++	case IP_DEST:
++		ebt_check_option2(flags, OPT_DEST);
++		ipinfo->bitmask |= EBT_IP6_DEST;
++		if (ebt_check_inverse2(optarg)) {
++			ipinfo->invflags |= EBT_IP6_DEST;
++		}
++		ebt_parse_ip6_address(optarg, &ipinfo->daddr, &ipinfo->dmsk);
++		break;
++
++	case IP_SPORT:
++	case IP_DPORT:
++		if (c == IP_SPORT) {
++			ebt_check_option2(flags, OPT_SPORT);
++			ipinfo->bitmask |= EBT_IP6_SPORT;
++			if (ebt_check_inverse2(optarg))
++				ipinfo->invflags |= EBT_IP6_SPORT;
++		} else {
++			ebt_check_option2(flags, OPT_DPORT);
++			ipinfo->bitmask |= EBT_IP6_DPORT;
++			if (ebt_check_inverse2(optarg))
++				ipinfo->invflags |= EBT_IP6_DPORT;
++		}
++		if (c == IP_SPORT)
++			parse_port_range(NULL, optarg, ipinfo->sport);
++		else
++			parse_port_range(NULL, optarg, ipinfo->dport);
++		break;
++
++	case IP_TCLASS:
++#if 0
++		ebt_check_option2(flags, OPT_TCLASS);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP6_TCLASS;
++		i = strtol(optarg, &end, 16);
++		if (i < 0 || i > 255 || *end != '\0')
++			ebt_print_error2("Problem with specified IPv6 traffic class");
++		ipinfo->tclass = i;
++		ipinfo->bitmask |= EBT_IP6_TCLASS;
++		break;
++#else
++		ebt_check_option2(flags, OPT_TCLASS);
++		ipinfo->bitmask |= EBT_IP6_TCLASS;
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP6_TCLASS;
++		parse_tc_range(NULL, optarg, ipinfo->tclass);
++		break;
++#endif
++
++	case IP_PROTO:
++#if 0
++		ebt_check_option2(flags, OPT_PROTO);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP6_PROTO;
++		i = strtoul(optarg, &end, 10);
++		if (*end != '\0') {
++			struct protoent *pe;
++
++			pe = getprotobyname(optarg);
++			if (pe == NULL)
++				ebt_print_error("Unknown specified IP protocol - %s", argv[optind - 1]);
++			ipinfo->protocol = pe->p_proto;
++		} else {
++			ipinfo->protocol = (unsigned char) i;
++		}
++#else
++		if((cp = strchr(optarg, ':')) == NULL){
++			i = strtoul(optarg, &end, 10);
++			if (*end != '\0') {
++				struct protoent *pe;
++
++				pe = getprotobyname(optarg);
++				if (pe == NULL)
++					ebt_print_error("Unknown specified IP protocol - %s", argv[optind - 1]);
++				ipinfo->protocol[0] = pe->p_proto;
++			} else {
++				ipinfo->protocol[0] = (unsigned char) i;
++			}
++			ipinfo->protocol[1] = ipinfo->protocol[0];
++		}
++		else{
++			*cp = '\0';
++			cp++;
++			i = strtoul(optarg, &end, 10);
++			i2 = strtoul(cp, &end2, 10);
++			if((*end != '\0') || (*end2 != '\0')) {
++				struct protoent *pe;
++				struct protoent *pe2;
++
++				pe = getprotobyname(optarg);
++				pe2 = getprotobyname(cp);
++				if ((pe == NULL) || (pe2 == NULL))
++					ebt_print_error("Unknown specified IP protocol - %s", argv[optind - 1]);
++				ipinfo->protocol[0] = pe->p_proto;
++				ipinfo->protocol[1] = pe2->p_proto;
++			}
++			else{
++				ipinfo->protocol[0] = (unsigned char) i;
++				ipinfo->protocol[1] = (unsigned char) i2;
++			}
++		}
++#endif
++		ipinfo->bitmask |= EBT_IP6_PROTO;
++		break;
++	default:
++		return 0;
++	}
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_match *match, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	struct ebt_ip6_info *ipinfo = (struct ebt_ip6_info *)match->data;
++
++	if (entry->ethproto != ETH_P_IPV6 || entry->invflags & EBT_IPROTO) {
++		ebt_print_error("For IPv6 filtering the protocol must be "
++		            "specified as IPv6");
++	} else if (ipinfo->bitmask & (EBT_IP6_SPORT|EBT_IP6_DPORT) &&
++		(!(ipinfo->bitmask & EBT_IP6_PROTO) ||
++		ipinfo->invflags & EBT_IP6_PROTO ||
++#if 0
++		(ipinfo->protocol!=IPPROTO_TCP &&
++		 ipinfo->protocol!=IPPROTO_UDP &&
++		 ipinfo->protocol!=IPPROTO_SCTP &&
++		 ipinfo->protocol!=IPPROTO_DCCP)))
++#else
++		(ipinfo->protocol[0]!=IPPROTO_TCP && ipinfo->protocol[1]!=IPPROTO_TCP &&
++		 ipinfo->protocol[0]!=IPPROTO_UDP && ipinfo->protocol[1]!=IPPROTO_UDP &&
++		 ipinfo->protocol[0]!=IPPROTO_SCTP && ipinfo->protocol[1]!=IPPROTO_SCTP &&
++		 ipinfo->protocol[0]!=IPPROTO_DCCP && ipinfo->protocol[1]!=IPPROTO_DCCP)))
++#endif
++		ebt_print_error("For port filtering the IP protocol must be "
++				"either 6 (tcp), 17 (udp), 33 (dccp) or "
++				"132 (sctp)");
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_match *match)
++{
++	struct ebt_ip6_info *ipinfo = (struct ebt_ip6_info *)match->data;
++
++	if (ipinfo->bitmask & EBT_IP6_SOURCE) {
++		printf("--ip6-src ");
++		if (ipinfo->invflags & EBT_IP6_SOURCE)
++			printf("! ");
++		printf("%s", ebt_ip6_to_numeric(&ipinfo->saddr));
++		printf("/%s ", ebt_ip6_to_numeric(&ipinfo->smsk));
++	}
++	if (ipinfo->bitmask & EBT_IP6_DEST) {
++		printf("--ip6-dst ");
++		if (ipinfo->invflags & EBT_IP6_DEST)
++			printf("! ");
++		printf("%s", ebt_ip6_to_numeric(&ipinfo->daddr));
++		printf("/%s ", ebt_ip6_to_numeric(&ipinfo->dmsk));
++	}
++	if (ipinfo->bitmask & EBT_IP6_TCLASS) {
++#if 0
++		printf("--ip6-tclass ");
++		if (ipinfo->invflags & EBT_IP6_TCLASS)
++			printf("! ");
++		printf("0x%02X ", ipinfo->tclass);
++#else
++		printf("--ip6-tclass ");
++		if (ipinfo->invflags & EBT_IP6_TCLASS)
++			printf("! ");
++		print_tc_range(ipinfo->tclass);
++#endif
++	}
++	if (ipinfo->bitmask & EBT_IP6_PROTO) {
++		struct protoent *pe;
++#if 1
++		struct protoent *pe2;
++#endif
++
++		printf("--ip6-proto ");
++		if (ipinfo->invflags & EBT_IP6_PROTO)
++			printf("! ");
++#if 0
++		pe = getprotobynumber(ipinfo->protocol);
++		if (pe == NULL) {
++			printf("%d ", ipinfo->protocol);
++		} else {
++			printf("%s ", pe->p_name);
++		}
++#else
++		if(ipinfo->protocol[0] == ipinfo->protocol[1]){
++			pe = getprotobynumber(ipinfo->protocol[0]);
++			if(pe == NULL)
++				printf("%d ", ipinfo->protocol[0]);
++			else
++				printf("%s ", pe->p_name);
++		}
++		else{
++			pe = getprotobynumber(ipinfo->protocol[0]);
++			pe2 = getprotobynumber(ipinfo->protocol[1]);
++			if((pe == NULL) || (pe2 == NULL))
++				printf("%d:%d ", ipinfo->protocol[0], ipinfo->protocol[1]);
++			else
++				printf("%s:%s ", pe->p_name, pe2->p_name);
++		}
++#endif
++	}
++	if (ipinfo->bitmask & EBT_IP6_SPORT) {
++		printf("--ip6-sport ");
++		if (ipinfo->invflags & EBT_IP6_SPORT)
++			printf("! ");
++		print_port_range(ipinfo->sport);
++	}
++	if (ipinfo->bitmask & EBT_IP6_DPORT) {
++		printf("--ip6-dport ");
++		if (ipinfo->invflags & EBT_IP6_DPORT)
++			printf("! ");
++		print_port_range(ipinfo->dport);
++	}
++}
++
++static int compare(const struct ebt_entry_match *m1,
++   const struct ebt_entry_match *m2)
++{
++	struct ebt_ip6_info *ipinfo1 = (struct ebt_ip6_info *)m1->data;
++	struct ebt_ip6_info *ipinfo2 = (struct ebt_ip6_info *)m2->data;
++
++	if (ipinfo1->bitmask != ipinfo2->bitmask)
++		return 0;
++	if (ipinfo1->invflags != ipinfo2->invflags)
++		return 0;
++	if (ipinfo1->bitmask & EBT_IP6_SOURCE) {
++		if (!IN6_ARE_ADDR_EQUAL(&ipinfo1->saddr, &ipinfo2->saddr))
++			return 0;
++		if (!IN6_ARE_ADDR_EQUAL(&ipinfo1->smsk, &ipinfo2->smsk))
++			return 0;
++	}
++	if (ipinfo1->bitmask & EBT_IP6_DEST) {
++		if (!IN6_ARE_ADDR_EQUAL(&ipinfo1->daddr, &ipinfo2->daddr))
++			return 0;
++		if (!IN6_ARE_ADDR_EQUAL(&ipinfo1->dmsk, &ipinfo2->dmsk))
++			return 0;
++	}
++	if (ipinfo1->bitmask & EBT_IP6_TCLASS) {
++#if 0
++		if (ipinfo1->tclass != ipinfo2->tclass)
++			return 0;
++#else
++		if (ipinfo1->tclass[0] != ipinfo2->tclass[0] ||
++		   ipinfo1->tclass[1] != ipinfo2->tclass[1])
++			return 0;
++#endif
++	}
++#if 0
++	if (ipinfo1->bitmask & EBT_IP6_PROTO) {
++		if (ipinfo1->protocol != ipinfo2->protocol)
++			return 0;
++	}
++#else
++	if (ipinfo1->bitmask & EBT_IP6_PROTO) {
++		if (ipinfo1->protocol[0] != ipinfo2->protocol[0] ||
++			ipinfo1->protocol[1] != ipinfo2->protocol[1])
++			return 0;
++	}
++#endif
++	if (ipinfo1->bitmask & EBT_IP6_SPORT) {
++		if (ipinfo1->sport[0] != ipinfo2->sport[0] ||
++		   ipinfo1->sport[1] != ipinfo2->sport[1])
++			return 0;
++	}
++	if (ipinfo1->bitmask & EBT_IP6_DPORT) {
++		if (ipinfo1->dport[0] != ipinfo2->dport[0] ||
++		   ipinfo1->dport[1] != ipinfo2->dport[1])
++			return 0;
++	}
++	return 1;
++}
++
++static struct ebt_u_match ip6_match =
++{
++	.name		= EBT_IP6_MATCH,
++	.size		= sizeof(struct ebt_ip6_info),
++	.help		= print_help,
++	.init		= init,
++	.parse		= parse,
++	.final_check	= final_check,
++	.print		= print,
++	.compare	= compare,
++	.extra_ops	= opts,
++};
++
++void _init(void)
++{
++	ebt_register_match(&ip6_match);
++}
+Index: ebtables-v2.0.8-2/extensions/ebt_policer.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/extensions/ebt_policer.c	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,508 @@
++/* Shared library add-on to ebtables to add policer support, ZyXEL Stan, 20100107 */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_policer.h"
++
++#define EBT_POLICER_RATE_KBPS        10       /* Policer default rate in kbps. */
++#define EBT_POLICER_BURST_KBYTE      10       /* Policer default burst in kbyte. */
++#define EBT_POLICER_MAX_INPUT_VALUE  1000000  /* Max rate value user can input in kbps or mbps. */
++
++#if 1//__MSTC__, Jones For compilation
++#define FLAG_MODE          0x01
++#define FLAG_POLICER       0x02
++#define FLAG_POLICER_BURST 0x04
++#define FLAG_CRATE         0x08
++#define FLAG_CBS_BURST     0x10
++#define FLAG_PRATE         0x20
++#define FLAG_PBS_BURST     0x40
++#define FLAG_EBS_BURST     0x80
++
++#define MODE_TBF   0
++#define MODE_SRTCM 1
++#define MODE_TRTCM 2
++
++static struct option opts[] = {
++    { "mode",          required_argument, 0, '#' },
++    { "policer",       required_argument, 0, '%' },
++    { "policer-burst", required_argument, 0, '$' },
++    { "crate",         required_argument, 0, '1' },
++    { "cbs-burst",     required_argument, 0, '2' },
++    { "prate",         required_argument, 0, '3' },
++    { "pbs-burst",     required_argument, 0, '4' },
++    { "ebs-burst",     required_argument, 0, '5' },
++    { 0 }
++};
++#else
++#define FLAG_POLICER		         0x01
++#define FLAG_POLICER_BURST	         0x02
++
++#define ARG_POLICER	                 '1'
++#define ARG_POLICER_BURST            '2'
++
++static struct option opts[] = {
++    { "policer",		required_argument, 0, ARG_POLICER },
++    { "policer-burst",	required_argument, 0, ARG_POLICER_BURST },
++    { 0 }
++};
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++/* Function which prints out usage message. */
++static void print_help(void)
++{
++	printf(
++	    "policer options:\n"
++	    "--mode name                     mode name match, default is tbf.\n"
++	    "                                If you want to use tbf mode, you can skip this option.\n"
++	    "                                [Support tbf, srtcm, trtcm.]\n"
++	    "tbf mode: \n"
++	    "--policer rate			max data rate match, default %ukbps\n"
++	    "                                [Bits per second followed by kbps or mbps.\n"
++	    "                                Support 1kbps to 1000000kbps or 1mbps to 1000000mbps.] \n"
++	    "--policer-burst size		size to match in a burst, default %ukb\n"
++	    "                                [Kilo-bytes followed by kb.\n"
++	    "                                Support 1kb to 1000kb.]\n"
++	    "srtcm mode: \n"
++	    "The nfmark field of red packet is marked as 0x10000, \n"
++	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "--crate rate			committed data rate match, default %ukbps\n"
++	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
++	    "--ebs-burst size		size to match in EBS burst, default %ukb\n"
++	    "trtcm mode: \n"
++	    "The nfmark field of red packet is marked as 0x10000, \n"
++	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "--crate rate			committed data rate match, default %ukbps\n"
++	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
++	    "--prate rate			peak data rate match, default %ukbps\n"
++	    "                                [Msut be equal or greater than crate.]\n"
++	    "--pbs-burst size		size to match in PBS burst, default %ukb\n\n",
++	    EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE,
++	    EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE, EBT_POLICER_BURST_KBYTE,
++	    EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE, EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE);
++}
++#else
++/* Function which prints out usage message. */
++static void print_help(void)
++{
++	printf(
++	    "policer options:\n"
++	    "--policer rate			max data rate match: default %ukbps\n"
++	    "                                [Bits per second followed by kbps or mbps.\n"
++	    "                                Support 1kbps to 1000000kbps or 1mbps to 1000000mbps.] \n"
++	    "--policer-burst size		size to match in a burst, default %ukb\n"
++	    "                                [Kilo-bytes followed by kb.\n"
++	    "                                Support 1kb to 1000kb.]\n"
++	    "\n", EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE);
++}
++#endif
++
++/* parse_rate(): to check the rate and preprocess the rate. */
++static int parse_rate(const char *rate, u_int32_t *val)
++{
++	const char *kbps;
++	const char *mbps;
++	u_int32_t r;
++	u_int32_t mult = 1;
++
++	kbps = strstr(rate, "kbps"); /* String comparison. */
++	mbps = strstr(rate, "mbps"); /* String comparison. */
++
++	if ((!kbps && !mbps) || (kbps && mbps)) {
++		return 0;
++	}
++	else if (kbps) {
++		if (strlen(kbps + 4) != 0) {
++			return 0;
++		}
++		mult = 1; /* kbps scale */
++	}
++	else if (mbps) {
++		if (strlen(mbps + 4) != 0) {
++			return 0;
++		}
++		mult = 1000; /* mbps scale */
++	}
++
++	r = strtoul(rate, NULL, 0);
++
++	if (!r) {
++		return 0;
++	}
++
++	if (r > EBT_POLICER_MAX_INPUT_VALUE) { /* prevent user enter greater than IPT_POLICER_MAX_INPUT_VALUE */
++		return 0;
++	}
++	*val = r * mult;
++	return 1;
++}
++
++#if 1//__MSTC__, Jones For compilation
++/* Initialize the match. */
++static void init(struct ebt_entry_match *m)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)m->data;
++	/* Default mode is TBF. */
++	r->policerMode = MODE_TBF;
++
++	/* Prepare default rate string, such as 10kbps. */
++	char rate_buf[16];
++	sprintf(rate_buf, "%dkbps", EBT_POLICER_RATE_KBPS);
++
++	parse_rate(rate_buf, &r->rate);
++	r->burst = EBT_POLICER_BURST_KBYTE;
++	/* For srtcm and trtcm. */
++	r->pRate = r->rate;
++	r->pbsBurst = EBT_POLICER_BURST_KBYTE;
++#if 1 /* Init creditCap to check if the rule is new or not. __OBM__. ZyXEL, Stan Su, 20100611. */
++	r->creditCap = 0;
++#endif
++
++}
++/* end init */
++#else
++/* Initialize the match. */
++static void init(struct ebt_entry_match *m)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)m->data;
++
++	/* Prepare default rate string, such as 10kbps. */
++	char rate_buf[16];
++	sprintf(rate_buf, "%dkbps", EBT_POLICER_RATE_KBPS);
++
++	parse_rate(rate_buf, &r->avg);
++	r->burst = EBT_POLICER_BURST_KBYTE;
++}
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++static int parse(int c, char **argv, int argc,
++                 const struct ebt_u_entry *entry,
++                 unsigned int *flags,
++                 struct ebt_entry_match **match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)(*match)->data;
++	const char *str1;
++	char *remainder;
++
++	switch(c) {
++	case '#':
++		/* Check Mode */
++		ebt_check_option2(flags, FLAG_MODE);
++		if (ebt_check_inverse2(optarg)) {
++			ebt_print_error("Unexpected `!' after --mode");
++		}
++		if (strcmp(optarg, "tbf") == 0) {
++			r->policerMode = MODE_TBF;
++		}
++		else if (strcmp(optarg, "srtcm") == 0) {
++			r->policerMode = MODE_SRTCM;
++		}
++		else if (strcmp(optarg, "trtcm") == 0) {
++			r->policerMode = MODE_TRTCM;
++		}
++		else {
++			ebt_print_error("bad mode '%s'", optarg);
++		}
++		break;
++
++	case '%':
++		if (r->policerMode == 0) {
++			/* Check parameter of tbf */
++			ebt_check_option2(flags, FLAG_POLICER);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --policer");
++			}
++			if (!parse_rate(optarg, &r->rate)) {
++				ebt_print_error("bad rate '%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '$':
++		if (r->policerMode == 0) {
++			/* Check parameter of tbf */
++			ebt_check_option2(flags, FLAG_POLICER_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --policer-burst");
++			}
++			str1 = optarg;
++			r->burst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++				ebt_print_error("bad --policer-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '1':
++		if (r->policerMode == 1 || r->policerMode == 2) {
++			/* Check parameter of srtcm or trtcm */
++			ebt_check_option2(flags, FLAG_CRATE);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --crate");
++			}
++			if (!parse_rate(optarg, &r->rate)) {
++				ebt_print_error("bad committed information rate '%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '2':
++		if (r->policerMode == 1 || r->policerMode == 2) {
++			/* Check parameter of srtcm or trtcm */
++			ebt_check_option2(flags, FLAG_CBS_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --cbs-burst");
++			}
++			str1 = optarg;
++			r->burst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++				ebt_print_error("bad --cbs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '3':
++		if (r->policerMode == 2) {
++			/* Check parameter of trtcm */
++			ebt_check_option2(flags, FLAG_PRATE);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --prate");
++			}
++			if (!parse_rate(optarg, &r->pRate)) {
++				ebt_print_error("bad peak information rate '%s'", optarg);
++			}
++			if (r->rate > r->pRate) {
++				ebt_print_error("prate msut be equal or greater than crate");
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '4':
++		if (r->policerMode == 2) {
++			/* Check parameter of trtcm */
++			ebt_check_option2(flags, FLAG_PBS_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --pbs-burst");
++			}
++			str1 = optarg;
++			r->pbsBurst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->pbsBurst > 1000 || r->pbsBurst <= 0) {
++				ebt_print_error("bad --pbs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '5':
++		if (r->policerMode == 1) {
++			/* Check parameter of srtcm */
++			ebt_check_option2(flags, FLAG_EBS_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --ebs-burst");
++			}
++			str1 = optarg;
++			r->pbsBurst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->pbsBurst > 1000 || r->pbsBurst <= 0) {
++				ebt_print_error("bad --ebs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	default:
++		return 0;
++	}
++
++	return 1;
++}
++/* end parse */
++#else
++static int parse(int c, char **argv, int argc,
++                 const struct ebt_u_entry *entry,
++                 unsigned int *flags,
++                 struct ebt_entry_match **match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)(*match)->data;
++	const char *str1;
++	char *remainder;
++
++	switch(c) {
++	case ARG_POLICER:
++		check_option(flags, FLAG_POLICER);
++		if (check_inverse(optarg)) {
++			print_error("Unexpected `!' after --policer");
++		}
++		if (!parse_rate(optarg, &r->avg)) {
++			print_error("bad rate `%s'", optarg);
++		}
++		break;
++
++	case ARG_POLICER_BURST:
++		check_option(flags, FLAG_POLICER_BURST);
++		if (check_inverse(optarg)) {
++			print_error("Unexpected `!' after --policer-burst");
++		}
++
++		str1 = optarg;
++		r->burst = strtol(str1, &remainder, 0);
++		if (strcmp(remainder, "kb") != 0 || r->burst > 1000 || r->burst <= 0) {
++			print_error("bad --policer-burst `%s'", optarg);
++		}
++		break;
++
++	default:
++		return 0;
++	}
++
++	return 1;
++}
++#endif
++
++/* Final check; nothing. */
++static void final_check(const struct ebt_u_entry *entry,
++                        const struct ebt_entry_match *match,
++                        const char *name,
++                        unsigned int hookmask,
++                        unsigned int time)
++{
++	/* empty */
++}
++
++struct rates
++{
++    const char *name;
++    u_int32_t mult;
++};
++
++static struct rates g_rates[] =
++{
++    { "kbps", 1 },
++    { "mbps", 1000 },
++    { "gbps", 1000000 },
++};
++
++static void print_rate(u_int32_t period)
++{
++	unsigned int i;
++
++	for (i = 1; i < sizeof(g_rates) / sizeof(struct rates); i ++)
++		if (period < g_rates[i].mult
++			    || period / g_rates[i].mult < period % g_rates[i].mult ) {
++			break;
++		}
++
++	printf("%u%s ", period / g_rates[i - 1].mult , g_rates[i - 1].name);
++}
++
++#if 1//__MSTC__, Jones For compilation
++/* Prints out the matchinfo. */
++static void
++print(const struct ebt_u_entry *entry, const struct ebt_entry_match *match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)match->data;
++
++	switch(r->policerMode) {
++	case MODE_TBF:
++		printf("policer: rate ");
++		print_rate(r->rate);
++		printf("burst %ukbytes ", r->burst);
++		break;
++
++	case MODE_SRTCM:
++		printf("srtcm: cRate ");
++		print_rate(r->rate);
++		printf("cbs-burst %ukbytes ", r->burst);
++		printf("ebs-burst %ukbytes ", r->pbsBurst);
++		break;
++
++	case MODE_TRTCM:
++		printf("trtcm: cRate ");
++		print_rate(r->rate);
++		printf("cbs-burst %ukbytes ", r->burst);
++		printf("pRate ");
++		print_rate(r->pRate);
++		printf("pbs-burst %ukbytes ", r->pbsBurst);
++		break;
++	}
++}
++/* end print */
++#else
++/* Prints out the matchinfo. */
++static void
++print(const struct ebt_u_entry *entry, const struct ebt_entry_match *match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)match->data;
++
++	printf("policer: rate ");
++	print_rate(r->avg);
++	printf("burst %ukbytes ", r->burst);
++}
++#endif
++static int compare(const struct ebt_entry_match* m1, const struct ebt_entry_match *m2)
++{
++	struct ebt_policer_info* li1 = (struct ebt_policer_info*)m1->data;
++	struct ebt_policer_info* li2 = (struct ebt_policer_info*)m2->data;
++#if 1//__MSTC__, Jones For compilation
++	if (li1->rate!= li2->rate) {
++		return 0;
++	}
++#else
++       if (li1->avg != li2->avg) {
++		return 0;
++	}
++#endif
++	if (li1->burst != li2->burst) {
++		return 0;
++	}
++	return 1;
++}
++
++static struct ebt_u_match policer_match =
++{
++    .name         = EBT_POLICER_MATCH,
++    .size         = sizeof(struct ebt_policer_info),
++    .help         = print_help,
++    .init         = init,
++    .parse        = parse,
++    .final_check  = final_check,
++    .print        = print,
++    .compare      = compare,
++    .extra_ops    = opts,
++};
++
++//static void _init(void) __attribute((constructor));
++void _init(void)
++{
++	ebt_register_match(&policer_match);
++}
++
+Index: ebtables-v2.0.8-2/extensions/ebt_tc.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/extensions/ebt_tc.c	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,126 @@
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include <linux/netfilter_bridge/ebt_tc.h>
++
++
++static struct option opts[] =
++{
++	{ "set-tc" , required_argument, 0, '1' },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"tc target options:\n"
++	" --set-tc value     : Set tc value\n");
++}
++
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_tc_info *tcinfo =
++	   (struct ebt_tc_info *)target->data;
++
++	tcinfo->target = EBT_CONTINUE;
++}
++
++static void
++parse_tc(const unsigned char *s, struct ebt_tc_info *tcinfo){
++	char *buffer;
++	char *end, *cp;
++
++	buffer = strdup(s);
++#if 0
++	if ((cp = strchr(buffer, '/')) == NULL){
++		ftosinfo->ftos = strtol(buffer, &end, 0);
++		ftosinfo->mask = 0xff;
++	}
++	else {
++		*cp = '\0';
++		cp++;
++		ftosinfo->ftos = buffer[0] ? strtol(buffer, &end, 0) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		ftosinfo->mask = cp[0] ? strtol(cp, &end, 0) : 0xFF;
++		if (ebt_errormsg[0] != '\0')
++			return;
++	}
++#else
++	tcinfo->tc = strtol(buffer, &end, 0);
++
++	/* add for debug */
++	printf( "tcinfo->tc is 0x%x\n", tcinfo->tc );
++#endif
++	free(buffer);
++}
++
++static int parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_tc_info *tcinfo =
++	   (struct ebt_tc_info *)(*target)->data;
++	char *end;
++
++	switch (c) {
++	case '1':
++		parse_tc(optarg, tcinfo);
++		break;
++
++	 default:
++		return 0;
++	}
++
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	return;
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	struct ebt_tc_info *tcinfo =
++	   (struct ebt_tc_info *)target->data;
++
++	printf("--set-tc 0x%x", tcinfo->tc);
++
++}
++
++static int compare(const struct ebt_entry_target *t1,
++   const struct ebt_entry_target *t2)
++{
++	struct ebt_tc_info *tcinfo1 =
++	   (struct ebt_tc_info *)t1->data;
++	struct ebt_tc_info *tcinfo2 =
++	   (struct ebt_tc_info *)t2->data;
++
++	return tcinfo1->tc == tcinfo2->tc;
++}
++
++static struct ebt_u_target tc_target =
++{
++	.name		= EBT_TC_TARGET,
++	.size		= sizeof(struct ebt_tc_info),
++	.help		= print_help,
++	.init		= init,
++	.parse		= parse,
++	.final_check	= final_check,
++	.print		= print,
++	.compare	= compare,
++	.extra_ops	= opts,
++};
++
++void _init(void)
++{
++	ebt_register_target(&tc_target);
++}
+Index: ebtables-v2.0.8-2/extensions/ebt_vlan.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/extensions/ebt_vlan.c	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/extensions/ebt_vlan.c	2016-07-28 13:37:12.618152818 +0800
+@@ -1,8 +1,8 @@
+ /* ebt_vlan
+- * 
++ *
+  * Authors:
+  * Bart De Schuymer <bdschuym@pandora.be>
+- * Nick Fedchik <nick@fedchik.org.ua> 
++ * Nick Fedchik <nick@fedchik.org.ua>
+  *
+  * June, 2002
+  */
+@@ -33,7 +33,7 @@
+ };
+ 
+ /*
+- * option inverse flags definition 
++ * option inverse flags definition
+  */
+ #define OPT_VLAN_ID     0x01
+ #define OPT_VLAN_PRIO   0x02
+@@ -42,12 +42,113 @@
+ 
+ struct ethertypeent *ethent;
+ 
++#if 1  /*Rodney_20090724*/
++static uint16_t parse_id(const char *name)
++{
++	struct servent *service;
++	char *end;
++	uint16_t id;
++
++	id = strtol(name, &end, 10);
++
++	if (id >= 0 || id <= 0xFFFF) {
++		return id;
++	}
++	ebt_print_error("Problem with specified vlanID '%s'", name);
++
++	return 0;
++}
++static void
++parse_id_range(const char *portstring, uint16_t *id)
++{
++	char *buffer;
++	char *cp;
++
++	buffer = strdup(portstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		id[0] = id[1] = parse_id(buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		id[0] = buffer[0] ? parse_id(buffer) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		id[1] = cp[0] ? parse_id(cp) : 0xFFFF;
++		if (ebt_errormsg[0] != '\0')
++			return;
++
++		if (id[0] > id[1])
++			ebt_print_error("Invalid VlanID range (min > max)");
++	}
++	free(buffer);
++}
++static void print_id_range(uint16_t *id)
++{
++	if (id[0] == id[1])
++		printf("%d ", id[0]);
++	else
++		printf("%d:%d ", id[0], id[1]);
++}
++
++static uint8_t parse_prio(const char *name)
++{
++	struct servent *service;
++	char *end;
++	uint8_t prio;
++
++	prio = (uint8_t)strtol(name, &end, 16);
++
++	if (prio >= 0 || prio <= 0x07) {
++		return prio;
++	}
++	ebt_print_error("Problem with specified vlanPRIO '%s'", name);
++
++	return 0;
++}
++static void
++parse_prio_range(const char *portstring, uint8_t *prio)
++{
++	char *buffer;
++	char *cp;
++
++	buffer = strdup(portstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		prio[0] = prio[1] = parse_prio(buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		prio[0] = buffer[0] ? parse_prio(buffer) : 0;
++		if (ebt_errormsg[0] != '\0')
++			return;
++		prio[1] = cp[0] ? parse_prio(cp) : 0x07;
++		if (ebt_errormsg[0] != '\0')
++			return;
++
++		if (prio[0] > prio[1])
++			ebt_print_error("Invalid VlanPrio range (min > max)");
++	}
++	free(buffer);
++}
++static void print_prio_range(uint8_t *prio)
++{
++	if (prio[0] == prio[1])
++		printf("%d ", prio[0]);
++	else
++		printf("%d:%d ", prio[0], prio[1]);
++}
++#endif
++
+ static void print_help()
+ {
+ 	printf(
+ "vlan options:\n"
++#if 1  /*Rodney_20090724*/
++"--vlan-id [!] id[:id]       : vlan-tagged frame identifier, 0,1-4096 (integer)\n"
++"--vlan-prio [!] prio[:prio]   : Priority-tagged frame's user priority, 0-7 (integer)\n"
++#else
+ "--vlan-id [!] id       : vlan-tagged frame identifier, 0,1-4096 (integer)\n"
+ "--vlan-prio [!] prio   : Priority-tagged frame's user priority, 0-7 (integer)\n"
++#endif
+ "--vlan-encap [!] encap : Encapsulated frame protocol (hexadecimal or name)\n");
+ }
+ 
+@@ -58,7 +159,6 @@
+ 	vlaninfo->bitmask = 0;
+ }
+ 
+-
+ static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
+    unsigned int *flags, struct ebt_entry_match **match)
+ {
+@@ -71,21 +171,31 @@
+ 		ebt_check_option2(flags, OPT_VLAN_ID);
+ 		if (ebt_check_inverse2(optarg))
+ 			vlaninfo->invflags |= EBT_VLAN_ID;
++#if 1  /*Rodney_20090724*/
++		parse_id_range(optarg, vlaninfo->id);
++#else
+ 		local.id = strtoul(optarg, &end, 10);
+ 		if (local.id > 4094 || *end != '\0')
+ 			ebt_print_error2("Invalid --vlan-id range ('%s')", optarg);
+ 		vlaninfo->id = local.id;
++#endif
++
+ 		vlaninfo->bitmask |= EBT_VLAN_ID;
+ 		break;
+ 	case VLAN_PRIO:
+ 		ebt_check_option2(flags, OPT_VLAN_PRIO);
+ 		if (ebt_check_inverse2(optarg))
+ 			vlaninfo->invflags |= EBT_VLAN_PRIO;
++#if 1  /*Rodney_20090724*/
++		parse_prio_range(optarg, vlaninfo->prio);
++#else
+ 		local.prio = strtoul(optarg, &end, 10);
+ 		if (local.prio >= 8 || *end != '\0')
+ 			ebt_print_error2("Invalid --vlan-prio range ('%s')", optarg);
+ 		vlaninfo->prio = local.prio;
++#endif
+ 		vlaninfo->bitmask |= EBT_VLAN_PRIO;
++
+ 		break;
+ 	case VLAN_ENCAP:
+ 		ebt_check_option2(flags, OPT_VLAN_ENCAP);
+@@ -117,7 +227,7 @@
+ 	if (entry->ethproto != ETH_P_8021Q || entry->invflags & EBT_IPROTO)
+ 		ebt_print_error("For vlan filtering the protocol must be specified as 802_1Q");
+ 
+-	/* Check if specified vlan-id=0 (priority-tagged frame condition) 
++	/* Check if specified vlan-id=0 (priority-tagged frame condition)
+ 	 * when vlan-prio was specified. */
+ 	/* I see no reason why a user should be prohibited to match on a perhaps impossible situation <BDS>
+ 	if (vlaninfo->bitmask & EBT_VLAN_PRIO &&
+@@ -131,10 +241,24 @@
+ 	struct ebt_vlan_info *vlaninfo = (struct ebt_vlan_info *) match->data;
+ 
+ 	if (vlaninfo->bitmask & EBT_VLAN_ID) {
++#if 1  /*Rodney_20090724*/
++		printf("--vlan-id ");
++		if (vlaninfo->invflags & EBT_VLAN_ID)
++			printf("! ");
++		print_id_range(vlaninfo->id);
++#else
+ 		printf("--vlan-id %s%d ", (vlaninfo->invflags & EBT_VLAN_ID) ? "! " : "", vlaninfo->id);
++#endif
+ 	}
+ 	if (vlaninfo->bitmask & EBT_VLAN_PRIO) {
++#if 1  /*Rodney_20090724*/
++		printf("--vlan-prio ");
++		if (vlaninfo->invflags & EBT_VLAN_PRIO)
++			printf("! ");
++		print_prio_range(vlaninfo->prio);
++#else
+ 		printf("--vlan-prio %s%d ", (vlaninfo->invflags & EBT_VLAN_PRIO) ? "! " : "", vlaninfo->prio);
++#endif
+ 	}
+ 	if (vlaninfo->bitmask & EBT_VLAN_ENCAP) {
+ 		printf("--vlan-encap %s", (vlaninfo->invflags & EBT_VLAN_ENCAP) ? "! " : "");
+@@ -157,12 +281,25 @@
+ 		return 0;
+ 	if (vlaninfo1->invflags != vlaninfo2->invflags)
+ 		return 0;
++#if 1  /*Rodney_20090724*/
++	if (vlaninfo1->bitmask & EBT_VLAN_ID) {
++		if (vlaninfo1->id[0] != vlaninfo2->id[0] ||
++			vlaninfo1->id[1] != vlaninfo2->id[1])
++			return 0;
++	}
++	if (vlaninfo1->bitmask & EBT_VLAN_PRIO) {
++		if (vlaninfo1->prio[0] != vlaninfo2->prio[0] ||
++			vlaninfo1->prio[1] != vlaninfo2->prio[1])
++			return 0;
++	}
++#else
+ 	if (vlaninfo1->bitmask & EBT_VLAN_ID &&
+ 	    vlaninfo1->id != vlaninfo2->id)
+ 		return 0;
+ 	if (vlaninfo1->bitmask & EBT_VLAN_PRIO &&
+ 	    vlaninfo1->prio != vlaninfo2->prio)
+ 		return 0;
++#endif
+ 	if (vlaninfo1->bitmask & EBT_VLAN_ENCAP &&
+ 	    vlaninfo1->encap != vlaninfo2->encap)
+ 		return 0;
+Index: ebtables-v2.0.8-2/include/ebtables_u.h
+===================================================================
+--- ebtables-v2.0.8-2.orig/include/ebtables_u.h	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/include/ebtables_u.h	2016-07-28 13:37:12.618152818 +0800
+@@ -25,6 +25,12 @@
+ #define EBTABLES_U_H
+ #include <netinet/in.h>
+ #include <linux/netfilter_bridge/ebtables.h>
++#include <linux/netfilter/x_tables.h>
++#include <linux/version.h>
++
++#if !KERNEL_2_6_36
++#define KERNEL_2_6_36 		(LINUX_VERSION_CODE > KERNEL_VERSION(2,6,31))
++#endif
+ 
+ #ifndef IPPROTO_SCTP
+ #define IPPROTO_SCTP		132
+@@ -37,8 +43,12 @@
+ #define EXEC_STYLE_DAEMON	1
+ 
+ #ifndef EBT_MIN_ALIGN
++#if KERNEL_2_6_36
++#define EBT_MIN_ALIGN (__alignof__(struct _xt_align))
++#else
+ #define EBT_MIN_ALIGN (__alignof__(struct ebt_entry_target))
+ #endif
++#endif
+ #define EBT_ALIGN(s) (((s) + (EBT_MIN_ALIGN-1)) & ~(EBT_MIN_ALIGN-1))
+ #define ERRORMSG_MAXLEN 128
+ 
+@@ -127,6 +137,16 @@
+ 	unsigned char sourcemsk[ETH_ALEN];
+ 	unsigned char destmac[ETH_ALEN];
+ 	unsigned char destmsk[ETH_ALEN];
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++	unsigned char sourcemacstart[ETH_ALEN];
++	unsigned char sourcestartmsk[ETH_ALEN];
++	unsigned char sourcemacend[ETH_ALEN];
++	unsigned char sourceendmsk[ETH_ALEN];
++	unsigned char destmacstart[ETH_ALEN];
++	unsigned char deststartmsk[ETH_ALEN];
++	unsigned char destmacend[ETH_ALEN];
++	unsigned char destendmsk[ETH_ALEN];
++#endif
+ 	struct ebt_u_match_list *m_list;
+ 	struct ebt_u_watcher_list *w_list;
+ 	struct ebt_entry_target *t;
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_AUTOMAP.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_AUTOMAP.h	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,51 @@
++/* Used by ebt_AUTOMAP.c, MitraStar Jeff, 20110114*/
++#ifndef __LINUX_BRIDGE_EBT_AUTOMAP_H
++#define __LINUX_BRIDGE_EBT_AUTOMAP_H
++
++#define EBT_AUTOMAP_TARGET "AUTOMAP"
++
++#define AUTOMAP_TYPE_8021P  0x1
++#define AUTOMAP_TYPE_DSCP   0x2
++#define AUTOMAP_TYPE_PKTLEN 0x4
++
++#define DSCP_MASK_SHIFT   5
++#define ETHERPRI_MARK_SHIFT   12
++
++
++		/*
++		Auto Priority Mapping Table
++
++
++			DSCP	|   Packet Length	| 802.1P	|     Queue     |
++		   ---------------------------------------------
++					|				|   001	|       0 		|
++					|				|		|			|
++					|				|   010	|       1		|
++					|				|		|			|
++			0x00       |       >1100		|   000	|       2		|
++					|				|		|			|
++			0x08       |       250-1100	|   011	|       3		|
++					|				|		|			|
++			0x10       |				|   100	|       4		|
++					|				|		|			|
++			0x18       |       <250		|   101	|       5		|
++					|				|		|			|
++		0x20,0x28	|				|   110	|       6		|
++					|				|		|			|
++		0x30,0x38  	|				|   111	|       7		|
++		*/
++
++
++/* accoding to tr181 8021p to DSCP mapping table(upstream), higher value higher priority*/
++unsigned short vlan8021pToPriorityQueue[8] = {2,0,1,3,4,5,6,7};
++unsigned short dscpPrecedenceToPriorityQueue[8] = {2,3,4,5,6,6,7,7};
++
++
++/* target info */
++struct ebt_automap_t_info {
++	int type;
++	int marktable[8];
++};
++
++#endif
++
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ftos_t.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ftos_t.h	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,12 @@
++#ifndef __LINUX_BRIDGE_EBT_FTOS_T_H
++#define __LINUX_BRIDGE_EBT_FTOS_T_H
++
++struct ebt_ftos_info
++{
++	unsigned char ftos;
++	unsigned char mask;
++    int target;
++};
++#define EBT_FTOS_TARGET "ftos"
++
++#endif
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ip.h
+===================================================================
+--- ebtables-v2.0.8-2.orig/include/linux/netfilter_bridge/ebt_ip.h	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ip.h	2016-07-28 13:37:12.618152818 +0800
+@@ -21,23 +21,47 @@
+ #define EBT_IP_PROTO 0x08
+ #define EBT_IP_SPORT 0x10
+ #define EBT_IP_DPORT 0x20
++#if 1  /*Rodney_20090724*/
++#define EBT_IP_IPP 0x40
++#define EBT_IP_DSCP 0x80
++#define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
++ EBT_IP_SPORT | EBT_IP_DPORT | EBT_IP_IPP | EBT_IP_DSCP)
++#else
+ #define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
+  EBT_IP_SPORT | EBT_IP_DPORT )
++#endif
+ #define EBT_IP_MATCH "ip"
+ 
+ /* the same values are used for the invflags */
+ struct ebt_ip_info
+ {
++/* xyzhu_nj_20100413*/
++#if 1
++	__be32 saddr[2];
++	__be32 daddr[2];
++	__be32 smsk[2];
++	__be32 dmsk[2];
++#else
+ 	__be32 saddr;
+ 	__be32 daddr;
+ 	__be32 smsk;
+ 	__be32 dmsk;
++#endif
++
+ 	uint8_t  tos;
++#if 1 /*Rodney_20090724*/
++	uint8_t  protocol[2];
++#else
+ 	uint8_t  protocol;
++#endif
+ 	uint8_t  bitmask;
+ 	uint8_t  invflags;
+ 	uint16_t sport[2];
+ 	uint16_t dport[2];
++#if 1  /*Rodney_20090724*/
++	uint8_t  ipp[2];
++	uint8_t  dscp[2];
++#endif
+ };
+ 
+ #endif
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_policer.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_policer.h	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,39 @@
++/* Used by ebt_policer.c, ZyXEL Stan, 20100107*/
++#ifndef __LINUX_BRIDGE_EBT_POLICER_H
++#define __LINUX_BRIDGE_EBT_POLICER_H
++
++#define EBT_POLICER_MATCH "policer"
++
++#define BITS_PER_BYTE 8
++#define KILO_SCALE    1000
++
++struct ebt_policer_info
++{
++#if 1//__MSTC__, Jones For compilation
++       int policerMode;
++
++	/* For srTCM and trTCM, rate means cRate and burst means cbsBurst.
++       For srTCM, pbsBurst means ebsBurst. */
++       u_int32_t rate, pRate;
++	u_int32_t burst, pbsBurst;  /* Period multiplier for upper limit. */
++
++       /* Used internally by the kernel */
++       unsigned long prev;
++
++	/* For srTCM and trTCM, credit means cbsCredit and creditCap means cbsCreditCap.
++	   For srTCM, pbsCreditCap means ebsCreditCap. */
++	u_int32_t credit, pbsCredit;
++	u_int32_t creditCap, pbsCreditCap, only_for_bugfix_1, only_for_bugfix_2;
++#else
++	u_int32_t avg;    /* Average secs between packets * scale */
++	u_int32_t burst;  /* Period multiplier for upper limit. */
++
++	/* Used internally by the kernel */
++	unsigned long prev;
++	u_int32_t credit;
++	u_int32_t credit_cap, cost;
++#endif
++};
++
++#endif
++
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_vlan.h
+===================================================================
+--- ebtables-v2.0.8-2.orig/include/linux/netfilter_bridge/ebt_vlan.h	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_vlan.h	2016-07-28 13:37:12.618152818 +0800
+@@ -8,8 +8,13 @@
+ #define EBT_VLAN_MATCH "vlan"
+ 
+ struct ebt_vlan_info {
++#if 1  /*Rodney_20090724*/
++	uint16_t id[2];		/* VLAN ID {1-4095} */
++	uint8_t prio[2];		/* VLAN User Priority {0-7} */
++#else
+ 	uint16_t id;		/* VLAN ID {1-4095} */
+ 	uint8_t prio;		/* VLAN User Priority {0-7} */
++#endif
+ 	__be16 encap;		/* VLAN Encapsulated frame code {0-65535} */
+ 	uint8_t bitmask;		/* Args bitmask bit 1=1 - ID arg,
+ 				   bit 2=1 User-Priority arg, bit 3=1 encap*/
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_vlan_t.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_vlan_t.h	2016-07-28 13:37:12.618152818 +0800
+@@ -0,0 +1,18 @@
++#ifndef __LINUX_BRIDGE_EBT_VLAN_T_H
++#define __LINUX_BRIDGE_EBT_VLAN_T_H
++
++#define EBT_VLAN_ID    0x01
++#define EBT_VLAN_PRIO  0x02
++#define EBT_VLAN_MASK (EBT_VLAN_ID | EBT_VLAN_PRIO)
++
++struct ebt_vlan_t_info
++{
++	uint16_t id;
++	uint8_t prio;
++	uint8_t bitmask;
++	/* EBT_ACCEPT, EBT_DROP, EBT_CONTINUE or EBT_RETURN */
++	int target;
++};
++#define EBT_VLAN_TARGET "VLAN"
++
++#endif
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebtables.h
+===================================================================
+--- ebtables-v2.0.8-2.orig/include/linux/netfilter_bridge/ebtables.h	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebtables.h	2016-07-28 13:37:12.618152818 +0800
+@@ -97,8 +97,21 @@
+ #define EBT_802_3 0x04
+ #define EBT_SOURCEMAC 0x08
+ #define EBT_DESTMAC 0x10
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++#define EBT_SOURCEMACSTART 0x100
++#define EBT_SOURCEMACEND 0x200
++#define EBT_DESTMACSTART 0x400
++#define EBT_DESTMACEND 0x800
++#endif
++
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++#define EBT_F_MASK (EBT_NOPROTO | EBT_802_3 | EBT_SOURCEMAC | EBT_DESTMAC \
++   | EBT_SOURCEMACSTART |EBT_SOURCEMACEND |EBT_DESTMACSTART |EBT_DESTMACEND \
++   | EBT_ENTRY_OR_ENTRIES)
++#else
+ #define EBT_F_MASK (EBT_NOPROTO | EBT_802_3 | EBT_SOURCEMAC | EBT_DESTMAC \
+    | EBT_ENTRY_OR_ENTRIES)
++#endif
+ 
+ #define EBT_IPROTO 0x01
+ #define EBT_IIN 0x02
+@@ -107,8 +120,21 @@
+ #define EBT_IDEST 0x10
+ #define EBT_ILOGICALIN 0x20
+ #define EBT_ILOGICALOUT 0x40
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++#define EBT_ISOURCESTART 0x100
++#define EBT_ISOURCEEND 0x200
++#define EBT_IDESTSTART 0x400
++#define EBT_IDESTEND 0x800
++#endif
++
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++#define EBT_INV_MASK (EBT_IPROTO | EBT_IIN | EBT_IOUT | EBT_ILOGICALIN \
++   | EBT_ISOURCESTART |EBT_ISOURCEEND |EBT_IDESTSTART |EBT_IDESTEND \
++   | EBT_ILOGICALOUT | EBT_ISOURCE | EBT_IDEST)
++#else
+ #define EBT_INV_MASK (EBT_IPROTO | EBT_IIN | EBT_IOUT | EBT_ILOGICALIN \
+    | EBT_ILOGICALOUT | EBT_ISOURCE | EBT_IDEST)
++#endif
+ 
+ struct ebt_entry_match
+ {
+@@ -180,6 +206,16 @@
+ 	unsigned char sourcemsk[ETH_ALEN];
+ 	unsigned char destmac[ETH_ALEN];
+ 	unsigned char destmsk[ETH_ALEN];
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++	unsigned char sourcemacstart[ETH_ALEN];
++	unsigned char sourcestartmsk[ETH_ALEN];
++	unsigned char sourcemacend[ETH_ALEN];
++	unsigned char sourceendmsk[ETH_ALEN];
++	unsigned char destmacstart[ETH_ALEN];
++	unsigned char deststartmsk[ETH_ALEN];
++	unsigned char destmacend[ETH_ALEN];
++	unsigned char destendmsk[ETH_ALEN];
++#endif
+ 	/* sizeof ebt_entry + matches */
+ 	unsigned int watchers_offset;
+ 	/* sizeof ebt_entry + matches + watchers */
+Index: ebtables-v2.0.8-2/libebtc.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/libebtc.c	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/libebtc.c	2016-07-28 13:37:12.618152818 +0800
+@@ -500,6 +500,20 @@
+ 		if (new_entry->bitmask & EBT_DESTMAC &&
+ 		    memcmp(u_e->destmac, new_entry->destmac, ETH_ALEN))
+ 			continue;
++#if defined(TCSUPPORT_PON_MAC_FILTER)
++		if (new_entry->bitmask & EBT_SOURCEMACSTART &&
++		    memcmp(u_e->sourcemacstart, new_entry->sourcemacstart, ETH_ALEN))
++			continue;
++		if (new_entry->bitmask & EBT_SOURCEMACEND &&
++		    memcmp(u_e->sourcemacend, new_entry->sourcemacend, ETH_ALEN))
++			continue;
++		if (new_entry->bitmask & EBT_DESTMACSTART &&
++		    memcmp(u_e->destmacstart, new_entry->destmacstart, ETH_ALEN))
++			continue;
++		if (new_entry->bitmask & EBT_DESTMACEND &&
++		    memcmp(u_e->destmacend, new_entry->destmacend, ETH_ALEN))
++			continue;
++#endif
+ 		if (new_entry->bitmask != u_e->bitmask ||
+ 		    new_entry->invflags != u_e->invflags)
+ 			continue;
+Index: ebtables-v2.0.8-2/useful_functions.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/useful_functions.c	2007-09-22 01:27:20.000000000 +0800
++++ ebtables-v2.0.8-2/useful_functions.c	2016-07-28 13:37:12.618152818 +0800
+@@ -29,6 +29,10 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <getopt.h>
++#include <errno.h>
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <arpa/inet.h>
+ 
+ const unsigned char mac_type_unicast[ETH_ALEN] =   {0,0,0,0,0,0};
+ const unsigned char msk_type_unicast[ETH_ALEN] =   {1,0,0,0,0,0};
+@@ -59,6 +63,7 @@
+ {
+ 	char hlpmsk[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+ 
++#if !defined(TCSUPPORT_PON_MAC_FILTER)
+ 	if (!memcmp(mac, mac_type_unicast, 6) &&
+ 	    !memcmp(mask, msk_type_unicast, 6))
+ 		printf("Unicast");
+@@ -71,7 +76,9 @@
+ 	else if (!memcmp(mac, mac_type_bridge_group, 6) &&
+ 	         !memcmp(mask, msk_type_bridge_group, 6))
+ 		printf("BGA");
+-	else {
++	else
++#endif
++	{
+ 		ebt_print_mac(mac);
+ 		if (memcmp(mask, hlpmsk, 6)) {
+ 			printf("/");
+@@ -276,3 +283,135 @@
+ 
+ 	return buf;
+ }
++#ifdef IPV6
++/* Most of the following code is derived from iptables */
++static void
++in6addrcpy(struct in6_addr *dst, struct in6_addr *src)
++{
++	memcpy(dst, src, sizeof(struct in6_addr));
++}
++
++int string_to_number_ll(const char *s, unsigned long long min,
++            unsigned long long max, unsigned long long *ret)
++{
++	unsigned long long number;
++	char *end;
++
++	/* Handle hex, octal, etc. */
++	errno = 0;
++	number = strtoull(s, &end, 0);
++	if (*end == '\0' && end != s) {
++		/* we parsed a number, let's see if we want this */
++		if (errno != ERANGE && min <= number && (!max || number <= max)) {
++			*ret = number;
++			return 0;
++		}
++	}
++	return -1;
++}
++
++int string_to_number_l(const char *s, unsigned long min, unsigned long max,
++                       unsigned long *ret)
++{
++	int result;
++	unsigned long long number;
++
++	result = string_to_number_ll(s, min, max, &number);
++	*ret = (unsigned long)number;
++
++	return result;
++}
++
++int string_to_number(const char *s, unsigned int min, unsigned int max,
++                     unsigned int *ret)
++{
++	int result;
++	unsigned long number;
++
++	result = string_to_number_l(s, min, max, &number);
++	*ret = (unsigned int)number;
++
++	return result;
++}
++
++static struct in6_addr *numeric_to_addr(const char *num)
++{
++	static struct in6_addr ap;
++	int err;
++
++	if ((err=inet_pton(AF_INET6, num, &ap)) == 1)
++		return &ap;
++	return (struct in6_addr *)NULL;
++}
++
++static struct in6_addr *parse_ip6_mask(char *mask)
++{
++	static struct in6_addr maskaddr;
++	struct in6_addr *addrp;
++	unsigned int bits;
++
++	if (mask == NULL) {
++		/* no mask at all defaults to 128 bits */
++		memset(&maskaddr, 0xff, sizeof maskaddr);
++		return &maskaddr;
++	}
++	if ((addrp = numeric_to_addr(mask)) != NULL)
++		return addrp;
++	if (string_to_number(mask, 0, 128, &bits) == -1)
++		ebt_print_error("Invalid IPv6 Mask '%s' specified", mask);
++	if (bits != 0) {
++		char *p = (char *)&maskaddr;
++		memset(p, 0xff, bits / 8);
++		memset(p + (bits / 8) + 1, 0, (128 - bits) / 8);
++		p[bits / 8] = 0xff << (8 - (bits & 7));
++		return &maskaddr;
++	}
++
++	memset(&maskaddr, 0, sizeof maskaddr);
++	return &maskaddr;
++}
++
++/* Set the ipv6 mask and address. Callers should check ebt_errormsg[0].
++ * The string pointed to by address can be altered. */
++void ebt_parse_ip6_address(char *address, struct in6_addr *addr,
++                           struct in6_addr *msk)
++{
++	struct in6_addr *tmp_addr;
++	char buf[256];
++	char *p;
++	int i;
++	int err;
++
++	strncpy(buf, address, sizeof(buf) - 1);
++	/* first the mask */
++	buf[sizeof(buf) - 1] = '\0';
++	if ((p = strrchr(buf, '/')) != NULL) {
++		*p = '\0';
++		tmp_addr = parse_ip6_mask(p + 1);
++	} else
++		tmp_addr = parse_ip6_mask(NULL);
++	in6addrcpy(msk, tmp_addr);
++
++	/* if a null mask is given, the name is ignored, like in "any/0" */
++	if (!memcmp(msk, &in6addr_any, sizeof(in6addr_any)))
++		strcpy(buf, "::");
++
++	if ((err=inet_pton(AF_INET6, buf, addr)) < 1) {
++		ebt_print_error("Invalid IPv6 Address '%s' specified", buf);
++		return;
++	}
++
++	for (i = 0; i < 4; i++)
++		addr->s6_addr32[i] &= msk->s6_addr32[i];
++}
++
++/* Transform the ip6 addr into a string ready for output. */
++char *ebt_ip6_to_numeric(const struct in6_addr *addrp)
++{
++	/* 0000:0000:0000:0000:0000:000.000.000.000
++	 * 0000:0000:0000:0000:0000:0000:0000:0000 */
++	static char buf[50+1];
++	return (char *)inet_ntop(AF_INET6, addrp, buf, sizeof(buf));
++}
++#endif
++
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ip6.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ip6.h	2016-07-28 13:37:12.622150811 +0800
+@@ -0,0 +1,51 @@
++/*
++ *  ebt_ip6
++ *
++ *	Authors:
++ * Kuo-Lang Tseng <kuo-lang.tseng@intel.com>
++ * Manohar Castelino <manohar.r.castelino@intel.com>
++ *
++ *  Jan 11, 2008
++ *
++ */
++
++#ifndef __LINUX_BRIDGE_EBT_IP6_H
++#define __LINUX_BRIDGE_EBT_IP6_H
++
++#define EBT_IP6_SOURCE 0x01
++#define EBT_IP6_DEST 0x02
++#define EBT_IP6_TCLASS 0x04
++#define EBT_IP6_PROTO 0x08
++#define EBT_IP6_SPORT 0x10
++#define EBT_IP6_DPORT 0x20
++
++#if !defined(TCSUPPORT_CT_PORTSLIMIT)
++#define EBT_IP6_MASK (EBT_IP6_SOURCE | EBT_IP6_DEST | EBT_IP6_TCLASS |\
++		      EBT_IP6_PROTO | EBT_IP6_SPORT | EBT_IP6_DPORT)
++#endif
++#define EBT_IP6_MATCH "ip6"
++
++/* the same values are used for the invflags */
++struct ebt_ip6_info {
++	struct in6_addr saddr;
++	struct in6_addr daddr;
++	struct in6_addr smsk;
++	struct in6_addr dmsk;
++#if 0
++	uint8_t  tclass;
++#else
++	uint8_t	 tclass[2];
++#endif
++#if 0
++	uint8_t  protocol;
++#else
++	uint8_t	 protocol[2];
++#endif
++
++	uint8_t  bitmask;
++	uint8_t  invflags;
++	uint16_t sport[2];
++	uint16_t dport[2];
++};
++
++#endif
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_tc.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_tc.h	2016-07-28 13:37:12.622150811 +0800
+@@ -0,0 +1,12 @@
++#ifndef __LINUX_BRIDGE_EBT_TC_H_
++#define __LINUX_BRIDGE_EBT_TC_H_
++
++struct ebt_tc_info
++{
++	unsigned char tc;
++	int target;
++};
++#define EBT_TC_TARGET "tc"
++
++#endif
++

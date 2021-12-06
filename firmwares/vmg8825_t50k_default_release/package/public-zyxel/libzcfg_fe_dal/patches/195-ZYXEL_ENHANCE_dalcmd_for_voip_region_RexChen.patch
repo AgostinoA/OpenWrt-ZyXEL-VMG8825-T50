@@ -1,0 +1,130 @@
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_region.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/phone/zcfg_fe_dal_phone_region.c	2017-05-24 20:59:31.290038074 +0800
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_region.c	2017-05-24 21:00:31.362041500 +0800
+@@ -12,8 +12,8 @@
+ #include "zcfg_webgui_flag.h"
+ 
+ dal_param_t VOIP_REGION_param[]={
+-	{"X_ZYXEL_FlashUsageStyle",					dalType_string,	0,	0,	NULL},
+-	{"Region",									dalType_string,	0,	0,	NULL},
++	{"Service_Mode",							dalType_string,	0,	0,	NULL,	"Europe_Type|USA_Type",	NULL},
++	{"Region",									dalType_VoipRegion,	0,	0,	NULL,	NULL,	NULL},
+ 	{NULL,										0,				0,	0,	NULL},
+ };
+ 
+@@ -27,6 +27,25 @@
+ 
+ objIndex_t Iid = {0};
+ 
++void zcfgFeDalShowVoipRegion(struct json_object *Jarray){
++	struct json_object *obj = NULL;
++	const char *serviceMode = NULL;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray, 0);
++
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "Service_Mode")),"EUROP_Flash_Style"))
++			serviceMode = "Eurpoe Type";
++		else if(!strcmp(json_object_get_string(json_object_object_get(obj, "Service_Mode")),"USA_Flash_Style"))
++			serviceMode = "USA Type";
++	printf("Region : %s \n",json_object_get_string(json_object_object_get(obj, "Region")));
++	printf("Call Service Mode : %s \n",serviceMode);
++
++}
++
++
+ void initRegionGlobalObjects(){
+ 	multiJobj = NULL;
+ 	profObj = NULL;
+@@ -35,7 +54,7 @@
+ }
+ 
+ void getRegionBasicInfo(struct json_object *Jobj){
+-	X_ZYXEL_FlashUsageStyle = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_FlashUsageStyle"));
++	X_ZYXEL_FlashUsageStyle = json_object_get_string(json_object_object_get(Jobj, "Service_Mode"));
+ 	Region = json_object_get_string(json_object_object_get(Jobj, "Region"));
+ 
+ 	return;
+@@ -74,8 +93,20 @@
+ 
+ zcfgRet_t zcfgFeDalVoipRegionEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	//printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-
++	const char *region = NULL;
++	const char *callservice = NULL;
++	if(!json_object_object_get(Jobj, "type")){
++		callservice = json_object_get_string(json_object_object_get(Jobj, "Service_Mode"));
++		region = json_object_get_string(json_object_object_get(Jobj, "Region"));
++		if(!strcmp(callservice, "Europe_Type")){
++			json_object_object_del(Jobj, "Service_Mode");
++			json_object_object_add(Jobj, "Service_Mode", json_object_new_string("EUROP_Flash_Style"));
++		}
++		else if(!strcmp(callservice, "USA_Type")){
++			json_object_object_del(Jobj, "Service_Mode");
++			json_object_object_add(Jobj, "Service_Mode", json_object_new_string("USA_Flash_Style"));
++		}
++	}
+ 	initRegionGlobalObjects();
+ 	getRegionBasicInfo(Jobj);
+ 	multiJobj = zcfgFeJsonObjNew();
+@@ -95,6 +126,25 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalVoipRegionGet(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *voiceregionJobj = NULL;
++	objIndex_t voiceregionIid = {0};
++	voiceregionIid.level = 2;
++	voiceregionIid.idx[0] = 1;
++	voiceregionIid.idx[1] = 1;
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_PROF, &voiceregionIid, &voiceregionJobj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Service_Mode", JSON_OBJ_COPY(json_object_object_get(voiceregionJobj, "X_ZYXEL_FlashUsageStyle")));
++		json_object_object_add(paramJobj, "Region", JSON_OBJ_COPY(json_object_object_get(voiceregionJobj, "Region")));
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(voiceregionJobj);
++	}
++	return ret;
++}
++
++
+ zcfgRet_t zcfgFeDalVoipPhoneRegion(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -105,6 +155,9 @@
+ 	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalVoipRegionEdit(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDalVoipRegionGet(Jobj, NULL);
++	}
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-24 20:59:33.134038041 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-24 21:01:38.157541500 +0800
+@@ -192,6 +192,7 @@
+ extern void zcfgFeDalShowFirewallDos(struct json_object *Jarray);
+ extern void zcfgFeDalShowDnsRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipCallRule(struct json_object *Jarray);
++extern void zcfgFeDalShowVoipRegion(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+@@ -247,7 +248,7 @@
+ #if BUILD_PACKAGE_ZyIMS
+ {"VOIPLINE",		VOIP_LINE_param,	zcfgFeDalVoipLine,		NULL,						"get|add|edit|delete", ""},//SIP
+ {"VOIPPROFILE",		VOIP_PROFILE_param,	zcfgFeDalVoipProfile,	NULL,						"get|add|edit|delete", ""},//SIP
+-{"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion,NULL,						"edit",				""},//Phone
++{"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion,zcfgFeDalShowVoipRegion,	"get|edit",				"Phone"},//Phone
+ {"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice,NULL,					"get|edit",			""},//Phone
+ {"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT,NULL,						"edit",				""},//Phone
+ {"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	zcfgFeDalShowVoipCallRule,	"get|edit",			"Call_Rule"},//Call_Rule

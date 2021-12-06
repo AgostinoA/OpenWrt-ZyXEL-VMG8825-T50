@@ -1,0 +1,222 @@
+Index: bwm-1.1.0.orig/bwm.c
+===================================================================
+--- bwm-1.1.0.orig.orig/bwm.c	2015-01-16 16:32:32.922793262 +0800
++++ bwm-1.1.0.orig/bwm.c	2015-01-16 16:33:51.699909000 +0800
+@@ -17,9 +17,11 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdbool.h>
+ #include <unistd.h>
+ 
+ #include <sys/time.h>
++#include <sys/select.h>
+ 
+ #define MAX_INTERFACES 16
+ 
+@@ -47,6 +49,11 @@
+   unsigned tot_rate_part;
+ };
+ 
++typedef struct bm_result_s {
++	int rx_rate;
++	int tx_rate;
++} bm_result_t;
++
+ unsigned long bwm_calc_remainder(unsigned long num, unsigned long den);
+ 
+ int main(int argc, char *argv[])
+@@ -69,38 +76,30 @@
+   struct interface_info interface[MAX_INTERFACES];
+   struct timezone tz;
+ 
+-  unsigned long rx_bw_total_whole = 0;
+-  unsigned long tx_bw_total_whole = 0;
+-  unsigned long tot_bw_total_whole = 0;
+-  unsigned rx_bw_total_part = 0;
+-  unsigned tx_bw_total_part = 0;
+-  unsigned tot_bw_total_part = 0;
+-
+-  if(argc >= 2) if((sleep_time = atoi(argv[1])) < 1) sleep_time = 1;
+-  if(argc >= 3) strncpy(filename, argv[2], 255);
++  int rs = 0; 
++  char iface[16] = "eth0";
++  struct timeval timer_val;
++  FILE *fp = NULL;
++  bm_result_t result, result1;
++
++  while ((rs = getopt(argc, argv, "i:t:")) != -1) {
++    switch(rs) {
++      case 'i':
++        strcpy(iface, optarg);
++        break;
++      case 't':
++        sleep_time = atoi((unsigned char *)optarg);
++        break;
++    }
++  }
+ 
+-  if(argc > 3) 
+-  {
+-    printf("\nUsage: %s <update time in seconds> <filename>\n\n", argv[0]);
+-    printf("Update time defaults to 2 seconds if not specified.  Minimum is 1 second.\n");
+-    printf("Filename defaults to /proc/net/dev if not specified.\n");
++  if((fp = fopen("/tmp/bwm_result", "wb+")) == NULL) {
++    perror("fopen");
+     exit(EXIT_FAILURE);
+   }
+ 
+-  printf("%c[2J",27);
+-
+   while(1)
+   {
+-    if (inum==oldinum)
+-    {
+-      printf("%c[H",27);
+-    } else {
+-      printf("%c[H%c[J",27,27);
+-      oldinum = inum;
+-    }
+-    printf("Bandwidth Monitor 1.1.0\n\n");
+-    printf("       Iface        RX(KB/sec)   TX(KB/sec)   Total(KB/sec)\n\n");
+-
+     inum = -1;
+ 
+     if((devfile = fopen(filename, "r")) == NULL) 
+@@ -113,6 +112,9 @@
+ 
+     while(fgets(buffer, 255, devfile) != NULL && inum++ < MAX_INTERFACES - 1)
+     {
++      if(strstr(buffer, iface) == NULL)
++        continue;
++
+       interface[inum].time_old = interface[inum].time_new;
+       gettimeofday(&interface[inum].time_new, &tz);
+ 
+@@ -145,15 +147,9 @@
+ 
+               interface[inum].rx_kbytes_dif =
+                (interface[inum].rx_bytes_new -
+-                interface[inum].rx_bytes_old) / 1024 * 1000;
++                interface[inum].rx_bytes_old);
+ 
+-              interface[inum].rx_rate_whole = 
+-               interface[inum].rx_kbytes_dif / 
+-                interface[inum].time_diff_ms;
+-
+-              interface[inum].rx_rate_part = 
+-               bwm_calc_remainder(interface[inum].rx_kbytes_dif,
+-                interface[inum].time_diff_ms);
++              result.rx_rate = (int)((double)interface[inum].rx_kbytes_dif/(double)interface[inum].time_diff_ms * 1000);
+             }
+             break;
+    
+@@ -164,99 +160,32 @@
+ 
+               interface[inum].tx_kbytes_dif =
+                (interface[inum].tx_bytes_new -
+-                interface[inum].tx_bytes_old) / 1024 * 1000;
++                interface[inum].tx_bytes_old);
+ 
+-              interface[inum].tx_rate_whole = 
+-               interface[inum].tx_kbytes_dif / 
+-                interface[inum].time_diff_ms;
+-
+-              interface[inum].tx_rate_part = 
+-               bwm_calc_remainder(interface[inum].tx_kbytes_dif,
+-                interface[inum].time_diff_ms);
+-
+-              interface[inum].tot_rate_whole =
+-               interface[inum].rx_rate_whole +
+-                interface[inum].tx_rate_whole;
+-
+-              interface[inum].tot_rate_part =
+-               interface[inum].rx_rate_part +
+-                interface[inum].tx_rate_part;
+-
+-              if(interface[inum].tot_rate_part > 1000)
+-              {
+-                interface[inum].tot_rate_whole++;
+-                interface[inum].tot_rate_part -= 1000;
+-              }
++              result.tx_rate = (int)((double)interface[inum].tx_kbytes_dif/(double)interface[inum].time_diff_ms * 1000);
+             }
+             break;
+           }
+         }
+-   
++ 
+         if(!first_pass)
+         {
+-          printf("%12s     %8lu.%03u %8lu.%03u    %8lu.%03u\n", 
+-            interface[inum].name,
+-             interface[inum].rx_rate_whole, interface[inum].rx_rate_part, 
+-              interface[inum].tx_rate_whole, interface[inum].tx_rate_part, 
+-               interface[inum].tot_rate_whole, 
+-                interface[inum].tot_rate_part);
++          fseek(fp, 0*sizeof(bm_result_t), SEEK_SET);
++          fwrite(&result, sizeof(bm_result_t), 1, fp);
+         }
+       }
+     }
+ 
+     fclose(devfile);
+ 
+-    rx_bw_total_whole = 0;
+-    tx_bw_total_whole = 0;
+-    rx_bw_total_part = 0;
+-    tx_bw_total_part = 0;
+-
+-    for(total_counter = 1; total_counter <= inum; total_counter++)
+-    {
+-      rx_bw_total_whole += interface[total_counter].rx_rate_whole;
+-      rx_bw_total_part += interface[total_counter].rx_rate_part;
+-
+-      if(rx_bw_total_part > 1000)
+-      {
+-        rx_bw_total_whole++;
+-        rx_bw_total_part -= 1000;
+-      }
+-
+-      tx_bw_total_whole += interface[total_counter].tx_rate_whole;
+-      tx_bw_total_part += interface[total_counter].tx_rate_part;
+-
+-      if(tx_bw_total_part > 1000)
+-      {
+-        tx_bw_total_whole++;
+-        tx_bw_total_part -= 1000;
+-      }
+-
+-      tot_bw_total_whole = rx_bw_total_whole + tx_bw_total_whole;
+-      tot_bw_total_part = rx_bw_total_part + tx_bw_total_part;
+-    
+-      if(tot_bw_total_part > 1000)
+-      {
+-        tot_bw_total_whole++;
+-        tot_bw_total_part -= 1000;
+-      }
+-    }
+-
+-    if(inum < 1) printf("No interfaces!\n\n");
+-
+-    if(!first_pass)
+-    {
+-      printf("\n       Total     %8lu.%03u %8lu.%03u    %8lu.%03u\n\n",
+-       rx_bw_total_whole, rx_bw_total_part,
+-        tx_bw_total_whole, tx_bw_total_part,
+-         tot_bw_total_whole, tot_bw_total_part);
+-
+-      printf("Hit CTRL-C to end this madness.\n");
+-    }
++	timer_val.tv_sec = sleep_time;
++	timer_val.tv_usec = 0;
++	select(0, NULL, NULL, NULL, &timer_val);
+ 
+-    sleep(sleep_time);
+     first_pass = 0;
+   }
+ 
++  fclose(fp);
+   exit(EXIT_SUCCESS);
+ }
+ 

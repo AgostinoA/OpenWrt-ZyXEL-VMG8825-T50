@@ -1,0 +1,220 @@
+Index: libzcfg_fe_tr98-1.0/qos.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.c	2016-05-04 18:12:01.348865074 +0800
++++ libzcfg_fe_tr98-1.0/qos.c	2016-05-04 18:14:30.671118500 +0800
+@@ -771,6 +771,150 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t qMgmtPolicerGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *qPolicerObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.QueueManagement.Policer.%hhu", &objIid.idx[objIid.level - 1]);
++	if((ret = feObjJsonGet(RDM_OID_QOS_POLICER, &objIid, &qPolicerObj, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get qos policer object with ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name){
++		paramValue = json_object_object_get(qPolicerObj, paramList->name);
++		if(paramValue){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "PolicerEnable")){
++			paramValue = json_object_object_get(qPolicerObj, "Enable");
++		}
++		else if(!strcmp(paramList->name, "PolicerStatus")){
++			paramValue = json_object_object_get(qPolicerObj, "Status");
++		}
++
++		if(paramValue){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		paramList++;
++	}
++
++	zcfgFeJsonObjFree(qPolicerObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t qMgmtPolicerSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *qPolicerObj = NULL;
++	struct json_object *paramValue = NULL, *tr98ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.QueueManagement.Policer.%hhu", &objIid.idx[objIid.level - 1]);
++	if((ret = feObjJsonGet(RDM_OID_QOS_POLICER, &objIid, &qPolicerObj, 1)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get qos policer object with ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	/* if multiple set is required, just appended JSON to multiJobj */
++	if(multiJobj){
++		tmpObj = qPolicerObj;
++		qPolicerObj = zcfgFeJsonMultiObjAppend(RDM_OID_QOS_POLICER, &objIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name){
++		tr98ParamValue = json_object_object_get(tr98Jobj, (const char *)paramList->name);
++		if(!tr98ParamValue){
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "PolicerEnable"))
++		{
++			if((paramValue = json_object_object_get(qPolicerObj, "Enable")))
++				json_object_object_add(qPolicerObj, "Enable", JSON_OBJ_COPY(tr98ParamValue));
++		}
++		else{
++			if((paramValue = json_object_object_get(qPolicerObj, paramList->name))){
++				json_object_object_add(qPolicerObj, paramList->name, JSON_OBJ_COPY(tr98ParamValue));
++			}
++		}
++
++		paramList++;
++	}
++
++	if(!multiJobj) {
++		if((ret = zcfgFeObjJsonSet(RDM_OID_QOS_POLICER, &objIid, qPolicerObj, NULL)) != ZCFG_SUCCESS ) {
++			zcfgLog(ZCFG_LOG_ERR, "%s: fail to get qos policer object, ret=%d\n", __FUNCTION__, ret);
++		}
++		zcfgFeJsonObjFree(qPolicerObj);
++		return ret;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t qMgmtPolicerAdd(char *tr98FullPathName, int *idx){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_POLICER, &objIid, NULL)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to add qos policer instance with ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	*idx = objIid.idx[0];
++#else
++	printf("%s: return %d\n", __FUNCTION__, ret);
++
++	if((ret == ZCFG_SUCCESS) || (ret == ZCFG_DELAY_APPLY)) {
++		objIndex_t tr98ObjIid;
++
++		IID_INIT(tr98ObjIid);
++		if(zcfg98To181ObjMappingAdd(e_TR98_POLICER, &tr98ObjIid, RDM_OID_QOS_POLICER, &objIid) == ZCFG_SUCCESS) {
++			printf("%s: Added QueueManagement.Policer %hhu\n", __FUNCTION__, tr98ObjIid.idx[0]);
++			*idx = tr98ObjIid.idx[0];
++		}
++	}
++#endif
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t qMgmtPolicerDel(char *tr98FullPathName){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.QueueManagement.Policer.%hhu", &objIid.idx[objIid.level - 1]);
++
++	if((ret = zcfgFeObjJsonDel(RDM_OID_QOS_POLICER, &objIid, NULL)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to delete qos policer instance with ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	return ZCFG_SUCCESS;
++}
+ 
+ zcfgRet_t qMgmtClsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag){
+ 	
+Index: libzcfg_fe_tr98-1.0/qos.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.h	2016-05-04 18:12:01.348865074 +0800
++++ libzcfg_fe_tr98-1.0/qos.h	2016-05-04 18:14:37.969386600 +0800
+@@ -114,6 +114,35 @@
+ 	{ NULL, 0, 0}
+ };
+ 
++tr98Parameter_t para_Policer[] = {
++	//{ "PolicerKey", PARAMETER_ATTR_READONLY, 0, json_type_},
++	{ "PolicerEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "PolicerStatus", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	//{ "Alias", PARAMETER_ATTR_, 0, json_type_},
++	{ "CommittedRate", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "CommittedBurstSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "ExcessBurstSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "PeakRate", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "PeakBurstSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "MeterType", PARAMETER_ATTR_WRITE, 21, json_type_string},
++	{ "PossibleMeterTypes", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "ConformingAction", PARAMETER_ATTR_WRITE, 13, json_type_string},
++	{ "PartialConformingAction", PARAMETER_ATTR_WRITE, 13, json_type_string},
++	{ "NonConformingAction", PARAMETER_ATTR_WRITE, 13, json_type_string},
++	//{ "CountedPackets", PARAMETER_ATTR_READONLY, 0, json_type_},
++	//{ "CountedBytes", PARAMETER_ATTR_READONLY, 0, json_type_},
++	{ "TotalCountedPackets", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "TotalCountedBytes", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ConformingCountedPackets", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ConformingCountedBytes", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "PartiallyConformingCountedPackets", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "PartiallyConformingCountedBytes", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "NonConformingCountedPackets", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "NonConformingCountedBytes", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "X_ZYXEL_Name", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ NULL, 0, 0}
++};
++
+ tr98Parameter_t para_Que[] = {	
+ 	{ "QueueKey", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
+ 	{ "QueueEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+@@ -160,6 +189,11 @@
+ extern int qMgmtQueAttrGet(char *, int, char *);
+ extern zcfgRet_t qMgmtQueAttrSet(char *, int, char *, int , struct json_object *);
+ 
++extern zcfgRet_t qMgmtPolicerGet(char *, int , struct json_object **, bool );
++extern zcfgRet_t qMgmtPolicerSet(char *, int , struct json_object *, struct json_object *, char *);
++extern zcfgRet_t qMgmtPolicerAdd(char *, int *);
++extern zcfgRet_t qMgmtPolicerDel(char *);
++
+ /* InternetGatewayDevice.QueueManagement.Classification.i */
+ extern zcfgRet_t qMgmtClsObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t qMgmtClsSet(char *, int, struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-05-04 18:12:02.824865102 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-05-04 18:14:46.967271900 +0800
+@@ -311,7 +311,7 @@
+ {TR98_CLS,                      ATTR_INDEX_CREA, para_Cls,          	qMgmtClsObjGet,			   qMgmtClsSet,            qMgmtClsAdd,      qMgmtClsDel,     qMgmtClsNotify, qMgmtClsAttrGet, qMgmtClsAttrSet},
+ //{TR98_APP,                      ATTR_INDEX_CREA, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_FLOW,                     ATTR_INDEX_CREA, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_POLICER,                  ATTR_INDEX_CREA, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_POLICER,                  ATTR_INDEX_CREA, para_Policer,          qMgmtPolicerGet,            qMgmtPolicerSet,          qMgmtPolicerAdd,     qMgmtPolicerDel,     NULL},
+ {TR98_QUE,                      ATTR_INDEX_CREA, para_Que,              qMgmtQueObjGet,			   qMgmtQueSet,            qMgmtQueAdd,      qMgmtQueDel,     qMgmtQueNotify, qMgmtQueAttrGet, qMgmtQueAttrSet},
+ {TR98_SHAPER,                   ATTR_INDEX_CREA, para_Shaper,			qMgmtShaperObjGet,	   	   qMgmtShaperSet,         qMgmtShaperAdd,   qMgmtShaperDel,  qMgmtShaperNotify, qMgmtShaperAttrGet, qMgmtShaperAttrSet},
+ //{TR98_QUE_STAT,                 ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},

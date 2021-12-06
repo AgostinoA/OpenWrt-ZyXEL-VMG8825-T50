@@ -1,0 +1,117 @@
+Index: bridge-utils-1.5/brctl/brctl_cmd.c
+===================================================================
+--- bridge-utils-1.5.orig/brctl/brctl_cmd.c	2019-03-12 15:31:22.665487510 +0800
++++ bridge-utils-1.5/brctl/brctl_cmd.c	2019-03-12 15:31:22.673491510 +0800
+@@ -1020,9 +1020,15 @@
+ 		br_show_timer(&f->ageing_timer_value);
+ #if defined(ZYXEL_PATCH)		
+ 		ifName[0] = 0;
+-		if(!get_ifname(brname, f->port_no, ifName)){
+-			printf("\t\t%s", ifName);
++		if(get_foreach_port_ifname(brname, f->port_no, ifName))
++		{
++			if(!old_get_ifname(brname, f->port_no, ifName))
++			{
++				printf("\t\t%s", ifName);
++			}
+ 		}
++		else
++			printf("\t\t%s", ifName);
+ #endif
+ 		printf("\n");
+ 	}
+Index: bridge-utils-1.5/libbridge/libbridge.h
+===================================================================
+--- bridge-utils-1.5.orig/libbridge/libbridge.h	2019-03-12 15:31:22.665487510 +0800
++++ bridge-utils-1.5/libbridge/libbridge.h	2019-03-12 15:31:22.673491510 +0800
+@@ -157,7 +157,8 @@
+ #endif
+ 
+ #if defined(ZYXEL_PATCH)
+-extern int get_ifname(const char *brname, int portno, char *ifname);
++extern int old_get_ifname(const char *brname, int portno, char *ifname);
++extern int get_foreach_port_ifname(const char *brname, int portno, char *ifname);
+ #endif
+ 
+ #endif
+Index: bridge-utils-1.5/libbridge/libbridge_devif.c
+===================================================================
+--- bridge-utils-1.5.orig/libbridge/libbridge_devif.c	2019-03-12 15:31:22.665487510 +0800
++++ bridge-utils-1.5/libbridge/libbridge_devif.c	2019-03-12 15:31:22.677493510 +0800
+@@ -111,7 +111,7 @@
+ }
+ 
+ #if defined(ZYXEL_PATCH)
+-int get_ifname(const char *brname, int portno, char *ifname)
++int old_get_ifname(const char *brname, int portno, char *ifname)
+ {
+ 	int ifindices[MAX_PORTS];
+ 	unsigned long args[4] = { BRCTL_GET_PORT_LIST,
+Index: bridge-utils-1.5/libbridge/libbridge_init.c
+===================================================================
+--- bridge-utils-1.5.orig/libbridge/libbridge_init.c	2011-03-29 08:52:54.000000000 +0800
++++ bridge-utils-1.5/libbridge/libbridge_init.c	2019-03-12 15:35:17.852261759 +0800
+@@ -211,3 +211,62 @@
+ 
+ 	return count;
+ }
++
++#if defined(ZYXEL_PATCH)
++int get_foreach_port_ifname(const char *brname, int portno, char *ifname)
++{
++	int i = 0, count = 0, ret = 1;
++	struct dirent **namelist = NULL;
++	char path[SYSFS_PATH_MAX], brport[SYSFS_PATH_MAX], tmp[SYSFS_PATH_MAX];
++
++	snprintf(path, SYSFS_PATH_MAX, SYSFS_CLASS_NET "%s/brif", brname);
++	count = scandir(path, &namelist, 0, alphasort);
++	if (count == -1) {
++		dprintf("%s: Scandir fail!\n", __FUNCTION__);
++		return 1;
++	}
++
++	for (i = 0; i < count; i++) {
++		if (namelist[i]->d_name[0] == '.' 
++		    && (namelist[i]->d_name[1] == '\0' 
++			|| (namelist[i]->d_name[1] == '.'
++			    && namelist[i]->d_name[2] == '\0')))
++			continue;
++
++		DIR *dir = NULL;
++		FILE *fp = NULL;
++		int port_no = -1;
++		snprintf(brport, SYSFS_PATH_MAX, SYSFS_CLASS_NET "%s/brport", namelist[i]->d_name);
++		dir = opendir(brport);
++		if (!dir) {
++			dprintf("%s: Open dir failed!\n", __FUNCTION__);
++			ret = 1;
++			break;
++		}
++
++		snprintf(tmp, SYSFS_PATH_MAX, "%s/port_no", brport);
++		if((fp = fopen(tmp, "r")) == NULL) {
++			dprintf("%s: Cannot open file: %s\n", __FUNCTION__, tmp);
++			closedir(dir);
++			ret = 1;
++			break;
++		}
++		
++		fscanf(fp, "%i", &port_no);
++		fclose(fp);
++		if(port_no == portno) {
++			strcpy(ifname, namelist[i]->d_name);
++			closedir(dir);
++			ret = 0;
++			break;
++		}
++		closedir(dir);
++	}
++
++	for (i = 0; i < count; i++)
++		free(namelist[i]);
++	free(namelist);
++
++	return ret;
++}
++#endif
+\ No newline at end of file

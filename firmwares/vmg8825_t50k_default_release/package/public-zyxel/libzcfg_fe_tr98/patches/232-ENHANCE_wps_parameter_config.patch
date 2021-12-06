@@ -1,0 +1,174 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-10-12 10:07:59.874108963 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-10-12 10:08:36.840364000 +0800
+@@ -4218,6 +4218,10 @@
+ }
+ 
+ #define MAX_WEPKEY_NUM   4
++#define WIFI24_FIRST_AP  1
++#define WIFI24_LAST_AP  4
++#define WIFI5_FIRST_AP  5
++#define WIFI5_LAST_AP  8
+ 
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i
+  *
+@@ -4247,6 +4251,7 @@
+ 	struct json_object *wepKey = NULL, *wepKey64 = NULL;
+ 	bool apWpsEnable = false;
+ 	struct json_object *paramGuardObj = NULL;
++	objIndex_t wpsIid;
+ 
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, wifiSsid) != ZCFG_SUCCESS) {
+ 		/*  The instance number of WLANConfiguration.i will be continuous because of the tr98 to tr181 mapping table. 
+@@ -4288,8 +4293,27 @@
+ 		}
+ 	}
+ 
+-	if(ret == ZCFG_NO_MORE_INSTANCE)
+-		apJobj = NULL;
++	if(ret != ZCFG_SUCCESS) {
++		json_object_put(radioJobj);
++		json_object_put(ssidJobj);
++		return ZCFG_NO_MORE_INSTANCE;
++	}
++
++	// Sync with WebGUI
++	IID_INIT(wpsIid);
++	wpsIid.level = apIid.level;
++	if(apIid.idx[0] >= WIFI24_FIRST_AP && apIid.idx[0] <= WIFI24_LAST_AP) {
++		wpsIid.idx[0] = WIFI24_FIRST_AP;
++	}
++	else if(apIid.idx[0] >= WIFI5_FIRST_AP && apIid.idx[0] <= WIFI5_LAST_AP) {
++		wpsIid.idx[0] = WIFI5_FIRST_AP;
++	}
++	else {
++		printf("%s: wrong access point seq num: %hhu\n", __FUNCTION__, apIid.idx[0]);
++		json_object_put(radioJobj);
++		json_object_put(ssidJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
+ 
+ 	if(apJobj != NULL) {
+ 		int defaultKeyIndex = 0;
+@@ -4322,7 +4346,7 @@
+ 		wepKey64 = json_object_object_get(apSecJobj, keyParamName);
+ 		wepKey64Len = wepKey64 ? strlen(json_object_get_string(wepKey64)) : 0;
+ 
+-		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_WPS, &apIid, &apWpsJobj)) != ZCFG_SUCCESS) {
++		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_WPS, &wpsIid, &apWpsJobj)) != ZCFG_SUCCESS) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.WPS Fail\n", __FUNCTION__);
+ 			json_object_put(radioJobj);
+ 			json_object_put(ssidJobj);
+@@ -4680,6 +4704,9 @@
+ 	struct json_object *apJobj = NULL, *apWpsJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
++	struct json_object *apFirstWpsJobj = NULL;
++	objIndex_t wpsFirstIid;
++	bool apWpsEnable = false;
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".WPS");
+@@ -4713,6 +4740,35 @@
+ 		json_object_put(apJobj);
+ 	}
+ 
++	// Sync with WebGUI
++	IID_INIT(wpsFirstIid);
++	wpsFirstIid.level = apIid.level;
++	if(apIid.idx[0] > WIFI24_FIRST_AP && apIid.idx[0] <= WIFI24_LAST_AP) {
++		wpsFirstIid.idx[0] = WIFI24_FIRST_AP;
++	}
++	else if(apIid.idx[0] > WIFI5_FIRST_AP && apIid.idx[0] <= WIFI5_LAST_AP) {
++		wpsFirstIid.idx[0] = WIFI5_FIRST_AP;
++	}
++	else if(apIid.idx[0] > WIFI5_LAST_AP) {
++		printf("%s: wrong access point seq num: %hhu\n", __FUNCTION__, apIid.idx[0]);
++		json_object_put(apWpsJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(wpsFirstIid.idx[0]) {
++		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_WPS, &wpsFirstIid, &apFirstWpsJobj)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.WPS Fail\n", __FUNCTION__);
++			json_object_put(apWpsJobj);
++			return ret;
++		}
++
++		apWpsEnable = json_object_get_boolean(json_object_object_get(apFirstWpsJobj, "Enable"));
++		json_object_put(apFirstWpsJobj);
++	}
++	else {
++		apWpsEnable = json_object_get_boolean(json_object_object_get(apWpsJobj, "Enable"));
++	}
++
+ 	/*fill up tr98 object from related tr181 objects*/
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+@@ -4745,7 +4801,12 @@
+ 		
+ 		paramValue = json_object_object_get(apWpsJobj, paramList->name);
+ 		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "Enable")){
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(apWpsEnable));
++			}
++			else {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -4821,6 +4882,8 @@
+ 	int wpsStationPin = 0;
+ 	char tr181ModeEnabled[20] = {0};
+ 	const char *modeEnabled = NULL;
++	struct json_object *apFirstWpsJobj = NULL;
++	objIndex_t wpsFirstIid;
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".WPS");
+@@ -4854,6 +4917,43 @@
+ 		json_object_put(apJobj);		
+ 	}
+ 
++	// Sync with WebGUI
++	IID_INIT(wpsFirstIid);
++	wpsFirstIid.level = apIid.level;
++	if(apIid.idx[0] > WIFI24_FIRST_AP && apIid.idx[0] <= WIFI24_LAST_AP) {
++		wpsFirstIid.idx[0] = WIFI24_FIRST_AP;
++	}
++	else if(apIid.idx[0] > WIFI5_FIRST_AP && apIid.idx[0] <= WIFI5_LAST_AP) {
++		wpsFirstIid.idx[0] = WIFI5_FIRST_AP;
++	}
++	else if(apIid.idx[0] > WIFI5_LAST_AP) {
++		printf("%s: wrong access point seq num: %hhu\n", __FUNCTION__, apIid.idx[0]);
++		json_object_put(apWpsJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(wpsFirstIid.idx[0]) {
++		bool apWpsEnable = false;
++
++		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_WPS, &wpsFirstIid, &apFirstWpsJobj)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.WPS Fail\n", __FUNCTION__);
++			json_object_put(apWpsJobj);
++			return ret;
++		}
++
++		apWpsEnable = json_object_get_boolean(json_object_object_get(apFirstWpsJobj, "Enable"));
++		json_object_put(apFirstWpsJobj);
++	
++		if((paramValue = json_object_object_get(tr98Jobj, "Enable"))) {
++			bool tr98ApWpsEnable = json_object_get_boolean(paramValue);
++			if(tr98ApWpsEnable != apWpsEnable) {
++				printf("%s: Can't set WPS Enable/Disable on this object\n", __FUNCTION__);
++				json_object_put(apWpsJobj);
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}			
++	}
++
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_SEC, &apIid, &apSecJobj)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.Security Fail\n", __FUNCTION__);
+ 		json_object_put(apWpsJobj);

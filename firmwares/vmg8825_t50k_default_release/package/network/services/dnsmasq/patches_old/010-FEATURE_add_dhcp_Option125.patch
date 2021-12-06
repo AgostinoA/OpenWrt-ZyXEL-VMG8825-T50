@@ -1,0 +1,93 @@
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2015-06-22 16:52:48.254338852 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2015-06-22 16:55:07.022157183 +0800
+@@ -1359,4 +1359,6 @@
+ //__ZYXEL__, Chi-Hsiang Auto reserve IP for the same host.
+ int handle_Auto_Reserve_IP_request(int payloadLen, const char *payload);
+ #endif
+-
++#ifdef ZyXEL_DHCP_OPTION125 /* __ZyXEL__, Albert, 20150622, Support DHCP option125   */
++extern void send_dhcp_op125_check(unsigned char *oui , unsigned char *serial, unsigned char *pclass, char reply[]);
++#endif
+\ No newline at end of file
+Index: dnsmasq-2.67/src/extern.c
+===================================================================
+--- dnsmasq-2.67.orig/src/extern.c	2015-06-22 16:52:48.254338852 +0800
++++ dnsmasq-2.67/src/extern.c	2015-06-22 16:55:33.152867960 +0800
+@@ -91,6 +91,36 @@
+ 
+ }
+ 
++#ifdef ZyXEL_DHCP_OPTION125 /* __ZyXEL__, Albert, 20150622, Support DHCP option125   */
++void send_dhcp_op125_check(unsigned char *oui , unsigned char *serial, unsigned char *pclass, char reply[])
++{
++	zcfgRet_t ret;
++	mgabDev_t mgabdev;
++	my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
++
++	memset(&mgabdev, '\0', sizeof(mgabdev));
++
++	if(oui){
++		strncpy(mgabdev.ManufacturerOUI, (char *)(&oui[2]), oui[1]);
++	}
++	if(serial){
++		strncpy(mgabdev.SerialNumber, (char *)(&serial[2]), serial[1]);
++	}
++	if(pclass){
++		strncpy(mgabdev.ProductClass, (char *)(&pclass[2]), pclass[1]);
++	}
++
++	/* send ZCFG_MSG_MGABDEV_DETECT to ESMD for notification  */
++	ret = dnsmasq_msg_send(ZCFG_MSG_DHCP_OPTIONI125_CHK, sizeof(mgabDev_t), (const char*)&mgabdev, reply);
++	my_syslog(MS_DHCP | LOG_INFO, "%s esmd reply=%s", __func__, reply);
++
++	if(ret != ZCFG_SUCCESS && ret != ZCFG_SUCCESS_AND_NO_REPLY){
++		my_syslog(MS_DHCP | LOG_ERR, "%s dnsmasq_msg_send fail,ret=%d", __func__, ret);
++		strcpy(reply, "accept");//default pass any port any service
++	}
++}
++#endif
++
+ void
+ send_dhcp_option_request(
+ 	char *ifName,
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2015-06-22 16:52:48.262338852 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2015-06-22 16:56:05.324042381 +0800
+@@ -170,6 +170,7 @@
+       if ((opt = option_find(mess, sz, OPTION_VENDOR_IDENT_OPT, 5)))
+ 	{
+ 	  unsigned  int elen, offset, len = option_len(opt);
++      int isaccept = 0;
+ 	  
+ 	  for (offset = 0; offset < (len - 5); offset += elen + 5)
+ 	    {
+@@ -187,6 +188,15 @@
+ 		  handle_op125_request(oui, serial, class);
+ #endif
+ 		  
++#ifdef ZyXEL_DHCP_OPTION125 /* __ZyXEL__, Albert, 20150622, Support DHCP option125   */
++          char Option125Check[16] = "";
++		  send_dhcp_op125_check(oui, serial, class, Option125Check);
++          if (strcmp(Option125Check, "none")==0 )
++              continue;
++          else
++              isaccept = 1;
++#endif
++
+ 		  /* If TR069-id is present set the tag "cpewan-id" to facilitate echoing 
+ 		     the gateway id back. Note that the device class is optional */
+ 		  if (oui && serial)
+@@ -198,6 +208,10 @@
+ 		  break;
+ 		}
+ 	    }
++#ifdef ZyXEL_DHCP_OPTION125 /* __ZyXEL__, Albert, 20150622, Support DHCP option125   */
++        if(isaccept == 0)
++            return 0;
++#endif
+ 	}
+       
+       if ((opt = option_find(mess, sz, OPTION_AGENT_ID, 1)))

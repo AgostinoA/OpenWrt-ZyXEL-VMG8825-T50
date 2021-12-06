@@ -1,0 +1,203 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2019-10-23 15:55:20.766077965 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2019-10-23 15:58:44.850083588 +0800
+@@ -305,6 +305,10 @@
+ CFLAGS += -DAVAST_AGENT_PACKAGE
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_SFP_POWER_MGMT),y)
++CFLAGS += -DZYXEL_SFP_POWER_MGMT
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2019-10-23 15:55:20.734077964 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2019-10-23 16:25:29.970725085 +0800
+@@ -401,7 +401,10 @@
+ {e_TR98_Qsteer		       , &tr98Obj[e_TR98_Qsteer	     -e_TR98_START]},
+ #endif //#ifdef BUILD_SONIQ
+ #ifdef ZYXEL_ONESSID
+-{e_TR98_ONESSID					, &tr98Obj[e_TR98_ONESSID					-e_TR98_START]}
++{e_TR98_ONESSID					, &tr98Obj[e_TR98_ONESSID					-e_TR98_START]},
++#endif //#ifdef ZYXEL_ONESSID
++#ifdef ZYXEL_SFP_POWER_MGMT
++{e_TR98_SFP_MGMT					, &tr98Obj[e_TR98_SFP_MGMT					-e_TR98_START]}
+ #endif //#ifdef ZYXEL_ONESSID
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2019-10-23 15:55:20.734077964 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2019-10-23 16:32:21.874139162 +0800
+@@ -358,6 +358,10 @@
+ #define TR98_XGRE_TUNNEL_STATS			"InternetGatewayDevice.X_GRE.Tunnel.i.Stats"
+ #endif
+ 
++#ifdef ZYXEL_SFP_POWER_MGMT
++#define TR98_SFP_MGMT						"InternetGatewayDevice.X_ZYXEL_EXT.SFP_Management"
++#endif
++
+ #define OBSOLETED 1
+ //#define ZYXEL_EXT 1
+ 
+@@ -728,6 +732,9 @@
+ #ifdef ZYXEL_ONESSID
+ {TR98_ONESSID,					0,				para_OneSsid,			zyExtOneSsidObjGet,				zyExtOneSsidObjSet,			NULL,			NULL,		NULL,	NULL,	NULL},
+ #endif
++#ifdef ZYXEL_SFP_POWER_MGMT
++{TR98_SFP_MGMT,					0,				para_SfpMgmt,			zyExtSfpMgmObjGet,				zyExtSfpMgmObjSet,			NULL,			NULL,		NULL,	NULL,	NULL},
++#endif
+ #ifdef ZYXEL_TR69_DATA_USAGE
+ {TR98_DATA_USAGE,         		    0,              para_DataUsage,	   		    zyExtDataUsageObjGet, 	     zyExtDataUsageObjSet,		NULL,             NULL,            NULL, NULL, NULL},
+ {TR98_DATA_USAGE_LAN,                           ATTR_INDEX_CREA,              para_DataUsageLan,                         zyExtDataUsageLanObjGet,            NULL,              NULL,             NULL,            NULL, NULL, NULL},
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2019-10-23 15:55:20.462077956 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2019-10-23 16:30:39.940642979 +0800
+@@ -7593,6 +7593,95 @@
+ }
+ #endif
+ 
++#ifdef ZYXEL_SFP_POWER_MGMT
++/* "InternetGatewayDevice.X_ZYXEL_EXT.SFP_Management" */
++zcfgRet_t zyExtSfpMgmObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *sfpMgmtJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_ZY_SFP_MANAGEMENT, &objIid, &sfpMgmtJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/
++		paramValue = json_object_object_get(sfpMgmtJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++	json_object_put(sfpMgmtJobj);
++	return ZCFG_SUCCESS;
++}
++
++/* "InternetGatewayDevice.X_ZYXEL_EXT.SFP_Management" */
++zcfgRet_t zyExtSfpMgmObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *sfpMgmtJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_SFP_MANAGEMENT, &objIid, &sfpMgmtJobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = sfpMgmtJobj;
++		sfpMgmtJobj = NULL;
++		sfpMgmtJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_SFP_MANAGEMENT, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(sfpMgmtJobj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(sfpMgmtJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_SFP_MANAGEMENT, &objIid, sfpMgmtJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(sfpMgmtJobj);
++			return ret;
++		}
++		json_object_put(sfpMgmtJobj);
++	}
++	return ZCFG_SUCCESS;
++}
++#endif
++
++
+ /* "InternetGatewayDevice.X_ZYXEL_EXT.DNS" */
+ zcfgRet_t zyExtDnsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2019-10-23 15:55:20.462077956 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2019-10-23 16:22:42.117341645 +0800
+@@ -82,6 +82,11 @@
+ extern tr98Parameter_t para_DataUsageWan[];
+ #endif
+ 
++#ifdef ZYXEL_SFP_POWER_MGMT
++extern tr98Parameter_t para_SfpMgmt[];
++#endif
++
++
+ /*Handler Function*/
+ 
+ //InternetGatewayDevice.X_ZYXEL_EXT.
+@@ -370,6 +375,11 @@
+ extern zcfgRet_t zyExtOneSsidObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ #endif
+ 
++#ifdef ZYXEL_SFP_POWER_MGMT
++extern zcfgRet_t zyExtSfpMgmObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtSfpMgmObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++#endif
++
+ #ifdef ZYXEL_TR69_DATA_USAGE
+ extern zcfgRet_t zyExtDataUsageObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtDataUsageObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2019-10-23 15:55:20.462077956 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2019-10-23 16:15:50.466371163 +0800
+@@ -480,6 +480,14 @@
+ };
+ #endif //#ifdef ZYXEL_ONESSID
+ 
++#ifdef ZYXEL_SFP_POWER_MGMT
++tr98Parameter_t para_SfpMgmt[] = {
++	{ "Status", PARAMETER_ATTR_READONLY, 32, json_type_string},
++	{ "Timer", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++#endif //#ifdef ZYXEL_SFP_POWER_MGMT
++
+ #ifdef ZYXEL_TR69_DATA_USAGE
+ tr98Parameter_t para_DataUsage[] = {
+ 	{ "DataUsageUpdate", PARAMETER_ATTR_WRITE, 16, json_type_string},

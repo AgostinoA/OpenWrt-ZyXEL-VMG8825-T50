@@ -1,0 +1,182 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2017-10-31 15:41:08.993284994 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2017-11-02 11:05:00.661883266 +0800
+@@ -1639,8 +1639,7 @@
+ 	}
+ 
+ 	// radio obj
+-	if(json_object_get_boolean(json_object_object_get(wifiSsidObj, "X_ZYXEL_MainSSID")))
+-		prepareWifiRadioObj(Jobj);
++	prepareWifiRadioObj(Jobj);
+ 
+ 	// subnet obj
+ 	prepareWifiSubnetObj(Jobj);
+@@ -1654,82 +1653,99 @@
+ 	const char *chListLower;
+ 	const char *chListAC80;	
+ 
+-	// Prepare div_wifiSubnet
++	band = json_object_get_string(json_object_object_get(wifiRadioObj, "OperatingFrequencyBand"));
++
++	// Prepare div_wifiAdvance
+ 	if(!json_object_object_get(Jobj,"div_wifiAdvance")){
+-		if(json_object_get_boolean(json_object_object_get(wifiSsidObj,"X_ZYXEL_MainSSID"))){
+-			json_object_object_add(Jobj, "div_wifiAdvance", json_object_new_boolean(true));
++		if(json_object_get_boolean(json_object_object_get(wifiSsidObj,"X_ZYXEL_MainSSID")))
+ 			div_wifiAdvance = true;
+-		}
+-		else{
+-			json_object_object_add(Jobj, "div_wifiAdvance", json_object_new_boolean(false));
++		else
+ 			div_wifiAdvance = false;
+-		}
++		json_object_object_add(Jobj, "div_wifiAdvance", json_object_new_boolean(div_wifiAdvance));
+ 	}	
+ 
++	// If guest SSIDs, return
++	if(!div_wifiAdvance){
++		dbg_printf("%s : not main SSID, no need to prepare Radio obj..\n",__FUNCTION__);
++		return;
++	}
++
++	// Prepare bandwidth
++	if(!json_object_object_get(Jobj, "bandwidth")){
++		bandwidth = json_object_get_int(json_object_object_get(wifiRadioObj, "OperatingChannelBandwidth"));
++		/* special case: In 2.4G, 
++		 *	1. if X_ZYXEL_OBSS_coex == true && bandwidth == 40 then bandwidth is 20/40
++		 *	2. if X_ZYXEL_OBSS_coex == false && bandwidth == 40 then bandwidth is 40
++		*/
++		if(!strcmp(band,"2.4GHz") && (bandwidth == 40) && json_object_get_boolean(json_object_object_get(wifiRadioObj, "X_ZYXEL_OBSS_coex"))){
++			bandwidth = 0;
++			dbg_printf("%s : In 2.4G, OBSS coexistence is on, so bandwidth is 20/40\n",__FUNCTION__);
++		}
++		json_object_object_add(Jobj, "bandwidth", json_object_new_int(bandwidth));
++	}
++
++	// Prepare channel
++	if(!json_object_object_get(Jobj, "channel")){
++		if(json_object_get_boolean(json_object_object_get(wifiRadioObj, "AutoChannelEnable")))
++			channel = AutoChannel;
++		else		
++			channel = json_object_get_int(json_object_object_get(wifiRadioObj, "Channel"));
++		json_object_object_add(Jobj, "channel", json_object_new_int(channel));
++	}
++
+ 	// Prepare extcha
+ 	if(!json_object_object_get(Jobj, "extcha")){
+-		if(!json_object_object_get(Jobj, "bandwidth")||!json_object_object_get(Jobj, "channel")){
+-
+-			if(!strcmp(json_object_get_string(json_object_object_get(wifiRadioObj, "ExtensionChannel")),"BelowControlChannel"))
+-				extcha == 2;
+-			else
+-				extcha == 1;
++		if(!strcmp(band,"2.4GHz")){
++			chList = json_object_get_string(json_object_object_get(wifiRadioObj, "PossibleChannels"));
++			chListUpper = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_UpperChannels"));
++			chListLower = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_LowerChannels"));
++			if(bandwidth==20 && isChannelInList(channel,chList)){
++				extcha = 0;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(0));
++			}
++			else if(bandwidth==40 && isChannelInList(channel,chListLower)){
++				extcha = 1;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(1));
++			}
++			else if(bandwidth==40 && isChannelInList(channel,chListUpper)){
++				extcha = 2;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(2));
++			}
++			else if(bandwidth==0 && isChannelInList(channel,chListLower)){
++				extcha = 1;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(1));
++			}
++			else if(bandwidth==0 && isChannelInList(channel,chListUpper)){
++				extcha = 2;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(2));
++			}
++			else{
++				printf("%s: ERROR!\n",__FUNCTION__);
++			}
+ 		}
+-		else{
+-			band = json_object_get_string(json_object_object_get(wifiRadioObj, "OperatingFrequencyBand"));
+-			if(!strcmp(band,"2.4GHz")){
+-				chList = json_object_get_string(json_object_object_get(wifiRadioObj, "PossibleChannels"));
+-				chListUpper = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_UpperChannels"));
+-				chListLower = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_LowerChannels"));
+-				if(bandwidth==20 && isChannelInList(channel,chList)){
+-					extcha = 0;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(0));
+-				}
+-				else if(bandwidth==40 && isChannelInList(channel,chListLower)){
+-					extcha = 1;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(1));
+-				}
+-				else if(bandwidth==40 && isChannelInList(channel,chListUpper)){
+-					extcha = 2;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(2));
+-				}
+-				else if(bandwidth==0 && isChannelInList(channel,chListLower)){
+-					extcha = 1;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(1));
+-				}
+-				else if(bandwidth==0 && isChannelInList(channel,chListUpper)){
+-					extcha = 2;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(2));
+-				}
+-				else{
+-					printf("%s: ERROR!\n",__FUNCTION__);
+-				}
+-
+-			}
+-			else{ // 5G
+-				chList = json_object_get_string(json_object_object_get(wifiRadioObj, "PossibleChannels"));
+-				chListUpper = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_UpperChannels"));
+-				chListLower = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_LowerChannels"));
+-				chListAC80 = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_AC80_Channels"));
+-				if(bandwidth==20 && isChannelInList(channel,chList)){
+-					extcha = 0;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(0));
+-				}
+-				else if(bandwidth==40 && isChannelInList(channel,chListLower)){
+-					extcha = 1;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(1));
+-				}
+-				else if(bandwidth==40 && isChannelInList(channel,chListUpper)){
+-					extcha = 2;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(2));
+-				}
+-				else if(bandwidth==80 && isChannelInList(channel,chListAC80)){
+-					extcha = 0;
+-					json_object_object_add(Jobj, "extcha", json_object_new_int(0));
+-				}
+-				else{
+-					printf("%s: ERROR!\n",__FUNCTION__);
+-				}
++		else{ // 5G
++			chList = json_object_get_string(json_object_object_get(wifiRadioObj, "PossibleChannels"));
++			chListUpper = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_UpperChannels"));
++			chListLower = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_LowerChannels"));
++			chListAC80 = json_object_get_string(json_object_object_get(wifiRadioObj, "X_ZYXEL_AC80_Channels"));
++			if(bandwidth==20 && isChannelInList(channel,chList)){
++				extcha = 0;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(0));
++			}
++			else if(bandwidth==40 && isChannelInList(channel,chListLower)){
++				extcha = 1;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(1));
++			}
++			else if(bandwidth==40 && isChannelInList(channel,chListUpper)){
++				extcha = 2;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(2));
++			}
++			else if(bandwidth==80 && isChannelInList(channel,chListAC80)){
++				extcha = 0;
++				json_object_object_add(Jobj, "extcha", json_object_new_int(0));
++			}
++			else{
++				printf("%s: ERROR!\n",__FUNCTION__);
+ 			}
+ 		}
+ 	}

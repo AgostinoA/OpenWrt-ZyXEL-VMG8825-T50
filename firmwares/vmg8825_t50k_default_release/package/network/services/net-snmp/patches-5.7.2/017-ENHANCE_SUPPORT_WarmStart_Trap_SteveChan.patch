@@ -1,0 +1,85 @@
+Index: net-snmp-5.7.2/agent/snmpd.c
+===================================================================
+--- net-snmp-5.7.2.orig/agent/snmpd.c	2017-01-10 19:18:59.310230837 +0800
++++ net-snmp-5.7.2/agent/snmpd.c	2017-01-10 19:18:59.698232753 +0800
+@@ -210,6 +210,10 @@
+ #include <mibgroup/smux/smux.h>
+ #endif /* USING_SMUX_MODULE */
+ 
++
++/*Zyxel Porting for WarmStart trap -- 2017.01.06 Steve*/
++#define ZYXEL_SNMP_WARMSTART_FEATURE 1
++
+ /*
+  * Prototypes.
+  */
+@@ -335,6 +339,9 @@
+            "  -X\t\t\trun as an AgentX subagent rather than as an\n"
+ 	   "\t\t\t  SNMP master agent\n"
+ #endif
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++			"  -w OPTION\t\tSend ColdStart/WarmStart trap (OPTION 0:ColdStart 1:WarmStart)\n"
++#endif
+            ,
+            "\nDeprecated options:\n"
+            "  -l FILE\t\tuse -Lf <FILE> instead\n"
+@@ -451,6 +458,10 @@
+     FILE           *PID;
+ #endif
+ 
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++	unsigned char coldstart = 0;
++#endif
++
+ #ifndef WIN32
+     /*
+      * close all non-standard file descriptors we may have
+@@ -519,6 +530,9 @@
+ #ifdef USING_AGENTX_SUBAGENT_MODULE
+     strcat(options, "X");
+ #endif
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++	strcat(options, "w:");
++#endif
+ 
+     /*
+      * This is incredibly ugly, but it's probably the simplest way
+@@ -835,6 +849,26 @@
+             netsnmp_config_remember(optarg);
+             break;
+ 
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++		case 'w': //ColdStart
++			/*-w 1 ---- WarmStart     *
++			 *-w 0 ---- ColdStart     */
++			if(optarg != NULL){
++				char           *warmecp;
++                int             warmvalue;
++
++                warmvalue = strtoul(optarg, &warmecp, 10);
++
++				if(*warmecp){ //Parsing not complete, data error
++                    fprintf(stderr, "Bad WarmStart Option: %s\n", optarg);
++                    exit(1);
++				}
++
++				coldstart = !warmvalue;
++			}
++			break;
++#endif
++
+         default:
+             usage(argv[0]);
+             break;
+@@ -1096,6 +1130,11 @@
+     /*
+      * Send coldstart trap if possible.  
+      */
++#if ZYXEL_SNMP_WARMSTART_FEATURE
++	if(!coldstart)
++		send_easy_trap(1, 0);
++	else
++#endif
+     send_easy_trap(0, 0);
+ 
+     /*

@@ -1,0 +1,659 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_wwanbackup.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_wwanbackup.c	2016-11-08 17:48:06.481303900 +0800
+@@ -0,0 +1,626 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t WWANBACKUP_param[]={
++/* set IPV4 object */
++{"IPAddress", dalType_v4Addr,	0,	0,	NULL},
++{"SubnetMask", dalType_v4Mask,	0,	0,	NULL},
++{"AddressingType", dalType_string, 0, 0, NULL},
++{"IPAction", dalType_string, 0, 0, NULL},
++/* set DNS object */
++{"DNS_Interface", dalType_string, 0, 0, NULL},
++{"DNS_X_ZYXEL_Type", dalType_string, 0, 0, NULL},
++{"DNSServer", dalType_string, 0, 0, NULL},
++{"DNS_Action", dalType_string, 0, 0, NULL},
++/* set PPP object */
++{"PPP_Username", dalType_string, 0, 0, NULL},
++{"PPP_Password", dalType_string, 0, 0, NULL},
++{"PPP_ConnectionTrigger", dalType_string, 0, 0, NULL},
++{"PPP_IdleDisconnectTime", dalType_int, 0, 0, NULL},
++/* set Ping Check object, without apply */
++{"Ping_Enable", dalType_boolean, 0, 0, NULL},
++{"Ping_Interval", dalType_int, 0, 0, NULL},
++{"Ping_FailLimit", dalType_int, 0, 0, NULL},
++{"Ping_DefaultGateway", dalType_boolean, 0, 0, NULL},
++{"Ping_Destination", dalType_v4Addr,	0,	0,	NULL},
++/* set Budget Control object, without apply */
++{"Bdg_Enable", dalType_boolean, 0, 0, NULL},
++{"Bdg_TimeEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_TimeValue", dalType_int, 0, 0, NULL},
++{"Bdg_ByteEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_ByteValue", dalType_int, 0, 0, NULL},
++{"Bdg_ByteMode", dalType_string, 0, 0, NULL},
++{"Bdg_PktEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_PktValue", dalType_int, 0, 0, NULL},
++{"Bdg_PktMode", dalType_string, 0, 0, NULL},
++{"Bdg_ResetDay", dalType_int, 0, 0, NULL},
++{"Bdg_TimeActionEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_TimeActionValue", dalType_int, 0, 0, NULL},
++{"Bdg_ByteActionEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_ByteActionValue", dalType_int, 0, 0, NULL},
++{"Bdg_PktActionEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_PktActionValue", dalType_int, 0, 0, NULL},
++{"Bdg_DropWWAN", dalType_boolean, 0, 0, NULL},
++{"Bdg_LogEnable", dalType_boolean, 0, 0, NULL},
++{"Bdg_LogInterval", dalType_int, 0, 0, NULL},
++{"ResetNow", dalType_boolean, 0, 0, NULL},
++/* set 3G object */
++{"Enable_3G", dalType_boolean, 0, 0, NULL},
++{"DialNumber_3G", dalType_string, 0, 0, NULL},
++{"APN_3G", dalType_string, 0, 0, NULL},
++{"PIN_3G", dalType_string, 0, 0, NULL},
++/* set Email object */
++{"EventIndex", dalType_int, 0, 0, NULL},
++{"Email_UP_Enable", dalType_boolean, 0, 0, NULL},
++{"Email_UP_Subject", dalType_string, 0, 0, NULL},
++{"Email_UP_To", dalType_string, 0, 0, NULL},
++{"Email_UP_SericeRef", dalType_string, 0, 0, NULL},
++{"EventIndex_down", dalType_int, 0, 0, NULL},
++{"Email_DN_Enable", dalType_boolean, 0, 0, NULL},
++{"Email_DN_Subject", dalType_string, 0, 0, NULL},
++{"Email_DN_To", dalType_string, 0, 0, NULL},
++{"Email_DN_SericeRef", dalType_string, 0, 0, NULL},
++{"EventIndex_b", dalType_int, 0, 0, NULL},
++{"Email_BG_Enable", dalType_boolean, 0, 0, NULL},
++{"Email_BG_Subject", dalType_string, 0, 0, NULL},
++{"Email_BG_To", dalType_string, 0, 0, NULL},
++{"Email_BG_SericeRef", dalType_string, 0, 0, NULL},
++};
++
++void getIidLevel(objIndex_t *objIid){
++    uint8_t iidIdx =0;
++	for(iidIdx=0;iidIdx<6;iidIdx++){
++		if(objIid->idx[iidIdx] != 0)
++			objIid->level = iidIdx+1;
++	}
++}
++
++zcfgRet_t getIfPath(char *ipIface, char *pppIface){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object * WWANObj = NULL;
++	objIndex_t WWANIid = {0};
++	const char *curIpIface = NULL;
++	const char *curPPPIface = NULL;
++	IID_INIT(WWANIid);
++	ret = zcfgFeObjJsonGet(RDM_OID_ZY_W_W_A_N_BACKUP, &WWANIid, &WWANObj);
++	
++	if(ret == ZCFG_SUCCESS){
++		curIpIface = json_object_get_string(json_object_object_get(WWANObj, "Interface"));
++		curPPPIface = json_object_get_string(json_object_object_get(WWANObj, "PPPInterface"));
++
++		if(curIpIface)
++			strcpy(ipIface, curIpIface);
++		if(curPPPIface)
++			strcpy(pppIface, curPPPIface);
++	}
++
++	zcfgFeJsonObjFree(WWANObj);
++	return ret;
++}
++
++zcfgRet_t set3GObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object * WWANObj = NULL;
++	objIndex_t WWANIid = {0};
++	IID_INIT(WWANIid);
++	bool enable = false;
++	const char *dialNumber = NULL;
++	const char *apn = NULL;
++	const char *pin = NULL;
++	
++	enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable_3G"));
++	dialNumber = json_object_get_string(json_object_object_get(Jobj, "DialNumber_3G"));
++	apn = json_object_get_string(json_object_object_get(Jobj, "APN_3G"));
++	pin = json_object_get_string(json_object_object_get(Jobj, "PIN_3G"));
++	
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_W_W_A_N_BACKUP, &WWANIid, &WWANObj);
++
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(WWANObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(WWANObj, "DialNumber", json_object_new_string(dialNumber));
++		json_object_object_add(WWANObj, "APN", json_object_new_string(apn));
++		json_object_object_add(WWANObj, "PIN", json_object_new_string(pin));
++
++		zcfgFeObjJsonSet(RDM_OID_ZY_W_W_A_N_BACKUP, &WWANIid, WWANObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(WWANObj);
++	
++	return ret;
++}
++
++zcfgRet_t setIPv4Obj(struct json_object *Jobj, char *action, char *ipIface){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object * ipv4Obj = NULL;
++	objIndex_t ipv4Iid = {0};
++	const char *ipAddress = NULL;
++	const char *subnetMask = NULL;
++	const char *addressingType = NULL;
++	bool IPStatic = false;
++
++	IPStatic = json_object_get_boolean(json_object_object_get(Jobj, "IPStatic"));
++	
++	IID_INIT(ipv4Iid);
++	sscanf(ipIface, "IP.Interface.%hhu", &ipv4Iid.idx[0]);
++	ipv4Iid.idx[1] = 1;
++	ipv4Iid.level = 2;
++	
++	ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipv4Iid, &ipv4Obj);
++
++	if(IPStatic == true){
++		if(ret == ZCFG_NO_MORE_INSTANCE && ipv4Obj == NULL){//post
++			ipv4Iid.idx[1] = 0;
++			ipv4Iid.level = 1;
++			ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE_V4_ADDR, &ipv4Iid, NULL);
++			if(ret == ZCFG_SUCCESS){
++				ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipv4Iid, &ipv4Obj);
++			}
++		}
++		
++		if(ret == ZCFG_SUCCESS && ipv4Obj != NULL){
++			ipAddress = json_object_get_string(json_object_object_get(Jobj, "IPAddress"));
++			subnetMask = json_object_get_string(json_object_object_get(Jobj, "SubnetMask"));
++			addressingType = json_object_get_string(json_object_object_get(Jobj, "AddressingType"));
++
++			json_object_object_add(ipv4Obj, "IPAddress", json_object_new_string(ipAddress));
++			json_object_object_add(ipv4Obj, "SubnetMask", json_object_new_string(subnetMask));
++			json_object_object_add(ipv4Obj, "AddressingType", json_object_new_string(addressingType));
++	
++			zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &ipv4Iid, ipv4Obj, NULL);
++		}
++
++	}else{
++		if(ret == ZCFG_SUCCESS && ipv4Obj != NULL){//delete
++			addressingType = json_object_get_string(json_object_object_get(ipv4Obj, "AddressingType"));
++			if(!strcmp(addressingType,"Static")){
++				ret = zcfgFeObjJsonDel(RDM_OID_IP_IFACE_V4_ADDR, &ipv4Iid, NULL);
++			}
++		}
++	}
++		
++	zcfgFeJsonObjFree(ipv4Obj);
++	return ret;
++}
++
++zcfgRet_t setDnsObj(struct json_object *Jobj, char* action, char* ipIface){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *dnsObj = NULL;
++	struct json_object *obj = NULL;
++	objIndex_t dnsIid = {0};
++	objIndex_t iid = {0};
++	const char *dnsIface = NULL;
++	const char *CurDnsIface = NULL;
++	const char *type = NULL;
++	const char *dnsServer = NULL;
++	bool found = false;
++	bool DNSStatic = false;
++
++	DNSStatic = json_object_get_boolean(json_object_object_get(Jobj, "DNS_Static"));
++	
++	IID_INIT(dnsIid);
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_DNS_CLIENT_SRV, &iid, &obj) == ZCFG_SUCCESS){
++		CurDnsIface = json_object_get_string(json_object_object_get(obj, "Interface"));
++		if(!strcmp(ipIface,CurDnsIface)){
++			memcpy(&dnsIid, &iid, sizeof(objIndex_t));
++			dnsObj = obj;
++			found = true;
++			getIidLevel(&dnsIid);
++			break;	
++		}
++		else{
++			zcfgFeJsonObjFree(obj);
++		}
++	}
++	
++	if(DNSStatic == true){
++		if(found == false && dnsObj == NULL){//post
++			IID_INIT(dnsIid);
++			ret = zcfgFeObjJsonAdd(RDM_OID_DNS_CLIENT_SRV, &dnsIid, NULL);
++			if(ret == ZCFG_SUCCESS){
++				zcfgFeObjJsonGet(RDM_OID_DNS_CLIENT_SRV, &dnsIid, &dnsObj);
++				found = true;
++			}
++		}
++			
++		if(found == true && dnsObj != NULL){
++			dnsIface = json_object_get_string(json_object_object_get(Jobj, "DNS_Interface"));
++			type = json_object_get_string(json_object_object_get(Jobj, "DNS_X_ZYXEL_Type"));
++			dnsServer = json_object_get_string(json_object_object_get(Jobj, "DNS_DNSServer"));
++			
++			json_object_object_add(dnsObj, "Interface", json_object_new_string(dnsIface));
++			json_object_object_add(dnsObj, "Type", json_object_new_string(type));
++			json_object_object_add(dnsObj, "DNSServer", json_object_new_string(dnsServer));
++			
++			zcfgFeObjJsonSet(RDM_OID_DNS_CLIENT_SRV, &dnsIid, dnsObj, NULL);
++		}
++	}else{
++		if(found == true && dnsObj != NULL){//delete
++			type = json_object_get_string(json_object_object_get(dnsObj, "Type"));
++			if(!strcmp(type,"Static")){
++				ret = zcfgFeObjJsonDel(RDM_OID_DNS_CLIENT_SRV, &dnsIid, NULL);
++			}
++		}
++	}
++
++	zcfgFeJsonObjFree(dnsObj);
++	return ret;
++}
++
++zcfgRet_t setPPPObj(struct json_object *Jobj, char *pppIface){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *pppObj = NULL;
++	objIndex_t pppIid = {0};
++	const char *username = NULL;
++	const char *passwrd = NULL;
++	const char *connectionTrigger = NULL;
++	int idleDisconnectTime = 0;
++	
++	IID_INIT(pppIid);
++	sscanf(pppIface, "PPP.Interface.%hhu", &pppIid.idx[0]);
++	pppIid.level = 1;
++
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PPP_IFACE, &pppIid, &pppObj);
++
++	if(ret == ZCFG_SUCCESS){
++		username = json_object_get_string(json_object_object_get(Jobj, "PPP_Username"));
++		passwrd = json_object_get_string(json_object_object_get(Jobj, "PPP_Password"));
++		connectionTrigger = json_object_get_string(json_object_object_get(Jobj, "PPP_ConnectionTrigger"));
++		idleDisconnectTime = json_object_get_int(json_object_object_get(Jobj, "PPP_IdleDisconnectTime"));
++
++		json_object_object_add(pppObj, "Username", json_object_new_string(username));
++		json_object_object_add(pppObj, "Password", json_object_new_string(passwrd));
++		json_object_object_add(pppObj, "ConnectionTrigger", json_object_new_string(connectionTrigger));
++		json_object_object_add(pppObj, "IdleDisconnectTime", json_object_new_int(idleDisconnectTime));
++
++		ret = zcfgFeObjJsonSetWithoutApply(RDM_OID_PPP_IFACE, &pppIid, pppObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(pppObj);
++	return ret;
++} 
++
++zcfgRet_t setPingObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *pingObj = NULL;
++	objIndex_t pingIid = {0};
++	bool enable = false;
++	int interval = 0;
++	int failLimit = 0;
++	bool pingGw = false;
++	const char *destination = NULL;
++	
++	IID_INIT(pingIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_W_W_A_N_PING_CHECK, &pingIid, &pingObj);
++
++	if(ret == ZCFG_SUCCESS){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Ping_Enable"));
++		interval = json_object_get_int(json_object_object_get(Jobj, "Ping_Interval"));
++		failLimit = json_object_get_int(json_object_object_get(Jobj, "Ping_FailLimit"));
++		pingGw = json_object_get_boolean(json_object_object_get(Jobj, "Ping_DefaultGateway"));
++		destination = json_object_get_string(json_object_object_get(Jobj, "Ping_Destination"));
++
++		json_object_object_add(pingObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(pingObj, "Interval", json_object_new_int(interval));
++		json_object_object_add(pingObj, "FailLimit", json_object_new_int(failLimit));
++		json_object_object_add(pingObj, "DefaultGateway", json_object_new_boolean(pingGw));
++		json_object_object_add(pingObj, "Destination", json_object_new_string(destination));
++
++		ret = zcfgFeObjJsonSetWithoutApply(RDM_OID_ZY_W_W_A_N_PING_CHECK, &pingIid, pingObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(pingObj);
++	return ret;
++
++}
++
++zcfgRet_t setBudgetObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *budgetObj = NULL;
++	objIndex_t budgetIid = {0};
++	bool enable = false;
++	bool timeEnable = false;
++	int timeValue = 0;
++	bool byteEnable = false;
++	int  byteValue = 0;
++	const char *byteMode = NULL;
++	bool pktEnable = false;
++	int pktValue = 0;
++	const char *pktMode = NULL;
++	int resetDay = 0;
++	bool timeActionEnable = false;
++	int timeActionValue = 0;
++	bool byteActionEnable = false;
++	int byteActionValue = 0;
++	bool pktActionEnable =  false;
++	int pktActionValue = 0; 
++	bool dropWWAN = false;
++	bool logEnable = false;
++	int logInterval = 0;
++	bool resetNow = false;		//ResetNow
++
++	IID_INIT(budgetIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_W_W_A_N_BUDGET_CONTROL, &budgetIid, &budgetObj);
++	if(ret == ZCFG_SUCCESS){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_Enable"));
++		timeEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_TimeEnable"));
++		timeValue = json_object_get_int(json_object_object_get(Jobj, "Bdg_TimeValue"));
++		byteEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_ByteEnable"));
++		byteValue = json_object_get_int(json_object_object_get(Jobj, "Bdg_ByteValue"));
++		byteMode = json_object_get_string(json_object_object_get(Jobj, "Bdg_ByteMode"));
++		pktEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_PktEnable"));
++		pktValue = json_object_get_int(json_object_object_get(Jobj, "Bdg_PktValue"));
++		pktMode = json_object_get_string(json_object_object_get(Jobj, "Bdg_PktMode"));
++		resetDay = json_object_get_int(json_object_object_get(Jobj, "Bdg_ResetDay"));
++		timeActionEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_TimeActionEnable"));
++		timeActionValue = json_object_get_int(json_object_object_get(Jobj, "Bdg_TimeActionValue"));
++		byteActionEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_ByteActionEnable"));
++		byteActionValue = json_object_get_int(json_object_object_get(Jobj, "Bdg_ByteActionValue"));
++		pktActionEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_PktActionEnable"));
++		pktActionValue = json_object_get_int(json_object_object_get(Jobj, "Bdg_PktActionValue"));
++		dropWWAN = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_DropWWAN"));
++		logEnable = json_object_get_boolean(json_object_object_get(Jobj, "Bdg_LogEnable"));
++		logInterval = json_object_get_int(json_object_object_get(Jobj, "Bdg_LogInterval"));
++		resetNow = json_object_get_int(json_object_object_get(Jobj, "ResetNow"));
++
++		json_object_object_add(budgetObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(budgetObj, "TimeEnable", json_object_new_boolean(timeEnable));
++		json_object_object_add(budgetObj, "TimeValue", json_object_new_int(timeValue));
++		json_object_object_add(budgetObj, "ByteEnable", json_object_new_boolean(byteEnable));
++		json_object_object_add(budgetObj, "ByteValue", json_object_new_int(byteValue));
++		json_object_object_add(budgetObj, "ByteMode", json_object_new_string(byteMode));
++		json_object_object_add(budgetObj, "PktEnable", json_object_new_boolean(pktEnable));
++		json_object_object_add(budgetObj, "PktValue", json_object_new_int(pktValue));
++		json_object_object_add(budgetObj, "PktMode", json_object_new_string(pktMode));
++		json_object_object_add(budgetObj, "ResetDay", json_object_new_int(resetDay));
++		json_object_object_add(budgetObj, "TimeActionEnable", json_object_new_boolean(timeActionEnable));
++		json_object_object_add(budgetObj, "TimeActionValue", json_object_new_int(timeActionValue));
++		json_object_object_add(budgetObj, "ByteActionEnable", json_object_new_boolean(byteActionEnable));
++		json_object_object_add(budgetObj, "ByteActionValue", json_object_new_int(byteActionValue));
++		json_object_object_add(budgetObj, "PktActionEnable", json_object_new_boolean(pktActionEnable));
++		json_object_object_add(budgetObj, "PktActionValue", json_object_new_int(pktActionValue));
++		json_object_object_add(budgetObj, "DropWWAN", json_object_new_boolean(dropWWAN));
++		json_object_object_add(budgetObj, "LogEnable", json_object_new_boolean(logEnable));
++		json_object_object_add(budgetObj, "LogInterval", json_object_new_int(logInterval));
++		json_object_object_add(budgetObj, "ResetNow", json_object_new_int(resetNow));
++
++		ret = zcfgFeObjJsonSetWithoutApply(RDM_OID_ZY_W_W_A_N_BUDGET_CONTROL, &budgetIid, budgetObj, NULL);
++	}
++	zcfgFeJsonObjFree(budgetObj);
++	return ret;
++}
++
++zcfgRet_t setEmailUPObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *emailUPObj = NULL;
++	objIndex_t emailUPIid = {0};
++	struct json_object *obj = NULL;
++	objIndex_t iid = {0};
++	bool enable = false;
++	const char *subject = NULL;
++	const char *senTo = NULL;
++	const char *sericeRef = NULL;
++	const char *event = NULL;
++	bool found = false;
++	
++	IID_INIT(iid);
++	IID_INIT(emailUPIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &iid, &obj) == ZCFG_SUCCESS){
++		event = json_object_get_string(json_object_object_get(obj, "Event"));
++		if(!strcmp(event,"MAILSEND_EVENT_3G_UP")){
++			memcpy(&emailUPIid, &iid, sizeof(objIndex_t));
++			emailUPObj = obj;
++			found = true;
++			getIidLevel(&emailUPIid);
++			break;	
++		}
++		else{
++			zcfgFeJsonObjFree(obj);
++		}
++	}
++
++	if(!found){//POST
++		IID_INIT(emailUPIid);
++		ret = zcfgFeObjJsonAdd(RDM_OID_MAIL_EVENT_CFG, &emailUPIid, NULL);
++		if(ret == ZCFG_SUCCESS){
++			ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &emailUPIid, &emailUPObj);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(emailUPObj, "Event", json_object_new_string("MAILSEND_EVENT_3G_UP"));
++				json_object_object_add(emailUPObj, "EmailBody", json_object_new_string("3G backup is up now."));
++				found = true;
++			}
++		}
++	}
++
++	if(found){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Email_UP_Enable"));
++		subject = json_object_get_string(json_object_object_get(Jobj, "Email_UP_Subject"));
++		senTo = json_object_get_string(json_object_object_get(Jobj, "Email_UP_To"));
++		sericeRef = json_object_get_string(json_object_object_get(Jobj, "Email_UP_SericeRef"));
++		
++		json_object_object_add(emailUPObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(emailUPObj, "EmailTo", json_object_new_string(senTo));
++		json_object_object_add(emailUPObj, "EmailSubject", json_object_new_string(subject));
++		json_object_object_add(emailUPObj, "SericeRef", json_object_new_string(sericeRef));
++		
++		zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &emailUPIid, emailUPObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(emailUPObj);
++	return ret;
++}
++
++zcfgRet_t setEmailDownObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *emailDnObj = NULL;
++	objIndex_t emailDnIid = {0};
++	struct json_object *obj = NULL;
++	objIndex_t iid = {0};
++	bool enable = false;
++	const char *subject = NULL;
++	const char *senTo = NULL;
++	const char *sericeRef = NULL;
++	const char *event = NULL;
++	bool found = false;
++
++	IID_INIT(iid);
++	IID_INIT(emailDnIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &iid, &obj) == ZCFG_SUCCESS){
++		event = json_object_get_string(json_object_object_get(obj, "Event"));
++		if(!strcmp(event,"MAILSEND_EVENT_3G_DOWN")){
++			memcpy(&emailDnIid, &iid, sizeof(objIndex_t));
++			emailDnObj = obj;
++			found = true;
++			getIidLevel(&emailDnIid);
++			break;	
++		}
++		else{
++			zcfgFeJsonObjFree(obj);
++		}
++	}
++
++	if(!found){//POST
++		IID_INIT(emailDnIid);
++		ret = zcfgFeObjJsonAdd(RDM_OID_MAIL_EVENT_CFG, &emailDnIid, NULL);
++		if(ret == ZCFG_SUCCESS){
++			ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &emailDnIid, &emailDnObj);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(emailDnObj, "Event", json_object_new_string("MAILSEND_EVENT_3G_DOWN"));
++				json_object_object_add(emailDnObj, "EmailBody", json_object_new_string("xDSL is back UP, 3G backup is down"));
++				found = true;
++			}
++		}
++	}
++
++	if(found){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Email_DN_Enable"));
++		subject = json_object_get_string(json_object_object_get(Jobj, "Email_DN_Subject"));
++		senTo = json_object_get_string(json_object_object_get(Jobj, "Email_DN_To"));
++		sericeRef = json_object_get_string(json_object_object_get(Jobj, "Email_DN_SericeRef"));
++		
++		json_object_object_add(emailDnObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(emailDnObj, "EmailTo", json_object_new_string(senTo));
++		json_object_object_add(emailDnObj, "EmailSubject", json_object_new_string(subject));
++		json_object_object_add(emailDnObj, "SericeRef", json_object_new_string(sericeRef));
++		
++		zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &emailDnIid, emailDnObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(emailDnObj);
++	return ret;
++
++}
++
++zcfgRet_t setEmailBgObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *emailBgObj = NULL;
++	objIndex_t emailBgIid = {0};
++	struct json_object *obj = NULL;
++	objIndex_t iid = {0};
++	bool enable = false;
++	const char *subject = NULL;
++	const char *senTo = NULL;
++	const char *sericeRef = NULL;
++	const char *event = NULL;
++	bool found = false;
++	
++	IID_INIT(iid);
++	IID_INIT(emailBgIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &iid, &obj) == ZCFG_SUCCESS){
++		event = json_object_get_string(json_object_object_get(obj, "Event"));
++		if(!strcmp(event,"MAILSEND_EVENT_3G_BUDGET")){
++			memcpy(&emailBgIid, &iid, sizeof(objIndex_t));
++			emailBgObj = obj;
++			found = true;
++			getIidLevel(&emailBgIid);
++			break;	
++		}
++		else{
++			zcfgFeJsonObjFree(obj);
++		}
++	}
++
++	if(!found){//POST
++		IID_INIT(emailBgIid);
++		ret = zcfgFeObjJsonAdd(RDM_OID_MAIL_EVENT_CFG, &emailBgIid, NULL);
++		if(ret == ZCFG_SUCCESS){
++			ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &emailBgIid, &emailBgObj);
++			if(ret == ZCFG_SUCCESS){
++				json_object_object_add(emailBgObj, "Event", json_object_new_string("MAILSEND_EVENT_3G_BUDGET"));
++				json_object_object_add(emailBgObj, "EmailBody", json_object_new_string("Take care of your budget. #{Msg}"));
++				found = true;
++			}
++		}
++	}
++
++	if(found){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Email_BG_Enable"));
++		subject = json_object_get_string(json_object_object_get(Jobj, "Email_BG_Subject"));
++		senTo = json_object_get_string(json_object_object_get(Jobj, "Email_BG_To"));
++		sericeRef = json_object_get_string(json_object_object_get(Jobj, "Email_BG_SericeRef"));
++		
++		json_object_object_add(emailBgObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(emailBgObj, "EmailTo", json_object_new_string(senTo));
++		json_object_object_add(emailBgObj, "EmailSubject", json_object_new_string(subject));
++		json_object_object_add(emailBgObj, "SericeRef", json_object_new_string(sericeRef));
++		
++		zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &emailBgIid, emailBgObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(emailBgObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_WwanBackup_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char *action = NULL;
++	char ipIface[32] = {0};
++	char pppIface[32] = {0};
++	bool resetNow = false;
++	resetNow = json_object_get_int(json_object_object_get(Jobj, "ResetNow"));
++
++	ret = getIfPath(ipIface, pppIface);
++	
++	if(resetNow == false){
++		
++		if(ret == ZCFG_SUCCESS){
++			setIPv4Obj(Jobj, action, ipIface);
++			setDnsObj(Jobj, action, ipIface);
++			setPPPObj(Jobj, pppIface);
++		}
++		setPingObj(Jobj);
++		setBudgetObj(Jobj);
++		set3GObj(Jobj);
++		setEmailUPObj(Jobj);
++		setEmailDownObj(Jobj);
++		setEmailBgObj(Jobj);
++	}
++	else{
++		resetNow = false;	
++	}	
++	return ret;	
++}	
++
++zcfgRet_t zcfgFeDalWwanBackup(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_WwanBackup_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-11-12 02:35:10.325429093 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-11-12 02:40:34.013875000 +0800
+@@ -11,6 +11,7 @@
+ extern dal_param_t MGMT_param[];
+ extern dal_param_t ETHWANLAN_param[];
+ extern dal_param_t ADVANCE_param[];
++extern dal_param_t WWANBACKUP_param[];
+ extern dal_param_t DNS_ENTRY_param[];
+ extern dal_param_t D_DNS_param[];
+ extern dal_param_t STATICROUTE_param[];
+@@ -70,6 +71,7 @@
+ extern zcfgRet_t zcfgFeDalDDns(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalEthWanLan(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWanAdvance(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalWwanBackup(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalStaticRoute(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsRoute(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalPolicyRoute(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -135,6 +137,7 @@
+ {"DNS_ENTRY",		DNS_ENTRY_param,	zcfgFeDalDnsEntry},
+ {"D_DNS",			D_DNS_param,		zcfgFeDalDDns},
+ {"ADVANCE",			ADVANCE_param,		zcfgFeDalWanAdvance},
++{"WWANBACKUP", 		WWANBACKUP_param,	zcfgFeDalWwanBackup},
+ {"STATICROUTE", 	STATICROUTE_param,	zcfgFeDalStaticRoute},
+ {"DNSROUTE", 		DNSROUTE_param,		zcfgFeDalDnsRoute},
+ {"POLICYROUTE", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute},

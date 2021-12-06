@@ -1,0 +1,147 @@
+Index: libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_snmp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/zcfg_fe_dal_snmp.c	2017-05-12 17:06:56.585505092 +0800
++++ libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_snmp.c	2017-05-12 17:10:04.677712013 +0800
+@@ -137,14 +137,119 @@
+ 	return ret;
+ }
+ 
++void zcfgFeDalShowSNMP(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray,i);
++
++		if(json_object_get_boolean(json_object_object_get(obj,"Enable")))
++			printf("%-20s: Enabled\n","SNMP Agent");
++		else
++			printf("%-20s: Disabled\n","SNMP Agent");
++
++		printf("%-20s: %s\n","Get Community",json_object_get_string(json_object_object_get(obj, "ROCommunity")));
++		printf("%-20s: %s\n","Set Community",json_object_get_string(json_object_object_get(obj, "RWCommunity")));
++		printf("%-20s: %s\n","Trap Community",json_object_get_string(json_object_object_get(obj, "TrapCommunity")));
++		printf("%-20s: %s\n","System Name",json_object_get_string(json_object_object_get(obj, "HostName")));
++		printf("%-20s: %s\n","System Location",json_object_get_string(json_object_object_get(obj, "Location")));
++		printf("%-20s: %s\n","System Contact",json_object_get_string(json_object_object_get(obj, "Contact")));
++		printf("%-20s: %s\n","Trap Destination",json_object_get_string(json_object_object_get(obj, "Host")));
++
++	}
++}
++
++zcfgRet_t zcfgFeDal_SNMP_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *retObj = NULL;
++
++	/* RDM_OID_ZY_SNMP */
++	struct json_object *snmpObj = NULL;
++	objIndex_t snmpIid = {0};
++	bool enable = false;
++	const char *ROCommunity = NULL;
++	const char *RWCommunity = NULL;
++	const char *TrapCommunity = NULL;
++
++	/* RDM_OID_SYSTEM_INFO */
++	struct json_object * SysInfoObj = NULL;
++	objIndex_t SysInfoIid = {0};
++	const char *HostName = NULL;
++	const char *Location = NULL;
++	const char *Contact = NULL;
++
++	/* RDM_OID_TRAP_ADDR */
++	struct json_object *trapObj = NULL;
++	objIndex_t trapIid = {0};
++	const char *host = NULL;
++	int port = 0;
++	bool found = false;
++
++	retObj = json_object_new_object();
++
++	IID_INIT(snmpIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_SNMP, &snmpIid, &snmpObj);
++	if(ret == ZCFG_SUCCESS){
++		enable = json_object_get_boolean(json_object_object_get(snmpObj, "Enable"));
++		ROCommunity = json_object_get_string(json_object_object_get(snmpObj, "ROCommunity"));
++		RWCommunity = json_object_get_string(json_object_object_get(snmpObj, "RWCommunity"));
++		TrapCommunity = json_object_get_string(json_object_object_get(snmpObj, "TrapCommunity"));		
++		json_object_object_add(retObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(retObj, "ROCommunity", json_object_new_string(ROCommunity));
++		json_object_object_add(retObj, "RWCommunity", json_object_new_string(RWCommunity));
++		json_object_object_add(retObj, "TrapCommunity", json_object_new_string(TrapCommunity));
++		zcfgFeJsonObjFree(snmpObj);
++	}
++
++	IID_INIT(SysInfoIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SYSTEM_INFO, &SysInfoIid, &SysInfoObj);
++	if(ret == ZCFG_SUCCESS){
++		HostName = json_object_get_string(json_object_object_get(SysInfoObj, "HostName"));
++		Location = json_object_get_string(json_object_object_get(SysInfoObj, "Location"));
++		Contact = json_object_get_string(json_object_object_get(SysInfoObj, "Contact"));
++		json_object_object_add(retObj, "HostName", json_object_new_string(HostName));
++		json_object_object_add(retObj, "Location", json_object_new_string(Location));
++		json_object_object_add(retObj, "Contact", json_object_new_string(Contact));
++		zcfgFeJsonObjFree(SysInfoObj);
++	}
++
++	IID_INIT(trapIid);
++	ret = zcfgFeObjJsonGetNext(RDM_OID_TRAP_ADDR, &trapIid, &trapObj);
++	if(ret == ZCFG_SUCCESS){
++		host = json_object_get_string(json_object_object_get(trapObj, "Host"));
++		json_object_object_add(retObj, "Host", json_object_new_string(host));
++		zcfgFeJsonObjFree(trapObj);
++	}
++	else if(trapObj==NULL){
++		json_object_object_add(retObj, "Host", json_object_new_string(""));
++		printf("Fail to get object..\n");
++	}
++
++	json_object_array_add(Jarray, retObj);
++
++	return ret;
++}
+ 
+ zcfgRet_t zcfgFeDalSNMP(const char *method, struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+-	if(!strcmp(method, "PUT"))
++	if(!strcmp(method, "PUT")){
+ 		ret = zcfgFeDal_SNMP_Edit(Jobj, NULL);
+-	else
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_SNMP_Get(Jobj, NULL);
++	}
++	else{
+ 		printf("Unknown method:%s\n", method);
++	}
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-12 17:06:58.285505100 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-12 17:12:48.410638093 +0800
+@@ -178,6 +178,7 @@
+ extern void zcfgFeDalShowHomeConnect(struct json_object *Jarray);
+ extern void zcfgFeDalShowWanAdvance(struct json_object *Jarray);
+ extern void zcfgFeDalShowSystemInfo(struct json_object *Jarray);
++extern void zcfgFeDalShowSNMP(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -222,7 +223,7 @@
+ {"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm,		NULL,						"edit",				""},//Wireless
+ {"WIFI_OTHERS",		WIFI_OTHERS_param,	zcfgFeDalWifiOthers,	NULL,						"edit",				""},//Wireless
+ {"SYSINFO", 		SYSTEM_INFO_param,	zcfgFeDalSystemInfo,	zcfgFeDalShowSystemInfo,	"edit|get",			"System"},
+-{"SNMP",			SNMP_param, 		zcfgFeDalSNMP,			NULL,						"edit",				""},//SNMP
++{"SNMP",			SNMP_param, 		zcfgFeDalSNMP,			zcfgFeDalShowSNMP,			"edit|get",				"SNMP"},
+ {"TIME",			TIME_param, 		zcfgFeDalTime,			NULL,						"edit",				""},//Time
+ {"TRUST_DOMAIN",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain,	NULL,						"add|delete",		""},//Remote_MGMT
+ {"SP_TRUST_DOMAIN",	SP_TRUST_DOMAIN_param, zcfgFeDalSpTrustDomain,NULL,						"add|delete",		""},//SP_Domain

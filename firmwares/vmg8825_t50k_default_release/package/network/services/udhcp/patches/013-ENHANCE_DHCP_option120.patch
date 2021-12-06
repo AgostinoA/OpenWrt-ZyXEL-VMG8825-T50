@@ -1,0 +1,79 @@
+Index: udhcp-0.9.8/options.c
+===================================================================
+--- udhcp-0.9.8.orig/options.c	2014-12-03 14:30:50.658378978 +0800
++++ udhcp-0.9.8/options.c	2014-12-03 14:30:50.706378978 +0800
+@@ -51,7 +51,8 @@
+ #ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
+ 	{"forcerenew",	OPTION_FORCERENEW,	0x5a},
+ #endif
+-/* Pochao: keep the following three options in order,
++	{"sipsrv",	OPTION_STRING,				0x78}, //Keep following four option in order
++	/* Pochao: keep the following three options in order,
+ 	   since the function read_config_options will check these options by the order in the array*/
+ 	{"6rd", OPTION_STRING,          DHCP_6RD_OPT},
+ #if 1 /* DHCP option 43, 121(must be last two options in this array for implementation concerns), ZyXEL, John */
+@@ -331,6 +332,11 @@
+ 
+ 	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV4_REQ_OPT, &dhcpIid, &optIid, (void **)&reqOptObj)) == ZCFG_SUCCESS){
+ 		if(reqOptObj->Enable){
++
++			if(reqOptObj->Tag == 120) {//option120
++				options[last_option_index - 4].flags |= OPTION_REQ;
++			}
++
+ 			if(reqOptObj->Tag == DHCP_6RD_OPT) {
+ 				options[last_option_index - 3].flags |= OPTION_REQ;
+ 			}
+Index: udhcp-0.9.8/script.c
+===================================================================
+--- udhcp-0.9.8.orig/script.c	2014-12-03 14:30:50.638378978 +0800
++++ udhcp-0.9.8/script.c	2014-12-03 14:43:53.862373200 +0800
+@@ -181,6 +181,37 @@
+ 
+ 				sprintf(brAddr, "%d.%d.%d.%d", option[18], option[19], option[20], option[21]);
+ 				json_object_object_add(dhcpc_opt, "brAddr", json_object_new_string(brAddr));
++			}else if(type_p->code == 0x78){ //option 120 SIP Server
++				//printf("OPTION 120!!");
++				//printf("%d %d %d %d %d %d", *(option - 1), option[0], option[1], option[2], option[3], option[4]);
++				 u_int8_t op120_total_len = *(option - 1);
++				char sip_svr_addr[257];
++				char *svr_addr_ptr = sip_svr_addr;
++				char *payload = option + 1;
++				if(option[0] == 0){ //Domain
++
++					while(payload < (option + op120_total_len)){
++						u_int8_t sub_str_len = *payload++;
++
++						strncpy(svr_addr_ptr, payload, sub_str_len);
++						svr_addr_ptr += sub_str_len;
++						payload += sub_str_len;
++
++						if(*payload != 0){
++							*svr_addr_ptr = '.';
++						}else{
++							*svr_addr_ptr = '\0';
++							break;
++						}
++						svr_addr_ptr++;
++
++					}
++
++				}else if(option[0] == 1){ //IP-Address
++					sprintf(sip_svr_addr, "%d.%d.%d.%d", option[1], option[2], option[3], option[4]);
++				}
++				//printf("type_p->name:%s\n", type_p->name);
++				json_object_object_add(dhcpc_opt, type_p->name, json_object_new_string(sip_svr_addr));
+ 			}
+ #endif
+ 			memcpy(dest, option, len);
+@@ -304,6 +335,10 @@
+ 	payload = json_object_to_json_string(dhcpc_opt);
+ 
+ 	payloadLen = strlen(payload) + 1;
++
++	//printf("============================UDHCP===========================\n");
++	//printf("%s\n", payload);
++
+ #if 1 //__ZYXEL__, Mark	
+ 	msgType = (name && strcmp(name, "renew") == 0) ? ZCFG_MSG_DHCPC_RENEW : ZCFG_MSG_DHCPC_BOUND;
+ 	dhcpMsgSend(msgType, ZCFG_EID_ESMD, payloadLen, payload);

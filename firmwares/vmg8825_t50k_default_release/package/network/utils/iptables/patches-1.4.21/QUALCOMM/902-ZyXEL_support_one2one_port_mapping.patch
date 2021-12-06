@@ -1,0 +1,242 @@
+Index: iptables-1.4.21/extensions/libipt_DNAT.c
+===================================================================
+--- iptables-1.4.21.orig/extensions/libipt_DNAT.c
++++ iptables-1.4.21/extensions/libipt_DNAT.c
+@@ -2,12 +2,16 @@
+ #include <netdb.h>
+ #include <string.h>
+ #include <stdlib.h>
++#include <getopt.h>
+ #include <xtables.h>
+ #include <iptables.h> /* get_kernel_version */
+ #include <limits.h> /* INT_MAX in ip_tables.h */
+ #include <linux/netfilter_ipv4/ip_tables.h>
+ #include <linux/netfilter/nf_nat.h>
+ 
++#define IPT_DNAT_OPT_DEST 0x1
++#define IPT_DNAT_OPT_RANDOM 0x2
++
+ enum {
+ 	O_TO_DEST = 0,
+ 	O_RANDOM,
+@@ -35,6 +39,13 @@ static void DNAT_help(void)
+ "[--random] [--persistent]\n");
+ }
+ 
++#if 1 /*use .extra_opts instead of x6_options in order to support one-to-one port mapping */
++static const struct option DNAT_opts[] = {
++	{ "to-destination", 1, NULL, '1' },
++	{ "random", 0, NULL, '2' },
++	{0}
++};
++#else
+ static const struct xt_option_entry DNAT_opts[] = {
+ 	{.name = "to-destination", .id = O_TO_DEST, .type = XTTYPE_STRING,
+ 	 .flags = XTOPT_MAND | XTOPT_MULTI},
+@@ -42,6 +53,7 @@ static const struct xt_option_entry DNAT
+ 	{.name = "persistent", .id = O_PERSISTENT, .type = XTTYPE_NONE},
+ 	XTOPT_TABLEEND,
+ };
++#endif
+ 
+ static struct ipt_natinfo *
+ append_range(struct ipt_natinfo *info, const struct nf_nat_ipv4_range *range)
+@@ -63,12 +75,26 @@ append_range(struct ipt_natinfo *info, c
+ }
+ 
+ /* Ranges expected in network order. */
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++static struct xt_entry_target *
++parse_to(const char *orig_arg, int portok, struct ipt_natinfo *info, char **matchRule)
++#else
+ static struct xt_entry_target *
+ parse_to(const char *orig_arg, int portok, struct ipt_natinfo *info)
++#endif
+ {
+ 	struct nf_nat_ipv4_range range;
+ 	char *arg, *colon, *dash, *error;
+ 	const struct in_addr *ip;
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++	int matchMinPort = 0;
++	int matchMaxPort = 0;
++	char *matchColon = NULL;
++	char *search = NULL;
++	char *tmp = NULL;
++	int i = 0;
++#endif
++
+ 
+ 	arg = strdup(orig_arg);
+ 	if (arg == NULL)
+@@ -113,6 +139,31 @@ parse_to(const char *orig_arg, int porto
+ 					   "Port range `%s' funky\n", colon+1);
+ 			range.min.tcp.port = htons(port);
+ 			range.max.tcp.port = htons(maxport);
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++			/* Find out the external port range in match rule. */
++			tmp = *matchRule;
++			range.mappingFlag = 0;
++			for (i = 1; tmp != NULL; i++)
++			{
++				tmp = *(matchRule + i);
++				if ((search = strstr(tmp, "dport")) != NULL)
++				{
++					search = *(matchRule + i + 1);
++					matchMinPort = atoi(search);
++					matchColon = strchr(search, ':');
++					matchMaxPort = atoi(matchColon + 1);
++
++					/* If the port range of match rule is same as forward port range, nothing to do here. */
++					if ((matchMinPort != port) && (matchMaxPort != maxport))
++					{
++						range.mappingMin.tcp.port = htons(matchMinPort);
++						range.mappingMax.tcp.port = htons(matchMaxPort);
++						range.mappingFlag = 1;
++					}
++					break;
++				}
++			}
++#endif
+ 		}
+ 		/* Starts with a colon? No IP info...*/
+ 		if (colon == arg) {
+@@ -148,6 +199,61 @@ parse_to(const char *orig_arg, int porto
+ 	return &(append_range(info, &range)->t);
+ }
+ 
++#if 1 /*use .parse instead of x6_parse in order to support one-to-one port mapping */
++static int DNAT_parse(int c, char **argv, int invert, unsigned int *flags,
++		       const void *e, struct xt_entry_target **target)
++{
++	const struct ipt_entry *entry = e;
++	struct ipt_natinfo *info = (void *)*target;
++	int portok;
++
++	if (entry->ip.proto == IPPROTO_TCP
++	    || entry->ip.proto == IPPROTO_UDP
++	    || entry->ip.proto == IPPROTO_SCTP
++	    || entry->ip.proto == IPPROTO_DCCP
++	    || entry->ip.proto == IPPROTO_ICMP)
++		portok = 1;
++	else
++		portok = 0;
++
++	switch (c) {
++	case '1':
++
++		if (*flags & IPT_DNAT_OPT_DEST) {
++			if (!kernel_version)
++				get_kernel_version();
++			if (kernel_version > LINUX_VERSION(2, 6, 10))
++				xtables_error(PARAMETER_PROBLEM,
++					   "Multiple --to-destination not supported");
++		}
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++		*target = parse_to(optarg, portok, info, argv);
++#else
++		*target = parse_to(optarg, portok, info);
++#endif
++		/* WTF do we need this for?? */
++		if (*flags & IPT_DNAT_OPT_RANDOM)
++			info->mr.range[0].flags |= NF_NAT_RANGE_PROTO_RANDOM;
++		*flags |= IPT_DNAT_OPT_DEST;
++		return 1;
++
++	case '2':
++		if (*flags & IPT_DNAT_OPT_DEST) {
++			info->mr.range[0].flags |= NF_NAT_RANGE_PROTO_RANDOM;
++			*flags |= IPT_DNAT_OPT_RANDOM;
++		} else
++			*flags |= IPT_DNAT_OPT_RANDOM;
++		return 1;
++
++	case '3':
++		info->mr.range[0].flags |= NF_NAT_RANGE_PERSISTENT;
++		return 1;
++
++	default:
++		return 0;
++	}
++}
++#else
+ static void DNAT_parse(struct xt_option_call *cb)
+ {
+ 	const struct ipt_entry *entry = cb->xt_entry;
+@@ -181,7 +287,16 @@ static void DNAT_parse(struct xt_option_
+ 		break;
+ 	}
+ }
++#endif
+ 
++#if 1 /*use .parse instead of x6_parse in order to support one-to-one port mapping */
++static void DNAT_fcheck(unsigned int flags)
++{
++	if (!flags)
++		xtables_error(PARAMETER_PROBLEM,
++			   "You must specify --to-destination");
++}
++#else
+ static void DNAT_fcheck(struct xt_fcheck_call *cb)
+ {
+ 	static const unsigned int f = F_TO_DEST | F_RANDOM;
+@@ -190,6 +305,7 @@ static void DNAT_fcheck(struct xt_fcheck
+ 	if ((cb->xflags & f) == f)
+ 		mr->range[0].flags |= NF_NAT_RANGE_PROTO_RANDOM;
+ }
++#endif
+ 
+ static void print_range(const struct nf_nat_ipv4_range *r)
+ {
+@@ -249,11 +365,20 @@ static struct xtables_target dnat_tg_reg
+ 	.size		= XT_ALIGN(sizeof(struct nf_nat_ipv4_multi_range_compat)),
+ 	.userspacesize	= XT_ALIGN(sizeof(struct nf_nat_ipv4_multi_range_compat)),
+ 	.help		= DNAT_help,
++#if 1 /*use .parse instead of x6_parse in order to support one-to-one port mapping */
++	.parse          = DNAT_parse,
++	.final_check	= DNAT_fcheck,
++#else
+ 	.x6_parse	= DNAT_parse,
+ 	.x6_fcheck	= DNAT_fcheck,
++#endif
+ 	.print		= DNAT_print,
+ 	.save		= DNAT_save,
++#if 1 /*use .parse instead of x6_parse in order to support one-to-one port mapping */
++	.extra_opts	= DNAT_opts,
++#else
+ 	.x6_options	= DNAT_opts,
++#endif
+ };
+ 
+ void _init(void)
+Index: iptables-1.4.21/include/linux/netfilter/nf_nat.h
+===================================================================
+--- iptables-1.4.21.orig/include/linux/netfilter/nf_nat.h
++++ iptables-1.4.21/include/linux/netfilter/nf_nat.h
+@@ -15,6 +15,13 @@ struct nf_nat_ipv4_range {
+ 	__be32				max_ip;
+ 	union nf_conntrack_man_proto	min;
+ 	union nf_conntrack_man_proto	max;
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120307. */
++	/* mappingFlag is 1, if it needs to do one-to-one port mapping. */
++	unsigned int mappingFlag;
++
++	/* Record external port information. */
++	union nf_conntrack_man_proto mappingMin, mappingMax;
++#endif
+ };
+ 
+ struct nf_nat_ipv4_multi_range_compat {
+@@ -28,6 +35,13 @@ struct nf_nat_range {
+ 	union nf_inet_addr		max_addr;
+ 	union nf_conntrack_man_proto	min_proto;
+ 	union nf_conntrack_man_proto	max_proto;
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120307. */
++	/* mappingFlag is 1, if it needs to do one-to-one port mapping. */
++	unsigned int mappingFlag;
++
++	/* Record external port information. */
++	union nf_conntrack_man_proto mappingMin, mappingMax;
++#endif
+ };
+ 
+ #endif /* _NETFILTER_NF_NAT_H */

@@ -1,0 +1,187 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2017-11-03 15:10:15.807578573 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2017-11-03 15:11:25.822232400 +0800
+@@ -218,20 +218,21 @@
+  *		 Jarray.i.DHCPtr181Path
+  */
+ zcfgRet_t getWanLanList_ext(struct json_object **Jarray){
+-	struct json_object *ipIfaceJarray, *pppIfaceJarray, *v4AddrJarray, *v6AddrJarray, *vlanTermJarray, *atmLinkJarray, *bridgeBrJarray, *dhcp4PoolJarray, *dhcp4ClientJarray;
+-	struct json_object *ipIfaceObj, *pppIfaceObj, *v4AddrObj, *v6AddrObj, *vlanTermObj, *ethLinkObj = NULL, *atmLinkObj, *bridgeBrObj;
++	struct json_object *ipIfaceJarray, *pppIfaceJarray, *v4AddrJarray, *v6AddrJarray, *vlanTermJarray, *atmLinkJarray, *bridgeBrJarray, *dhcp4PoolJarray, *dhcp4ClientJarray, *dnsClientJarray = NULL;
++	struct json_object *ipIfaceObj, *pppIfaceObj, *v4AddrObj, *v6AddrObj, *vlanTermObj, *ethLinkObj = NULL, *atmLinkObj, *bridgeBrObj, *dnsClientObj;
+ 	struct json_object *Jobj = NULL;
+-	struct json_object *addrJarray;
++	struct json_object *addrJarray, *dnsv4Array = NULL, *dnsv6Array = NULL;
+ 	char ifacePath[32] = {0}, BridgingBrPath[32] = {0};
+ 	int len, len2, i, j;
+ 	unsigned char idx;
+ 	const char *X_ZYXEL_BridgeName, *X_ZYXEL_SrvName, *X_ZYXEL_ConnectionType, *X_ZYXEL_IfName, *X_ZYXEL_Group_WAN_IpIface, *LowerLayers;
+-	const char *X_ZYXEL_Type;
++	const char *X_ZYXEL_Type, *dns_tmp;
+ 	char intfGrpWANList[256] = {0};
+ 	char *intf = NULL, *tmp_ptr = NULL;
+ 	const char *IpIfacePath = NULL;
+-	char DHCPStatus[16] = {0}, DHCPtr181Path[32] = {0};
++	char DHCPStatus[16] = {0}, DHCPtr181Path[32] = {0}, ipv6dns[128] = {0}, ipv4dns[32] = {0};
+ 	objIndex_t iid;	
++	bool Enable = false;
+ 
+ 	zcfgFeWholeObjJsonGet("Device.IP.Interface.", &ipIfaceJarray);
+ 	zcfgFeWholeObjJsonGet("Device.PPP.Interface.", &pppIfaceJarray);
+@@ -240,6 +241,7 @@
+ 	zcfgFeWholeObjJsonGet("Device.Bridging.Bridge.", &bridgeBrJarray);
+ 	zcfgFeWholeObjJsonGet("Device.DHCPv4.Server.Pool.", &dhcp4PoolJarray);
+ 	zcfgFeWholeObjJsonGet("Device.DHCPv4.Client.", &dhcp4ClientJarray);
++	zcfgFeWholeObjJsonGet("Device.DNS.Client.Server.", &dnsClientJarray);
+ 
+ 	if(ipIfaceJarray==NULL||pppIfaceJarray==NULL||vlanTermJarray==NULL||bridgeBrJarray==NULL)
+ 		return ZCFG_INTERNAL_ERROR;
+@@ -249,6 +251,7 @@
+ 	len = json_object_array_length(ipIfaceJarray);
+ 	for(i=0;i<len;i++){
+ 		ipIfaceObj = json_object_array_get_idx(ipIfaceJarray, i);
++		Enable = json_object_get_boolean(json_object_object_get(ipIfaceObj, "Enable"));
+ 		X_ZYXEL_SrvName = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_SrvName"));
+ 		X_ZYXEL_ConnectionType = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_ConnectionType"));
+ 		LowerLayers = json_object_get_string(json_object_object_get(ipIfaceObj, "LowerLayers"));
+@@ -259,6 +262,7 @@
+ 		}
+ 		
+ 		Jobj = json_object_new_object();
++		Jaddb(Jobj, "Enable", Enable);
+ 		Jadds(Jobj, "IpIfacePath", ifacePath);
+ 		Jaddi(Jobj, "wanInx", i+1);
+ 		Jaddb(Jobj, "BindToIntfGrp", false);
+@@ -307,11 +311,40 @@
+ 				v6AddrObj = json_object_array_get_idx(v6AddrJarray, j);
+ 				if(isEmptyIns(v6AddrObj))
+ 					continue;
+-				Jaddi(v4AddrObj, "ipIfaceIdx", i+1);
++				Jaddi(v6AddrObj, "ipIfaceIdx", i+1);
+ 				json_object_array_add(addrJarray, JSON_OBJ_COPY(v6AddrObj));
+ 				break;
+ 			}
+ 		}
++		/* DNS client server */
++		dnsv4Array = json_object_new_array();		
++		dnsv6Array = json_object_new_array();	//	need FIX
++		json_object_object_add(Jobj, "dnsv4Server", dnsv4Array);
++		json_object_object_add(Jobj, "dnsv6Server", dnsv6Array);
++		if(dnsClientJarray != NULL){
++			len2 = json_object_array_length(dnsClientJarray);
++			for(j=0; j<len2; j++){
++				dnsClientObj = json_object_array_get_idx(dnsClientJarray, j);
++				if(Jgets(dnsClientObj, "Interface") != NULL){
++					if(!strcmp(Jgets(dnsClientObj, "Interface"),ifacePath)){
++	
++						dns_tmp = Jgets(dnsClientObj, "DNSServer");
++						if(strchr(dns_tmp, ':')){	//ipv6 dns server
++	
++							strcpy(ipv6dns, dns_tmp);
++							Jadds(dnsClientObj, "v6dns", ipv6dns);
++							json_object_array_add(dnsv6Array, JSON_OBJ_COPY(dnsClientObj));
++						}
++						else{						//ipv4 dns server
++	
++							strcpy(ipv4dns, dns_tmp);
++							Jadds(dnsClientObj, "v4dns", ipv4dns);
++							json_object_array_add(dnsv4Array, JSON_OBJ_COPY(dnsClientObj));
++						}
++					}
++				}
++			}
++		}
+ 
+ 		int count = 0;
+ 		const char *HigherLayer = "IP.Interface.";
+@@ -518,10 +551,16 @@
+ zcfgRet_t zcfgFeDalStatusGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	struct json_object *statusJobj = NULL;
+-	struct json_object *firewallInfoObj = NULL, *firewallLevelObj = NULL;
++	struct json_object *firewallInfoObj = NULL, *firewallLevelObj = NULL, *gponObj = NULL, *wwanObj = NULL;
+ 	struct json_object *ssidJarray = NULL;
+ 	struct json_object *wanLanJarray = NULL;
+ 	struct json_object *ethIfaceJarray = NULL, *ethIfaceObj = NULL;
++	struct json_object *dslChannelJarray = NULL, *dslChannelObj = NULL;
++	struct json_object *optIntfJarray = NULL, *optIbtfObj = NULL;
++	struct json_object *wwanBackupJarray = NULL, *wwanBackupObj = NULL;
++	struct json_object *voipProfJarray = NULL, *voipProfObj = NULL;
++	struct json_object *voipProSIPfJarray = NULL, *voipProSIPfObj = NULL;
++	struct json_object *voipLineJarray = NULL, *voipLineObj = NULL, *voipLineIid = NULL;
+ 	objIndex_t iid;	
+ 	struct json_object *devInfoObj = NULL, *sysInfoObj = NULL;
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -549,6 +588,55 @@
+ 		json_object_array_add(ethIfaceJarray, ethIfaceObj);
+ 	}
+ 
++	dslChannelJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_DSL_CHANNEL, &iid, &dslChannelObj) == ZCFG_SUCCESS) {
++		json_object_array_add(dslChannelJarray, dslChannelObj);
++	}
++
++	optIntfJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_OPT_INTF, &iid, &optIbtfObj) == ZCFG_SUCCESS) {
++		json_object_array_add(optIntfJarray, optIbtfObj);
++	}
++
++	wwanBackupJarray = json_object_new_array();
++	IID_INIT(iid);
++	if(zcfgFeObjJsonGet(RDM_OID_ZY_W_W_A_N_BACKUP, &iid, &wwanBackupObj) == ZCFG_SUCCESS) {
++		json_object_array_add(wwanBackupJarray, wwanBackupObj);
++	}
++
++	IID_INIT(iid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ONU, &iid, &gponObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalStatusGetFail;
++
++	IID_INIT(iid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_W_W_A_N_STAT, &iid, &wwanObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalStatusGetFail;
++
++	voipProfJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_VOICE_PROF, &iid, &voipProfObj) == ZCFG_SUCCESS) {
++		Jaddi(voipProfObj, "idx", iid.idx[1]);
++		json_object_array_add(voipProfJarray, voipProfObj);
++	}
++
++	voipProSIPfJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_VOICE_PROF_SIP, &iid, &voipProSIPfObj) == ZCFG_SUCCESS) {
++		json_object_array_add(voipProSIPfJarray, voipProSIPfObj);
++	}
++
++	voipLineJarray = json_object_new_array();
++	voipLineIid = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_VOICE_LINE, &iid, &voipLineObj) == ZCFG_SUCCESS) {
++		Jaddi(voipLineObj, "idx0", iid.idx[0]);
++		Jaddi(voipLineObj, "idx1", iid.idx[1]);
++		Jaddi(voipLineObj, "idx2", iid.idx[2]);
++		json_object_array_add(voipLineJarray, voipLineObj);
++	}
++
+ 	getWifiInfo(&ssidJarray);
+ 	getWanLanList_ext(&wanLanJarray);
+ 	
+@@ -560,6 +648,15 @@
+ 	json_object_object_add(statusJobj, "LanPortInfo", ethIfaceJarray);
+ 	json_object_object_add(statusJobj, "WiFiInfo", ssidJarray);
+ 	json_object_object_add(statusJobj, "WanLanInfo", wanLanJarray);
++	json_object_object_add(statusJobj, "DslChannelInfo", dslChannelJarray);
++	json_object_object_add(statusJobj, "OptIntfInfo", dslChannelJarray);
++	json_object_object_add(statusJobj, "WWANBackupInfo", wwanBackupJarray);
++	json_object_object_add(statusJobj, "GponInfo", gponObj);
++	json_object_object_add(statusJobj, "WWANStatsInfo", wwanObj);
++	json_object_object_add(statusJobj, "VoipProfInfo", voipProfJarray);
++	json_object_object_add(statusJobj, "VoipProfSIPInfo", voipProSIPfJarray);
++	json_object_object_add(statusJobj, "VoipLineInfo", voipLineJarray);
++	
+ 	return ZCFG_SUCCESS;
+ 
+ zcfgFeDalStatusGetFail:

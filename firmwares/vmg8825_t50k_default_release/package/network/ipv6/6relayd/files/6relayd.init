@@ -1,0 +1,85 @@
+#!/bin/sh /etc/rc.common
+# Copyright (c) 2011-2012 OpenWrt.org
+START=80
+
+resolve_ifname() {
+	grep -qs "^ *$1:" /proc/net/dev && {
+		append ifaces "$1"
+	}
+}
+
+resolve_network() {
+	local ifn
+	fixup_interface "$1"
+	config_get ifn "$1" ifname
+	[ -z "$ifn" ] && return 1
+	resolve_ifname "$ifn"
+}
+
+start_6relayd() {
+	local cfg="$1"
+	local mode="$2"
+	local args="-s -l"
+	local ifaces=""
+
+	SERVICE_DAEMONIZE=1
+	SERVICE_WRITE_PID=1
+	SERVICE_PID_FILE="/var/run/6relayd-$cfg.pid"
+	[ -f "$SERVICE_PID_FILE" ] && {
+		if grep -q 6relayd "/proc/$(cat $SERVICE_PID_FILE)/cmdline"; then
+			return 0
+		else
+			rm -f "$SERVICE_PID_FILE"
+		fi
+	}
+
+	local net networks
+	config_get networks "$cfg" network
+	for net in $networks; do
+		resolve_network "$net" || {
+			return 1
+		}
+	done
+
+	local ifn ifnames
+	config_get ifnames "$cfg" ifname
+	for ifn in $ifnames; do
+		resolve_ifname "$ifn"
+	done
+
+	local rd
+	config_get rd "$cfg" rd
+	[ -n "$rd" ] && append args "-R$rd"
+
+	local dhcpv6
+	config_get dhcpv6 "$cfg" dhcpv6
+	[ -n "$dhcpv6" ] && append args "-D$dhcpv6"
+
+	local ndp
+	config_get ndp "$cfg" ndp
+	[ "$ndp" == "relay" ] && append args "-N -r"
+
+	local always_rewrite_dns
+	config_get_bool always_rewrite_dns "$cfg" always_rewrite_dns 0
+	[ $always_rewrite_dns -eq 1 ] && append args "-n"
+
+	# In server mode the first interface needs to be passed twice
+	[ "$mode" == "server" ] && ifaces=". $ifaces"
+
+	service_start /usr/sbin/6relayd $args $ifaces
+}
+
+stop() {
+	for pid in /var/run/6relayd-*.pid; do
+		SERVICE_PID_FILE="$pid"
+		service_stop /usr/sbin/6relayd
+		rm -f "$SERVICE_PID_FILE"
+	done
+}
+
+start() {
+	include /lib/network
+	config_load 6relayd
+	config_foreach start_6relayd relay relay
+	config_foreach start_6relayd server server
+}

@@ -1,0 +1,458 @@
+Index: libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_port_mapping.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/nat/zcfg_fe_dal_nat_port_mapping.c	2017-05-25 20:39:21.732512475 +0800
++++ libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_port_mapping.c	2017-05-25 20:41:40.317891200 +0800
+@@ -99,6 +99,18 @@
+ 			return ZCFG_REQUEST_REJECT;
+ 		}
+ 	}
++	description = json_object_get_string(json_object_object_get(Jobj, "Description"));
++	IID_INIT(objIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_NAT_PORT_MAPPING, &objIid, &NatPortMappingJobj) == ZCFG_SUCCESS){	
++		if(strncmp(json_object_get_string(json_object_object_get(Jobj, "Description")), "APP:", 4)){
++			if(!strcmp(description, json_object_get_string(json_object_object_get(NatPortMappingJobj, "Description")))){	
++				zcfgFeJsonObjFree(NatPortMappingJobj);				
++				strcat(replyMsg, "Description is duplicate.");			
++				return ZCFG_INVALID_PARAM_VALUE;		
++			}	
++			zcfgFeJsonObjFree(NatPortMappingJobj);	
++		}
++	}
+ 
+ 	IID_INIT(objIid);
+ 	ret = zcfgFeObjJsonAdd(RDM_OID_NAT_PORT_MAPPING, &objIid, NULL);
+@@ -180,7 +192,9 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *NatPortMappingJobj = NULL;
++	struct json_object *obj = NULL;
+ 	objIndex_t objIid = {0};
++	objIndex_t Iid = {0};
+ 	bool enable = false;
+ 	const char *interface = NULL;
+ 	const char *originatingipaddress = NULL;
+@@ -193,12 +207,13 @@
+ 	const char *internalclient = NULL;
+ 	const char *description = NULL;
+ 	int index = 0;
+-	bool found = false;
++	bool found = false, tmp = false;
+ #ifdef ELISA_NAT_PORTFORWARD_CUSTOMIZATIONN
+ 	bool autoDetectWanStatus = false;
+ 	const char *wanip = NULL;
+ #endif
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	description = json_object_get_string(json_object_object_get(Jobj, "Description"));
+ 	IID_INIT(objIid);
+ 	objIid.level = 1;
+ 	objIid.idx[0] = index;
+@@ -207,6 +222,21 @@
+ 			found = true;
+ 		}
+ 	}
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_NAT_PORT_MAPPING, &Iid, &obj) == ZCFG_SUCCESS){	
++		if(strncmp(json_object_get_string(json_object_object_get(Jobj, "Description")), "APP:", 4)){
++			if(!strcmp(description, json_object_get_string(json_object_object_get(obj, "Description")))){
++				if(index == Iid.idx[0]){
++					zcfgFeJsonObjFree(obj);	
++				}
++				else{
++					zcfgFeJsonObjFree(obj);				
++					strcat(replyMsg, "Description is duplicate.");			
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}	
++		}
++		zcfgFeJsonObjFree(obj);	
++	}
+ 
+ 	if(!found){
+ 		if(replyMsg != NULL)
+@@ -239,7 +269,6 @@
+ 		protocol = json_object_get_string(json_object_object_get(Jobj, "Protocol"));
+ 		internalclient = json_object_get_string(json_object_object_get(Jobj, "InternalClient"));
+ 		description = json_object_get_string(json_object_object_get(Jobj, "Description"));
+-
+ #ifdef ELISA_NAT_PORTFORWARD_CUSTOMIZATIONN
+ 		autoDetectWanStatus = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_AutoDetectWanStatus"));
+ 		wanip = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_WANIP"));
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_dns_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_dns_route.c	2017-05-25 20:39:21.780512474 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_dns_route.c	2017-05-25 20:41:28.269891200 +0800
+@@ -110,17 +110,22 @@
+ 
+ zcfgRet_t zcfgFeDalDnsRouteEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *Jarray = NULL;
+ 	int index = 0;
+ 	zcfg_offset_t oid;
+ 	IID_INIT(dnsRtIid);
+-	
+ 	oid = RDM_OID_DNS_RT_ENTRY;
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	initDnsRouteGlobalObjects();
+ 	getDnsRouteBasicInfo(Jobj);
++	Jarray = json_object_new_array();
++	zcfgFeDalDnsRouteGet(Jarray, NULL);
+ 	ret = convertIndextoIid(index, &dnsRtIid, oid, NULL, NULL, replyMsg);
+ 	if(ret != ZCFG_SUCCESS)
+ 		return ret;	
++	ret = dalcmdParamCheck(NULL, DomainName, oid, "DomainName", "DomainName",  replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 	if((ret = zcfgFeDalDnsRouteObjEdit(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) fail to edit Dns Route \n", __FUNCTION__);
+ 		goto exit;
+@@ -137,15 +142,19 @@
+ 
+ zcfgRet_t zcfgFeDalDnsRouteAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	zcfg_offset_t oid;
+-	//printf("%s():--- Add DnsRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	struct json_object *Jarray = NULL;
+ 	initDnsRouteGlobalObjects();
+ 	getDnsRouteBasicInfo(Jobj);
++	zcfg_offset_t oid;
++	oid = RDM_OID_DNS_RT_ENTRY;
+ 
+ 	IID_INIT(dnsRtIid);
+ 
+-	oid = RDM_OID_DNS_RT_ENTRY;
+-	ret = dalcmdParamCheck(DomainName, oid, "DomainName", replyMsg);
++	/*ret = dalcmdParamCheck(0, DomainName, "DomainName", Jarray, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;*/
++
++	ret = dalcmdParamCheck(NULL, DomainName, oid, "DomainName", "DomainName",  replyMsg);
+ 	if(ret != ZCFG_SUCCESS)
+ 		return ret;
+ 
+@@ -196,7 +205,6 @@
+ 	struct json_object *paramJobj = NULL;
+ 	objIndex_t dnsrouteIid = {0};
+ 	int count = 1;
+-	
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_DNS_RT_ENTRY, &dnsrouteIid, &dnsrouteObj) == ZCFG_SUCCESS){
+ 		paramJobj = json_object_new_object();
+ 		json_object_object_add(paramJobj, "count", json_object_new_int(count));
+@@ -208,6 +216,7 @@
+ 		zcfgFeJsonObjFree(dnsrouteObj);
+ 		count++;
+ 	}
++	
+ 	return ret;
+ 
+ }
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_policy_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_policy_route.c	2017-05-25 20:39:21.780512474 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_policy_route.c	2017-05-25 20:41:21.904891200 +0800
+@@ -44,7 +44,6 @@
+ 		printf("wrong Jobj format!\n");
+ 		return;
+ 	}
+-	printf("%s %s %d \n",json_object_to_json_string(Jarray), __func__,__LINE__);
+ 	printf("%-8s %-10s %-10s %-18s %-20s %-10s %-13s %-20s %-20s %-10s\n", 
+ 		"Index", "Status", "Name", "Source IP", "Source Subnet Mask", "Protocol", "Source Port", "Source MAC", "Source Interface", "WAN Interface");
+ 	len = json_object_array_length(Jarray);
+@@ -129,68 +128,26 @@
+ 
+ 	return ret;
+ }
+-/*void convertIndextoIid(int idx, objIndex_t *Iid, zcfg_offset_t oid, char *key, void *ptr){
+-	//idx get from GUI, Iid is final return value [1,x,0,0,0,0], oid is RDM_OID_... , ptr is a parameter which condition compare and I don't care parameter type
+-	struct json_object *obj = NULL;
+-	struct json_object *paramObj = NULL;
+-	int count = 1, type = 0;
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(oid, Iid, &obj) == ZCFG_SUCCESS){
+-		if(key != NULL){	// for parameter contidional check
+-			paramObj = json_object_object_get(obj, key);
+-			type = json_object_get_type(paramObj);
+-			if(type == 1){		//bool value
+-				bool *iptr = (bool*)(ptr);
+-				if(json_object_get_boolean(paramObj) == iptr){
+-					if(idx == count){
+-						zcfgFeJsonObjFree(obj);
+-						break;
+-					}
+-					count++;
+-				}
+-			}
+-			else if(type == 3){		// int value
+-				int *iptr = (int*)(ptr);
+-				if(json_object_get_int(paramObj) == iptr){
+-					if(idx == count){
+-						zcfgFeJsonObjFree(obj);
+-						break;
+-					}
+-					count++;
+-				}
+-			}
+-			else if(type == 9){		// string value
+-				char *iptr = (char*)(ptr);
+-				if(!strcmp(iptr, json_object_get_string(paramObj))){
+-					if(idx == count){
+-						zcfgFeJsonObjFree(obj);
+-						break;
+-					}
+-					count++;
+-				}
+-			}
+-		}
+-		else{				// without parameter check, just only for index to Iid
+-			if(idx == count){
+-				zcfgFeJsonObjFree(obj);
+-				break;
+-			}
+-			count++;
+-		}
+-		zcfgFeJsonObjFree(obj);
+-	}
+-}*/
+ 
+ zcfgRet_t zcfgFeDalPolicyRouteEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *obj = NULL;
++	struct json_object *Jarray = NULL;
+ 	objIndex_t policyRtIid = {0};
+ 	int index = 0, count = 1;
+ 	zcfg_offset_t oid;
++	Jarray = json_object_new_array();
++	zcfgFeDalPolicyRouteGet(Jarray, NULL);
+ 	initPolicyRouteGlobalObjects();
+ 	getPolicyRouteBasicInfo(Jobj);
+ 	oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+-	index = json_object_get_int(json_object_object_get(Jobj, "Index"));	//Assume  index = 2
+-	convertIndextoIid(index, &policyRtIid, oid, "X_ZYXEL_PolicyRoute", true);
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(index, &policyRtIid, oid, "X_ZYXEL_PolicyRoute", true, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	ret = dalcmdParamCheck(&policyRtIid, X_ZYXEL_PolicyRouteName, oid, "X_ZYXEL_PolicyRouteName", "RouteName", replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 	if((ret = zcfgFeDalPolicyRouteObjEdit(Jobj, &policyRtIid)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) fail to edit Policy Route \n", __FUNCTION__);
+ 		goto exit;
+@@ -210,11 +167,16 @@
+ 
+ zcfgRet_t zcfgFeDalPolicyRouteAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *Jarray = NULL;
+ 	objIndex_t policyRtIid = {0};
++	zcfg_offset_t oid;
+ 	//printf("%s():--- Add Policy Route Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+ 	initPolicyRouteGlobalObjects();
+ 	getPolicyRouteBasicInfo(Jobj);
+-
++	oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++	ret = dalcmdParamCheck(NULL, X_ZYXEL_PolicyRouteName, oid, "X_ZYXEL_PolicyRouteName", "RouteName",  replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 	policyRtIid.level = 1;
+ 	policyRtIid.idx[0] = 1;
+ 
+@@ -300,7 +262,7 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalPolicyRouteEdit(Jobj, NULL);
++		ret = zcfgFeDalPolicyRouteEdit(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "POST")) {
+ 		ret = zcfgFeDalPolicyRouteAdd(Jobj, replyMsg);
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_static_route.c	2017-05-25 20:39:21.760512474 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c	2017-05-25 20:41:13.377891200 +0800
+@@ -10,7 +10,7 @@
+ 
+ dal_param_t STATICROUTE_param[] =
+ {
+-	{"Alias",				dalType_string,			1,	32,	NULL, NULL, 		dal_Add|dal_Edit|dal_Delete},
++	{"Name",				dalType_string,			1,	32,	NULL, NULL, 		dal_Add|dal_Edit|dal_Delete},
+ 	{"Enable",				dalType_boolean,		0,	0,	NULL, NULL,			dal_Add},
+ 	{"ipver",				dalType_string,			0,	0,	NULL, "IPv4|IPv6",	dal_Add|dal_Edit|dal_Delete},
+ 	{"DestIPAddress",		dalType_v4v6Addr,		0,	0,	NULL, NULL,			0},
+@@ -105,16 +105,15 @@
+ 		return;
+ 	}
+ 
+-	printf("%-25s %-7s %-7s %-35s %-17s %-22s %-22s\n",
+-		    "Alias", "Enable", "IPver", "DestIPAddress/DestPrefix", "DestMask", "Interface", "Gateway/NextHop");
+-	
++	printf("%-15s %-7s %-7s %-35s %-17s %-22s %-22s\n",
++		     "Name", "Enable", "IPver", "DestIPAddress/DestPrefix", "DestMask", "Interface", "Gateway/NextHop");		
+ 	len = json_object_array_length(Jarray);
+ 	for(i=0;i<len;i++){
+ 		obj = json_object_array_get_idx(Jarray, i);
+ 		ipver = json_object_get_string(json_object_object_get(obj, "ipver"));
+ 		if(!strcmp(ipver, "IPv4")){
+-			printf("%-25s %-7u %-7s %-35s %-17s %-22s %-22s\n",
+-				    json_object_get_string(json_object_object_get(obj, "Alias")),
++			printf("%-15s %-7u %-7s %-35s %-17s %-22s %-22s\n",
++				    json_object_get_string(json_object_object_get(obj, "Name")),
+ 				    json_object_get_boolean(json_object_object_get(obj, "Enable")),
+ 				    ipver,
+ 				    json_object_get_string(json_object_object_get(obj, "DestIPAddress")),
+@@ -123,8 +122,8 @@
+ 				    json_object_get_string(json_object_object_get(obj, "GatewayIPAddress")));
+ 		}
+ 		else{
+-			printf("%-25s %-7u %-7s %-35s %-17s %-22s %-22s\n",
+-					json_object_get_string(json_object_object_get(obj, "Alias")),
++			printf("%-15s %-7u %-7s %-35s %-17s %-22s %-22s\n",
++					json_object_get_string(json_object_object_get(obj, "Name")),
+ 					json_object_get_boolean(json_object_object_get(obj, "Enable")),
+ 					ipver,
+ 					json_object_get_string(json_object_object_get(obj, "DestIPPrefix")),
+@@ -140,7 +139,7 @@
+ 	NextHop = json_object_get_string(json_object_object_get(Jobj, "NextHop"));
+ 	DestIPPrefix = json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix"));
+ 	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-	Alias = json_object_get_string(json_object_object_get(Jobj, "Alias"));
++	Alias = json_object_get_string(json_object_object_get(Jobj, "Name"));
+ 	ipver= json_object_get_string(json_object_object_get(Jobj, "ipver"));
+ 	DestIPAddress = json_object_get_string(json_object_object_get(Jobj, "DestIPAddress"));
+ 	DestSubnetMask = json_object_get_string(json_object_object_get(Jobj, "DestSubnetMask"));
+@@ -166,7 +165,7 @@
+ 			}
+ 		}
+ 		else{
+-			Alias = json_object_get_string(json_object_object_get(Jobj, "Alias"));
++			Alias = json_object_get_string(json_object_object_get(Jobj, "Name"));
+ 			if(Alias != NULL && !strcmp(Alias, tempAlias)){
+ 				return ZCFG_SUCCESS;
+ 			}
+@@ -201,7 +200,7 @@
+ 		StaticRoute = json_object_get_boolean(json_object_object_get(obj, "StaticRoute"));
+ 		if(StaticRoute && strcmp(Alias, "") && strcmp(DestIPAddress, "")){
+ 			pramJobj = json_object_new_object();
+-			json_object_object_add(pramJobj, "Alias", json_object_new_string(Alias));
++			json_object_object_add(pramJobj, "Name", json_object_new_string(Alias));
+ 			json_object_object_add(pramJobj, "DestIPAddress", json_object_new_string(DestIPAddress));
+ 			json_object_object_add(pramJobj, "StaticRoute", json_object_new_boolean(StaticRoute));
+ 			json_object_object_add(pramJobj, "ipver", json_object_new_string("IPv4"));
+@@ -214,9 +213,9 @@
+ 			ipIfaceObj = json_object_object_get(ipIfaceMultiObj, Interface);
+ 			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(ipIfaceObj, "X_ZYXEL_SrvName")));
+ #endif
+-			
+ 			json_object_array_add(Jarray, pramJobj);
+ 		}
++		
+ 		zcfgFeJsonObjFree(obj);
+ 	}
+ 
+@@ -227,7 +226,7 @@
+ 		Origin = json_object_get_string(json_object_object_get(obj, "Origin"));
+ 		if(!strcmp(Origin, "Static") && strcmp(Alias, "") && strcmp(DestIPPrefix, "")){
+ 			pramJobj = json_object_new_object();
+-			json_object_object_add(pramJobj, "Alias", json_object_new_string(Alias));
++			json_object_object_add(pramJobj, "Name", json_object_new_string(Alias));
+ 			json_object_object_add(pramJobj, "DestIPPrefix", json_object_new_string(DestIPPrefix));
+ 			json_object_object_add(pramJobj, "ipver", json_object_new_string("IPv6"));
+ 			json_object_object_add(pramJobj, "NextHop", JSON_OBJ_COPY(json_object_object_get(obj, "NextHop")));
+@@ -271,7 +270,7 @@
+ 		json_object_object_add(fwdObj, "GatewayIPAddress", JSON_OBJ_COPY(paramObj));
+ 	if((paramObj = json_object_object_get(Jobj, "Enable")) != NULL)
+ 		json_object_object_add(fwdObj, "Enable", JSON_OBJ_COPY(paramObj));
+-	if((paramObj = json_object_object_get(Jobj, "Alias")) != NULL)
++	if((paramObj = json_object_object_get(Jobj, "Name")) != NULL)
+ 		json_object_object_add(fwdObj, "Alias", JSON_OBJ_COPY(paramObj));
+ 	if((paramObj = json_object_object_get(Jobj, "Interface")) != NULL){
+ 		json_object_object_add(fwdObj, "Interface", JSON_OBJ_COPY(paramObj));
+@@ -355,6 +354,10 @@
+ zcfgRet_t zcfgFeDalStaticRouteAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	zcfg_offset_t targetOid;
++	struct json_object *routeV4FwdObj = NULL;
++	struct json_object *routeV6FwdObj = NULL;
++	zcfg_offset_t routeV4FwdIid = {0};
++	zcfg_offset_t routeV6FwdIid = {0};
+ 	//printf("%s():--- Add StaticRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+ 	initIpv4FwdGlobalObjects();
+ 	getStaticRouteBasicInfo(Jobj);
+@@ -382,8 +385,22 @@
+ 		}
+ 	}
+ 
+-	if((ret = dalcmdParamCheck(Alias, targetOid, "Alias", replyMsg))!= ZCFG_SUCCESS)
+-		return ret;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &routeV4FwdIid, &routeV4FwdObj) == ZCFG_SUCCESS){	
++		if(!strcmp(Alias, json_object_get_string(json_object_object_get(routeV4FwdObj, "Alias")))){	
++			zcfgFeJsonObjFree(routeV4FwdObj);					
++			strcat(replyMsg, "Name is duplicate.");			
++			return ZCFG_INVALID_PARAM_VALUE;		
++		}	
++		zcfgFeJsonObjFree(routeV4FwdObj);	
++	}
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V6_FWD, &routeV6FwdIid, &routeV6FwdObj) == ZCFG_SUCCESS){	
++		if(!strcmp(Alias, json_object_get_string(json_object_object_get(routeV6FwdObj, "Alias")))){	
++			zcfgFeJsonObjFree(routeV6FwdObj);					
++			strcat(routeV6FwdObj, "Name is duplicate.");			
++			return ZCFG_INVALID_PARAM_VALUE;		
++		}	
++		zcfgFeJsonObjFree(routeV6FwdObj);	
++	}
+ 
+ 	if((ret = zcfgFeObjJsonBlockedAdd(targetOid, &fwdIid, NULL)) != ZCFG_SUCCESS){
+ 		printf("%s():(ERROR) zcfgFeObjJsonAdd add Static Route \n ",__FUNCTION__);
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-25 20:39:21.912512472 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-25 20:41:59.592891200 +0800
+@@ -353,22 +353,47 @@
+  *           Jarray.i.BridgingBrPath = Bridging.Bridge.i (For LAN only)
+  */
+ 
+-zcfgRet_t dalcmdParamCheck(const char *param, zcfg_offset_t oid, char *key, char *replyMsg){
++//Suppose parameter need to check is string.
++zcfgRet_t dalcmdParamCheck(objIndex_t *Iid, const char *param, zcfg_offset_t oid, char *key, char *key1, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *obj = NULL;
+-	objIndex_t Iid = {0};
+-	
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(oid, &Iid, &obj) == ZCFG_SUCCESS){
++	objIndex_t iid = {0};
++	int len = 0, i, count = 1;
++	bool duplicate = false;
++	if(Iid == NULL){		//	for add function use
++		while(zcfgFeObjJsonGetNextWithoutUpdate(oid, &iid, &obj) == ZCFG_SUCCESS){	
++			if(!strcmp(param, json_object_get_string(json_object_object_get(obj, key)))){	
++				json_object_put(obj);			
++				obj = NULL;			
++				strcat(replyMsg, key1);			
++				strcat(replyMsg, " is duplicate.");			
++				return ZCFG_INVALID_PARAM_VALUE;		
++			}	
++			json_object_put(obj);		
++			obj = NULL;	
++		}
++	}
++	else{					//	for edit function use, need iid
++		while(zcfgFeObjJsonGetNextWithoutUpdate(oid, &iid, &obj) == ZCFG_SUCCESS){	
+ 		if(!strcmp(param, json_object_get_string(json_object_object_get(obj, key)))){
++				for(i=0;i<6;i++){
++					if(iid.idx[i] != Iid->idx[i]){
++						duplicate = true;
++						break;
++					}
++				}
++				if(duplicate){
+ 			json_object_put(obj);
+ 			obj = NULL;
+-			strcat(replyMsg, key);
++					strcat(replyMsg, key1);			
+ 			strcat(replyMsg, " is duplicate.");
+ 			return ZCFG_INVALID_PARAM_VALUE;
+ 		}
++			}		
+ 		json_object_put(obj);
+ 		obj = NULL;
+ 	}	
++	}
+ 	return ret;
+ }
+ 

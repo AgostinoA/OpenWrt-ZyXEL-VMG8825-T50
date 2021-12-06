@@ -1,0 +1,279 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2016-02-25 15:06:11.738293321 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2016-02-25 15:10:15.606297999 +0800
+@@ -105,6 +105,10 @@
+ CFLAGS += -DZCFG_ABANDON_NO_TR181_MAPPING_PARM
+ endif
+ 
++ifeq ($(CONFIG_GENERIC_TR98_LAN_IP_ALIAS),y)
++CFLAGS += -DLANIPALIAS
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2016-02-25 15:06:11.874293324 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2016-02-25 15:07:59.378295386 +0800
+@@ -2340,6 +2340,171 @@
+ 	return ret;
+ }
+ 
++#ifdef LANIPALIAS
++// InternetGatewayDevice.LANDevice.{i}.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPAlias.
++zcfgRet_t lanIpAliasObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char ipifaceMappingName[MAX_TR181_PATHNAME] = {0};
++	char tr98LanIpIntfName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char *ptr = NULL;
++	objIndex_t ipIntfv4AddrIid;
++	rdm_IpIfaceV4Addr_t	*ipIntfv4AddrObj = NULL;
++
++	strcpy(tr98LanIpIntfName, tr98FullPathName);
++	ptr = strstr(tr98LanIpIntfName, ".X_ZYXEL_IPAlias");
++	*ptr = '\0';
++	if((ret = zcfgFe98To181MappingNameGet(tr98LanIpIntfName, ipifaceMappingName)) != ZCFG_SUCCESS){
++		ztrdbg(ZTR_DL_ERR, "%s:  %s mapping isn't existed\n", __FUNCTION__, tr98LanIpIntfName);
++		return ret;
++	}
++
++	IID_INIT(ipIntfv4AddrIid);
++	sscanf(ipifaceMappingName, "IP.Interface.%hhu", &ipIntfv4AddrIid.idx[0]);
++	ipIntfv4AddrIid.level = 1;
++	if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, NULL)) != ZCFG_SUCCESS){
++		ztrdbg(ZTR_DL_ERR, "%s: Add Instance Fail!!\n", __FUNCTION__);
++		return ret;
++	}
++
++	if((ret = zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, (void **)&ipIntfv4AddrObj)) == ZCFG_SUCCESS){
++		ipIntfv4AddrObj->X_ZYXEL_Alias = true;
++		if((ret = zcfgFeObjStructSet(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, (void *)ipIntfv4AddrObj, NULL)) != ZCFG_SUCCESS) {
++			ztrdbg(ZTR_DL_ERR, "%s: Set Ip Alias Fail\n", __FUNCTION__);
++		}
++
++		zcfgFeObjStructFree(ipIntfv4AddrObj);
++	}
++	else {
++		return ret;
++	}
++
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	*idx = ipIntfv4AddrIid.idx[0];
++#else
++	ztrdbg(ZTR_DL_DEBUG, "%s: return %d\n", __FUNCTION__, ret);
++
++	if((ret == ZCFG_SUCCESS) || (ret == ZCFG_DELAY_APPLY)) {
++		objIndex_t tr98ObjIid;
++		zcfg_name_t seqnum = 0;
++		IID_INIT(tr98ObjIid);
++		zcfgFe98NameToSeqnum((const char *)tr98LanIpIntfName, &seqnum, &tr98ObjIid);
++		tr98ObjIid.level = 2;
++		if(zcfg98To181ObjMappingAdd(e_TR98_IP_ALIAS, &tr98ObjIid, RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid) == ZCFG_SUCCESS) {
++			ztrdbg(ZTR_DL_DEBUG, "%s: Added LANDevice %hhu IPInterface %hhu X_ZYXEL_IPAlias %hhu\n", __FUNCTION__, tr98ObjIid.idx[0], tr98ObjIid.idx[1], tr98ObjIid.idx[2]);
++			*idx = tr98ObjIid.idx[2];
++		}
++	}
++	else {
++		return ret;
++	}
++#endif
++
++	return ZCFG_SUCCESS;
++}
++
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPAlias.i
++
++    Related object in TR181:
++    Device.IP.Interface.i
++    Device.IP.Interface.i.IPv4Address.i
++*/
++zcfgRet_t lanIpAliasObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char mappingPathName[MAX_TR181_PATHNAME] = {0};
++	objIndex_t ipIntfv4AddrIid;
++	struct json_object *ipIntfv4AddrJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++		ztrdbg(ZTR_DL_ERR, "98 to 181 Mapping Fail!!\n");
++		return ret;
++	}
++	else{
++		ztrdbg(ZTR_DL_DEBUG, "TR181 object %s\n", mappingPathName);
++	}
++
++	IID_INIT(ipIntfv4AddrIid);
++	ipIntfv4AddrIid.level = 2;
++	sscanf(mappingPathName, "IP.Interface.%hhu.IPv4Address.%hhu", &ipIntfv4AddrIid.idx[0], &ipIntfv4AddrIid.idx[1]);
++	if((ret = feObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, &ipIntfv4AddrJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++ 	while(paramList && paramList->name != NULL) {
++		paramValue = json_object_object_get(ipIntfv4AddrJobj, paramList->name);
++		if(paramValue) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		}
++		paramList++;
++	}
++	json_object_put(ipIntfv4AddrJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPAlias.i
++
++    Related object in TR181:
++    Device.IP.Interface.i
++    Device.IP.Interface.i.IPv4Address.i
++*/
++zcfgRet_t lanIpAliasObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char mappingPathName[MAX_TR181_PATHNAME] = {0};
++	objIndex_t ipIntfv4AddrIid;
++	struct json_object *ipIntfv4AddrJobj = NULL;
++	struct json_object *paramValue = NULL, *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++		ztrdbg(ZTR_DL_ERR, "98 to 181 Mapping Fail!!\n");
++		return ret;
++	}
++	else{
++		ztrdbg(ZTR_DL_DEBUG, "TR181 object %s\n", mappingPathName);
++	}
++
++	IID_INIT(ipIntfv4AddrIid);
++	ipIntfv4AddrIid.level = 2;
++	sscanf(mappingPathName, "IP.Interface.%hhu.IPv4Address.%hhu", &ipIntfv4AddrIid.idx[0], &ipIntfv4AddrIid.idx[1]);
++	if((ret = feObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, &ipIntfv4AddrJobj, 0)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = ipIntfv4AddrJobj;
++		ipIntfv4AddrJobj = NULL;
++		ipIntfv4AddrJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList && paramList->name != NULL) {
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue && strcmp(paramList->name, "X_ZYXEL_IfName")) {
++			json_object_object_add(ipIntfv4AddrJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		}
++		paramList++;
++	}
++
++	if(multiJobj) {
++
++	}
++	else {
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, ipIntfv4AddrJobj, NULL)) != ZCFG_SUCCESS) {
++			json_object_put(ipIntfv4AddrJobj);
++			return ret;
++		}
++		json_object_put(ipIntfv4AddrJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++#endif
+ 
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.DHCPStaticAddress.i
+ 
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2016-02-25 15:06:10.398293295 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2016-02-25 15:06:11.938293325 +0800
+@@ -2,6 +2,9 @@
+ extern tr98Parameter_t para_LanDev[];
+ extern tr98Parameter_t para_LanHostConfMgmt[];
+ extern tr98Parameter_t para_IpIntf[];
++#ifdef LANIPALIAS
++extern tr98Parameter_t para_IpAlias[];
++#endif
+ #ifdef IPV6INTERFACE_PROFILE
+ extern tr98Parameter_t para_IpIntfV6Addr[];
+ extern tr98Parameter_t para_IpIntfV6Prefix[];
+@@ -57,6 +60,13 @@
+ extern zcfgRet_t lanIpIntfObjAdd(char *tr98FullPathName, int *idx);
+ extern zcfgRet_t lanIpIntfObjDel(char *tr98FullPathName);
+ 
++#ifdef LANIPALIAS
++extern zcfgRet_t lanIpAliasObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t lanIpAliasObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++extern zcfgRet_t lanIpAliasObjAdd(char *tr98FullPathName, int *idx);
++//extern zcfgRet_t lanIpAliasObjDel(char *tr98FullPathName);
++#endif
++
+ extern zcfgRet_t lanDhcpStaticAddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDhcpStaticAddrObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ extern zcfgRet_t lanDhcpStaticAddrObjAdd(char *tr98FullPathName, int *idx);
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2016-02-25 15:06:11.726293321 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2016-02-25 15:06:11.938293325 +0800
+@@ -63,6 +63,17 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++#ifdef LANIPALIAS
++tr98Parameter_t para_IpAlias[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IPAddress", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "SubnetMask", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "AddressingType", PARAMETER_ATTR_WRITE, 8, json_type_string},
++	{ "X_ZYXEL_IfName", PARAMETER_ATTR_READONLY, 19, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++#endif
++
+ #ifdef IPV6INTERFACE_PROFILE
+ tr98Parameter_t para_IpIntfV6Addr[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-02-25 15:06:11.906293324 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-02-25 15:06:11.938293325 +0800
+@@ -79,6 +79,9 @@
+ #define TR98_LAN_DEV                  "InternetGatewayDevice.LANDevice.i"
+ #define TR98_LAN_HOST_CONF_MGMT       "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement"
+ #define TR98_IP_INTF                  "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i"
++#ifdef LANIPALIAS
++#define TR98_IP_ALIAS         "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPAlias.i"
++#endif
+ #ifdef IPV6INTERFACE_PROFILE
+ #define TR98_IP_INTF_IPV6ADDR         "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPv6Address.i"
+ #define TR98_IP_INTF_IPV6PREFIX       "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPv6Prefix.i"
+@@ -324,6 +327,9 @@
+ {TR98_LAN_DEV,                  ATTR_INDEX_CREA,para_LanDev,            lanDevObjGet,            NULL,                   lanDevObjAdd,     lanDevObjDel,    NULL},
+ {TR98_LAN_HOST_CONF_MGMT,       0,              para_LanHostConfMgmt,   lanHostConfMgmtObjGet,   lanHostConfMgmtObjSet,  NULL,             NULL,            NULL},
+ {TR98_IP_INTF,                  ATTR_INDEX_CREA,para_IpIntf,		    lanIpIntfObjGet,         lanIpIntfObjSet,        lanIpIntfObjAdd,  lanIpIntfObjDel,	NULL},
++#ifdef LANIPALIAS
++{TR98_IP_ALIAS,            ATTR_INDEX_CREA, para_IpAlias, lanIpAliasObjGet, lanIpAliasObjSet, lanIpAliasObjAdd, lanIpIntfObjDel, NULL, NULL, NULL},
++#endif
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_IP_INTF_IPV6ADDR,         ATTR_INDEX_CREA,para_IpIntfV6Addr,		lanIpIntfV6AddrObjGet,   lanIpIntfV6AddrObjSet,  lanIpIntfV6AddrObjAdd,  lanIpIntfV6AddrObjDel,	NULL},
+ {TR98_IP_INTF_IPV6PREFIX,		ATTR_INDEX_CREA,para_IpIntfV6Prefix,	lanIpIntfV6PrefixObjGet, lanIpIntfV6PrefixObjSet,lanIpIntfV6PrefixObjAdd,lanIpIntfV6PrefixObjDel, NULL},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-02-25 15:06:11.858293323 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-02-25 15:06:11.938293325 +0800
+@@ -123,6 +123,9 @@
+ {e_TR98_LAN_DEV                 , &tr98Obj[e_TR98_LAN_DEV                 -e_TR98_START]},
+ {e_TR98_LAN_HOST_CONF_MGMT      , &tr98Obj[e_TR98_LAN_HOST_CONF_MGMT      -e_TR98_START]},
+ {e_TR98_IP_INTF                 , &tr98Obj[e_TR98_IP_INTF                 -e_TR98_START]},
++#ifdef LANIPALIAS
++{e_TR98_IP_ALIAS            ,&tr98Obj[e_TR98_IP_ALIAS                 -e_TR98_START]},
++#endif
+ #ifdef IPV6INTERFACE_PROFILE
+ {e_TR98_IP_INTF_IPV6ADDR        , &tr98Obj[e_TR98_IP_INTF_IPV6ADDR        -e_TR98_START]},
+ {e_TR98_IP_INTF_IPV6PREFIX      , &tr98Obj[e_TR98_IP_INTF_IPV6PREFIX      -e_TR98_START]},

@@ -1,0 +1,466 @@
+Index: libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2018-02-23 14:11:11.090096001 +0800
++++ libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2018-02-23 14:25:46.654211200 +0800
+@@ -630,7 +630,8 @@
+ 	obj = json_object_object_get(Jobj, cnt);
+ 	while(obj != NULL){
+ 		type = json_object_get_string(json_object_object_get(obj, "type"));
+-			if(!strcmp(type, "vlangroup")) {
++			if(!strcmp(type, "vlangroup")) 
++            {
+ 			vlanvalue = json_object_get_string(json_object_object_get(obj, "vlangroup"));
+ 			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &vlanGroupIid, &vlanGroupObj) == ZCFG_SUCCESS){
+ 				if(!strcmp(vlanvalue,json_object_get_string(json_object_object_get(vlanGroupObj, "GroupName")))){
+@@ -787,19 +788,23 @@
+ 	objIndex_t BridgeFilterIid = {0};
+ 	objIndex_t VlanIid = {0};
+ 	objIndex_t EthLinkIid = {0};
+-	int index = 0, critinfolen = 0, ethidx = 0, count = 0, idx = 0, origBrRefKey = 0, reset = 0;
++	int index = 0, criteriaNum = 0, ethidx = 0, count = 0, idx = 0, origBrRefKey = 0, reset = 0;
+ 	const char *name = NULL, *wanintf = NULL, *lanintf = NULL, *type = NULL, *macvalue = NULL, *op60value = NULL, *op61value = NULL, *vlanvalue = NULL, *optionstr = NULL;
+-	char brPathName[32] = {0}, lanIntf_tmp[512] = {0}, brPath[32] = {0}, ifname[8] = {0}, cnt[4] = {0}, buf[512] = {0}, bfKey[4] = {0};
++	char brPathName[32] = {0}, lanIntf_tmp[512] = {0}, brPath[32] = {0}, ifname[8] = {0}, cnt[4] = {0}, buf[512] = {0}, bfKey[4] = {0}, preIfaceGroup[32] = {0}, preInterface[32] = {0};
+ 	char *single_lanIntf = NULL, *rest_str = NULL, *op125value = NULL;
+ 	const char *act = NULL, *wildcardenable = NULL, *origVlanName = NULL, *ptr = NULL, *tmp = NULL, *brRefKey = NULL, *cmd = NULL;
+-	bool lanIntfSet = false, wildcard = false;
++	bool lanIntfSet = false, wildcard = false, lanIntReset = false;
++
++    printf("Entering dalcmdIntrGrpEdit!\n");
+ 	if(json_object_object_get(Jobj, "critInfo"))
+ 		GUICeireriaReconstruct(Jobj, replyMsg);
+ 	if(json_object_object_get(Jobj, "type"))
+ 		CLICeireriaReconstruct(Jobj, replyMsg, method);
+ 	
++    criteriaNum = json_object_get_int(json_object_object_get(Jobj, "criteriaNum"));
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+-	if(index == 1){
++	if(index == 1)
++    {
+ 		if(replyMsg != NULL)
+ 			strcat(replyMsg, "Default rule cannot modify.");
+ 		return ZCFG_INVALID_PARAM_VALUE;
+@@ -812,26 +817,35 @@
+ 	sprintf(brPath,"Bridging.Bridge.%d",index);
+ 	sprintf(brPathName,"Bridging.Bridge.%d.Port.1",index);
+ 	
+-	if(name != NULL || wanintf != NULL){
+-		if(name != NULL){		// name edit setting
++    printf("dalcmdIntrGrpEdit: criteriaNum:%d\n", criteriaNum);
++    
++	if(name != NULL || wanintf != NULL) //update bridge name, bind wan interface
++    {
++		if(name != NULL)
++        {		// name edit setting
+ 			BridgeBrIid.level = 1;
+ 			BridgeBrIid.idx[0] = index;
+-			if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_BR, &BridgeBrIid, &BridgeBrObj) == ZCFG_SUCCESS){
++			if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_BR, &BridgeBrIid, &BridgeBrObj) == ZCFG_SUCCESS)
++            {
+ 				json_object_object_add(BridgeBrObj, "X_ZYXEL_BridgeName", json_object_new_string(name));
+-				zcfgFeObjJsonSetWithoutApply(RDM_OID_BRIDGING_BR, &BridgeBrIid, BridgeBrObj, NULL);
++                zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_BR, &BridgeBrIid, BridgeBrObj, NULL);
+ 				zcfgFeJsonObjFree(BridgeBrObj);
+ 			}
+ 		}
+-		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ETH_LINK, &EthLinkIid, &EthLinkObj) == ZCFG_SUCCESS){
+-			if(!strcmp(json_object_get_string(json_object_object_get(EthLinkObj, "LowerLayers")), brPathName)){
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ETH_LINK, &EthLinkIid, &EthLinkObj) == ZCFG_SUCCESS)
++        {
++			if(!strcmp(json_object_get_string(json_object_object_get(EthLinkObj, "LowerLayers")), brPathName))
++            {
+ 				ethidx = EthLinkIid.idx[0];
+ 				zcfgFeJsonObjFree(EthLinkObj);
+ 				break;
+ 			}
+ 			zcfgFeJsonObjFree(EthLinkObj);
+ 		}
+-		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &IpIfaceIid, &IpIfaceObj) == ZCFG_SUCCESS){
+-			if(!strcmp(ifname,json_object_get_string(json_object_object_get(IpIfaceObj, "X_ZYXEL_IfName")))){
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &IpIfaceIid, &IpIfaceObj) == ZCFG_SUCCESS)
++        {
++			if(!strcmp(ifname,json_object_get_string(json_object_object_get(IpIfaceObj, "X_ZYXEL_IfName"))))
++            {
+ 			if(wanintf != NULL)
+ 				json_object_object_add(IpIfaceObj, "X_ZYXEL_Group_WAN_IpIface", json_object_new_string(wanintf));
+ 			if(name != NULL)
+@@ -844,13 +858,17 @@
+ 		}
+ 	}
+ 
+-	if(json_object_object_get(Jobj, "lanIntf")){
++    //if only port bind setting, no criteria option.
++	if(json_object_object_get(Jobj, "lanIntf") != NULL && criteriaNum <= 0)
++    {
+ 			strcpy(lanIntf_tmp, lanintf);
+ 			single_lanIntf = strtok_r(lanIntf_tmp, ",", &rest_str);
+ 			IID_INIT(BridgeFilterIid);
+ 			IID_INIT(VlanIid);
+-			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS){
+-				if(atoi(json_object_get_string(json_object_object_get(VlanObj, "BrRefKey"))) == index){
++			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS)
++            {
++				if(atoi(json_object_get_string(json_object_object_get(VlanObj, "BrRefKey"))) == index)
++                {
+ 					json_object_object_add(VlanObj, "BrRefKey", json_object_new_string(""));
+ 					zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &VlanIid, VlanObj, NULL);
+ 					zcfgFeJsonObjFree(VlanObj);
+@@ -858,58 +876,111 @@
+ 				}
+ 				zcfgFeJsonObjFree(VlanObj);
+ 			}
+-			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS){
+-				if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")),brPath)){
++			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS)
++            {
++                //Check LAN port if not binding, let it to back bind br0.
++				if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")),brPath))
++                {
+ 				strcpy(buf, lanintf);
+ 				ptr = strtok_r(buf, ",", &tmp);
+-				while(ptr != NULL){
+-					if(!strncmp(ptr,brPath,17)){
+-						if(!strcmp(ptr,json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")))){
++                    while(ptr != NULL)
++                    {
++                        if(!strncmp(ptr,brPath,17))
++                        {
++                            if(!strcmp(ptr,json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface"))))
++                            {
++                                //filter already bind lan port.
++                                printf("dalcmdIntrGrpEdit:idx:%d, already have interface: %s, lanIntfSet:%s, bridge:%s \n",BridgeFilterIid.idx[0], ptr, lanIntfSet ? "true": "false", json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")));
++                                printf("dalcmdIntrGrpEdit:idx:%d, X_ZYXEL_PreIfaceGroup:%s\n",BridgeFilterIid.idx[0],json_object_get_string(json_object_object_get(BridgeFilterObj, "X_ZYXEL_PreIfaceGroup")));
+ 							lanIntfSet = true;
++                                printf("dalcmdIntrGrpEdit: idx %d only port bind without crit!\n",BridgeFilterIid.idx[0]);
+ 							break;
+ 						}
+ 					}
+ 					ptr = strtok_r(NULL, ",", &tmp);
+ 				}
+ 				buf[0] = '\0';
+-				if(!lanIntfSet){
++                    /* 
++                     * if lanIntf already set, then do nothing, continue parse next idx.
++                     * if lanIntf not set, and interface was empty, delete it, if not empty, set to bind br0.
++                    */
++                    if(!lanIntfSet)
++                    {
++                        printf("dalcmdIntrGrpEdit: idx:%d, lanIntf not match data model, ptr:%s, X_ZYXEL_Enable_Criteria:%s\n Bridge:%s\n",
++                                BridgeFilterIid.idx[0], ptr, json_object_get_string(json_object_object_get(BridgeFilterObj, "X_ZYXEL_Enable_Criteria")),json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")));
++                        //if already bind, and no change port, it should pass it.
+ 					json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string("Bridging.Bridge.1"));
+ 					if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")),""))
++                        {
+ 						zcfgFeObjJsonDel(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, NULL);
++                        }
+ 					else
++                        {
++                            printf("dalcmdIntrGrpEdit: idx:%d, set bridge filter, ptr:%s, X_ZYXEL_Enable_Criteria:%s\n Bridge:%s\n",
++                                BridgeFilterIid.idx[0], ptr, json_object_get_string(json_object_object_get(BridgeFilterObj, "X_ZYXEL_Enable_Criteria")),json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")));
+ 						zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
+ 				}
++                    }
+ 				lanIntfSet = false;
+ 					zcfgFeJsonObjFree(BridgeFilterObj);
+ 				}
+ 			}
+-			while(single_lanIntf != NULL){
++			while(single_lanIntf != NULL)
++            {
+ 				IID_INIT(BridgeFilterIid);
+-				while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS){
+-					if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")),single_lanIntf)){
++				while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS)
++                {
++                    strncpy(preIfaceGroup, json_object_get_string(json_object_object_get(BridgeFilterObj, "X_ZYXEL_PreIfaceGroup")), sizeof(preIfaceGroup));
++					if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")),single_lanIntf) && !strcmp(preIfaceGroup,""))
++                    {
++                        printf("dalcmdIntrGrpEdit: idx:%d, signel lanIntf, X_ZYXEL_Enable_Criteria:%s\n Bridge:%s, brPath:%s\n",
++                                BridgeFilterIid.idx[0], json_object_get_string(json_object_object_get(BridgeFilterObj, "X_ZYXEL_Enable_Criteria")),json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")), brPath);
+ 						json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string(brPath));
+ 						zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
+ 						zcfgFeJsonObjFree(BridgeFilterObj);
+ 						break;
+ 					}
++                    else if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")),single_lanIntf) && strcmp(preIfaceGroup,"") != 0)
++                    {
++                        printf("dalcmdIntrGrpEdit: idx %d signel lanIntf, and have been bind by crit!\n",BridgeFilterIid.idx[0]);
++                        sprintf(preInterface,"Bridging.Bridge.1.Port.%d",(BridgeFilterIid.idx[0]+1));
++                        json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string("Bridging.Bridge.1"));
++                        json_object_object_add(BridgeFilterObj, "X_ZYXEL_PreIfaceGroup", json_object_new_string(""));
++                        zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
++                        
++                        printf("dalcmdIntrGrpEdit: idx %d signel lanIntf, modify to port bind only!\n",BridgeFilterIid.idx[0]);
++                        json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string(brPath));
++                        json_object_object_add(BridgeFilterObj, "Interface", json_object_new_string(preInterface));
++                        zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
++                        zcfgFeJsonObjFree(BridgeFilterObj);
++                        break;
++                    }
+ 					zcfgFeJsonObjFree(BridgeFilterObj);
+ 				}
+ 				single_lanIntf = strtok_r(rest_str, ",", &rest_str);
+ 			}
+ 		}
+-	else{
++
++    if(criteriaNum > 0)
++    {
+ 		sprintf(cnt,"%d",count);
+ 		obj = json_object_object_get(Jobj, cnt);
+-		while(obj != NULL){
++		while(obj != NULL)
++        {
+ 			bfKey[0] = '\0';
+ 			type = json_object_get_string(json_object_object_get(obj, "type"));
+-			if(!strcmp(type,"vlangroup")){
++			if(!strcmp(type,"vlangroup"))
++            {
++                printf("dalcmdIntrGrpEdit: with vlangroup!\n");
+ 				act = json_object_get_string(json_object_object_get(obj, "act"));
+ 				idx = json_object_get_int(json_object_object_get(obj, "idx"));
+ 				vlanvalue = json_object_get_string(json_object_object_get(obj, "vlangroup"));
+-				if(!strcmp(act,"add")){
+-					while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS){
+-						if(!strcmp(vlanvalue,json_object_get_string(json_object_object_get(VlanObj, "GroupName")))){
++				if(!strcmp(act,"add"))
++                {
++					while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS)
++                    {
++						if(!strcmp(vlanvalue,json_object_get_string(json_object_object_get(VlanObj, "GroupName"))))
++                        {
+ 							sprintf(bfKey,"%d",index);
+ 							json_object_object_add(VlanObj, "BrRefKey", json_object_new_string(bfKey));
+ 							zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &VlanIid, VlanObj, NULL);
+@@ -918,31 +989,39 @@
+ 						}
+ 						zcfgFeJsonObjFree(VlanObj);
+ 					}
+-			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS){
+-				if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")),brPath)){
+-							if(strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")),"")){
++                    while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS)
++                    {
++                        if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")),brPath))
++                        {
++                            if(strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")),""))
++                            {
+ 					json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string("Bridging.Bridge.1"));
+ 								zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
+ 								zcfgFeJsonObjFree(BridgeFilterObj);
+ 							}
+-							else{	//for CLI edit criteria vlan
++                            else
++                            {	//for CLI edit criteria vlan
+ 						zcfgFeObjJsonDel(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, NULL);
+ 							}							
+ 						}
+ 					zcfgFeJsonObjFree(BridgeFilterObj);
+ 				}
+-
+-				}else if(!strcmp(act,"edit")){
++				}
++                else if(!strcmp(act,"edit"))
++                {
+ 					VlanIid.idx[0] = idx;
+ 					VlanIid.level = 1;
+-					if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS){
++                        if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS)
++                        {
+ 						json_object_object_add(VlanObj, "BrRefKey", json_object_new_string(""));
+ 						zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &VlanIid, VlanObj, NULL);
+ 						zcfgFeJsonObjFree(VlanObj);
+ 			}
+ 			IID_INIT(VlanIid);
+-			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS){
+-						if(!strcmp(vlanvalue,json_object_get_string(json_object_object_get(VlanObj, "GroupName")))){
++                    while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS)
++                    {
++                        if(!strcmp(vlanvalue,json_object_get_string(json_object_object_get(VlanObj, "GroupName"))))
++                        {
+ 							sprintf(bfKey,"%d",index);
+ 							json_object_object_add(VlanObj, "BrRefKey", json_object_new_string(bfKey));
+ 					zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &VlanIid, VlanObj, NULL);
+@@ -952,20 +1031,25 @@
+ 				zcfgFeJsonObjFree(VlanObj);
+ 			}
+ 		}
+-				else if(!strcmp(act,"delete")){
++				else if(!strcmp(act,"delete"))
++                {
+ 					VlanIid.idx[0] = idx;
+ 					VlanIid.level = 1;
+-					if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS){
++					if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS)
++                    {
+ 						json_object_object_add(VlanObj, "BrRefKey", json_object_new_string(""));
+ 						zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &VlanIid, VlanObj, NULL);
+ 						zcfgFeJsonObjFree(VlanObj);
+ 					}
+ 				}
+ 				else{	// for CLI change criteria, original criteria exist vlan group rule, new criteria do not have. Rex Chen
+-			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS){
++                    while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanObj) == ZCFG_SUCCESS)
++                    {
+ 						brRefKey = json_object_get_string(json_object_object_get(VlanObj, "BrRefKey"));
+-						if(strcmp(brRefKey, "")){
+-							if(index == atoi(brRefKey)){
++                            if(strcmp(brRefKey, ""))
++                            {
++                                if(index == atoi(brRefKey))
++                                {
+ 					json_object_object_add(VlanObj, "BrRefKey", json_object_new_string(""));
+ 					zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &VlanIid, VlanObj, NULL);
+ 					zcfgFeJsonObjFree(VlanObj);
+@@ -975,9 +1059,10 @@
+ 				zcfgFeJsonObjFree(VlanObj);
+ 			}
+ 				}
+-
+-			}
+-			else{
++			}//if(!strcmp(type,"vlangroup"))
++			else
++            {
++                printf("dalcmdIntrGrpEdit: without vlangroup!\n");
+ 				act = json_object_get_string(json_object_object_get(obj, "act"));
+ 				idx = json_object_get_int(json_object_object_get(obj, "idx"));
+ 				macvalue = json_object_get_string(json_object_object_get(obj, "mac_value"));
+@@ -988,7 +1073,8 @@
+ 				if(!strcmp(cmd, "GUI")){
+ 					wildcardenable = json_object_get_string(json_object_object_get(obj, "wildcardEnable"));
+ 				}
+-				else if(!strcmp(cmd ,"CLI")){
++				else if(!strcmp(cmd ,"CLI"))
++                {
+ 					wildcard = json_object_get_boolean(json_object_object_get(obj, "wildcardEnable"));
+ 					if(wildcard)
+ 						wildcardenable = "Y";
+@@ -996,26 +1082,34 @@
+ 						wildcardenable = "N";
+ 				}
+ 				
++				// IID_INIT(BridgeFilterIid);
++                //first, it will reset already bind port, back to bind br0.
++				// if(reset == 0)
++                // {
++					// if(strcmp(act,"delete")){
++                        // while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS)
++                        // {
++                            // if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")),brPath)
++                                // && !strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "X_ZYXEL_PreIfaceGroup")),""))
++                            // {
++                                // json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string("Bridging.Bridge.1"));
++                                // zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
++                                // zcfgFeJsonObjFree(BridgeFilterObj);
++                            // }
++                            // zcfgFeJsonObjFree(BridgeFilterObj);
++                        // }
++					// }
++                // }
+ 				IID_INIT(BridgeFilterIid);
+-				if(reset == 0){
+-					if(strcmp(act,"delete")){
+-			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS){
+-				if(!strcmp(json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge")),brPath)){
+-					json_object_object_add(BridgeFilterObj, "Bridge", json_object_new_string("Bridging.Bridge.1"));
+-						zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
+-					zcfgFeJsonObjFree(BridgeFilterObj);
+-				}
+-							zcfgFeJsonObjFree(BridgeFilterObj);
+-						}
+-					}
+-			}
++				if(!strcmp(act,"add"))
++                {
+ 			IID_INIT(BridgeFilterIid);
+-				if(!strcmp(act,"add")){
+-					IID_INIT(BridgeFilterIid);
+-			if((ret = zcfgFeObjJsonAdd(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, NULL)) != ZCFG_SUCCESS) {
++                    if((ret = zcfgFeObjJsonAdd(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, NULL)) != ZCFG_SUCCESS) 
++                    {
+ 				return ret;
+ 			}
+-			if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj)) != ZCFG_SUCCESS) {
++                    if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj)) != ZCFG_SUCCESS) 
++                    {
+ 				return ret;
+ 			}
+ 					if(cmd != NULL){
+@@ -1033,30 +1127,59 @@
+ 						}
+ 					}
+ 					dalcmdcirteriaToObject(BridgeFilterObj, brPath, type, macvalue, op60value, op61value, op125value, wildcardenable);
+-					zcfgFeObjJsonSetWithoutApply(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
++                    zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
+ 					zcfgFeJsonObjFree(BridgeFilterObj);
+ 					reset++;
+ 				}	
+-				else if(!strcmp(act,"edit")){
++				else if(!strcmp(act,"edit"))
++                {
+ 					BridgeFilterIid.level = 1;
+ 					BridgeFilterIid.idx[0] = idx;
+-					if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj)) != ZCFG_SUCCESS) {
++					if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj)) != ZCFG_SUCCESS)
++                    {
+ 						return ret;
+ 					}
++                    printf("dalcmdIntrGrpEdit: brPath:%s\n", brPath);
+ 					dalcmdcirteriaToObject(BridgeFilterObj, brPath, type, macvalue, op60value, op61value, op125value, wildcardenable);
+-			zcfgFeObjJsonSetWithoutApply(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
++                    zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, BridgeFilterObj, NULL);
+ 			zcfgFeJsonObjFree(BridgeFilterObj);
+ 					reset++;
+ 
+ 				}
+-				else if(!strcmp(act,"delete")){
++				else if(!strcmp(act,"delete"))
++                {
+ 					BridgeFilterIid.level = 1;
+ 					BridgeFilterIid.idx[0] = idx;
+ 					ret = zcfgFeObjJsonDel(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, NULL);
+ 				}
+-				else{
+-					while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS){
+-						if(!strcmp(brPath,json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge"))) && !strcmp("",json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface")))){
++				else if(!strcmp(act, "re_add"))
++                {
++                    /*
++                     * If only change port bind to option bind, lanIntf will be null,
++                     * also same as only set option bind.
++                    */
++                    if((ret = zcfgFeDalIntrGrpDelete(Jobj, NULL)) == ZCFG_SUCCESS)
++                    {
++                        if((ret = dalcmdIntrGrpAdd(Jobj, replyMsg)) == ZCFG_SUCCESS)
++                        {
++                            printf("dalcmdIntrGrpEdit: SUCCESS Delete rule, and re-add one!\n");
++                        }
++                        else
++                        {
++                            printf("dalcmdIntrGrpEdit:SUCCESS Delete rule, but FAILED re-add one!\n");
++                        }
++                    }
++                    else
++                    {
++                        printf("dalcmdIntrGrpEdit:FAILED Delete rule!\n");
++                    }
++                }
++                else
++                {
++                    while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, &BridgeFilterObj) == ZCFG_SUCCESS)
++                    {
++                        if(!strcmp(brPath,json_object_get_string(json_object_object_get(BridgeFilterObj, "Bridge"))) && !strcmp("",json_object_get_string(json_object_object_get(BridgeFilterObj, "Interface"))))
++                        {
+ 							zcfgFeObjJsonDel(RDM_OID_BRIDGING_FILTER, &BridgeFilterIid, NULL);
+ 						}
+ 						zcfgFeJsonObjFree(BridgeFilterObj);
+@@ -1066,7 +1189,7 @@
+ 			count++;
+ 			sprintf(cnt,"%d",count);
+ 			obj = json_object_object_get(Jobj, cnt);
+-		}
++		}//while(obj != NULL)
+ 	}
+ 	return ret;
+ }

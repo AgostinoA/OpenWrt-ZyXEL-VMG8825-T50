@@ -1,0 +1,73 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2018-03-21 14:04:13.937170645 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2018-03-21 13:51:03.859371300 +0800
+@@ -465,27 +465,64 @@
+ #else
+ 	char tr181Name[32] = {0};
+ 	char tr98TmpName[32] = {0};
+-	char mappingPathName[32] = {0};
+ 	char higherLayerPath[32] = {0};
+ 	char *ptr = NULL;
+ 	uint32_t hostNum = 0;
+ 	rdm_HostsHost_t *stHost = NULL;
+ #endif
++	char mappingPathName[32] = {0};
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
+ 
+ #if MODIFY_HOSTS_AND_HOST_FUN // modify 20150809
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_HOSTS, &objIid, &hostsObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	struct json_object *tr181LanDevJobj = NULL;
++	int hostNumOfEntries = 0;
++	char tr98LanDevPath[256+1] = {0};
++	strcpy(tr98LanDevPath, tr98FullPathName);
++	char *lanDev = NULL;
++	if((lanDev = strstr(tr98LanDevPath, ".Hosts"))){
++		*lanDev = '\0';
++	}else{
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	if(zcfgFe98To181MappingNameGet(tr98LanDevPath, mappingPathName) != ZCFG_SUCCESS){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("%s: tr181 mapping, %s\n", __FUNCTION__, mappingPathName);
++
++	bool running = true;
+ 	IID_INIT(objIid);
+-	if((ret = feObjJsonGet(RDM_OID_HOSTS, &objIid, &hostsObj, updateFlag)) != ZCFG_SUCCESS){
+-		return ret;
++	while(running && (zcfgFeObjJsonGetNext(RDM_OID_LAN_DEV, &objIid, &tr181LanDevJobj) == ZCFG_SUCCESS)){
++		char *linkIfaceStr = json_object_get_string(json_object_object_get(tr181LanDevJobj, "LinkInterface"));
++		if(linkIfaceStr && strstr(linkIfaceStr, mappingPathName)){
++			hostNumOfEntries = json_object_get_int(json_object_object_get(tr181LanDevJobj, "HostNumberOfEntries"));
++			running = false;
++		}
++		json_object_put(tr181LanDevJobj);
+ 	}
+ 
+ 	/*fill up tr98 object from related tr181 objects*/
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL){
++#ifdef ZYXEL_ELIMINATE_DHCP_LEASE
+ 		if(!strcmp(paramList->name, "X_ZYXEL_DeleteAllLease")) {
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(false));
++			//json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(false));
++			paramValue = hostsObj ? json_object_object_get(hostsObj, paramList->name) : NULL;
++			json_object_object_add(*tr98Jobj, paramList->name, paramValue ? JSON_OBJ_COPY(paramValue) : json_object_new_boolean(false));
++			paramList++;
++			continue;
++		}else
++#endif
++		if(!strcmp(paramList->name, "HostNumberOfEntries")){
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(hostNumOfEntries));
+ 			paramList++;
+ 			continue;
+ 		}

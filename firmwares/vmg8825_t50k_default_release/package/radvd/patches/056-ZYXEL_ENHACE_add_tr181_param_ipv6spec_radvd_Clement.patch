@@ -1,0 +1,84 @@
+Index: radvd-1.8/send.c
+===================================================================
+--- radvd-1.8.orig/send.c	2017-10-22 18:40:14.380622911 +0800
++++ radvd-1.8/send.c	2017-10-23 10:04:16.672348400 +0800
+@@ -496,6 +496,12 @@
+ 	radvert->nd_ra_flags_reserved   |=
+ 		(iface->AdvDefaultPreference << ND_OPT_RI_PRF_SHIFT) & ND_OPT_RI_PRF_MASK;
+ 
++	/*add AdvNDProxyFlag*//*clement*/
++	if(access("/var/advNDproxyFlag", F_OK)==0)
++	{
++		radvert->nd_ra_flags_reserved  |= 0x4;
++	}
++
+ 	radvert->nd_ra_reachable  = htonl(iface->AdvReachableTime);
+ 	radvert->nd_ra_retransmit = htonl(iface->AdvRetransTimer);
+ 
+@@ -747,6 +753,66 @@
+ 		memcpy(buff + buff_dest, iface->if_hwaddr, i);
+ 	}
+ 
++	/* add ra rdm option*/ /*clement*/
++	FILE *pFile;
++	uint8_t hex;
++	char buf[512];
++	int id1,id2,tag=0,enable=0;
++	int ii=0;
++	char inface[33];
++	char value[257];
++	/* open file*/
++	pFile = fopen("/tmp/ra_opt","r");
++	if( pFile != NULL )
++	{
++		/* add value to buff*/
++		while(fgets(buf,sizeof(buf),pFile) != NULL)
++		{
++			memset(value, 0, sizeof(value));
++			sscanf(buf,"%d %d %s %d %s %d\n",&id1,&id2,inface,&tag,value,&enable);
++			//printf("id1=%d, id2=%d, inface=%s, tag=%d, value=%s, enable=%d\n",id1,id2,inface,tag,value,enable);
++			if(!strcmp(inface, iface->Name))
++			{
++				if(enable)
++				{
++					int lenth=strlen(value);;
++					//printf("lenth=%d\n",lenth);
++					uint8_t *ucp;
++					ucp = (uint8_t *) (buff + len);
++					send_ra_inc_len(&len, 2 * sizeof(uint8_t));
++					switch(tag)
++					{
++						case ND_OPT_SOURCE_LINKADDR:
++							*ucp++ = ND_OPT_SOURCE_LINKADDR;
++							break;
++						case ND_OPT_TARGET_LINKADDR:
++							*ucp++ = ND_OPT_TARGET_LINKADDR;
++							break;
++						case ND_OPT_PREFIX_INFORMATION:
++							*ucp++ = ND_OPT_PREFIX_INFORMATION;
++							break;
++						case ND_OPT_REDIRECTED_HEADER:
++							*ucp++ = ND_OPT_REDIRECTED_HEADER;
++							break;
++						default:
++							break;
++					}
++					*ucp++ = (uint8_t)(((lenth/2)+2)/8);
++
++					for(ii=0;ii<lenth;ii=ii+2)
++					{
++						sscanf(value+ii, "%02hhx",&hex);
++						*ucp++ = hex;
++					}
++					send_ra_inc_len(&len, (lenth/2));
++				}
++			}
++		}
++
++		/* close file*/
++		fclose(pFile);
++	}
++
+ 	/*
+ 	 * Mobile IPv6 ext: Advertisement Interval Option to support
+ 	 * movement detection of mobile nodes

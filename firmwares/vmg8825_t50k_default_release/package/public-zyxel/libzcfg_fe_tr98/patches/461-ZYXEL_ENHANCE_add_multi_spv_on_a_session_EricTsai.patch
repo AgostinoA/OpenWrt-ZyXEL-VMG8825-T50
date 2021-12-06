@@ -1,0 +1,216 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-06-08 09:39:12.361201771 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-06-08 09:36:48.446393700 +0800
+@@ -40,6 +40,7 @@
+ 
+ #ifdef ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
+ static struct json_object *sessMultiObjSet = NULL;
++static struct json_object *sessTr98SpvObj = NULL;
+ #endif
+ int volatile wanDeviceInstanceNum = 0;
+ bool StaticWanDevOption = false;
+@@ -648,14 +649,20 @@
+ // utilize session MultiObjSet, and it ought to apply multiobjset on session complete
+ struct json_object *zcfgFeSessMultiObjSetUtilize(struct json_object *multiobj)
+ {
++#if 0
+ 	struct json_object *multiObjSet = zcfgFeSessMultiObjSetRetrieve();
+ 	if(!multiObjSet){
+ 		multiObjSet = json_object_new_object();
+ 		sessMultiObjSet = multiObjSet;
+ 	}
+ 	json_object_object_add(sessMultiObjSet, "applyonsesscomp", json_object_new_boolean(true));
+-	multiobj = NULL;
++
++	json_object_put(multiobj);
+ 	return sessMultiObjSet;
++#endif
++	json_object_object_add(multiobj, "applyonsesscomp", json_object_new_boolean(true));
++
++	return multiobj;
+ }
+ #endif //ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
+ 
+@@ -1303,6 +1310,151 @@
+ 	json_object_put(parmList);
+ }
+ 
++struct json_object *zcfgFeSessionTr98SpvObjRetrieve()
++{
++	return sessTr98SpvObj;
++}
++
++void zcfgFeSessionTr98SpvObjSet(struct json_object *tr98SpvObj)
++{
++	sessTr98SpvObj = tr98SpvObj;
++}
++
++zcfgRet_t zcfgFeSessionTr98SpvObjectClear()
++{
++	json_object_put(sessTr98SpvObj);
++	sessTr98SpvObj = NULL;
++}
++
++
++struct json_object *zcfgFeNewTr98SpvObject()
++{
++	struct json_object *tr98SpvObj = json_object_new_array();
++
++	return tr98SpvObj;
++}
++
++zcfgRet_t zcfgFeAddTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath, struct json_object *obj, struct json_object *spv)
++{
++	struct json_object *arrayObj;
++	int n = 0, arrayLength;
++
++	if(!tr98SpvObj || !objpath || !obj)
++		return ZCFG_INTERNAL_ERROR;
++
++	ztrdbg(ZTR_DL_INFO,  "%s: %s\n", __FUNCTION__, objpath);
++
++	arrayLength = json_object_array_length(tr98SpvObj);
++
++	arrayObj = json_object_new_object();
++	json_object_object_add(arrayObj, "name", json_object_new_string(objpath));
++	json_object_object_add(arrayObj, "obj", obj);
++	json_object_object_add(arrayObj, "spv", spv);
++
++	n = arrayLength;
++	json_object_array_put_idx(tr98SpvObj, n, arrayObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFeDeleteTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath)
++{
++	struct json_object *arrayObj;
++	int objseq = -1, arrayLength, n = 0;
++	const char *arrayObjPath;
++
++	if(!tr98SpvObj || !objpath)
++		return ZCFG_INTERNAL_ERROR;
++
++	ztrdbg(ZTR_DL_INFO,  "%s: %s\n", __FUNCTION__, objpath);
++
++	arrayLength = json_object_array_length(tr98SpvObj);
++
++	while(n != arrayLength && (objseq == -1)){
++
++		arrayObj = json_object_array_get_idx(tr98SpvObj, n);
++		if(!arrayObj)
++			continue;
++
++		arrayObjPath = json_object_get_string(json_object_object_get(arrayObj, "name"));
++		if(arrayObjPath && !strcmp(arrayObjPath, objpath))
++			objseq = n;
++
++		n++;
++	}
++
++	if(objseq >= 0)
++		json_object_array_delete_idx(tr98SpvObj, objseq);
++
++	return ZCFG_SUCCESS;
++}
++
++struct json_object *zcfgFeRetrieveTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath, struct json_object **spv)
++{
++	struct json_object *arrayObj;
++	struct json_object *obj = NULL;
++	int arrayLength, n = 0;
++	const char *arrayObjPath;
++
++	if(!tr98SpvObj || !objpath)
++		return NULL;
++
++	ztrdbg(ZTR_DL_INFO,  "%s: %s\n", __FUNCTION__, objpath);
++
++	arrayLength = json_object_array_length(tr98SpvObj);
++
++	while(n != arrayLength){
++
++		arrayObj = json_object_array_get_idx(tr98SpvObj, n);
++		if(!arrayObj)
++			continue;
++
++		arrayObjPath = json_object_get_string(json_object_object_get(arrayObj, "name"));
++		if(arrayObjPath && !strcmp(arrayObjPath, objpath)){
++			obj = json_object_object_get(arrayObj, "obj");
++			if(spv)
++				*spv = json_object_object_get(arrayObj, "spv");
++			return obj;
++		}
++		n++;
++	}
++
++	return obj;
++}
++
++zcfgRet_t zcfgFeTr98SpvObjectAppendReplace(struct json_object *tr98SpvObj, struct json_object *appendSpvObj)
++{
++	struct json_object *arrayObj;
++	struct json_object *obj = NULL, *spv = NULL;
++	int arrayLength, n = 0;
++	const char *arrayObjPath;
++
++	if(!tr98SpvObj || !appendSpvObj)
++		return ZCFG_INTERNAL_ERROR;
++
++	arrayLength = json_object_array_length(appendSpvObj);
++
++	ztrdbg(ZTR_DL_INFO,  "%s: appendSpvObj n=%d\n", __FUNCTION__, arrayLength);
++
++	while(n != arrayLength){
++		arrayObj = json_object_array_get_idx(appendSpvObj, n);
++		if(!arrayObj)
++			continue;
++
++		arrayObjPath = json_object_get_string(json_object_object_get(arrayObj, "name"));
++		if(arrayObjPath){
++			zcfgFeDeleteTr98SpvObject(tr98SpvObj, arrayObjPath);
++
++			obj = json_object_object_get(arrayObj, "obj");
++			spv = json_object_object_get(arrayObj, "spv");
++			zcfgFeAddTr98SpvObject(tr98SpvObj, arrayObjPath, JSON_OBJ_COPY(obj), JSON_OBJ_COPY(spv));
++		}
++		n++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t zcfgFe98StaticNameTableInit(void)
+ {
+ 	int maxTableEntries = e_TR98_LAST;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-06-08 09:39:12.281201770 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-06-08 09:35:47.294893700 +0800
+@@ -131,7 +131,7 @@
+ 	} while(0)
+ 
+ #define MSG_EMPTY(msg) ((msg != NULL && msg[0] != '\0') ? msg : "(empty)")
+-
++
+ 
+ #define TRANS_WANIPIFACE_98TO181   1
+ #define TRANS_WANIPIFACE_181TO98   2
+@@ -248,6 +248,16 @@
+ #define zcfgTr98RetrieveParmGurdObj(n) NULL
+ #endif
+ 
++struct json_object *zcfgFeSessionTr98SpvObjRetrieve();
++void zcfgFeSessionTr98SpvObjSet(struct json_object *);
++zcfgRet_t zcfgFeSessionTr98SpvObjectClear();
++
++struct json_object *zcfgFeNewTr98SpvObject();
++zcfgRet_t zcfgFeAddTr98SpvObject(struct json_object *, const char *, struct json_object *, struct json_object *);
++zcfgRet_t zcfgFeDeleteTr98SpvObject(struct json_object *, const char *);
++struct json_object *zcfgFeRetrieveTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath, struct json_object **);
++zcfgRet_t zcfgFeTr98SpvObjectAppendReplace(struct json_object *, struct json_object *);
++
+ struct json_object *zcfgFe98ParamGuardInit(const char *, void *);
+ zcfgRet_t zcfgFe98ParamGuard(struct json_object *, const char *, struct json_object *);
+ void zcfgFe98ParamGuardRelease(struct json_object *);

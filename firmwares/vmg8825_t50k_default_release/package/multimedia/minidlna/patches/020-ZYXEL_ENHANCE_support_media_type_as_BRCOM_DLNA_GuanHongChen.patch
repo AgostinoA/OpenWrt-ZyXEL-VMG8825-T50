@@ -1,0 +1,448 @@
+Index: minidlna-1.0.25/metadata.c
+===================================================================
+--- minidlna-1.0.25.orig/metadata.c	2016-10-14 17:16:01.789870771 +0800
++++ minidlna-1.0.25/metadata.c	2016-10-13 15:58:12.066331300 +0800
+@@ -533,8 +533,10 @@
+ 	return;
+ }
+ 
+-sqlite_int64
+-GetImageMetadata(const char * path, char * name)
++#define BE32(b) (*(b)<<24) | (*((b)+1)<<16) | (*((b)+2)<<8) | *((b)+3)
++
++static int64_t
++_get_jpeg_metadata(const char * path, char * name)
+ {
+ 	ExifData *ed;
+ 	ExifEntry *e = NULL;
+@@ -708,6 +710,293 @@
+ 	return ret;
+ }
+ 
++static uint8_t *
++_png_readchunk (FILE *file, size_t size)
++{
++ 	uint8_t *buf = malloc (size);
++ 
++ 	if (buf == (uint8_t *)NULL)
++ 		return NULL;
++ 
++ 	if (fread (buf, 1, size, file) != size)
++ 	{
++ 		free (buf);
++ 		return NULL;
++ 	}
++ 	/* seek past the checksum */
++ 	if (fseek (file, 4, SEEK_CUR))
++ 	{
++ 		free (buf);
++ 		return NULL;
++ 	}
++ 	return buf;
++}
++
++static int64_t
++_get_png_metadata (const char *path, char *name)
++{
++ 	FILE *file;
++ 	uint32_t width=0, height=0;
++ 	int thumb=0;
++ 	int got_header = 0;
++ 	struct stat statbuf;
++ 	int64_t ret;
++ 	metadata_t m;
++ 	memset(&m, '\0', sizeof(metadata_t));
++ 	uint8_t tagbuf[8];
++ 	uint32_t free_flags = 0xFFFFFFFF;
++ 
++ 	if ( stat(path, &statbuf) != 0 )
++ 		return 0;
++ 	strip_ext(name);
++ 
++ 	if ((file = fopen (path, "rb")) == (FILE *)NULL)
++ 	{
++ 		DPRINTF (E_ERROR, L_METADATA, "Error opening \"%s\": %s\n",
++ 				path, strerror (errno));
++ 		return 0;
++ 	}
++ 
++ 	if (fread (tagbuf, 1, 8, file) != 8)
++ 	{
++ 		fclose (file);
++ 		return 0;
++ 	}
++ 
++ 	if (memcmp (tagbuf, "\x89PNG\x0d\x0a\x1a\x0a", 8))
++ 	{
++ 		DPRINTF (E_WARN, L_METADATA,
++ 				"\"%s\" not a PNG file.\n", path);
++ 		fclose (file);
++ 		return 0;
++ 	}
++ 
++ 	/* Go through the chunks */
++ 
++ 	for (;;)
++ 	{
++ 		int32_t chunksize;
++ 		char *chunkname[5];
++ 		uint8_t *buf;
++ 
++ 		if ((fread (tagbuf, 1, 8, file)) != 8)
++ 		{
++ 			DPRINTF (E_WARN, L_METADATA,
++ 					"%s: Premature EOF.\n", path);
++ 			fclose (file);
++ 			free_metadata(&m, free_flags);
++ 			return 0;
++ 		}
++ 		chunksize = BE32 (&tagbuf[0]);
++ 		memcpy (chunkname, &tagbuf[4], 4);
++ 		chunkname[4] = '\x00';
++ 
++ 		if (!memcmp (&tagbuf[4], "IEND", 4))
++ 		{
++ 			break;
++ 		}
++ 		else if (chunksize <= 0)
++ 		{
++ 			if (fseek (file, 4, SEEK_CUR))
++ 			{
++ 				DPRINTF (E_WARN, L_METADATA,
++ 						"%s: Seek error.\n", path);
++ 				fclose (file);
++ 				free_metadata(&m, free_flags);
++ 				return 0;
++ 			}
++ 			continue;
++ 		}
++ 		else if (!memcmp (&tagbuf[4], "IHDR", 4)) {
++ 			if ((buf = _png_readchunk (file, chunksize)) == NULL)
++ 			{
++ 				fclose (file);
++ 				free_metadata(&m, free_flags);
++ 				return 0;
++ 			}
++ 			got_header = 1;
++ 
++ 			/* width and height are 32-bit BE starting at offset 0 */
++ 			width = BE32 (&buf[0]);
++ 			height = BE32 (&buf[4]);
++ 			free (buf);
++ 			continue;
++ 		}
++ 		else if (!memcmp (&tagbuf[4], "tIME", 4))
++ 		{
++ 			if ((buf = _png_readchunk (file, chunksize)) == NULL)
++ 			{
++ 				fclose (file);
++ 				free_metadata(&m, free_flags);
++ 				return 0;
++ 			}
++ 			if (m.date)
++ 				free (m.date);
++ 
++ 			asprintf (&m.date, "%04d-%02d-%02dT%02d:%02d:%02d",
++ 					(int)(buf[0]<<8 | buf[1]),
++ 					(int)buf[2], (int)buf[3],
++ 					(int)buf[4], (int)buf[5], (int)buf[6]);
++ 			free (buf);
++ 			continue;
++ 		}
++ 		else if (!memcmp (&tagbuf[4], "tEXt", 4) || 
++ 				!memcmp (&tagbuf[4], "iTXt", 4))
++ 		{
++ 			int international = !memcmp (&tagbuf[4], "iTXt", 4),
++ 					remaining = chunksize;
++ 			char *keyword, *value;
++ 			uint8_t *textp;
++ 			int l;
++ 
++ 			if ((buf = _png_readchunk (file, chunksize)) == NULL)
++ 			{
++ 				fclose (file);
++ 				free_metadata(&m, free_flags);
++ 				return 0;
++ 			}
++ 
++ 			textp = buf;
++ 			keyword = (char *)buf;
++ 			l = strlen (keyword) + 1;
++ 			textp += l;
++ 			if ((remaining -= l) <= 0)
++ 				goto textdone;
++ 
++ 			if (international)
++ 			{
++ 				char *lang;
++ 
++ 				if (*textp)
++ 					/* compressed */
++ 					goto textdone;
++ 
++ 				textp += 2;
++ 				if ((remaining -= 2) <= 0)
++ 					goto textdone;
++ 
++ 				/* language */
++ 				lang = (char *)textp;
++ 				l = strlen (lang) + 1;
++ 				textp += l;
++ 				if ((remaining -= l) <= 0)
++ 					goto textdone;
++ 
++ 				/* translated keyword */
++ 				l = strlen ((char *)textp) + 1;
++ 				textp += l;
++ 				if ((remaining -= l) <= 0)
++ 					goto textdone;
++ 			}
++ 
++ 			/* whatever's left is the value */
++ 			if ((value = malloc (remaining + 1)) == (char *)NULL)
++ 			{
++ 				DPRINTF (E_ERROR, L_METADATA, "Allocation error.\n");
++ 				free (buf);
++ 				fclose (file);
++ 				free_metadata(&m, free_flags);
++ 				return 0;
++ 			}
++ 
++ 			memcpy (value, textp, remaining);
++ 			value[remaining] = '\0';
++ 
++ 			if (!strcmp (keyword, "Title"))
++ 			{
++ 				if (m.title)
++ 					free (m.title);
++ 				m.title = value;
++ 			}
++ 			else if (!strcmp (keyword, "Author"))
++ 			{
++ 				if (m.creator)
++ 					free (m.creator);
++ 				m.creator = value;
++ 			}
++ 			else
++ 			{
++ 				free (value);
++ 			}
++ 
++ textdone:
++ 			free (buf);
++ 		}
++ 		else
++ 		{
++ 			/* move on to the next chunk */
++ 			if (fseek (file, chunksize + 4, SEEK_CUR))
++ 			{
++ 				DPRINTF (E_WARN, L_METADATA,
++ 						"%s: Seek error.\n", path);
++ 				fclose (file);
++ 				free_metadata(&m, free_flags);
++ 				return 0;
++ 			}
++ 		}
++ 	}
++ 	fclose (file);
++ 
++ 	if (!got_header)
++ 	{
++ 		DPRINTF (E_WARN, L_METADATA,
++ 				"%s: No PNG header.\n", path);
++ 		free_metadata (&m, free_flags);
++ 		return 0;
++ 	}
++ 
++ 	asprintf(&m.resolution, "%dx%d", (int)width, (int)height);
++ 	m.rotation = 0;
++ 	thumb = 0;
++ 	m.dlna_pn = NULL;
++ 	m.mime = strdup("image/png");
++ 
++ 	if (!m.title)
++ 		m.title = strdup (name);
++ 
++ 	//DPRINTF (E_MAXDEBUG, L_METADATA,
++ 	//		"Processed \"%s\":\n  Name: %s\n  Resolution: %s\n",
++ 	//		path, name, m.resolution);
++ 
++ 	ret = sql_exec(db, "INSERT into DETAILS"
++ 	                   " (PATH, TITLE, SIZE, TIMESTAMP, DATE, RESOLUTION,"
++ 	                    " ROTATION, THUMBNAIL, CREATOR, DLNA_PN, MIME) "
++ 	                   "VALUES"
++ 	                   " (%Q, '%q', %lld, %lld, %Q, %Q, %u, %d, %Q, %Q, %Q);",
++ 	                   path, m.title, (long long)statbuf.st_size,
++ 					   (long long)statbuf.st_mtime, m.date, m.resolution,
++ 					   m.rotation, thumb, m.creator, m.dlna_pn, m.mime);
++ 	if( ret != SQLITE_OK )
++ 	{
++ 		DPRINTF(E_ERROR, L_METADATA, "Error inserting details for '%s'!\n", path);
++ 		ret = 0;
++ 	}
++ 	else
++ 	{
++ 		ret = sqlite3_last_insert_rowid(db);
++ 	}
++ 	free_metadata(&m, FLAG_MIME | FLAG_RESOLUTION);
++ 
++ 	return ret;
++}
++ 
++ 
++sqlite_int64
++GetImageMetadata(const char *path, char *name)
++{
++ 	if (ends_with (path, ".jpg") || ends_with (path, ".jpeg"))
++ 	{
++ 		return _get_jpeg_metadata (path, name);
++ 	}
++ 	else if (ends_with (path, ".png"))
++ 	{
++ 		return _get_png_metadata (path, name);
++ 	}
++ 	else
++ 		return 0;
++}
++
++
+ sqlite_int64
+ GetVideoMetadata(const char * path, char * name)
+ {
+@@ -917,6 +1206,12 @@
+ 			asprintf(&m.mime, "video/x-matroska");
+ 		else if( strcmp(ctx->iformat->name, "flv") == 0 )
+ 			asprintf(&m.mime, "video/x-flv");
++		else if( strcmp(ctx->iformat->name, "rm") == 0 || strcmp(ctx->iformat->name, "rmvb") == 0 )
++    		asprintf(&m.mime, "video/x-pn-realvideo");
++		else if( strcmp(ctx->iformat->name, "vob") == 0 )
++    		asprintf(&m.mime, "video/dvd");
++		else if( strcmp(ctx->iformat->name, "m1v") == 0 || strcmp(ctx->iformat->name, "m2v") == 0 )
++    		asprintf(&m.mime, "video/mpeg");
+ 		if( m.mime )
+ 			goto video_no_dlna;
+ 
+Index: minidlna-1.0.25/metadata.h
+===================================================================
+--- minidlna-1.0.25.orig/metadata.h	2012-01-22 08:28:03.000000000 +0800
++++ minidlna-1.0.25/metadata.h	2016-10-13 14:25:05.194408800 +0800
+@@ -97,6 +97,17 @@
+ sqlite_int64
+ GetImageMetadata(const char * path, char * name);
+ 
++static int64_t
++_get_png_metadata(const char * path, char * name);
++
++static uint8_t *
++_png_readchunk(FILE *file, size_t size);
++
++static int64_t
++_get_jpeg_metadata(const char * path, char * name);
++
++
++
+ sqlite_int64
+ GetVideoMetadata(const char * path, char * name);
+ 
+Index: minidlna-1.0.25/upnpdescstrings.h
+===================================================================
+--- minidlna-1.0.25.orig/upnpdescstrings.h	2010-11-12 07:48:13.000000000 +0800
++++ minidlna-1.0.25/upnpdescstrings.h	2016-10-14 16:04:32.938109300 +0800
+@@ -32,6 +32,7 @@
+ #include "config.h"
+ 
+ /* strings used in the root device xml description */
++/*
+ #ifdef NETGEAR
+  #define ROOTDEV_MANUFACTURERURL	"http://www.netgear.com/"
+  #define ROOTDEV_MANUFACTURER		"NETGEAR"
+@@ -49,5 +50,11 @@
+  #define ROOTDEV_MODELDESCRIPTION	"MiniDLNA on " OS_NAME
+  #define ROOTDEV_MODELURL		OS_URL
+ #endif
++*/
++#define ROOTDEV_MANUFACTURERURL    "http://www.zyxel.com"
++#define ROOTDEV_MANUFACTURER	   "ZyXEL Corporation."
++#define ROOTDEV_MODELNAME	   "Windows Media Connect compatible (MiniDLNA)"
++#define ROOTDEV_MODELDESCRIPTION   "ZyXEL Digital Media Server Ver 2.1.2"
++#define ROOTDEV_MODELURL	   "http://www.zyxel.com"
+ 
+ #endif
+Index: minidlna-1.0.25/upnpglobalvars.h
+===================================================================
+--- minidlna-1.0.25.orig/upnpglobalvars.h	2012-07-14 07:31:17.000000000 +0800
++++ minidlna-1.0.25/upnpglobalvars.h	2016-10-13 17:51:28.766370300 +0800
+@@ -155,6 +155,7 @@
+ 	"http-get:*:audio/mp4:DLNA.ORG_PN=AAC_MULT5_ISO," \
+ 	"http-get:*:audio/L16;rate=44100;channels=2:DLNA.ORG_PN=LPCM," \
+ 	"http-get:*:image/jpeg:*," \
++	"http-get:*:image/png:*," \
+ 	"http-get:*:video/avi:*," \
+ 	"http-get:*:video/divx:*," \
+ 	"http-get:*:video/x-matroska:*," \
+@@ -168,7 +169,9 @@
+ 	"http-get:*:audio/mp4:*," \
+ 	"http-get:*:audio/x-wav:*," \
+ 	"http-get:*:audio/x-flac:*," \
+-	"http-get:*:application/ogg:*"
++    "http-get:*:application/ogg:*,"\
++    "http-get:*:video/x-pn-realvideo:*,"\
++	"http-get:*:video/dvd:*"
+ 
+ #define DLNA_FLAG_DLNA_V1_5      0x00100000
+ #define DLNA_FLAG_HTTP_STALLING  0x00200000
+Index: minidlna-1.0.25/upnpsoap.c
+===================================================================
+--- minidlna-1.0.25.orig/upnpsoap.c	2012-07-11 05:15:16.000000000 +0800
++++ minidlna-1.0.25/upnpsoap.c	2016-10-14 14:26:06.054539100 +0800
+@@ -938,6 +938,7 @@
+ 			        resolution, dlna_buf, mime, detailID, ext, passed_args);
+ 			if( *mime == 'i' ) {
+ 				int srcw, srch;
++/*
+ 				if( resolution && (sscanf(resolution, "%dx%d", &srcw, &srch) == 2) )
+ 				{
+ 					if( srcw > 4096 || srch > 4096 )
+@@ -947,6 +948,7 @@
+ 					if( srcw > 640 || srch > 480 )
+ 						add_resized_res(srcw, srch, 640, 480, "JPEG_SM", detailID, passed_args);
+ 				}
++*/
+ 				if( !(passed_args->flags & FLAG_RESIZE_THUMBS) && tn && atoi(tn) ) {
+ 					ret = strcatf(str, "&lt;res protocolInfo=\"http-get:*:%s:%s\"&gt;"
+ 					                   "http://%s:%d/Thumbnails/%s.jpg"
+@@ -954,8 +956,8 @@
+ 					                   mime, "DLNA.ORG_PN=JPEG_TN;DLNA.ORG_CI=1", lan_addr[passed_args->iface].str,
+ 					                   runtime_vars.port, detailID);
+ 				}
+-				else
+-					add_resized_res(srcw, srch, 160, 160, "JPEG_TN", detailID, passed_args);
++				/*else
++					add_resized_res(srcw, srch, 160, 160, "JPEG_TN", detailID, passed_args);*/
+ 			}
+ 			else if( *mime == 'v' ) {
+ 				switch( passed_args->client ) {
+Index: minidlna-1.0.25/utils.c
+===================================================================
+--- minidlna-1.0.25.orig/utils.c	2012-02-15 02:26:53.000000000 +0800
++++ minidlna-1.0.25/utils.c	2016-10-13 16:42:56.421657200 +0800
+@@ -298,6 +298,9 @@
+ 		ends_with(file, ".m2t") || ends_with(file, ".mkv")   ||
+ 		ends_with(file, ".vob") || ends_with(file, ".ts")    ||
+ 		ends_with(file, ".flv") || ends_with(file, ".xvid")  ||
++		ends_with(file, ".rm")  || ends_with(file, ".rmvb")  ||
++		ends_with(file, ".vob")  || ends_with(file, ".m1v")  ||
++		ends_with(file, ".m2v")  || 
+ #ifdef TIVO_SUPPORT
+ 		ends_with(file, ".TiVo") ||
+ #endif
+@@ -319,7 +322,8 @@
+ int
+ is_image(const char * file)
+ {
+-	return (ends_with(file, ".jpg") || ends_with(file, ".jpeg"));
++	return (ends_with(file, ".jpg") || ends_with(file, ".jpeg") ||
++			ends_with(file, ".png"));
+ }
+ 
+ int

@@ -1,0 +1,282 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_acl.c	2017-06-22 18:56:07.107487757 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c	2017-06-22 18:56:34.971400365 +0800
+@@ -27,19 +27,21 @@
+ 	{"ProtocolExclude", 	dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"IPVersion", 			dalType_string,	 0, 	0, 		NULL,	"IPv4|IPv6", 					dal_Add},
+ 	/*src des ip*/
+-	{"SourceIP", 			dalType_v4v6Addr,  0, 	0, 		NULL,	"AnyIP", 						dal_Add},
++	{"SourceIP", 			dalType_v4v6Addr,  0, 	0, 		NULL,	"AnyIP", 						dalcmd_Forbid},
+ 	{"SourceMask", 			dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+-	{"SourceMaskLen", 		dalType_int,  	 0, 	0, 		NULL,	NULL, 							0}, //same parameter to SourceMask, for dalcmd
+-	{"DestIP", 				dalType_v4v6Addr,  0, 	0, 		NULL,	"AnyIP", 						dal_Add},
++	{"SourceIPPrefix", 		dalType_IPPrefix,  0, 	0, 		NULL,	"AnyIP", 						dal_Add},
++	{"DestIP", 				dalType_v4v6Addr,  0, 	0, 		NULL,	"AnyIP", 						dalcmd_Forbid},
+ 	{"DestMask", 			dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+-	{"DestMaskLen", 		dalType_int,  	 0, 	0, 		NULL,	NULL, 							0}, //same parameter to DestMask, for dalcmd
++	{"DestIPPrefix", 		dalType_IPPrefix,  0, 	0, 		NULL,	"AnyIP", 						dal_Add},
+ 	/*Port*/
+ 	{"DestPortExclude", 	dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+-	{"DestPort", 			dalType_int, 	-1, 	65535, 	NULL,	NULL, 							0},
+-	{"DestPortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL,	NULL, 							0},
++	{"DestPort", 			dalType_int, 	-1, 	65535, 	NULL,	NULL, 							dalcmd_Forbid},
++	{"DestPortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL,	NULL, 							dalcmd_Forbid},
++	{"DestPortRange", 		dalType_PortRange, 	0, 	0, 	NULL,	NULL, 								0},
+ 	{"SourcePortExclude", 	dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+-	{"SourcePort", 			dalType_int, 	-1, 	65535, 	NULL,	NULL, 							0},
+-	{"SourcePortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL,	NULL, 							0},
++	{"SourcePort", 			dalType_int, 	-1, 	65535, 	NULL,	NULL, 							dalcmd_Forbid},
++	{"SourcePortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL,	NULL, 							dalcmd_Forbid},
++	{"SourcePortRange", 	dalType_PortRange, 	-1, 	65535, 	NULL,	NULL, 						0},
+ 	/*TCP flag*/
+ 	{"TCPFlag", 			dalType_string,  0, 	0, 		NULL,	"SYN|ACK|URG|PSH|RST|FIN",		0},	//for dalcmd TCP flag
+ 	{"X_ZYXEL_TCPFlagComp", dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+@@ -173,6 +175,9 @@
+ 	const char *name = NULL;
+ 	int intVal = 0;
+ 	char buf[32] = {0};
++	char ip[64] = {0};
++	char mask[8] = {0};
++	int startPort, endPort;
+ 
+ 	IID_INIT(aclIid);
+ 	oid = RDM_OID_FIREWALL_CHAIN_RULE;
+@@ -229,22 +234,85 @@
+ 				else if(!strcmp(charVal, "ICMPv6"))
+ 					json_object_object_add(aclObj, "Protocol", json_object_new_int(58));
+ 			}
+-			if((paramObj = json_object_object_get(Jobj, "SourceMaskLen")) != NULL){
+-				intVal = json_object_get_int(paramObj);
+-				sprintf(buf, "%d", intVal);
+-				json_object_object_add(aclObj, "SourceMask", json_object_new_string(buf));
+-				json_object_object_del(aclObj, "SourceMaskLen");
++			
++			if((paramObj = json_object_object_get(Jobj, "SourceIPPrefix")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "SourceIPPrefix")), "AnyIP")){
++					json_object_object_add(aclObj, "SourceIP", json_object_new_string(""));
++					json_object_object_add(aclObj, "SourceMask", json_object_new_string("0"));
++				}
++				else{
++					charVal = json_object_get_string(paramObj);
++					sscanf(charVal, "%[^/]/%s", ip, mask);
++					//printf("SourceIPPrefix ip=%s mask=%s\n", ip, mask);
++					json_object_object_add(aclObj, "SourceIP", json_object_new_string(ip));
++					json_object_object_add(aclObj, "SourceMask", json_object_new_string(mask));
++				}
++				json_object_object_del(aclObj, "SourceIPPrefix");
+ 			}
+-			else
+-				json_object_object_add(aclObj, "SourceMask", json_object_new_string("32"));
+-			if((paramObj = json_object_object_get(Jobj, "DestMaskLen")) != NULL){
+-				intVal = json_object_get_int(paramObj);
+-				sprintf(buf, "%d", intVal);				
+-				json_object_object_add(aclObj, "DestMask", json_object_new_string(buf));
+-				json_object_object_del(aclObj, "DestMaskLen");
++			//else
++			//	json_object_object_add(aclObj, "SourceMask", json_object_new_string("32"));
++			
++			if((paramObj = json_object_object_get(Jobj, "DestIPPrefix")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix")), "AnyIP")){
++					json_object_object_add(aclObj, "DestIP", json_object_new_string(""));
++					json_object_object_add(aclObj, "DestMask", json_object_new_string("0"));
++				}
++				else{
++					charVal = json_object_get_string(paramObj);
++					sscanf(charVal, "%[^/]/%s", ip, mask);
++					//printf("DestIPPrefix ip=%s mask=%s\n", ip, mask);
++					json_object_object_add(aclObj, "DestIP", json_object_new_string(ip));
++					json_object_object_add(aclObj, "DestMask", json_object_new_string(mask));
++				}
++				json_object_object_del(aclObj, "DestIPPrefix");
++			}
++			//else
++			//	json_object_object_add(aclObj, "DestMask", json_object_new_string("32"));
++
++			if((paramObj = json_object_object_get(Jobj, "DestPortRange")) != NULL){
++				charVal = json_object_get_string(paramObj);
++				if(strchr(charVal, ':') != NULL){
++					sscanf(charVal, "%d:%d", &startPort, &endPort);
++					if(startPort == -1)
++						endPort = -1;
++				}
++				else{
++					startPort = atoi(charVal);
++					endPort = -1;
++				}
++				
++				//printf("DestPortRange startPort=%d endPort=%d\n", startPort, endPort);
++				json_object_object_add(aclObj, "DestPort", json_object_new_int(startPort));
++				json_object_object_add(aclObj, "DestPortRangeMax", json_object_new_int(endPort));
++				json_object_object_del(aclObj, "DestPortRange");
++			}
++			else if(json_object_object_get(Jobj, "DestPort") == NULL){//Protocol == ALL or not from WEGUI, and DestPortRange == NULL add default value
++				json_object_object_add(aclObj, "DestPort", json_object_new_int(-1));
++				json_object_object_add(aclObj, "DestPortRangeMax", json_object_new_int(-1));
++			}
++
++			if((paramObj = json_object_object_get(Jobj, "SourcePortRange")) != NULL){
++				charVal = json_object_get_string(paramObj);
++				if(strchr(charVal, ':') != NULL){
++					sscanf(charVal, "%d:%d", &startPort, &endPort);
++					if(startPort == -1)
++						endPort = -1;
++				}
++				else{
++					startPort = atoi(charVal);
++					endPort = -1;
++				}
++				
++				//printf("SourcePortRange startPort=%d endPort=%d\n", startPort, endPort);
++				json_object_object_add(aclObj, "SourcePort", json_object_new_int(startPort));
++				json_object_object_add(aclObj, "SourcePortRangeMax", json_object_new_int(endPort));
++				json_object_object_del(aclObj, "SourcePortRange");
++			}
++			else if(json_object_object_get(Jobj, "SourcePort") == NULL){//Protocol == ALL or not from WEGUI, and SourcePort == NULL, add default value
++				json_object_object_add(aclObj, "SourcePort", json_object_new_int(-1));
++				json_object_object_add(aclObj, "SourcePortRangeMax", json_object_new_int(-1));
+ 			}
+-			else
+-				json_object_object_add(aclObj, "DestMask", json_object_new_string("32"));
++			
+ 			if((paramObj = json_object_object_get(Jobj, "Direction")) != NULL){
+ 				json_object_object_add(aclObj, "X_ZYXEL_Direction", JSON_OBJ_COPY(paramObj));
+ 				json_object_object_del(aclObj, "Direction");
+@@ -295,6 +363,9 @@
+ 	const char *name = NULL;
+ 	int intVal = 0;
+ 	char buf[32] = {0};
++	char ip[64] = {0};
++	char mask[8] = {0};
++	int startPort, endPort;
+ 	
+ 	name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+ 	
+@@ -347,6 +418,7 @@
+ 				else if(!strcmp(charVal, "ICMPv6"))
+ 					json_object_object_add(aclObj, "Protocol", json_object_new_int(58));
+ 			}
++#if 0
+ 			if((paramObj = json_object_object_get(Jobj, "SourceMaskLen")) != NULL){
+ 				intVal = json_object_get_int(paramObj);
+ 				sprintf(buf, "%d", intVal);
+@@ -359,6 +431,72 @@
+ 				json_object_object_add(aclObj, "DestMask", json_object_new_string(buf));
+ 				json_object_object_del(aclObj, "DestMaskLen");
+ 			}
++#endif
++			if((paramObj = json_object_object_get(Jobj, "SourceIPPrefix")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "SourceIPPrefix")), "AnyIP")){
++					json_object_object_add(aclObj, "SourceIP", json_object_new_string(""));
++					json_object_object_add(aclObj, "SourceMask", json_object_new_string("0"));
++				}
++				else{
++					charVal = json_object_get_string(paramObj);
++					sscanf(charVal, "%[^/]/%s", ip, mask);
++					
++					//printf("SourceIPPrefix ip=%s mask=%s\n", ip, mask);
++					json_object_object_add(aclObj, "SourceIP", json_object_new_string(ip));
++					json_object_object_add(aclObj, "SourceMask", json_object_new_string(mask));
++				}
++				json_object_object_del(aclObj, "SourceIPPrefix");
++			}
++			if((paramObj = json_object_object_get(Jobj, "DestIPPrefix")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix")), "AnyIP")){
++					json_object_object_add(aclObj, "DestIP", json_object_new_string(""));
++					json_object_object_add(aclObj, "DestMask", json_object_new_string("0"));
++				}
++				else{
++					charVal = json_object_get_string(paramObj);
++					sscanf(charVal, "%[^/]/%s", ip, mask);
++					
++					//printf("DestIPPrefix ip=%s mask=%s\n", ip, mask);
++					json_object_object_add(aclObj, "DestIP", json_object_new_string(ip));
++					json_object_object_add(aclObj, "DestMask", json_object_new_string(mask));
++				}
++				json_object_object_del(aclObj, "DestIPPrefix");
++			}
++			if((paramObj = json_object_object_get(Jobj, "DestPortRange")) != NULL){
++				charVal = json_object_get_string(paramObj);
++				if(strchr(charVal, ':') != NULL){
++					sscanf(charVal, "%d:%d", &startPort, &endPort);
++					if(startPort == -1)
++						endPort = -1;
++				}
++				else{
++					startPort = atoi(charVal);
++					endPort = -1;
++				}
++				
++				//printf("DestPortRange startPort=%d endPort=%d\n", startPort, endPort);
++				json_object_object_add(aclObj, "DestPort", json_object_new_int(startPort));
++				json_object_object_add(aclObj, "DestPortRangeMax", json_object_new_int(endPort));
++				json_object_object_del(aclObj, "DestPortRange");
++			}
++			if((paramObj = json_object_object_get(Jobj, "SourcePortRange")) != NULL){
++				charVal = json_object_get_string(paramObj);
++				if(strchr(charVal, ':') != NULL){
++					sscanf(charVal, "%d:%d", &startPort, &endPort);
++					if(startPort == -1)
++						endPort = -1;
++				}
++				else{
++					startPort = atoi(charVal);
++					endPort = -1;
++				}
++				
++				//printf("SourcePortRange startPort=%d endPort=%d\n", startPort, endPort);
++				json_object_object_add(aclObj, "SourcePort", json_object_new_int(startPort));
++				json_object_object_add(aclObj, "SourcePortRangeMax", json_object_new_int(endPort));
++				json_object_object_del(aclObj, "SourcePortRange");
++			}
++			
+ 			if((paramObj = json_object_object_get(Jobj, "Direction")) != NULL){
+ 				json_object_object_add(aclObj, "X_ZYXEL_Direction", JSON_OBJ_COPY(paramObj));
+ 				json_object_object_del(aclObj, "Direction");
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-06-22 18:56:06.947487756 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-06-22 18:56:07.151487758 +0800
+@@ -66,6 +66,8 @@
+ 	dalType_v6AddrPrefix,
+ 	dalType_v4v6Addr,
+ 	dalType_v6AddrIdentifier,
++	dalType_IPPrefix,      // e.g 10.10.100.1/32,  192.168.1.0/23, 2001:123::123/128, 2002:1f:dad:12::/64
++	dalType_PortRange,     // prot or startPort:endPort
+ 	dalType_AllIntf,      //LAN WAN  WWAN, Include Bridged WAN
+ 	dalType_LanRtWanWWan, //LAN WAN WWAN, not Include Bridged WAN
+ 	dalType_LanRtWan,     //LAN WAN, not Include Bridged WAN 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.h	2017-06-22 18:56:06.163487749 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.h	2017-06-22 18:56:07.151487758 +0800
+@@ -1,5 +1,5 @@
+ 
+ zcfgRet_t zcfgFeDalHandler(const char *handlerName, const char *method, struct json_object *Jobj, char *replyMsg);
+ zcfgRet_t getWanLanList(struct json_object **Jarray);
+-
++int isDigitString(char *getString);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-22 18:56:07.047487757 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-22 18:56:13.555487811 +0800
+@@ -822,6 +822,18 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++int isDigitString(char *getString)
++{
++	while(*getString != '\0'){
++		if(!isdigit(*getString)){
++			return 0;
++		}
++		getString++;
++	}
++	
++	return 1;
++}
++
+ bool findInList(char *list, char *target, char *separator){
+ 	char *buf, *ptr, *tmp_ptr = NULL;
+ 

@@ -1,0 +1,85 @@
+Index: pure-ftpd-1.0.30/src/ftpd.c
+===================================================================
+--- pure-ftpd-1.0.30.orig/src/ftpd.c	2014-01-15 13:20:12.000000000 +0800
++++ pure-ftpd-1.0.30/src/ftpd.c	2014-07-11 15:06:12.976801447 +0800
+@@ -37,6 +37,8 @@
+ # include <dmalloc.h>
+ #endif
+ 
++int free_memory_size;
++
+ void disablesignals(void)
+ {
+     sigset_t sigs;
+@@ -4042,6 +4044,26 @@
+     return 0;
+ }
+ 
++int get_free_memory(){
++	int size;
++	FILE *fp = NULL;
++	char *lst = calloc(128, sizeof(char));
++
++	fp = popen("cat /proc/meminfo", "r");
++	if(fp != NULL){
++		while((fgets(lst, 128, fp)) != NULL) {
++			if(strstr(lst, "MemFree:") != NULL){
++				sscanf(lst, "MemFree: %d", &size);
++				break;
++			}
++		}
++
++		pclose(fp);
++	}
++	free(lst);
++	return (size*1024);
++}
++
+ int ul_handle_data(ULHandler * const ulhandler, off_t * const uploaded,
+                    const double ts_start)
+ {
+@@ -4079,7 +4101,14 @@
+         }
+         addreply_noformat(451, MSG_DATA_READ_FAILED);
+         return -1;
+-    }    
++    }
++    free_memory_size = free_memory_size - readnb;
++    if(free_memory_size < (2*1024*1024)){
++        free_memory_size = get_free_memory();
++        if(free_memory_size < (5*1024*1024)){
++            return -5;
++        }
++    }
+     if (ul_dowrite(ulhandler, ulhandler->buf, readnb, uploaded) != 0) {
+         addreply_noformat(452, MSG_WRITE_FAILED);
+         return -1;
+@@ -4135,6 +4164,7 @@
+         error(451, "gettimeofday()");
+         return -1;
+     }
++    free_memory_size = get_free_memory();
+     for (;;) {
+         if (ulhandler->idletime >= INT_MAX / 1000) {
+             timeout = INT_MAX;
+@@ -4163,6 +4193,9 @@
+                 return 0;
+             case 0:
+                 break;
++            case -5:
++                addreply_noformat(552, MSG_NO_DISK_SPACE);
++                return -5;
+             default:
+                 if (ret > 2) {
+                     abort();
+@@ -4433,7 +4466,9 @@
+     }
+     (void) close(f);
+     closedata();
+-    
++    if(-5 == ret){
++        goto end;
++    }
+     /* Here ends the real upload code */
+ 
+ #ifdef SHOW_REAL_DISK_SPACE

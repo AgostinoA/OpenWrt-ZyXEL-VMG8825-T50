@@ -1,0 +1,134 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2018-04-11 14:16:11.248806071 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2018-04-11 14:25:34.293101726 +0800
+@@ -6,6 +6,10 @@
+ #include "zcfg_debug.h"
+ #include "zcfg_fe_rdm_string.h"
+ #include "zcfg_fe_dal_common.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_msg.h"
+ 
+ #define CWMP_SOAP_MSG_DEBUG (1 << 1)
+ #define isEmptyIns(obj) json_object_get_boolean(json_object_object_get(obj, "emptyIns"))
+@@ -1407,6 +1411,99 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalIPoE(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg, const char *action)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	objIndex_t v4ClientIid = {0};
++
++	if (Jobj != NULL && json_object_object_get(Jobj,"index"))
++	{
++		char *index = NULL;
++		char ipIfacePath[20] = {0};
++
++		index = json_object_get_string(json_object_object_get(Jobj,"index"));
++		strcpy(ipIfacePath, "IP.Interface.");
++		if (index)
++			strcat(ipIfacePath, index);
++		if (!getSpecificObj(RDM_OID_DHCPV4_CLIENT, "Interface", json_type_string, ipIfacePath, &v4ClientIid, NULL))
++		{
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++	else
++	{
++		return ZCFG_INTERNAL_ERROR;
++	}
++	//create and send MSG
++	sendMsgHdr = (zcfgMsg_t *)malloc(sizeof(zcfgMsg_t));
++	if (sendMsgHdr == NULL)
++	{
++		return ZCFG_INTERNAL_ERROR;
++	}
++	if(strcmp(action,"Release") == 0){
++		sendMsgHdr->type = ZCFG_MSG_WAN_IP_RELEASE;
++	}
++	else if(strcmp(action,"Renew") == 0){
++		sendMsgHdr->type = ZCFG_MSG_WAN_IP_RENEW;
++	}
++	sendMsgHdr->oid = RDM_OID_DHCPV4_CLIENT;
++	sendMsgHdr->length = 0;
++	sendMsgHdr->srcEid = ZCFG_EID_DALCMD;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++	memcpy(sendMsgHdr->objIid, &v4ClientIid, sizeof(objIndex_t));
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 30000);
++	if (ret == ZCFG_TIMEOUT)
++		return ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPPPoE(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg, const char *action)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	objIndex_t pppIid = {0};
++
++	if (Jobj != NULL && json_object_object_get(Jobj,"wanpppIdx"))
++	{
++		int wanpppIdx = 0;
++		wanpppIdx = json_object_get_int(json_object_object_get(Jobj,"wanpppIdx"));
++		if (wanpppIdx)
++		{
++			pppIid.level = 1;
++			pppIid.idx[0] = wanpppIdx;
++		}
++		else return ZCFG_INTERNAL_ERROR;
++	}
++	else
++	{
++		return ZCFG_INTERNAL_ERROR;
++	}
++	//create and send MSG
++	sendMsgHdr = (zcfgMsg_t *)malloc(sizeof(zcfgMsg_t));
++	if (sendMsgHdr == NULL)
++	{
++		return ZCFG_INTERNAL_ERROR;
++	}
++	if(strcmp(action,"Disconnect") == 0){
++		sendMsgHdr->type = ZCFG_MSG_WAN_PPP_DISCONNECT;
++	}
++	else if(strcmp(action,"Connect") == 0){
++		sendMsgHdr->type = ZCFG_MSG_WAN_PPP_CONNECT;
++	}
++	sendMsgHdr->oid = RDM_OID_PPP_IFACE;
++	sendMsgHdr->length = 0;
++	sendMsgHdr->srcEid = ZCFG_EID_DALCMD;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++	memcpy(sendMsgHdr->objIid, &pppIid, sizeof(objIndex_t));
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 30000);
++	if (ret == ZCFG_TIMEOUT)
++		return ZCFG_SUCCESS;
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray,char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -1417,6 +1514,18 @@
+ 	if(!strcmp(method, "GET")){
+ 		ret = zcfgFeDalStatusGet(Jobj, Jarray, NULL);
+ 	}
++	else if(!strcmp(method, "PUT")){
++		char *action = NULL;
++		if (Jobj != NULL && json_object_object_get(Jobj,"action")) {
++			action = json_object_get_string(json_object_object_get(Jobj,"action"));
++			if(!strcmp(action, "Renew")||!strcmp(action, "Release")){
++				ret = zcfgFeDalIPoE(Jobj, Jarray, replyMsg, action);
++			}
++			else if(!strcmp(action, "Connect")||!strcmp(action, "Disconnect")){
++				ret = zcfgFeDalPPPoE(Jobj, Jarray, replyMsg, action);
++			}
++		}
++	}
+ 
+ 	return ret;
+ }

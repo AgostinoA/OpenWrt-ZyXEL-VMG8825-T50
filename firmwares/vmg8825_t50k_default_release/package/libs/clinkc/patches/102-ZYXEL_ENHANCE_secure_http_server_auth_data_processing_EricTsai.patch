@@ -1,0 +1,358 @@
+Index: clinkc/src/cybergarage/http/chttp_authentication.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_authentication.c	2017-10-31 09:26:55.426226244 +0800
++++ clinkc/src/cybergarage/http/chttp_authentication.c	2017-10-31 09:26:55.454226244 +0800
+@@ -644,6 +644,10 @@
+ 	newEntry->algorithm = CG_HTTP_DEFAULT_ALGORITHM;
+ 
+ 	strcpy(newEntry->clientHost, cg_http_request_getremoteaddress(httpReq));
++
++	CgHttpServer *httpServer = (CgHttpServer *)cg_http_request_retrievehttpserver(httpReq);
++	cg_http_server_lock(httpServer);
++	now = digestHead;
+ 	while(now != NULL){
+ 		if(!strcmp(now->clientHost, newEntry->clientHost))
+ 			break;
+@@ -663,6 +667,7 @@
+ 		digestTail->next = newEntry;
+ 		digestTail = newEntry;
+ 	}
++	cg_http_server_unlock(httpServer);
+ 
+ 	/*response digest challenge*/
+ 	httpRes = cg_http_response_new();
+@@ -738,12 +743,16 @@
+ 			return HTTP_AUTH_INVALID_USERNAME;
+ 		}
+ 
++		CgHttpServer *httpServer = (CgHttpServer *)cg_http_request_retrievehttpserver(httpReq);
++		cg_http_server_lock(httpServer);
++		now = digestHead;
+ 		while(now != NULL){
+ 			if(!strcmp(now->clientHost, auth->clientHost)){
+ 				found = TRUE;
+ 
+ 				if(strcmp(now->realm, auth->realm)){
+ 					free(auth);
++					cg_http_server_unlock(httpServer);
+ 					return HTTP_AUTH_NOT_EXIST;
+ 				}
+ 				if(strcmp(now->nonce, auth->nonce))
+@@ -757,6 +766,7 @@
+ 
+ 		if(!found){
+ 			free(auth);
++			cg_http_server_unlock(httpServer);
+ 			return HTTP_AUTH_NOT_EXIST;
+ 		}
+ 
+@@ -770,6 +780,7 @@
+ 				auth->qop		= tmp;
+ 				if(strcmp(auth->qop, now->qop)){
+ 					free(auth);
++					cg_http_server_unlock(httpServer);
+ 					return HTTP_AUTH_NOT_EXIST;
+ 				}
+ 			}
+@@ -785,6 +796,7 @@
+ 				auth->algorithm	= tmp;
+ 				if(strcmp(auth->algorithm, now->algorithm)){
+ 					free(auth);
++					cg_http_server_unlock(httpServer);
+ 					return HTTP_AUTH_NOT_EXIST;
+ 				}
+ 			}
+@@ -796,12 +808,14 @@
+ 				auth->opaque	= NULL;
+ 				printf("error: can not get opaque");
+ 				free(auth);
++				cg_http_server_unlock(httpServer);
+ 				return HTTP_AUTH_ERROR;
+ 			}
+ 			else{
+ 				auth->opaque	= tmp;
+ 				if(strcmp(auth->opaque, now->opaque)){
+ 					free(auth);
++					cg_http_server_unlock(httpServer);
+ 					return HTTP_AUTH_NOT_EXIST;
+ 				}
+ 			}
+@@ -863,6 +877,7 @@
+ 			if((auth->algorithm)&&(strcmp(auth->algorithm, "MD5") != 0)){
+ 				auth->result = AUTH_UNSUPPORT_ALGORITHM;
+ 				free(auth);
++				cg_http_server_unlock(httpServer);
+ 				return HTTP_AUTH_NOT_EXIST;
+ 			}
+ 			snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", ha1, auth->nonce, ha2);
+@@ -872,6 +887,7 @@
+ 			if((auth->algorithm)&&(strcmp(auth->algorithm, "MD5") != 0)&&(strcmp(auth->algorithm,"MD5-sess") != 0)){
+ 				auth->result = AUTH_UNSUPPORT_ALGORITHM;
+ 				free(auth);
++				cg_http_server_unlock(httpServer);
+ 				return HTTP_AUTH_NOT_EXIST;
+ 			}
+ 
+@@ -900,12 +916,15 @@
+ 
+ 		if(!strcmp(digest, auth->response)){
+ 			free(auth);
++			cg_http_server_unlock(httpServer);
+ 			return HTTP_AUTH_SUCCESS;
+ 		}
+ 		else{
+ 			free(auth);
++			cg_http_server_unlock(httpServer);
+ 			return HTTP_AUTH_INVALID_PASSWORD;
+ 		}
++		cg_http_server_unlock(httpServer);
+ 	}
+ 	else{
+ 		printf("invalid authenticcation method\n");
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2017-10-31 09:26:55.382226244 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2017-10-31 09:26:55.454226244 +0800
+@@ -319,6 +319,8 @@
+ 	int timeout;
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 	void *ctxdata;
++
++	void *httpServer;
+ 	CgHttpAuth authData;
+ 	CgHttpForm form;
+ 	char loginUserName[32];
+@@ -546,9 +548,13 @@
+ #ifdef ZYXEL_PATCH
+ #define cg_http_request_setcookiedata(httpRes, data) (httpRes->cookieData = (void *)data)
+ #define cg_http_request_getcookiedata(httpRes) (httpRes->cookieData)
++#define cg_http_request_sethttpserver(httpReq, svr) (httpReq->httpServer = (void *)svr)
++#define cg_http_request_retrievehttpserver(httpReq) (httpReq->httpServer)
+ #else
+ #define cg_http_request_setcookiedata(httpRes, data) do{}while(0)
+ #define cg_http_request_getcookiedata(httpRes) NULL
++#define cg_http_request_sethttpserver(httpReq, svr) { }
++#define cg_http_request_retrievehttpserver(httpReq) NULL
+ #endif
+ 
+ /**** Local Address/Port ****/
+@@ -721,8 +727,8 @@
+ #define cg_http_server_gettimeout(httpServer) (httpServer->timeout)
+ 
+ /**** Mutex ****/
+-#define cg_http_server_lock(httpServer) cg_mutex_lock(httpServer->mutex)
+-#define cg_http_server_unlock(httpServer) cg_mutex_unlock(httpServer->mutex)
++#define cg_http_server_lock(httpServer) if(httpServer) cg_mutex_lock(httpServer->mutex)
++#define cg_http_server_unlock(httpServer) if(httpServer) cg_mutex_unlock(httpServer->mutex)
+ 
+ /****************************************
+ * Function (Server List)
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2017-10-31 09:26:54.806226241 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2017-10-31 09:32:16.542227796 +0800
+@@ -297,6 +297,8 @@
+ 		cg_thread_lock(thread);
+ 
+ 		if(clientData->_clientSockSize <= 0){
++			thread->isAlreadyExit = TRUE;
++			cg_thread_unlock(thread);
+ 			break;
+ 		}
+ 		FD_ZERO(&activeFds); 
+@@ -316,7 +318,12 @@
+ 			if (errno == EINTR){
+ 				continue; 
+ 			}
+-            break; 
++			printf("%s: errno %d\n", __FUNCTION__, errno);
++			cg_thread_lock(thread);
++			thread->isAlreadyExit = TRUE;
++			cg_thread_unlock(thread);
++
++			break;
+ 		}
+ 		else if(nReturn == 0){ //Yuru@2014.12.03, workaround, SO_RCVTIMEO sometimes doesn't work. force delete socket.
+ 			//printf("clinkc: cg_http_server_clientthread() select timeout\n");
+@@ -330,9 +337,15 @@
+ 		}
+ 		else if(nReturn){
+ 			clientSock = NULL;
+-			for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL, nReturn > 0; ){
++			cg_thread_lock(thread);
++			activeSock = cg_socketlist_gets(clientSocks);
++			cg_thread_unlock(thread);
++			while(activeSock!=NULL && (nReturn > 0))
++			{
+ 				clientSock = activeSock;
++				cg_thread_lock(thread);
+ 				activeSock = cg_socket_next(clientSock);
++				cg_thread_unlock(thread);
+ 				if(FD_ISSET(clientSock->id, &activeFds) || FD_ISSET(clientSock->id, &readFds)){
+ 					nReturn--;
+ 					if(cg_http_request_read(httpReq, clientSock) == FALSE){		
+@@ -360,7 +373,10 @@
+ 							}
+ 						}
+ 
++
++
+ 						if (httpServer->listener != NULL) {
++							cg_http_request_sethttpserver(httpReq, httpServer);
+ 							cg_http_request_setuserdata(httpReq, httpServerUserData);
+ 							httpServer->listener(httpReq);
+ 						}
+@@ -384,8 +410,8 @@
+ 			}
+ 		}
+ 	}
+-	thread->isAlreadyExit = TRUE;
+-	cg_thread_unlock(thread);
++	//thread->isAlreadyExit = TRUE;
++	//cg_thread_unlock(thread);
+ 	// This code frequently crashes. mutex lock referencing free'd memory.
+ 	cg_http_server_lock(httpServer);
+ 	cg_thread_remove(thread);
+@@ -429,6 +456,7 @@
+ #endif
+ 	cg_log_debug_s("Dropping HTTP client\n");
+ 	cg_http_request_delete(httpReq);
++	cg_thread_lock(thread);
+ #ifdef ZYXEL_PATCH	
+ 	cg_socketlist_delete(clientSocks);
+ #else
+@@ -437,22 +465,73 @@
+ #endif
+ 	cg_http_server_clientdata_delete(clientData);
+ 	cg_thread_setuserdata(thread, NULL);
++	cg_thread_unlock(thread);
+ #ifndef ZYXEL_PATCH	
+     // This code frequently crashes. mutex lock referencing free'd memory.
+-	cg_http_server_lock(httpServer);
+-	cg_thread_remove(thread);
+-	cg_http_server_unlock(httpServer);
++	//cg_thread_remove(thread);
+ #endif
+-	
+-	cg_log_debug_l4("Leaving...\n");
+ 
+ 	cg_thread_delete(thread);
++
++	cg_log_debug_l4("Leaving...\n");
+ }
+ 
+ /****************************************
+ * cg_http_server_thread
+ ****************************************/
+ 
++static BOOL cg_http_server_add_clientthread_sk(CgHttpServer *httpServer, CgSocket *clientSock)
++{
++	BOOL assigned = FALSE;
++	int threadSockets, threadSockets_tmp;
++
++	// !httpServer !clientSock
++
++	threadSockets = threadSockets_tmp = 255;
++	cg_http_server_lock(httpServer);
++
++	while(assigned != TRUE)
++	{
++		CgThread *httpClientThread = NULL;
++		CgThread *tmpClientThread = NULL;
++
++		for (httpClientThread = cg_threadlist_gets(httpServer->clientThreads); httpClientThread != NULL; httpClientThread = cg_thread_next(httpClientThread)){
++			cg_thread_lock(httpClientThread);
++			threadSockets = cg_http_server_get_threadClientSocksize(httpClientThread);
++			if(httpClientThread->isAlreadyExit == FALSE && threadSockets < CG_CLIENT_SOCKET_PER_THREAD){
++				if(tmpClientThread == NULL){ tmpClientThread = httpClientThread; threadSockets_tmp = threadSockets; cg_thread_unlock(httpClientThread); continue;}
++				else if(threadSockets < threadSockets_tmp){
++					cg_thread_unlock(httpClientThread);
++					tmpClientThread = httpClientThread;
++					continue;
++				}
++			}
++			cg_thread_unlock(httpClientThread);
++		}
++		if(tmpClientThread){
++			cg_thread_lock(tmpClientThread);
++			if(tmpClientThread->isAlreadyExit != TRUE){
++				cg_http_server_add_threadClientSock(tmpClientThread, clientSock);
++				//printf("%s: added!\n", __FUNCTION__);
++				cg_thread_unlock(tmpClientThread);
++				assigned = TRUE;
++			}else{
++				//printf("%s: failed, pick again!\n", __FUNCTION__);
++				cg_thread_unlock(tmpClientThread);
++				continue;
++			}
++		}
++		else{
++			//printf("%s: add failed!\n", __FUNCTION__);
++			cg_http_server_unlock(httpServer);
++			return assigned;
++		}
++	}
++
++	cg_http_server_unlock(httpServer);
++	return assigned;
++}
++
+ static void cg_http_server_thread(CgThread *thread)
+ {
+ 	CgHttpServer *httpServer;
+@@ -541,7 +620,7 @@
+ 						else if(CG_CLIENT_THREAD_LIMIT && (clientThreadSize = cg_threadlist_size(httpServer->clientThreads)) >= CG_CLIENT_THREAD_LIMIT){
+ 							//cg_sleep(CG_CLIENT_THREAD_WAIT_TIME); 
+ 							//break;
+-
++#if 0
+ 							cg_http_server_lock(httpServer);
+ 							httpClientThread = NULL;
+ 							tmpClientThread = NULL;
+@@ -550,25 +629,32 @@
+ 								cg_thread_lock(httpClientThread);
+ 								threadSockets = cg_http_server_get_threadClientSocksize(httpClientThread);
+ 								if(httpClientThread->isAlreadyExit == FALSE && threadSockets < CG_CLIENT_SOCKET_PER_THREAD){
+-									if(tmpClientThread == NULL){ tmpClientThread = httpClientThread; threadSockets_tmp = threadSockets; continue;}
++									if(tmpClientThread == NULL){ tmpClientThread = httpClientThread; threadSockets_tmp = threadSockets; cg_thread_unlock(httpClientThread); continue;}
+ 									else if(threadSockets < threadSockets_tmp){
+-										cg_thread_unlock(tmpClientThread);
++										cg_thread_unlock(httpClientThread);
+ 										tmpClientThread = httpClientThread;
+ 										continue;
+ 									}
+ 								}
+ 								cg_thread_unlock(httpClientThread);
+ 							}
+-							cg_http_server_unlock(httpServer);
+ 							if(tmpClientThread){
+-								cg_http_server_add_threadClientSock(tmpClientThread, clientSock);
++								cg_thread_lock(tmpClientThread);
++								if(tmpClientThread->isAlreadyExit != TRUE)
++									cg_http_server_add_threadClientSock(tmpClientThread, clientSock);
+ 								cg_thread_unlock(tmpClientThread);
+-								cg_http_server_interrupt_thread(tmpClientThread);
++								//cg_http_server_interrupt_thread(tmpClientThread);
+ 							}
+ 							else{
+ 								cg_socket_delete(clientSock);
+ 								clientSock = NULL;
+ 							}
++							cg_http_server_unlock(httpServer);
++#endif
++							if(cg_http_server_add_clientthread_sk(httpServer, clientSock) != TRUE){
++								cg_socket_delete(clientSock);
++								clientSock = NULL;
++							}
+ 						}
+ 						else{
+ #endif
+@@ -581,6 +667,8 @@
+ 		cg_http_server_lock(httpServer);
+ 		cg_threadlist_add(httpServer->clientThreads, httpClientThread);
+ 		cg_http_server_unlock(httpServer);
++		int n = cg_threadlist_size(httpServer->clientThreads);
++		printf("%s: clientThreads %d\n", __FUNCTION__, n);
+ 
+ 		cg_thread_start(httpClientThread);
+ #ifdef ZYXEL_PATCH

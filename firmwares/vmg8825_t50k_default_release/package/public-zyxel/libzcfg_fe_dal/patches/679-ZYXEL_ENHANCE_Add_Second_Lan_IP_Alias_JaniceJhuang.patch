@@ -1,0 +1,236 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2019-05-27 16:05:51.068924956 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2019-05-28 14:10:48.235970125 +0800
+@@ -323,6 +323,11 @@
+ CFLAGS += -DMOS_SUPPORT
+ endif
+ 
++#Support Second Lan IP Alias
++ifeq ($(CONFIG_ZYXEL_SECOND_LAN_IP_ALIAS),y)
++CFLAGS += -DZYXEL_SECOND_LAN_IP_ALIAS
++endif
++
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+ 
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c	2019-05-27 16:05:50.700734694 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c	2019-05-28 14:42:55.239605191 +0800
+@@ -18,6 +18,12 @@
+ 	{"ipAlias_Enable", 			dalType_boolean,	0,	0,	NULL,	NULL,	NULL},
+ 	{"ipAlias_IPAddress", 		dalType_v4Addr,		0,	0,	NULL,	NULL,	NULL},
+ 	{"ipAlias_SubnetMask", 		dalType_v4Mask,		0,	0,	NULL,	NULL,	NULL},
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++	{"GroupName_2",				dalType_string,		0,	0,	NULL,	NULL,	dal_Edit},
++	{"ipAlias_Enable_2", 			dalType_boolean,	0,	0,	NULL,	NULL,	NULL},
++	{"ipAlias_IPAddress_2", 		dalType_v4Addr,		0,	0,	NULL,	NULL,	NULL},
++	{"ipAlias_SubnetMask_2", 		dalType_v4Mask,		0,	0,	NULL,	NULL,	NULL},
++#endif
+ 	{"PubLan_Enable",			dalType_boolean,	0,	0,	NULL,	NULL,	NULL},
+ 	{"PubLan_IP", 				dalType_v4Addr,		0,	0,	NULL,	NULL,	NULL},
+ 	{"PubLan_SubnetMask", 		dalType_v4Mask,		0,	0,	NULL,	NULL,	NULL},
+@@ -86,7 +92,14 @@
+ 	const char *aliasAddr = NULL, *curAliasAddr = NULL;
+ 	const char *aliasSubMask = NULL, *curAliasSubMask = NULL;
+ 	char *X_ZYXEL_Dhcp4Subnet_Ref = NULL;
+-	
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++	objIndex_t ipAliasIid_2 = {0};
++	bool aliasEnable_2 = false, curAlias_2 = false;
++	bool found_2 = false, setParam_2 = false, onesetting = false;
++	const char *aliasAddr_2 = NULL, *curAliasAddr_2 = NULL;
++	const char *aliasSubMask_2 = NULL, *curAliasSubMask_2 = NULL;
++	aliasEnable_2 = json_object_get_boolean(json_object_object_get(Jobj, "ipAlias_Enable_2"));
++#endif
+ 	aliasEnable = json_object_get_boolean(json_object_object_get(Jobj, "ipAlias_Enable"));
+ 
+ 	IID_INIT(ipAliasIid);
+@@ -98,6 +111,10 @@
+ 			zcfgFeJsonObjFree(ipv4AddrObj);
+ 			continue;
+ 		}
++		#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++		if(ipv4AddrIid.idx[1] == 3)
++			break;
++		#endif
+ 		curAliasAddr = json_object_get_string(json_object_object_get(ipv4AddrObj, "IPAddress"));
+ 		curAliasSubMask = json_object_get_string(json_object_object_get(ipv4AddrObj, "SubnetMask"));
+ 		found = true;
+@@ -133,6 +150,9 @@
+ 
+ 			zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid, ipAliasObj, NULL);
+ 			zcfgFeJsonObjFree(ipAliasObj);
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++			onesetting = true;
++#endif
+ 		}
+ 	}else{
+ 		zcfgFeJsonObjFree(ipAliasObj);
+@@ -141,6 +161,75 @@
+ 		}
+ 	}
+ 	}
++
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++	//Add Second Alias IP
++	if(!onesetting){
++	aliasAddr_2 = json_object_get_string(json_object_object_get(Jobj, "ipAlias_IPAddress_2"));
++	aliasSubMask_2 = json_object_get_string(json_object_object_get(Jobj, "ipAlias_SubnetMask_2"));
++
++	IID_INIT(ipAliasIid_2);
++	IID_INIT(ipv4AddrIid);
++	ipv4AddrIid.level = 2;
++	ipv4AddrIid.idx[0] = 1;
++	ipv4AddrIid.idx[1] = 2;
++	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE_V4_ADDR, &ipv4AddrIid, &ipv4AddrObj) == ZCFG_SUCCESS) {
++		curAlias_2 = json_object_get_boolean(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Alias"));
++		X_ZYXEL_Dhcp4Subnet_Ref = json_object_get_string(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Dhcp4Subnet_Ref"));
++		if((ipv4AddrIid.idx[0] != ipIntfIid->idx[0]) || (curAlias_2 == false) || (strstr(X_ZYXEL_Dhcp4Subnet_Ref, "DHCPv4.Server.X_ZYXEL_Subnet"))){
++			zcfgFeJsonObjFree(ipv4AddrObj);
++			continue;
++		}
++        if(ipv4AddrIid.idx[1] == 2 && (curAlias_2 == true)){
++            zcfgFeJsonObjFree(ipv4AddrObj);
++		    continue;
++        }
++		
++		curAliasAddr_2 = json_object_get_string(json_object_object_get(ipv4AddrObj, "IPAddress"));
++		curAliasSubMask_2 = json_object_get_string(json_object_object_get(ipv4AddrObj, "SubnetMask"));
++		found_2 = true;
++		memcpy(&ipAliasIid_2, &ipv4AddrIid, sizeof(objIndex_t));
++		ipAliasObj = ipv4AddrObj;
++		break;                                          
++	}
++
++	if(json_object_object_get(Jobj, "ipAlias_Enable_2")){
++		if(aliasEnable_2){
++			aliasAddr_2 = json_object_get_string(json_object_object_get(Jobj, "ipAlias_IPAddress_2"));
++			aliasSubMask_2 = json_object_get_string(json_object_object_get(Jobj, "ipAlias_SubnetMask_2"));
++			if(found_2){
++				if(strcmp(curAliasAddr_2, aliasAddr_2) || strcmp(curAliasSubMask_2, aliasSubMask_2)){
++					setParam_2 = true;
++				}
++			}else{//POST
++				memcpy(&ipAliasIid_2, ipIntfIid, sizeof(objIndex_t));
++				ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid_2, NULL);
++				if(ret == ZCFG_SUCCESS){
++					zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid_2, &ipAliasObj);
++					setParam_2 = true;
++				}
++			}
++
++			if(setParam_2){
++				json_object_object_add(ipAliasObj, "Enable", json_object_new_boolean(aliasEnable_2));
++				json_object_object_add(ipAliasObj, "X_ZYXEL_Alias", json_object_new_boolean(true));
++				if(json_object_object_get(Jobj, "ipAlias_IPAddress_2"))
++				json_object_object_add(ipAliasObj, "IPAddress", json_object_new_string(aliasAddr_2));
++				if(json_object_object_get(Jobj, "ipAlias_SubnetMask_2"))
++				json_object_object_add(ipAliasObj, "SubnetMask", json_object_new_string(aliasSubMask_2));
++
++				zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid_2, ipAliasObj, NULL);
++				zcfgFeJsonObjFree(ipAliasObj);
++			}
++		}else{
++			zcfgFeJsonObjFree(ipAliasObj);
++			if(found_2){
++				ret = zcfgFeObjJsonDel(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid_2, NULL);
++			}
++		}
++	}
++	}
++#endif	
+ 	zcfgFeJsonObjFree(ipv4AddrObj);
+ 	return ret;
+ }
+@@ -197,6 +286,10 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	const char *GroupName = NULL, *srvName = NULL, *ifName = NULL;
+ 	GroupName = json_object_get_string(json_object_object_get(Jobj, "GroupName"));
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++	const char *GroupName_2 = NULL;
++	GroupName_2 = json_object_get_string(json_object_object_get(Jobj, "GroupName_2"));
++#endif
+ 
+ 	IID_INIT(ipIntfIid);
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ipIntfIid, &ipIntfObj) == ZCFG_SUCCESS) {
+@@ -206,6 +299,12 @@
+ 			!strncmp(ifName, "br", 2)){
+ 			break;
+ 		}                                           
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++		if((!strcmp(GroupName_2, "Default") || !strcmp(GroupName_2, srvName)) &&
++			!strncmp(ifName, "br", 2)){
++			break;
++		}
++#endif		
+ 		zcfgFeJsonObjFree(ipIntfObj);
+     }
+ 	// For dalcmd to check ipv4 address and submask parameter.
+@@ -243,6 +342,10 @@
+ 	const char *bridge_name = NULL;
+ 	const char *wanlanlist_name = NULL;
+ 	int i, len = 0;
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++	const char *ifName = NULL;
++	int num = 0, num_1 = 0;
++#endif
+ 
+ 	getWanLanList(&WanLanList);
+ 	len = json_object_array_length(WanLanList);
+@@ -250,6 +353,9 @@
+ 		paramJobj = json_object_new_object();
+ 		bridge_name = json_object_get_string(json_object_object_get(bringObj, "X_ZYXEL_BridgeName"));
+ 		json_object_object_add(paramJobj, "GroupName", json_object_new_string(bridge_name));
++#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++		json_object_object_add(paramJobj, "GroupName_2", json_object_new_string(bridge_name));
++#endif		
+ 		for(i=0;i<len;i++){
+ 			reqObject = json_object_array_get_idx(WanLanList, i);
+ 			wanlanlist_name = json_object_get_string(json_object_object_get(reqObject, "Name"));
+@@ -261,17 +367,44 @@
+ 				while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE_V4_ADDR, &ipv4AddrIid, &Iid, &ipv4AddrObj) == ZCFG_SUCCESS){
+ 					if(json_object_get_boolean(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Alias"))
+ 						&& strstr(json_object_get_string(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Dhcp4Subnet_Ref")), "DHCPv4.Server.X_ZYXEL_Subnet") == NULL){
++		                #ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++                        ifName = json_object_get_string(json_object_object_get(ipv4AddrObj, "X_ZYXEL_IfName"));
++						//printf("ifName = %s, %s(%d)\n\r", ifName, __FUNCTION__, __LINE__);
++						sscanf(ifName, "br%d:%d", &num, &num_1);
++						//printf("num = %d, num_1 = %d, %s(%d)\n\r", num, num_1, __FUNCTION__, __LINE__);
++						if(num_1 == 2){
++							json_object_object_add(paramJobj, "ipAlias_Enable", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "Enable")));
++							json_object_object_add(paramJobj, "ipAlias_IPAddress", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "IPAddress")));
++							json_object_object_add(paramJobj, "ipAlias_SubnetMask", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "SubnetMask")));
++							json_object_object_add(paramJobj, "ipAlias_Subnet_Ref", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Dhcp4Subnet_Ref")));
++						}else{
++							json_object_object_add(paramJobj, "ipAlias_Enable_2", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "Enable")));
++							json_object_object_add(paramJobj, "ipAlias_IPAddress_2", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "IPAddress")));
++							json_object_object_add(paramJobj, "ipAlias_SubnetMask_2", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "SubnetMask")));
++						}
++						#else
+ 						json_object_object_add(paramJobj, "ipAlias_Enable", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "Enable")));
+ 						json_object_object_add(paramJobj, "ipAlias_IPAddress", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "IPAddress")));
+ 						json_object_object_add(paramJobj, "ipAlias_SubnetMask", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "SubnetMask")));
+ 						json_object_object_add(paramJobj, "ipAlias_Subnet_Ref", JSON_OBJ_COPY(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Dhcp4Subnet_Ref")));
+ 						break;
++						#endif
+ 					}
+ 					else{
++						#ifdef ZYXEL_SECOND_LAN_IP_ALIAS
++						json_object_object_add(paramJobj, "ipAlias_Enable", json_object_new_boolean(false));
++						json_object_object_add(paramJobj, "ipAlias_IPAddress", json_object_new_string(""));
++						json_object_object_add(paramJobj, "ipAlias_SubnetMask", json_object_new_string(""));
++						json_object_object_add(paramJobj, "ipAlias_Subnet_Ref", json_object_new_string(""));
++						json_object_object_add(paramJobj, "ipAlias_Enable_2", json_object_new_boolean(false));
++						json_object_object_add(paramJobj, "ipAlias_IPAddress_2", json_object_new_string(""));
++						json_object_object_add(paramJobj, "ipAlias_SubnetMask_2", json_object_new_string(""));
++						#else
+ 						json_object_object_add(paramJobj, "ipAlias_Enable", json_object_new_boolean(false));
+ 						json_object_object_add(paramJobj, "ipAlias_IPAddress", json_object_new_string(""));
+ 						json_object_object_add(paramJobj, "ipAlias_SubnetMask", json_object_new_string(""));
+ 						json_object_object_add(paramJobj, "ipAlias_Subnet_Ref", json_object_new_string(""));
++						#endif
+ 					}
+ 					zcfgFeJsonObjFree(ipv4AddrObj);
+ 				}

@@ -1,0 +1,188 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2017-07-04 13:56:46.186246845 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2017-07-04 13:58:56.250243461 +0800
+@@ -137,6 +137,7 @@
+ bool cbtGuestWifiConfig;
+ bool cbtWifiConfig;
+ unsigned int guestCountdownTime = 0;
++bool cbtSameSsidChange;
+ #endif
+ //WiFi Radio
+ bool div_wifiAdvance;
+@@ -319,19 +320,25 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ #ifdef CBT_CUSTOMIZATION
+ 	if(cbtGuestWifiConfig == true){ // CBT Guest Wi-Fi
+-		// 2.4G
++
++		if(cbtWifiConfig == true){
++			if(guestSecTmpObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &guestSecTmpIid, guestSecTmpObj, NULL);
++			if(guest5GSecTmpObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &guest5GSecTmpIid, guest5GSecTmpObj, NULL);
++		}
++
++		// 2.4G AP, APSec
+ 		if(guestApObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT, &guestApIid, guestApObj, NULL);
+ 		if(guestSecObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &guestSecIid, guestSecObj, NULL);
+-		if(guestSsidObj) zcfgFeObjJsonSet(RDM_OID_WIFI_SSID, &guestSsidIid, guestSsidObj, NULL);
+-		// 5G
++
++		// 5G AP, APSec
+ 		if(guest5GApObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT, &guest5GApIid, guest5GApObj, NULL);
+ 		if(guest5GSecObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &guest5GSecIid, guest5GSecObj, NULL);
++
++		// 2.4G SSID
++		if(guestSsidObj) zcfgFeObjJsonSet(RDM_OID_WIFI_SSID, &guestSsidIid, guestSsidObj, NULL);
++		// 5G SSID
+ 		if(guest5GSsidObj) zcfgFeObjJsonSet(RDM_OID_WIFI_SSID, &guest5GSsidIid, guest5GSsidObj, NULL);
+ 
+-		if(cbtWifiConfig == true){
+-			if(guestSecTmpObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &guestSecTmpIid, guestSecTmpObj, NULL);
+-			if(guest5GSecTmpObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &guest5GSecTmpIid, guest5GSecTmpObj, NULL);
+-		}
+ 	}else{ // general wireless
+ 		if (wifiRadioObj == NULL)
+ 		{
+@@ -609,6 +616,7 @@
+ 	const char *serialNum;
+ 	char tempSerial[6] = {0};
+ 	char temp5GSsid[32] = {0};
++	char originalSsid[32] = {0};
+ 	
+ 	if(cbtGuestWifiConfig == true){ // CBT guest Wi-Fi
+ 		
+@@ -680,14 +688,50 @@
+ 			serialNum = json_object_get_string(json_object_object_get(guestDevInfoObj, "SerialNumber"));
+ 
+ 			strncpy(tempSerial, serialNum + 8, 5);
+-			if(cbtWifiConfig)
+-				sprintf(temp5GSsid, "Fioptics%s-5G", tempSerial); // for WiFi
+-			else
+-				sprintf(temp5GSsid, "Fioptics%s-Guest-5G", tempSerial); // for Guest WiFi
++			if(cbtWifiConfig){ // WiFi
++				sprintf(originalSsid, "Fioptics%s", tempSerial);
++
++				if(!strcmp(guestSsid, originalSsid)) // default SSID
++					sprintf(temp5GSsid, "Fioptics%s-5G", tempSerial);
++				else // user define SSID
++					sprintf(temp5GSsid, "%s-5G", guestSsid);
++
++			}else{ // Guest WiFi
++				sprintf(originalSsid, "Fioptics%s-Guest", tempSerial);
++
++				if(!strcmp(guestSsid, originalSsid)) // default SSID
++					sprintf(temp5GSsid, "Fioptics%s-Guest-5G", tempSerial);
++				else // user default SSID
++					sprintf(temp5GSsid, "%s-5G", guestSsid);
++
++			}
+ 
+ 			json_object_object_add(guest5GSsidObj, "SSID", json_object_new_string(temp5GSsid));
+ 		}
+ 
++		// TR-181 parameter
++		if(cbtWifiConfig){ // WiFi, X_ZYXEL_MasterMain
++
++			cbtSameSsidChange = json_object_get_boolean(json_object_object_get(guestSsidObj, "X_ZYXEL_MasterMain"));
++			if(cbtSameSsidChange == guestSameSsid)
++				cbtSameSsidChange = false;
++			else
++				cbtSameSsidChange = true;
++
++			json_object_object_add(guestSsidObj, "X_ZYXEL_MasterMain", json_object_new_boolean(guestSameSsid));
++			json_object_object_add(guest5GSsidObj, "X_ZYXEL_MasterMain", json_object_new_boolean(guestSameSsid));
++		}else{ // Guest WiFi, X_ZYXEL_MasterGuest
++
++			cbtSameSsidChange = json_object_get_boolean(json_object_object_get(guestSsidObj, "X_ZYXEL_MasterGuest"));
++			if(cbtSameSsidChange == guestSameSsid)
++				cbtSameSsidChange = false;
++			else
++				cbtSameSsidChange = true;
++
++			json_object_object_add(guestSsidObj, "X_ZYXEL_MasterGuest", json_object_new_boolean(guestSameSsid));
++			json_object_object_add(guest5GSsidObj, "X_ZYXEL_MasterGuest", json_object_new_boolean(guestSameSsid));
++		}
++
+ 	}else{ // wireless general
+ #endif
+ 	
+@@ -776,6 +820,8 @@
+ 	char *psk_lowercase = NULL;
+ 
+ #ifdef CBT_CUSTOMIZATION // 20170427 Max Add
++	char tmpPsk[128] = {0};
++
+ 	if(cbtGuestWifiConfig == true){ // CBT guest Wi-Fi
+ 
+ 		iidArray = json_object_object_get(Jobj, "cbtGuestWifiIid"); // 2.4G Iid
+@@ -940,42 +986,56 @@
+ 						json_object_object_add(guest5GSecTmpObj, "ModeEnabled", json_object_new_string("WPA-WPA2-Personal"));
+ 					}
+ 				}
+-
+-				json_object_object_add(guestSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+-				json_object_object_add(guest5GSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+ 				
+ 				X_ZYXEL_Auto_PSK = json_object_get_string(json_object_object_get(guestSecObj, "X_ZYXEL_Auto_PSK"));
+ 				if(strcmp(X_ZYXEL_Auto_PSK, guestPskValue) == 0) // The same string means using auto generate psk
+ 				{
+ 					// X_ZYXEL_AutoGenPSK
+ 					X_ZYXEL_AutoGenPSK = true;
+-					json_object_object_add(guestSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+-					json_object_object_add(guest5GSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
++
+ 					// 2.4G KeyPassphrase and PreSharedKey
++					json_object_object_add(guestSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+ 					json_object_object_add(guestSecObj, "KeyPassphrase", json_object_new_string(X_ZYXEL_Auto_PSK));
+ 					json_object_object_add(guestSecObj, "PreSharedKey", json_object_new_string(""));
++
+ 					// 5G KeyPassphrase and PreSharedKey
+-					json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(X_ZYXEL_Auto_PSK));
+-					json_object_object_add(guest5GSecObj, "PreSharedKey", json_object_new_string(""));
+-				}
+-				else {
++					if(guestSameSsid == true){
++						json_object_object_add(guest5GSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
++						json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(X_ZYXEL_Auto_PSK));
++						json_object_object_add(guest5GSecObj, "PreSharedKey", json_object_new_string(""));
++					}else{
++						X_ZYXEL_AutoGenPSK = false;
++
++						json_object_object_add(guest5GSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
++						sprintf(tmpPsk, "%s%s", X_ZYXEL_Auto_PSK, "-5G");
++						json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(tmpPsk));
++					}
++				}else {
+ 					// X_ZYXEL_AutoGenPSK
+ 					X_ZYXEL_AutoGenPSK = false;
+ 					json_object_object_add(guestSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+ 					json_object_object_add(guest5GSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+ 
+-					if(strlen(psk_value) == 64) {
+-						psk_lowercase = (char*)malloc(strlen(psk_value)+1);
+-						memset(psk_lowercase, 0, strlen(psk_value)+1);
+-						stolower(psk_value, psk_lowercase, strlen(psk_value));
++					if(strlen(guestPskValue) == 64) {
++						psk_lowercase = (char*)malloc(strlen(guestPskValue)+1);
++						memset(psk_lowercase, 0, strlen(guestPskValue)+1);
++						stolower(guestPskValue, psk_lowercase, strlen(guestPskValue));
+ 						json_object_object_add(guestSecObj, "KeyPassphrase", json_object_new_string(""));
+ 						json_object_object_add(guestSecObj, "PreSharedKey", json_object_new_string(psk_lowercase));
+ 						json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(""));
+ 						json_object_object_add(guest5GSecObj, "PreSharedKey", json_object_new_string(psk_lowercase));
+ 					}
+ 					else {
++						// 2.4G PSK
+ 						json_object_object_add(guestSecObj, "KeyPassphrase", json_object_new_string(guestPskValue));
+-						json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(guestPskValue));
++						
++						// 5G PSK
++						if(guestSameSsid == true){
++							json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(guestPskValue));
++						}else{
++							sprintf(tmpPsk, "%s%s", guestPskValue, "-5G");
++							json_object_object_add(guest5GSecObj, "KeyPassphrase", json_object_new_string(tmpPsk));
++						}
+ 					}
+ 				}
+ 			}

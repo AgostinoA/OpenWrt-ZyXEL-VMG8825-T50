@@ -1,0 +1,145 @@
+--- a/networking/wget.c
++++ b/networking/wget.c
+@@ -110,6 +110,11 @@ static char TCPOpenResponseTime[64] = DE
+ static unsigned long TotalBytesReceived = 0;
+ static unsigned long TotalBytesSent = 0;
+ static unsigned long TestBytesReceived = 0;
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++char Latency[33] = {0};
++static unsigned long BOMTimeMs = 0;
++static unsigned long EOMTimeMs = 0;
++#endif
+ static unsigned long ifBytesReceivedStart = 0;
+ static unsigned long ifBytesReceivedEnd = 0;
+ static unsigned long ifBytesSentStart = 0;
+@@ -160,6 +165,31 @@ enum {
+ 
+ #if defined(ZCFG_SUPPORT)//TR143
+ 
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++char* getLatency(char* ip){
++	FILE *fpRead;
++	char cmd[513] = {0};
++	char* renewCh;
++
++	strcpy(cmd, "ping ");
++	strcat(cmd, ip);
++	strcat(cmd, " -c 10 | awk 'BEGIN{avg = 0; i = 0} { if($7 ~ /time=*/ ){avg += substr($7,6); i++} } END{ if(i > 2) {print avg/i} else {print 0} }'");
++
++	fpRead = popen(cmd, "r");
++	if(!fpRead){
++		Latency[0] = '\0';
++		return Latency;
++	}
++
++	fgets(Latency, sizeof(Latency), fpRead);
++	renewCh = strstr(Latency,"\n");
++	if(renewCh) *renewCh= '\0';
++
++	pclose(fpRead);	
++	return Latency;
++} 
++#endif
++
+ static void outputDiagDlData(void)
+ {
+ 	struct json_object *diag_result = NULL;
+@@ -168,6 +198,9 @@ static void outputDiagDlData(void)
+ 	char testByteRecv[21] = {0};
+ 	char totalByteRecv[21] = {0};
+ 	char totalByteSent[21] = {0};
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++	char tmpBuf[21] = {0};
++#endif	
+ 
+ 	if(!strcmp(DiagnosticsState, "Requested")) {
+ 		strcpy(DiagnosticsState, "Completed");
+@@ -190,6 +223,14 @@ static void outputDiagDlData(void)
+         sprintf(totalByteSent, "%u", TotalBytesSent);
+         json_object_object_add(diag_result, "TotalBytesSent", json_object_new_string(totalByteSent));
+ 
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++	json_object_object_add(diag_result, "X_ZYXEL_Latency", json_object_new_string(Latency));
++	sprintf(tmpBuf, "%lu", EOMTimeMs - BOMTimeMs);
++	json_object_object_add(diag_result, "X_ZYXEL_RoundTripTime", json_object_new_string(tmpBuf));
++	sprintf(tmpBuf, "%.3f", ( (TotalBytesReceived > 0) ? ( (double)(TotalBytesReceived * 8) / 1024 / 1024 ) / ( (double)(EOMTimeMs - BOMTimeMs) / 1000000 ) : 0 ) );
++	json_object_object_add(diag_result, "X_ZYXEL_DownloadSpeed", json_object_new_string(tmpBuf));
++#endif
++
+ 	json_object_object_add(diag_result, "TCPOpenRequestTime", json_object_new_string(TCPOpenRequestTime));
+ 	json_object_object_add(diag_result, "TCPOpenResponseTime", json_object_new_string(TCPOpenResponseTime));
+ 
+@@ -271,7 +312,11 @@ static size_t safe_fwrite(void *ptr, siz
+ 	return ret;
+ }
+ 
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++unsigned long getDateTime(char *buf)
++#else
+ void getDateTime(char *buf)
++#endif
+ {
+     struct timeval c_tv;
+     struct timezone c_tz;
+@@ -279,7 +324,11 @@ void getDateTime(char *buf)
+     gettimeofday(&c_tv,&c_tz);
+     p = localtime(&c_tv.tv_sec);
+ 	sprintf(buf, "%d-%02d-%02dT%02d:%02d:%02d.%u", (1900+p->tm_year), (1+p->tm_mon), p->tm_mday, p->tm_hour, p->tm_min, p->tm_sec, c_tv.tv_usec);	
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++	return (1000000 * c_tv.tv_sec + c_tv.tv_usec);
++#else
+ 	return;
++#endif
+ }
+ 
+ unsigned long getReceiveByte(char *ifName)
+@@ -1018,6 +1067,10 @@ static void download_one_url(const char
+  resolve_lsa:
+ 	lsa = host2sockaddr(server.host, server.port);
+ #if defined(ZCFG_SUPPORT) //TR143
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++	strcpy(Latency, getLatency(server.host) );
++#endif
++
+ 	if(!lsa) {
+ 		strcpy(DiagnosticsState, "Error_InitConnectionFailed");
+ 		outputDiagDlData();
+@@ -1151,8 +1204,12 @@ static void download_one_url(const char
+ 			goto read_response;
+ 		case 200:
+ #if defined(ZCFG_SUPPORT) //TR143:DownloadDiagnstic
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++			BOMTimeMs = getDateTime(BOMTime);
++#else
+ 			getDateTime(BOMTime);
+ #endif
++#endif
+ /*
+ Response 204 doesn't say "null file", it says "metadata
+ has changed but data didn't":
+@@ -1291,8 +1348,12 @@ However, in real world it was observed t
+ 		 */
+ 		sfp = prepare_ftp_session(&dfp, &target, lsa);
+ #if defined(ZCFG_SUPPORT) //TR143:DownloadDiagnstic
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++		BOMTimeMs = getDateTime(BOMTime);
++#else
+ 		getDateTime(BOMTime);
+ #endif
++#endif
+ 	}
+ 
+ 	free(lsa);
+@@ -1345,7 +1406,11 @@ However, in real world it was observed t
+                         (ifBytesSentEnd - ifBytesSentStart) : 0;
+                 //printf("Sent data end: %ld\n", ifBytesSentEnd);
+ 	}
+-   	getDateTime(EOMTime);
++#ifdef ZYXEL_DL_DIAG_CALCULATION
++   	EOMTimeMs = getDateTime(EOMTime);
++#else
++	getDateTime(EOMTime);
++#endif
+ 
+ 	outputDiagDlData();
+ #endif

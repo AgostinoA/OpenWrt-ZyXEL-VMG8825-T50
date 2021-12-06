@@ -1,0 +1,117 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2017-01-13 17:36:39.987858344 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2017-01-13 17:40:13.846316426 +0800
+@@ -1619,10 +1619,44 @@
+ 		paramValue = json_object_object_get(ipIntfJobj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			if(strstr(paramList->name, "X_ZYXEL_Group_WAN_IpIface") != NULL) {
++#ifdef ISKON_CUSTOMIZATION
++				struct json_object *wanGroup = NULL;
++				wanGroup = json_object_object_get(ipIntfJobj, "X_ZYXEL_Group_WAN_IpIface");
++				if(wanGroup) {
++					char wanGroupIf[256] = {0}, wanGroupIfName[256] = {0};
++					char *pc1 = NULL, *pc2 = NULL;
++					objIndex_t ipIid = {0};
++					struct json_object *ipJobj = NULL;
++					// wanGroupIfName in format "name"
++					strcpy(wanGroupIf, json_object_get_string(wanGroup));
++					if (strlen(wanGroupIf)) {
++						pc2 = &wanGroupIf[0];
++						do {
++							pc1 = pc2;
++							pc2 = strstr(pc1, ",");
++							if (pc2 != NULL) {
++								*pc2 = 0;
++								++pc2;
++							}
++							IID_INIT(ipIid);
++							ipIid.level = 1;
++							sscanf(pc1, "IP.Interface.%hhu", &ipIid.idx[0]);
++							if  ((ret = feObjJsonGet(RDM_OID_IP_IFACE, &ipIid,  (void **)&ipJobj, updateFlag)) == ZCFG_SUCCESS) {
++								strcat(wanGroupIfName, json_object_get_string(json_object_object_get(ipJobj, "X_ZYXEL_SrvName")));
++								strcat(wanGroupIfName, ",");
++								zcfgFeObjStructFree(ipJobj);
++							}
++							if (pc2 == NULL || pc2[0] == 0)
++								break;
++						} while (1);
++					}
++					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(wanGroupIfName));
++#else
+ 				char *tr98WanIpIface = translateWanIpIface(TRANS_WANIPIFACE_181TO98, json_object_get_string(paramValue));
+ 				if(tr98WanIpIface) {
+ 					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tr98WanIpIface));
+ 					free(tr98WanIpIface);
++#endif
+ 				}
+ 				else
+ 					json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_string(""));
+@@ -2028,6 +2062,59 @@
+ 				continue;
+ 			}
+ 			else if(strstr(paramList->name, "X_ZYXEL_Group_WAN_IpIface") != NULL) {
++#ifdef ISKON_CUSTOMIZATION
++				char groupIf[256] = {0};
++				char tr181GroupIf[256] = {0};
++				char tmp[32];
++				struct json_object *pv = NULL;
++				struct json_object *ipJobj = NULL;
++				objIndex_t ipIid = {0};
++				char *pc1 = NULL, *pc2 = NULL;
++				int idx = 0;
++
++				strcpy(groupIf, json_object_to_json_string(paramValue));
++				pc2 = &groupIf[0];
++				if (*pc2 == '"') ++pc2;
++				do {
++					pc1 = pc2;
++					// skip space char
++					while (*pc1 == ' ')
++						++pc1;
++					// skip ,
++					pc2 = strstr(pc1, ",");
++					if (pc2 != NULL) {
++						*pc2 = 0;
++						++pc2;
++						// end of param value ?
++						if (*pc2 == '"') *pc2 = 0;
++					} else {
++						// string end with "
++						pc2 = strstr(pc1, "\"");
++						if (pc2 != NULL) *pc2 = 0;
++					}
++
++					if (strlen(pc1) != 0) {
++						IID_INIT(ipIid);
++						ipIid.level = 1;
++						while ((ret = feObjJsonGetNext(RDM_OID_IP_IFACE, &ipIid, &ipJobj, true)) == ZCFG_SUCCESS) {
++							pv = json_object_object_get(ipJobj, "X_ZYXEL_SrvName");
++							// string pv in format "ifname"
++							strcpy(tmp, json_object_to_json_string(pv)+1 /*skip first " */);
++							idx = strlen(tmp);
++							tmp[idx-1] = 0; // skip last "
++							if (strcmp(pc1, tmp)==0) {
++								sprintf(tr181GroupIf, "%sIP.Interface.%d,", tr181GroupIf, ipIid.idx[0]);
++								json_object_put(ipJobj);
++								break;
++							}
++							json_object_put(ipJobj);
++						}
++				}
++					if (pc2 == NULL || pc2[0] == 0)
++						break;
++				} while (1);
++				json_object_object_add(ipIntfJobj, paramList->name, json_object_new_string(tr181GroupIf));
++#else
+ 				const char *wanIpIfaces = json_object_get_string(paramValue);
+ 
+ 				char *tr181WanIpIface = translateWanIpIface(TRANS_WANIPIFACE_98TO181, wanIpIfaces);
+@@ -2035,6 +2122,7 @@
+ 					json_object_object_add(ipIntfJobj, paramList->name, json_object_new_string(tr181WanIpIface));
+ 					free(tr181WanIpIface);
+ 				}
++#endif
+ 				paramList++;
+ 				continue;
+ 			}

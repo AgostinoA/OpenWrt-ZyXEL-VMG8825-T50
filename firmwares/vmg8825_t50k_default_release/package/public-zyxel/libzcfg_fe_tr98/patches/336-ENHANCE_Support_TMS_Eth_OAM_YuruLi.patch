@@ -1,0 +1,353 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2016-07-13 10:49:48.852371353 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2016-07-13 10:51:43.544387585 +0800
+@@ -33,6 +33,10 @@
+ CFLAGS += -DCONFIG_XPON_SUPPORT
+ endif
+ 
++ifeq ($(strip $(CONFIG_PACKAGE_tmsctl)),y)
++CFLAGS += -DZYXEL_ETHOAM_TMSCTL
++endif
++
+ #One Connect
+ ifeq ($(CONFIG_ZYXEL_ONECONNECT),y)
+ CFLAGS += -DONECONNECT
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-07-13 10:49:48.852371353 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-07-13 11:15:37.056759327 +0800
+@@ -204,6 +204,9 @@
+ #define TR98_REMO_MGMT                "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement"
+ #define TR98_REMO_SRV                 "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.Service.i"
+ #define TR98_IEEE8021AG               "InternetGatewayDevice.X_ZYXEL_EXT.IEEE8021ag"
++#ifdef ZYXEL_ETHOAM_TMSCTL
++#define TR98_IEEE8023AH               "InternetGatewayDevice.X_ZYXEL_EXT.IEEE8023ah"
++#endif
+ #define TR98_SAMBA		              "InternetGatewayDevice.X_ZYXEL_EXT.SAMBA"
+ #define TR98_UPNP		              "InternetGatewayDevice.X_ZYXEL_EXT.UPNP"
+ #define TR98_REMO_TRUSTDOMAIN		"InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.i"
+@@ -458,6 +461,9 @@
+ {TR98_REMO_MGMT,				0,				NULL,					NULL,					 NULL,					 NULL,				NULL,			NULL},
+ {TR98_REMO_SRV, 			    ATTR_INDEX_CREA,para_RemoSrv,		    zyExtRemoteMgmtSrvObjGet,		 zyExtRemoteMgmtSrvObjSet,		 zyExtRemoteMgmtSrvObjAdd, zyExtRemoteMgmtSrvObjDel, zyExtRemoteMgmtSrvObjNotify, zyExtRemoteMgmtSrvObjAttrGet, zyExtRemoteMgmtSrvObjAttrSet},
+ {TR98_IEEE8021AG,               0,              para_8021ag,	        zyExt8021agObjGet, 	     zyExt8021agObjSet,		NULL,             NULL,            zyExt8021agObjNotify, zyExt8021agObjAttrGet, zyExt8021agObjAttrSet},
++#ifdef ZYXEL_ETHOAM_TMSCTL
++{TR98_IEEE8023AH,				0,				para_8023ah,			zyExt8023ahObjGet,		 zyExt8023ahObjSet, 	NULL,			  NULL, 		   zyExt8023ahObjNotify, zyExt8023ahObjAttrGet, zyExt8023ahObjAttrSet},
++#endif
+ {TR98_SAMBA,         		    0,              para_Samba,	   		    zyExtSambaObjGet, 	     zyExtSambaObjSet,		NULL,             NULL,            zyExtSambaObjNotify, zyExtSambaObjAttrGet, zyExtSambaObjAttrSet},
+ {TR98_UPNP,         		    0,              para_Upnp,	   		    zyExtUPnPObjGet, 	     zyExtUPnPObjSet,		NULL,             NULL,            NULL, NULL, NULL},
+ {TR98_REMO_TRUSTDOMAIN,         ATTR_INDEX_CREA,para_RemoTrustDomain,   zyExtRemoteMgmtTrustDomainObjGet,                    zyExtRemoteMgmtTrustDomainObjSet,                   zyExtRemoteMgmtTrustDomainObjAdd,            zyExtRemoteMgmtTrustDomainObjDel,            NULL},
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2016-07-13 10:49:48.856371353 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2016-07-13 11:14:21.134562649 +0800
+@@ -5827,7 +5827,7 @@
+  *   Related object in TR181:
+  *   Device.X_ZYXEL_8021ag
+  */
+- zcfgRet_t zyExt8021agObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++zcfgRet_t zyExt8021agObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid;
+@@ -6033,6 +6033,214 @@
+ 	return ret;
+ }
+ 
++#ifdef ZYXEL_ETHOAM_TMSCTL
++zcfgRet_t zyExt8023ahObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ieeeJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_IEEE8023AH, &objIid, &ieeeJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;	
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(ieeeJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(ieeeJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExt8023ahObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ieeeJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8023AH, &objIid, &ieeeJobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = ieeeJobj;
++		ieeeJobj = NULL;
++		ieeeJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IEEE8023AH, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(ieeeJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(ieeeJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IEEE8023AH, &objIid, ieeeJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(ieeeJobj);
++			return ret;
++		}
++		json_object_put(ieeeJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExt8023ahObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int zyExt8023ahObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  ieeeOid = 0;
++	objIndex_t ieeeIid;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(ieeeIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	ieeeOid = zcfgFeObjNameToObjId(tr181Obj, &ieeeIid);
++	
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		
++		/*special case*/
++
++		attrValue = zcfgFeParamAttrGetByName(ieeeOid, paramList->name);
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t zyExt8023ahObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  ieeeOid = 0;
++	objIndex_t ieeeIid;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(ieeeIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	ieeeOid = zcfgFeObjNameToObjId(tr181Obj, &ieeeIid);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++		
++		attrValue = zcfgFeParamAttrGetByName(ieeeOid, paramList->name);
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(ieeeOid, multiAttrJobj, paramList->name, attrValue);
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, ieeeOid, paramList->name);
++		}
++		break;
++	}
++	
++	return ret;
++}
++#endif
++
+ #ifdef ONECONNECT
+ /* InternetGatewayDevice.X_ZYXEL_EXT.OneConnect */
+ zcfgRet_t zyExtOneConnectObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2016-07-13 10:49:48.856371353 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2016-07-13 11:15:30.171618061 +0800
+@@ -11,6 +11,9 @@
+ extern tr98Parameter_t para_SnmpTrap[];
+ extern tr98Parameter_t para_RemoSrv[];
+ extern tr98Parameter_t para_8021ag[];
++#ifdef ZYXEL_ETHOAM_TMSCTL
++extern tr98Parameter_t para_8023ah[];
++#endif
+ extern tr98Parameter_t para_RemoTrustDomain[];
+ extern tr98Parameter_t para_Igmp[];
+ #if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+@@ -161,6 +164,15 @@
+ extern int zyExt8021agObjAttrGet(char *, int, char *);
+ extern zcfgRet_t zyExt8021agObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
++#ifdef ZYXEL_ETHOAM_TMSCTL
++/*InternetGatewayDevice.X_ZYXEL_EXT.8023ah*/
++extern zcfgRet_t zyExt8023ahObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyExt8023ahObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyExt8023ahObjNotify(char *, char *, struct json_object *, int, struct json_object **);
++extern int zyExt8023ahObjAttrGet(char *, int, char *);
++extern zcfgRet_t zyExt8023ahObjAttrSet(char *, int, char *, int , struct json_object *);
++#endif
++
+ /*InternetGatewayDevice.X_ZYXEL_EXT.SAMBA*/
+ extern zcfgRet_t zyExtSambaObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t zyExtSambaObjSet(char *, int, struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2016-07-13 10:49:48.856371353 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2016-07-13 11:03:46.678249847 +0800
+@@ -252,9 +252,37 @@
+ 	{ "LoopBackResult", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "SendLinkTrace", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "LinkTraceResult", PARAMETER_ATTR_WRITE, 321, json_type_string},
++#ifdef ZYXEL_ETHOAM_TMSCTL
++	{ "Enabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Y1731Mode", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Interface", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "MDName", PARAMETER_ATTR_WRITE, 129, json_type_string},
++	{ "MAID", PARAMETER_ATTR_WRITE, 129, json_type_string},
++	{ "LMPID", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "RMPID", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "CCMEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "CCMInterval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "LinkTraceTTL", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "TmsPid", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++#endif
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++#ifdef ZYXEL_ETHOAM_TMSCTL
++tr98Parameter_t para_8023ah[] = {
++	{ "Enabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Interface", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "VariableRetrievalEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "LinkEventsEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "RemoteLoopbackEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "ActiveModeEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "AutoEventEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "OAMID", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "TmsPid", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++#endif
++
+ tr98Parameter_t para_Sec[] = {
+ 	{ "CertificateNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-07-13 10:49:48.840371353 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-07-13 11:28:42.464876933 +0800
+@@ -253,6 +253,9 @@
+ {e_TR98_REMO_MGMT               , &tr98Obj[e_TR98_REMO_MGMT               -e_TR98_START]},
+ {e_TR98_REMO_SRV                , &tr98Obj[e_TR98_REMO_SRV                -e_TR98_START]},
+ {e_TR98_IEEE8021AG              , &tr98Obj[e_TR98_IEEE8021AG              -e_TR98_START]},
++#ifdef ZYXEL_ETHOAM_TMSCTL
++{e_TR98_IEEE8023AH				, &tr98Obj[e_TR98_IEEE8023AH			  -e_TR98_START]},
++#endif
+ {e_TR98_SAMBA		            , &tr98Obj[e_TR98_SAMBA		              -e_TR98_START]},
+ {e_TR98_UPNP	           		, &tr98Obj[e_TR98_UPNP		              -e_TR98_START]},
+ {e_TR98_REMO_TRUSTDOMAIN        , &tr98Obj[e_TR98_REMO_TRUSTDOMAIN        -e_TR98_START]},

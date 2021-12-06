@@ -1,0 +1,95 @@
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_region.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/phone/zcfg_fe_dal_phone_region.c	2019-07-18 19:33:23.880236763 +0800
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_region.c	2019-07-18 19:38:34.644776764 +0800
+@@ -15,6 +15,7 @@
+ 	{"Service_Mode",							dalType_string,	0,	0,	NULL,	"Europe_Type|USA_Type",	NULL},
+ 	{"Region",									dalType_VoipRegion,	0,	0,	NULL,	NULL,	NULL},
+ 	{"Region_Cap",                              dalType_string,	0,	0,	NULL,	NULL,	NULL},
++    {"FxsCIDSigProtocol",                       dalType_string,  0,  0,  NULL,  NULL,  NULL},
+ 	{NULL,										0,				0,	0,	NULL},
+ };
+ 
+@@ -42,6 +43,9 @@
+ 		else if(!strcmp(json_object_get_string(json_object_object_get(obj, "Service_Mode")),"USA_Flash_Style"))
+ 			serviceMode = "USA Type";
+ 	printf("Region : %s \n",json_object_get_string(json_object_object_get(obj, "Region")));
++#ifdef ZYXEL_PHONE_CUSTOMIZED_FXS_CLID_PARAMS_SUPPORT
++    printf("Caller ID Signal Type : %s \n", json_object_get_string(json_object_object_get(obj, "FxsCIDSigProtocol")));
++#endif
+ 	printf("Call Service Mode : %s \n",serviceMode);
+ 
+ }
+@@ -134,12 +138,39 @@
+ 	initRegionGlobalObjects();
+ 	getRegionBasicInfo(Jobj);
+ 	multiJobj = zcfgFeJsonObjNew();
++    struct json_object *voiceCommonObj = NULL;
++    char *callerIDSignalType;
+ 
+ 	if((ret = zcfgFeDalVoipFlashAndCountryEdit(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s: Edit prof  obj fail \n", __FUNCTION__);
+ 		goto exit;
+ 	}
+ 
++    IID_INIT(Iid);
++    while (zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_COMMON, &Iid, &voiceCommonObj) == ZCFG_SUCCESS)
++    {
++        if ((callerIDSignalType = json_object_get_string(json_object_object_get(Jobj, "FxsCIDSigProtocol"))) != NULL)
++        {
++            if (!strcmp(callerIDSignalType, "Default"))
++            {
++                json_object_object_add(voiceCommonObj, "FxsCIDSigProtocol", json_object_new_string(""));
++            }
++            else
++            {
++                json_object_object_add(voiceCommonObj, "FxsCIDSigProtocol", json_object_new_string(callerIDSignalType));
++            }
++        }
++
++        if (zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_COMMON, &Iid, multiJobj, voiceCommonObj) == NULL)
++        {
++            printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_COMMON);
++            zcfgFeJsonObjFree(voiceCommonObj);
++            goto exit;
++        }
++
++        zcfgFeJsonObjFree(voiceCommonObj);
++    }
++
+ 	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_VOICE_PROF);
+ 		goto exit;
+@@ -177,6 +208,8 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *paramJobj = NULL;
+ 	struct json_object *voiceregionJobj = NULL;
++    struct json_object *voiceCommonObj = NULL;
++    char *callerIDSignalType;
+ 
+     paramJobj = json_object_new_object();
+ 
+@@ -189,6 +222,23 @@
+         break;
+     }
+ 
++    IID_INIT(Iid);
++    while (zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_COMMON, &Iid, &voiceCommonObj) == ZCFG_SUCCESS)
++    {
++        if ((callerIDSignalType = json_object_get_string(json_object_object_get(voiceCommonObj, "FxsCIDSigProtocol"))) != NULL)
++        {
++            if (callerIDSignalType[0] == '\0')
++            {
++                json_object_object_add(paramJobj, "FxsCIDSigProtocol", json_object_new_string("Default"));
++            }
++            else
++            {
++                json_object_object_add(paramJobj, "FxsCIDSigProtocol", json_object_new_string(callerIDSignalType));
++            }
++        }
++        zcfgFeJsonObjFree(voiceCommonObj);
++    }
++
+     ret = zcfgFeDalVoipRegionCapGet(paramJobj);
+     json_object_array_add(Jarray, paramJobj);
+ 

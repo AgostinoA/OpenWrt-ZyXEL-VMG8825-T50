@@ -1,0 +1,307 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2015-10-21 16:58:06.246314388 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2015-10-21 17:12:48.542192600 +0800
+@@ -109,6 +109,10 @@
+ CFLAGS += -DCONFIG_PACKAGE_ZyIMS
+ endif
+ 
++ifeq ($(CONFIG_XPON_SUPPORT),y)
++CFLAGS += -DCONFIG_XPON_SUPPORT
++endif
++
+ #One Connect
+ ifeq ($(CONFIG_ZYXEL_ONECONNECT),y)
+ CFLAGS += -DONECONNECT
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-10-21 16:58:06.390314393 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-10-21 17:17:25.439771400 +0800
+@@ -10063,3 +10063,194 @@
+ 	return ret;
+ }
+ 
++#ifdef CONFIG_XPON_SUPPORT
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig
++ *
++ *  Related object in TR181:
++ *  Device.Optical.Interface.i
++ */
++zcfgRet_t WANPonIfaceCfgObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181Obj[32] = {0};
++	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char *ptr = NULL;
++	char ponIfaceObj[32] = {0};
++	uint32_t  ponIfaceOid = 0;
++	objIndex_t ponIfaceIid;
++	struct json_object *ponIfaceJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++	//printf("\033[0;32m Debug: [%s]:tr98FullPathName=%s \033[0m \n",__FUNCTION__,tr98FullPathName);
++
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".X_ZYZEL_WANPonInterfaceConfig");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, ponIfaceObj)) == ZCFG_SUCCESS) {
++		if(strstr(ponIfaceObj, "Optical") == NULL) {
++			printf("%s : Not an Pon(Optical) Interface:%s\n", __FUNCTION__,ponIfaceObj);
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++
++		IID_INIT(ponIfaceIid);
++		sprintf(tr181Obj, "Device.%s", ponIfaceObj );
++		ponIfaceOid = zcfgFeObjNameToObjId(tr181Obj, &ponIfaceIid);
++
++		if((ret = feObjJsonGet(ponIfaceOid, &ponIfaceIid, &ponIfaceJobj, updateFlag)) != ZCFG_SUCCESS)
++			return ret;
++
++		printf("Optical Interface %s\n", json_object_to_json_string(ponIfaceJobj));
++
++		/*fill up tr98 WANEthernetInterfaceConfig object*/
++		*tr98Jobj = json_object_new_object();
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name != NULL) {
++			paramValue = json_object_object_get(ponIfaceJobj, paramList->name);
++			if(paramValue != NULL) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++
++			/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++			printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++			paramList++;
++		}
++
++		json_object_put(ponIfaceJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig
++
++    Related object in TR181:
++    Device.Optical.Interface.i
++ */
++zcfgRet_t WANPonIfaceCfgObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char ponIfaceName[32] = {0};
++	char *ptr = NULL;
++	objIndex_t ponIfaceIid;
++	tr98Parameter_t *paramList = NULL;
++	struct json_object *ponIfaceJobj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*find tr181 mapping object*/
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".X_ZYZEL_WANPonInterfaceConfig");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, ponIfaceName)) == ZCFG_SUCCESS) {
++		if(strstr(ponIfaceName, "Optical") == NULL) {
++			printf("%s : Not an Pon(Optical) Interface\n", __FUNCTION__);
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++
++		IID_INIT(ponIfaceIid);
++		sscanf(ponIfaceName, "Optical.Interface.%hhu", &ponIfaceIid.idx[0]);
++		ponIfaceIid.level = 1;
++
++		if((ret = zcfgFeObjJsonGet(RDM_OID_OPT_INTF, &ponIfaceIid, &ponIfaceJobj)) != ZCFG_SUCCESS)
++			return ret;
++
++		if(multiJobj){
++			tmpObj = ponIfaceJobj;
++			ponIfaceJobj = NULL;
++			ponIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_OPT_INTF, &ponIfaceIid, multiJobj, tmpObj);
++		}
++
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name != NULL) {
++			/*Write new parameter value from tr98 object to tr181 objects*/
++			paramValue = json_object_object_get(tr98Jobj, paramList->name);
++			if(paramValue != NULL) {
++				tr181ParamValue = json_object_object_get(ponIfaceJobj, paramList->name);
++				if(tr181ParamValue != NULL) {
++					json_object_object_add(ponIfaceJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++#if TR98_MAPPING_DEBUG
++			printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++			paramList++;
++		}
++
++		if(multiJobj){
++			json_object_put(tmpObj);
++		}
++		else{
++			if((ret = zcfgFeObjJsonSet(RDM_OID_OPT_INTF, &ponIfaceIid, ponIfaceJobj, NULL)) != ZCFG_SUCCESS ) {
++				json_object_put(ponIfaceJobj);
++				return ret;
++			}
++			json_object_put(ponIfaceJobj);
++		}
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig.Stats
++
++    Related object in TR181:
++    Device.Optical.Interface.i.Stats.
++ */
++zcfgRet_t WANPonIfaceCfgStObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char ponIfaceName[32] = {0};
++	char *ptr = NULL;
++	objIndex_t objIid;
++	rdm_OptIntfSt_t *ponIfaceSt = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".X_ZYZEL_WANPonInterfaceConfig");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, ponIfaceName)) != ZCFG_SUCCESS) {
++		/*No such object*/
++		return ret;
++	}
++
++	if(strstr(ponIfaceName, "Optical") == NULL) {
++		printf("%s : Not an Pon(Optical) Interface\n", __FUNCTION__);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	*tr98Jobj = json_object_new_object();
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(ponIfaceName, "Optical.Interface.%hhu", &objIid.idx[0]);
++
++	if(feObjStructGet(RDM_OID_OPT_INTF_ST, &objIid, (void **)&ponIfaceSt, updateFlag) == ZCFG_SUCCESS) {
++		json_object_object_add(*tr98Jobj, "BytesSent", json_object_new_int(ponIfaceSt->BytesSent));
++		json_object_object_add(*tr98Jobj, "BytesReceived", json_object_new_int(ponIfaceSt->BytesReceived));
++		json_object_object_add(*tr98Jobj, "PacketsSent", json_object_new_int(ponIfaceSt->PacketsSent));
++		json_object_object_add(*tr98Jobj, "PacketsReceived", json_object_new_int(ponIfaceSt->PacketsReceived));
++		zcfgFeObjStructFree(ponIfaceSt);
++	}
++	return ZCFG_SUCCESS;
++}
++#endif/*CONFIG_XPON_SUPPORT*/
++
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2015-10-21 16:58:06.202314386 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2015-10-21 17:13:42.983692600 +0800
+@@ -52,6 +52,11 @@
+ extern tr98Parameter_t para_WanAtmF5LoDiag[];
+ extern tr98Parameter_t para_WanAtmF4LoDiag[];
+ 
++#ifdef CONFIG_XPON_SUPPORT
++extern tr98Parameter_t para_WANPonIntfConf[];
++extern tr98Parameter_t para_WANPonIntfConfStat[];
++#endif
++
+ /*Handler Function*/
+ extern zcfgRet_t WANDeviceObjGet(char *, int, struct json_object **, bool);
+ #ifdef SOL_TR69_3G_Backup
+@@ -223,3 +228,11 @@
+ extern zcfgRet_t WANPppv6RdObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t WANPppv6RdObjSet(char *, int, struct json_object *, struct json_object *);
+ 
++
++#ifdef CONFIG_XPON_SUPPORT
++/* InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig*/
++extern zcfgRet_t WANPonIfaceCfgObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t WANPonIfaceCfgObjSet(char *, int, struct json_object *, struct json_object *);
++/* InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig.Stats*/
++extern zcfgRet_t WANPonIfaceCfgStObjGet(char *, int, struct json_object **, bool);
++#endif
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2015-10-21 16:58:06.390314393 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2015-10-21 17:13:52.590692600 +0800
+@@ -884,3 +884,19 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++#ifdef CONFIG_XPON_SUPPORT
++tr98Parameter_t para_WANPonIntfConf[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	//{ "PonType", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_WANPonIntfConfStat[] = {
++	{ "BytesSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "BytesReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "PacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "PacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++#endif
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-10-21 16:58:06.334314391 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-10-21 17:13:30.604192600 +0800
+@@ -218,6 +218,10 @@
+ #ifdef IPV6RD_PROFILE
+ {e_TR98_WAN_PPP_CONN_IPV6RD      , &tr98Obj[e_TR98_WAN_PPP_CONN_IPV6RD      -e_TR98_START]},
+ #endif
++#ifdef CONFIG_XPON_SUPPORT
++{e_TR98_WAN_PON_INTF_CONF      , &tr98Obj[e_TR98_WAN_PON_INTF_CONF            -e_TR98_START]},
++{e_TR98_WAN_PON_INTF_CONF_STAT      , &tr98Obj[e_TR98_WAN_PON_INTF_CONF_STAT  -e_TR98_START]},
++#endif
+ {e_TR98_FIREWALL                , &tr98Obj[e_TR98_FIREWALL                -e_TR98_START]},
+ {e_TR98_FIREWALL_LEVEL          , &tr98Obj[e_TR98_FIREWALL_LEVEL          -e_TR98_START]},
+ {e_TR98_FIREWALL_CHAIN          , &tr98Obj[e_TR98_FIREWALL_CHAIN          -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-10-21 16:58:06.202314386 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-10-21 17:14:03.905692600 +0800
+@@ -176,6 +176,10 @@
+ #ifdef IPV6RD_PROFILE
+ #define TR98_WAN_PPP_CONN_IPV6RD       "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_IPv6rd"
+ #endif
++#ifdef CONFIG_XPON_SUPPORT
++#define TR98_WAN_PON_INTF_CONF        "InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig"
++#define TR98_WAN_PON_INTF_CONF_STAT   "InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig.Stats"
++#endif
+ #define TR98_ZYXEL_EXT                "InternetGatewayDevice.X_ZYXEL_EXT"
+ #define TR98_DNS_RT_ENTRY             "InternetGatewayDevice.X_ZYXEL_EXT.DNSRouteEntry.i"
+ #define TR98_DNS_ENTRY     		      "InternetGatewayDevice.X_ZYXEL_EXT.DNSEntry.i"
+@@ -414,6 +418,10 @@
+ #ifdef IPV6RD_PROFILE
+ {TR98_WAN_PPP_CONN_IPV6RD,      0,				para_WANPppv6Rd,        WANPppv6RdObjGet,         WANPppv6RdObjSet,        NULL,             NULL,            NULL},
+ #endif
++#ifdef CONFIG_XPON_SUPPORT
++{TR98_WAN_PON_INTF_CONF,        0,				para_WANPonIntfConf,     WANPonIfaceCfgObjGet,   WANPonIfaceCfgObjSet,   NULL,             NULL,            NULL},
++{TR98_WAN_PON_INTF_CONF_STAT,   0,			    para_WANPonIntfConfStat, WANPonIfaceCfgStObjGet, NULL,                   NULL,             NULL,            NULL},
++#endif
+ {TR98_FIREWALL,                 0,              para_Firewall,          firewallObjGet,          firewallObjSet,         NULL,             NULL,            firewallObjNotify, firewallObjAttrGet, firewallObjAttrSet},
+ {TR98_FIREWALL_LEVEL,           ATTR_INDEX_CREA,para_FirewallLevel,     firewallLevelObjGet,     firewallLevelObjSet,    firewallLevelObjAdd,firewallLevelObjDel,firewallLevelObjNotify, firewallLevelObjAttrGet, firewallLevelObjAttrSet},
+ {TR98_FIREWALL_CHAIN,           ATTR_INDEX_CREA,para_FirewallChain,     firewallChainObjGet,     firewallChainObjSet,    firewallChainObjAdd,firewallChainObjDel,firewallChainObjNotify, firewallChainObjAttrGet, firewallChainObjAttrSet},

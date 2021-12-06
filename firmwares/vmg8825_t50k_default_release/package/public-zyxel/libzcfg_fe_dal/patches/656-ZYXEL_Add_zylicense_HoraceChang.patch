@@ -1,0 +1,200 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2019-03-18 18:20:53.533442631 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2019-03-18 18:25:26.691276070 +0800
+@@ -41,6 +41,7 @@
+ SECURITY_URLWHITELIST_PATH = ./security/URLWhiteList
+ SECURITY_URLBLACKLIST_PATH = ./security/URLBlackList
+ SECURITY_CERTIFICATE_PATH = ./security/certificate
++SECURITY_ZYLICENSE_PATH = ./security/zylicense
+ MONITOR_PATH = ./monitor
+ JS_PATH = ./js
+ SOURCES += $(wildcard $(FE_PATH)/*.c)
+@@ -88,6 +89,9 @@
+ SOURCES += $(wildcard $(SECURITY_URLFilter_PATH)/*.c)
+ SOURCES += $(wildcard $(SECURITY_URLWHITELIST_PATH)/*.c)
+ SOURCES += $(wildcard $(SECURITY_URLBLACKLIST_PATH)/*.c)
++ifeq ($(CONFIG_ZYXEL_ZY_LICENSE_CMD),y)
++SOURCES += $(wildcard $(SECURITY_ZYLICENSE_PATH)/*.c)
++endif
+ endif
+ SOURCES += $(wildcard $(MONITOR_PATH)/*.c)
+ SOURCES += $(wildcard $(JS_PATH)/*.c)
+@@ -288,6 +292,9 @@
+ ifeq ($(CONFIG_ZYXEL_HOME_CYBER_SECURITY_FSECURE),y)
+ CFLAGS += -DZYXEL_HOME_CYBER_SECURITY_FSECURE
+ endif
++ifeq ($(CONFIG_ZYXEL_ZY_LICENSE_CMD),y)
++CFLAGS += -DCONFIG_ZYXEL_ZY_LICENSE_CMD
++endif
+ 
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+Index: libzcfg_fe_dal-1.0/security/zylicense/zcfg_fe_dal_zylicense.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/security/zylicense/zcfg_fe_dal_zylicense.c	2019-03-18 19:43:27.468481471 +0800
+@@ -0,0 +1,121 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t ZyLicense_param[]={
++	{"license_enable",	dalType_boolean,	0,	0,	NULL, NULL, dal_Add_ignore},
++	{NULL,		0,	0,	0,	NULL}
++};
++
++struct json_object *zyLicenseObj = NULL;
++objIndex_t zyLicenseIid;
++bool zyLicenseEnable;
++
++
++zcfgRet_t freeAllzyLicenseObjects(){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	if(zyLicenseObj) json_object_put(zyLicenseObj);
++	return ret;
++}
++
++void getBasicZyLicenseInfo(struct json_object *Jobj){
++
++	zyLicenseEnable = json_object_get_boolean(json_object_object_get(Jobj, "license_enable"));
++	printf("%s: zyLicenseEnable = %d\n",__FUNCTION__,zyLicenseEnable );
++	printf("%s: %s\n",__FUNCTION__,json_object_get_string(Jobj) );
++	return;
++}
++
++void initGlobalzyLicenseObjects(){
++	zyLicenseObj = NULL;
++	IID_INIT(zyLicenseIid);
++
++}
++
++zcfgRet_t editzyLicenseObject(struct json_object *Jobj){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	bool value;
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_LICNSE, &zyLicenseIid, &zyLicenseObj)) != ZCFG_SUCCESS) {
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Parental_Control.error.get_zylicense_err"));
++		return ret;
++	}
++	value = Jgetb(zyLicenseObj, "Cyber_Security_FSC");
++	printf("%s: value = %d, %d\n",__FUNCTION__,value,zyLicenseEnable);
++	if ( value != zyLicenseEnable ) {
++		printf("%s: License Change from %d to %d\n",__FUNCTION__,value,zyLicenseEnable);
++		json_object_object_add(zyLicenseObj, "Cyber_Security_FSC", json_object_new_boolean(zyLicenseEnable));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_LICNSE, &zyLicenseIid, zyLicenseObj, NULL)) != ZCFG_SUCCESS){
++			json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Parental_Control.error.set_zylicense_err"));
++			return ret;
++		}
++	}
++
++	return ret;
++}
++
++void zcfgFeDalShowZyLicense(struct json_object *Jarray){
++	struct json_object *Jobj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	if((Jobj = json_object_array_get_idx(Jarray, 0)) == NULL)
++		return;
++
++	printf("Secure License %s\n", Jgetb(Jobj, "license_enable")?"Enabled":"Disabled");
++
++}
++
++zcfgRet_t zcfgFeDalZyLicenseGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	objIndex_t objIid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	IID_INIT(objIid);
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_LICNSE, &objIid, &obj) == ZCFG_SUCCESS){
++		pramJobj = json_object_new_object();
++		replaceParam(pramJobj, "license_enable", obj, "Cyber_Security_FSC");
++		json_object_array_add(Jarray, pramJobj);
++		zcfgFeJsonObjFree(obj);
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalZyLicenseEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	initGlobalzyLicenseObjects();
++	getBasicZyLicenseInfo(Jobj);
++	ret = editzyLicenseObject(Jobj);
++	freeAllzyLicenseObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalZyLicense(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDalZyLicenseEdit(Jobj, replyMsg);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDalZyLicenseGet(Jobj, Jarray, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2019-03-18 18:20:53.641450408 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2019-03-18 18:43:20.865847238 +0800
+@@ -103,6 +103,7 @@
+ extern dal_param_t URL_FILTER_param[];
+ extern dal_param_t URLWhite_FILTER_param[];
+ extern dal_param_t URLBlack_FILTER_param[];
++extern dal_param_t ZyLicense_param[];
+ extern dal_param_t SCHEDULE_param[];
+ extern dal_param_t DEV_SEC_CERT_param[];
+ extern dal_param_t HOME_CONNECTIVYITY_param[];
+@@ -211,6 +212,9 @@
+ extern zcfgRet_t zcfgFeDalURLFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalURLWhiteFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalURLBlackFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#ifdef CONFIG_ZYXEL_ZY_LICENSE_CMD
++extern zcfgRet_t zcfgFeDalZyLicense(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#endif
+ #endif
+ extern zcfgRet_t zcfgFeDalSchedule(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDevSecCert(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -305,6 +309,9 @@
+ extern void zcfgFeDalShowURLFilter(struct json_object *Jarray);
+ extern void zcfgFeDalShowURLWhiteFilter(struct json_object *Jarray);
+ extern void zcfgFeDalShowURLBlackFilter(struct json_object *Jarray);
++#ifdef CONFIG_ZYXEL_ZY_LICENSE_CMD
++extern void zcfgFeDalShowZyLicense(struct json_object *Jarray);
++#endif
+ #endif
+ extern void zcfgFeDalShowTime(struct json_object *Jarray);
+ extern void zcfgFeDalShowSysLog(struct json_object *Jarray);
+@@ -403,6 +410,9 @@
+ {"URL_filter", 		URL_FILTER_param,	zcfgFeDalURLFilter,	zcfgFeDalShowURLFilter,						"get|add|edit|delete",	"Parental_Control"},//Cyber_security
+ {"URL_WhiteList", 	URLWhite_FILTER_param,	zcfgFeDalURLWhiteFilter,	zcfgFeDalShowURLWhiteFilter,	"get|add|edit|delete",	"Parental_Control"},//Cyber_security
+ {"URL_BlackList", 	URLBlack_FILTER_param,	zcfgFeDalURLBlackFilter,	zcfgFeDalShowURLBlackFilter,	"get|add|edit|delete",	"Parental_Control"},//Cyber_security
++#ifdef CONFIG_ZYXEL_ZY_LICENSE_CMD
++{"zylicense", 		ZyLicense_param,	zcfgFeDalZyLicense,	zcfgFeDalShowZyLicense,						"get|edit",	"Parental_Control"},//Cyber_security
++#endif
+ #endif
+ {"scheduler",		SCHEDULE_param, 	zcfgFeDalSchedule,		zcfgFeDalShowSchedule,		"get|add|edit|delete",	"Scheduler_Rule"},
+ {"dev_sec_cert", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"get|add|edit|delete", 	""},//Certificates

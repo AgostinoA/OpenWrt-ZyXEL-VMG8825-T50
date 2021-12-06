@@ -1,0 +1,233 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2014-06-05 11:28:45.177897802 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2014-06-05 10:56:24.989315000 +0800
+@@ -3036,6 +3036,201 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj)
++{
++	zcfgRet_t ret;
++	int idx = 0;
++	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char *ptr = NULL;
++	char wifiSsid[32] = {0};
++	char ssidRef[32] = {0};
++	objIndex_t apIid;
++	struct json_object *apJobj = NULL, *apSecJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;	
++
++	sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.%*[^.].%*d.WEPKey.%d", &idx);
++
++	/*There should be only one WEPKey Object*/
++	if(idx > 4)
++		return ZCFG_NO_MORE_INSTANCE;
++	
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".WEPKey");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i.WLANConfiguration.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wifiSsid)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	IID_INIT(apIid);
++	while((ret = zcfgFeObjJsonGetNext(RDM_OID_WIFI_ACCESS_POINT, &apIid, &apJobj)) == ZCFG_SUCCESS) {
++		strcpy(ssidRef, json_object_get_string(json_object_object_get(apJobj, "SSIDReference")));
++		if(!strcmp(ssidRef, wifiSsid))
++			break;
++		else {
++			json_object_put(apJobj);
++			apJobj = NULL;
++		}
++	}
++
++	if(ret == ZCFG_NO_MORE_INSTANCE)
++		return ret;
++
++	if(apJobj != NULL) {
++		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_SEC, &apIid, &apSecJobj)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.Security Fail\n", __FUNCTION__);
++			json_object_put(apJobj);
++			return ret;
++		}
++		json_object_put(apJobj);
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(!strcmp(paramList->name, "WEPKey")){
++			paramValue = json_object_new_string("");
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(apSecJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		paramValue = json_object_new_string("");
++		json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		json_object_put(paramValue);
++		paramList++;
++	}
++
++	json_object_put(apSecJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t lanDevWlanCfgWEPKeyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
++{
++	zcfgRet_t ret;
++	int idx = 0;
++	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char *ptr = NULL;
++	char wifiSsid[32] = {0};
++	char ssidRef[32] = {0};
++	char *keylength = NULL;
++	char paramName[20] = {0};
++	objIndex_t apIid;
++	struct json_object *apJobj = NULL, *apSecJobj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;	
++
++	sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.%*[^.].%*d.WEPKey.%d", &idx);
++
++	/*There should be only one WEPKey Object*/
++	if(idx > 4)
++		return ZCFG_NO_MORE_INSTANCE;
++	
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".WEPKey");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i.WLANConfiguration.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wifiSsid)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	IID_INIT(apIid);
++	while((ret = zcfgFeObjJsonGetNext(RDM_OID_WIFI_ACCESS_POINT, &apIid, &apJobj)) == ZCFG_SUCCESS) {
++		strcpy(ssidRef, json_object_get_string(json_object_object_get(apJobj, "SSIDReference")));
++		if(!strcmp(ssidRef, wifiSsid))
++			break;
++		else {
++			json_object_put(apJobj);
++			apJobj = NULL;
++		}
++	}
++
++	if(ret == ZCFG_NO_MORE_INSTANCE)
++		return ret;
++
++	if(apJobj != NULL) {
++		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_SEC, &apIid, &apSecJobj)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.Security Fail\n", __FUNCTION__);
++			json_object_put(apJobj);
++			return ret;
++		}
++		json_object_put(apJobj);		
++	}
++
++	if(multiJobj){
++		tmpObj = apSecJobj;
++		apSecJobj = NULL;
++		apSecJobj = zcfgFeJsonMultiObjAppend(RDM_OID_WIFI_ACCESS_POINT_SEC, &apIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "WEPKey")){
++				keylength = strlen((char *)json_object_get_string(paramValue));
++				if((5 == keylength) || (10 == keylength)){
++					sprintf(paramName, "X_ZYXEL_WEP64Key%hhu", idx);
++					json_object_object_add(apSecJobj, paramName, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					json_object_object_add(apSecJobj, "ModeEnabled", json_object_new_string("WEP-64"));
++					paramList++;
++					continue;
++				}else if((13 == keylength) || (26 == keylength)){
++					if(1 != idx){
++						sprintf(paramName, "X_ZYXEL_WEPKey%hhu", idx);
++						json_object_object_add(apSecJobj, paramName, JSON_OBJ_COPY(paramValue));
++					}else{
++						json_object_object_add(apSecJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					}
++					paramList++;
++					json_object_object_add(apSecJobj, "ModeEnabled", json_object_new_string("WEP-128"));
++					paramList++;
++					continue;
++				}
++			}
++			tr181ParamValue = json_object_object_get(apSecJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(apSecJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;	
++	}
++
++	/*Set Device.WiFi.AccessPoint.i.Security*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_ACCESS_POINT_SEC, &apIid, apSecJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(apSecJobj);
++			return ret;
++		}
++
++		json_object_put(apSecJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
+ 
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPv6Address.i.
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2014-06-05 11:28:44.965897803 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2014-06-05 11:08:06.915901400 +0800
+@@ -88,6 +88,9 @@
+ extern zcfgRet_t lanDevWlanCfgPskObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevWlanCfgPskObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ 
++/*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WEPKey.i*/
++extern zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj);
++extern zcfgRet_t lanDevWlanCfgWEPKeyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ 
+ /*InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPv6Address.i*/
+ extern zcfgRet_t lanIpIntfV6AddrObjGet(char *, int, struct json_object **, bool);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2014-06-05 11:28:44.969897803 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2014-06-05 11:08:37.517296000 +0800
+@@ -258,7 +258,7 @@
+ {TR98_WPS,                      0,              para_LanDevWlanCfgWps,  lanDevWlanCfgWpsObjGet,  lanDevWlanCfgWpsObjSet, NULL,             NULL,            NULL},
+ //{TR98_REG,                      ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_ASSOC_DEV,                ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_WEP_KEY,                  ATTR_INDEXNODE, para_WepKey,            NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_WEP_KEY,                  ATTR_INDEXNODE, para_WepKey,            lanDevWlanCfgWEPKeyObjGet,lanDevWlanCfgWEPKeyObjSet,                   NULL,             NULL,            NULL},
+ {TR98_PSK,                      ATTR_INDEXNODE, para_Psk,               lanDevWlanCfgPskObjGet,  lanDevWlanCfgPskObjSet, NULL,             NULL,            NULL},
+ //{TR98_AP_WMM_PARAM,             ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_STA_WMM_PARAM,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},

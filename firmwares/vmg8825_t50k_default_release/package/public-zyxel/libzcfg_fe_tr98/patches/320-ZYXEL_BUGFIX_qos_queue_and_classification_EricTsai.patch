@@ -1,0 +1,295 @@
+Index: libzcfg_fe_tr98-1.0/qos.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.c	2016-05-05 18:29:44.994542837 +0800
++++ libzcfg_fe_tr98-1.0/qos.c	2016-05-05 18:29:45.046542838 +0800
+@@ -395,23 +395,20 @@
+ 		}
+ 
+ 		if(!strcmp(paramList->name, "QueueInterface")){
+-			paramValue = json_object_object_get(qObj, "Interface");
+-			if(paramValue){
+-#if 0
+-			tr181Intf[0] = '\0';
+-			tr098Intf[0] = '\0';
+-			strcpy(tr181Intf, json_object_get_string(paramValue));
+-			
+-			if(tr181Intf[0] != '\0'){
+-				if((ret = zcfgFe181To98MappingNameGet( tr181Intf + strlen("Device."), tr098Intf)) != ZCFG_SUCCESS){
++			//json_object_get_boolean(json_object_object_get(qObj, "AllInterfaces"));
++			const char *interfaceName = json_object_get_string(json_object_object_get(qObj, "Interface"));
++			if(interfaceName && strlen(interfaceName)){
++				strcpy(tr181Intf, interfaceName);
++				if(!strcmp(tr181Intf, "WAN")){
++					strcpy(tr098Intf, tr181Intf);
++				}
++				else if((ret = zcfgFe181To98MappingNameGet(tr181Intf, tr098Intf)) != ZCFG_SUCCESS){
+ 					zcfgLog(ZCFG_LOG_ERR, "%s: fail to mapping queue intf from tr181 to tr098 with ret=%d\n", __FUNCTION__, ret);
+ 					zcfgFeJsonObjFree(qObj);
+ 					return ret;
+ 				}
+ 			}
+-#endif
+-				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-			}
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tr098Intf));
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -441,12 +438,6 @@
+ 			continue;
+ 		}
+ 		
+-		/* not support in tr181, just give default value */
+-		if(!strcmp(paramList->name, "QueueKey")){
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(0));
+-			paramList++;
+-			continue;
+-		}
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+ 		paramList++;
+ 	}
+@@ -463,9 +454,8 @@
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char *ptr = NULL;
+ 	char tr098Intf[128] = {0};
+-	char tr181Intf[128] = "Device.";
++	char tr181Intf[128] = {0};
+ 
+ 	IID_INIT(qIid);
+ 	qIid.level = 1;
+@@ -480,6 +470,7 @@
+ 		tmpObj = qObj;
+ 		qObj = NULL;
+ 		qObj = zcfgFeJsonMultiObjAppend(RDM_OID_QOS_QUE, &qIid, multiJobj, tmpObj);
++		zcfgFeJsonObjFree(tmpObj);
+ 	}
+ 
+ 	/* set(update) value to target object */
+@@ -500,17 +491,16 @@
+ 				}
+ 				else if(!strcmp(paramList->name, "QueueInterface")){
+ 					tr098Intf[0] = '\0';
+-					ptr = tr181Intf + strlen(tr181Intf);
+ 					strcpy(tr098Intf, json_object_get_string(paramValue));
+-					if(tr098Intf[0] != '\0' && (ret = zcfgFe98To181MappingNameGet(tr098Intf, ptr)) != ZCFG_SUCCESS){
++					if(!strcmp(tr098Intf, "WAN")){
++						strcpy(tr181Intf, tr098Intf);
++					}
++					else if(tr098Intf[0] != '\0' && (ret = zcfgFe98To181MappingNameGet(tr098Intf, tr181Intf)) != ZCFG_SUCCESS){
+ 						zcfgLog(ZCFG_LOG_ERR, "%s: fail to mapping queue intf from tr98 to tr181 with ret=%d\n", __FUNCTION__, ret);
+ 						zcfgFeJsonObjFree(qObj);
+ 						return ret;
+ 					}
+ 
+-					if(*ptr == '\0')
+-						tr181Intf[0] = '\0';
+-					
+ 					json_object_object_add(qObj, "Interface", json_object_new_string(tr181Intf));
+ 				}
+ 				else if(!strcmp(paramList->name, "QueueBufferLength")){
+@@ -522,9 +512,6 @@
+ 				else if(!strcmp(paramList->name, "QueuePrecedence")){
+ 					json_object_object_add(qObj, "Precedence", JSON_OBJ_COPY(paramValue));
+ 				}
+-				else if(!strcmp(paramList->name, "QueueKey")){
+-					zcfgLog(ZCFG_LOG_ERR, "%s : QueueKey is not supported in QoS object\n", __FUNCTION__);
+-				}
+ 				else{
+ 					json_object_object_add(qObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				}
+@@ -542,8 +529,6 @@
+ 			zcfgFeJsonObjFree(qObj);
+ 			return ret;
+ 		}
+-		zcfgFeJsonObjFree(tmpObj);
+-	
+ 	}
+ 	
+ 	return ZCFG_SUCCESS;
+@@ -847,15 +832,15 @@
+ 			continue;
+ 		}
+ 
+-		if(!strcmp(paramList->name, "PolicerEnable"))
++		if(!strcmp(paramList->name, "PolicerEnable"))
+ 		{
+-			if((paramValue = json_object_object_get(qPolicerObj, "Enable")))
++			if((paramValue = json_object_object_get(qPolicerObj, "Enable")))
+ 				json_object_object_add(qPolicerObj, "Enable", JSON_OBJ_COPY(tr98ParamValue));
+ 		}
+ 		else{
+-			if((paramValue = json_object_object_get(qPolicerObj, paramList->name))){
++			if((paramValue = json_object_object_get(qPolicerObj, paramList->name))){
+ 				json_object_object_add(qPolicerObj, paramList->name, JSON_OBJ_COPY(tr98ParamValue));
+-			}
++			}
+ 		}
+ 
+ 		paramList++;
+@@ -987,10 +972,9 @@
+ 				if(tr181Intf[0] != '\0'){
+ 					/* not "LAN" or "lo" */
+ 					if(strcmp(tr181Intf, "LAN") && strcmp(tr181Intf, "lo")){
+-						if((ret = zcfgFe181To98MappingNameGet( tr181Intf + strlen("Device."), tr098Intf)) != ZCFG_SUCCESS){
++						if((ret = zcfgFe181To98MappingNameGet( tr181Intf, tr098Intf)) != ZCFG_SUCCESS){
+ 							zcfgLog(ZCFG_LOG_ERR, "%s: fail to mapping class intf from tr181 to tr098 with ret=%d\n", __FUNCTION__, ret);
+-							zcfgFeJsonObjFree(cObj);
+-							return ret;
++							tr098Intf[0] = '\0';
+ 						}
+ 					}
+ 					else{
+@@ -1023,18 +1007,7 @@
+ 			continue;
+ 		}
+ 		
+-		/* not support in tr181, just give default value */
+-		if(!strcmp(paramList->name, "ClassQueue")){
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(-1));
+-			paramList++;
+-			continue;
+-		}
+-		if(!strcmp(paramList->name, "ClassificationKey")){
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(0));
+-			paramList++;
+-			continue;
+-		}
+-
++#if 0
+ 		if(!strcmp(paramList->name, "SourceVendorSpecificInfoMode")){
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Exact"));
+ 			paramList++;
+@@ -1046,6 +1019,7 @@
+ 			paramList++;
+ 			continue;
+ 		}
++#endif
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+ 		paramList++;
+ 	}
+@@ -1066,7 +1040,7 @@
+ 	char app[128] = "";
+ 	char *ptr = NULL;
+ 	char tr098Intf[128] = {0};
+-	char tr181Intf[128] = "Device.";
++	char tr181Intf[128] = {0};
+ 
+ 	IID_INIT(cIid);
+ 	cIid.level = 1;
+@@ -1081,6 +1055,7 @@
+ 		tmpObj = cObj;
+ 		cObj = NULL;
+ 		cObj = zcfgFeJsonMultiObjAppend(RDM_OID_QOS_CLS, &cIid, multiJobj, tmpObj);
++		zcfgFeJsonObjFree(tmpObj);
+ 	}
+ 
+ 	if(cObj){
+@@ -1131,18 +1106,14 @@
+ 					sprintf(app, "Device.QoS.App.%d", json_object_get_int(paramValue));
+ 					json_object_object_add(cObj, "App", json_object_new_string(app));
+ 				}
+-				else if(!strcmp(paramList->name, "ClassQueue")){
+-					zcfgLog(ZCFG_LOG_ERR, "%s : ClassQueue is not supported in QoS object\n", __FUNCTION__);
+-				}
+-				else if(!strcmp(paramList->name, "ClassificationKey")){
+-					zcfgLog(ZCFG_LOG_ERR, "%s : ClassificationKey is not supported in QoS object\n", __FUNCTION__);
+-				}
++#if 0
+ 				else if(!strcmp(paramList->name, "SourceVendorSpecificInfoMode")){
+ 					zcfgLog(ZCFG_LOG_ERR, "%s : SourceVendorSpecificInfoMode could only be \"Exact\"\n", __FUNCTION__);
+ 				}
+ 				else if(!strcmp(paramList->name, "DestVendorSpecificInfoMode")){
+ 					zcfgLog(ZCFG_LOG_ERR, "%s : DestVendorSpecificInfoMode could only be \"Exact\"\n", __FUNCTION__);
+ 				}
++#endif
+ 				else{
+ 					json_object_object_add(cObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				}
+@@ -1162,7 +1133,6 @@
+ 		return ret;
+ 	}
+ 	
+-	zcfgFeJsonObjFree(tmpObj);
+ 	return ZCFG_SUCCESS;
+ }
+ 
+@@ -1471,6 +1441,7 @@
+ 		tmpObj = sObj;
+ 		sObj = NULL;
+ 		sObj = zcfgFeJsonMultiObjAppend(RDM_OID_QOS_SHAPER, &sIid, multiJobj, tmpObj);
++		zcfgFeJsonObjFree(tmpObj);
+ 	}
+ 
+ 	if(sObj){
+@@ -1515,7 +1486,6 @@
+ 		return ret;
+ 	}
+ 	
+-	zcfgFeJsonObjFree(tmpObj);
+ 	return ZCFG_SUCCESS;
+ }
+ 
+Index: libzcfg_fe_tr98-1.0/qos.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.h	2016-05-05 18:29:44.994542837 +0800
++++ libzcfg_fe_tr98-1.0/qos.h	2016-05-05 18:26:31.201701100 +0800
+@@ -28,10 +28,10 @@
+ };
+ 
+ tr98Parameter_t para_Cls[] = {	
+-	{ "ClassificationKey", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	//{ "ClassificationKey", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
+ 	{ "ClassificationEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+ 	{ "ClassificationStatus", PARAMETER_ATTR_READONLY, 10, json_type_string},
+-	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	//{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
+ 	{ "ClassificationOrder", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
+ 	{ "ClassInterface", PARAMETER_ATTR_WRITE, 257, json_type_string},	
+ 	{ "DestIP", PARAMETER_ATTR_WRITE, 17, json_type_string},	
+@@ -82,12 +82,12 @@
+ 	{ "SourceVendorSpecificInfoExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+ 	{ "SourceVendorSpecificInfoEnterprise", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
+ 	{ "SourceVendorSpecificInfoSubOption", PARAMETER_ATTR_WRITE, 0, json_type_int},	
+-	{ "SourceVendorSpecificInfoMode", PARAMETER_ATTR_WRITE, 11, json_type_string},	
++	//{ "SourceVendorSpecificInfoMode", PARAMETER_ATTR_WRITE, 11, json_type_string},	
+ 	{ "DestVendorSpecificInfo", PARAMETER_ATTR_WRITE, 257, json_type_string},	
+ 	{ "DestVendorSpecificInfoExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "DestVendorSpecificInfoEnterprise", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
+ 	{ "DestVendorSpecificInfoSubOption", PARAMETER_ATTR_WRITE, 0, json_type_int},	
+-	{ "DestVendorSpecificInfoMode", PARAMETER_ATTR_WRITE, 11, json_type_string},	
++	//{ "DestVendorSpecificInfoMode", PARAMETER_ATTR_WRITE, 11, json_type_string},	
+ 	{ "TCPACK", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+ 	{ "TCPACKExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+ 	{ "IPLengthMin", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
+@@ -105,12 +105,15 @@
+ 	{ "ForwardingPolicy", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
+ 	{ "TrafficClass", PARAMETER_ATTR_WRITE, 0, json_type_int},	
+ 	{ "ClassPolicer", PARAMETER_ATTR_WRITE, 0, json_type_int},	
+-	{ "ClassQueue", PARAMETER_ATTR_WRITE, 0, json_type_int},	
++	//{ "ClassQueue", PARAMETER_ATTR_WRITE, 0, json_type_int},	
+ 	{ "ClassApp", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "X_ZYXEL_VLANIDAction", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "X_ZYXEL_VLANIDMark", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "X_ZYXEL_Name", PARAMETER_ATTR_WRITE, 32, json_type_string},
+ 	{ "X_ZYXEL_SourceClientIDType", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "X_ZYXEL_DefaultClass", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "X_ZYXEL_Service", PARAMETER_ATTR_WRITE, 129, json_type_string},
++	{ "X_ZYXEL_ServiceExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ NULL, 0, 0}
+ };
+ 
+@@ -144,10 +147,10 @@
+ };
+ 
+ tr98Parameter_t para_Que[] = {	
+-	{ "QueueKey", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	//{ "QueueKey", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
+ 	{ "QueueEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+ 	{ "QueueStatus", PARAMETER_ATTR_READONLY, 10, json_type_string},
+-	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	//{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
+ 	{ "TrafficClasses", PARAMETER_ATTR_WRITE, 257, json_type_string},	
+ 	{ "QueueInterface", PARAMETER_ATTR_WRITE, 257, json_type_string},	
+ 	{ "QueueBufferLength", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	

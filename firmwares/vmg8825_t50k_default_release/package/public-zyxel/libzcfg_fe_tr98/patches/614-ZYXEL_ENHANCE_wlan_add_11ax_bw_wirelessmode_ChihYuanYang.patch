@@ -1,0 +1,281 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2019-02-18 15:30:36.040788787 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2019-02-18 15:41:37.817734787 +0800
+@@ -89,7 +89,7 @@
+   		\"IEEE11iEncryptionModes\": { \"AESEncryption\": { }, \"TKIPEncryption\": { }, \"TKIPandAESEncryption\": { }, \"Emp\": { } },\
+   		\"IEEE11iAuthenticationMode\": { \"PSKAuthentication\": { }, \"Emp\": { } },\
+ 		\"X_ZYXEL_OperatingFrequencyBand\": { \"2.4GHz\": { }, \"5GHz\": { } },\
+-		\"X_ZYXEL_OperatingChannelBandwidth\": { \"20MHz\": { }, \"40MHz\": { }, \"80MHz\": { } },\
++		\"X_ZYXEL_OperatingChannelBandwidth\": { \"20MHz\": { }, \"40MHz\": { }, \"80MHz\": { } , \"160MHz\": { } },\
+ 		}"
+ 
+ #endif
+@@ -5110,16 +5110,6 @@
+ #define WIFI5_LAST_AP  8
+ #endif
+ 
+-#define BANDWIDTH24_20Mhz { 1, 13};
+-#define BANDWIDTH24_L40Mhz { 1, 9};
+-#define BANDWIDTH24_U40Mhz { 5, 13};
+-
+-#define BANDWIDTH5_20Mhz { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165, 0};
+-#define BANDWIDTH5_L40Mhz { 36, 44, 52, 60, 100, 108, 116, 124, 132, 149, 157, 0};
+-#define BANDWIDTH5_U40Mhz { 40, 48, 56, 64, 104, 112, 120, 128, 136, 153, 161, 0};
+-#define BANDWIDTH5_80Mhz { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 149, 153, 157, 161, 0};
+-#define BANDWIDTH5_160Mhz { 0};
+-
+ typedef enum {
+ 	CHAN_OK=0,     //channel is ok, it doesn't require identifying Lower or Upper
+ 	CHAN_UPPER_OK, //primary channel becomes Lower channel
+@@ -5127,6 +5117,28 @@
+ 	CHAN_NOT_OK,   //internal error
+ } wlanChanStat;
+ 
++//check if channel is available in channel list based on bandwidth --- ChihYuanYang
++static bool WifiCheckChannelAvailable(const char *ch_list, const int channel)
++{
++	if(ch_list == NULL) return false;
++
++	char channel_list[129] = {0};
++	char *tmp_channel = NULL, *tmp_next = NULL;
++	bool found = false;
++
++	strcpy(channel_list, ch_list);
++	tmp_channel = strtok_r(channel_list, ",", &tmp_next);
++	while(tmp_channel != NULL){
++		if(channel == atoi(tmp_channel)){
++			found = true;
++			break;
++		}
++		tmp_channel = strtok_r(NULL, ",", &tmp_next);
++	}
++
++	return found;
++}
++
+ wlanChanStat lanDevWlanConfirmRadio(objIndex_t *apIid, struct json_object *tr98Jobj, struct json_object *radioJobj)
+ {
+ 	const char *beaconType = json_object_get_string(json_object_object_get(tr98Jobj, "BeaconType"));
+@@ -5139,7 +5151,13 @@
+ 	const char *opBand = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingFrequencyBand"));
+ 	const char *opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
+ 	const char *ExtChan = json_object_get_string(json_object_object_get(radioJobj, "ExtensionChannel"));
++	const char *PossiChan = json_object_get_string(json_object_object_get(radioJobj, "PossibleChannels"));
++	const char *LowerChan = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_LowerChannels"));
+ 	const char *UpperChan = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_UpperChannels"));
++	const char *BW80ChanList = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_AC80_Channels"));
++	const char *BW160ChanList = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_AX160_Channels"));
++	char chanlist[128] = {0};
++	bool found = false;
+ 
+ 	if(!strcmp(beaconType, "Basic")) {
+ 		const char *basicAuthMode = json_object_get_string(json_object_object_get(tr98Jobj, "BasicAuthenticationMode"));
+@@ -5159,136 +5177,99 @@
+ 
+ 	opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
+ 
++	if(tr98AutoChannel)
++		return CHAN_OK;
+ 
+ 	if(!strcmp(opBand, "2.4GHz")) {
+-		int bandwidth20Mhz[] = BANDWIDTH24_20Mhz
+-		int bandwidthLo40Mhz[] = BANDWIDTH24_L40Mhz
+-		int bandwidthUp40Mhz[] = BANDWIDTH24_U40Mhz
+-		int *bandwidthChannelNum = NULL;
+-		int *bandwidthChannelNum_another = NULL;
+-
+-		if(strstr(UpperChan, ",13") == NULL){//US maximum supported channel number
+-			bandwidthLo40Mhz[1] = 7;
+-			bandwidthUp40Mhz[1] = 11;
+-			bandwidth20Mhz[1] = 11;
+-		}
+ 
+ 		if(!strcmp(opBandwidth, "20MHz")) {
+-			bandwidthChannelNum = bandwidth20Mhz;
++			strcpy(chanlist, PossiChan);
+ 		}
+ 		else if(!strcmp(opBandwidth, "40MHz")) {
+ 			if(!strcmp(ExtChan, "BelowControlChannel")){
+-				bandwidthChannelNum = bandwidthUp40Mhz;
+-				bandwidthChannelNum_another = bandwidthLo40Mhz;
++				strcpy(chanlist, UpperChan);
+ 			}
+ 			else if(!strcmp(ExtChan, "AboveControlChannel")){
+-				bandwidthChannelNum = bandwidthLo40Mhz;
+-				bandwidthChannelNum_another = bandwidthUp40Mhz;
++				strcpy(chanlist, LowerChan);
+ 			}
+ 		}
+ 		else
+ 			return CHAN_NOT_OK;
+ 
+-		if(tr98AutoChannel)
+-			return CHAN_OK;
+-
+ 		if(tr181Channel != tr98SetChannel){
+ 			if(apIid->idx[0] > WIFI24_FIRST_AP && apIid->idx[0] <= WIFI24_LAST_AP){
+ 				return CHAN_NOT_OK;
+ 			}
+ 
+-			if(!strcmp(opBandwidth, "20MHz")){
+-				if((tr98SetChannel >= bandwidthChannelNum[0]) && (tr98SetChannel <= bandwidthChannelNum[1])){
+-					return CHAN_OK;
+-				}
+-				else{
+-					return CHAN_NOT_OK;
+-				}
++			if(WifiCheckChannelAvailable(chanlist, tr98SetChannel)){
++				return CHAN_OK;
+ 			}
+ 			else if(!strcmp(opBandwidth, "40MHz")){
+-				if((tr98SetChannel >= bandwidthChannelNum[0]) && (tr98SetChannel <= bandwidthChannelNum[1])){
+-					return CHAN_OK;
+-				}
+-				else if((tr98SetChannel >= bandwidthChannelNum_another[0])
+-					&& (tr98SetChannel <= bandwidthChannelNum_another[1])){
+-					if(!strcmp(ExtChan, "BelowControlChannel")){
++				// check channel is available for another channel list
++				if(!strcmp(ExtChan, "BelowControlChannel")){
++					strcpy(chanlist, LowerChan);
++					if(WifiCheckChannelAvailable(chanlist, tr98SetChannel)){
+ 						return CHAN_LOWER_OK;
+ 					}
+-					else{
++				}
++				else if(!strcmp(ExtChan, "AboveControlChannel")){
++					strcpy(chanlist, UpperChan);
++					if(WifiCheckChannelAvailable(chanlist, tr98SetChannel)){
+ 						return CHAN_UPPER_OK;
+ 					}
+ 				}
+-				else{
+-					return CHAN_NOT_OK;
+-				}
++			}
++			else{
++				return CHAN_NOT_OK;
+ 			}
+ 		}
+ 	}
+ 	else if(!strcmp(opBand, "5GHz")) {
+-		int bandwidth20Mhz[] = BANDWIDTH5_20Mhz
+-		int bandwidthLo40Mhz[] = BANDWIDTH5_L40Mhz
+-		int bandwidthUp40Mhz[] = BANDWIDTH5_U40Mhz
+-		int bandwidth80Mhz[] = BANDWIDTH5_80Mhz
+-		int bandwidth160Mhz[] = BANDWIDTH5_160Mhz
+-		int *bandwidthChannelNum = NULL;
+-		int *bandwidthChannelNum_another = NULL;
+ 
+ 		if(!strcmp(opBandwidth, "20MHz")) {
+-			bandwidthChannelNum = bandwidth20Mhz;
++			strcpy(chanlist, PossiChan);
+ 		}
+ 		else if(!strcmp(opBandwidth, "40MHz")) {
+ 			if(!strcmp(ExtChan, "BelowControlChannel")){
+-				bandwidthChannelNum = bandwidthUp40Mhz;
+-				bandwidthChannelNum_another = bandwidthLo40Mhz;
++				strcpy(chanlist, UpperChan);
+ 			}
+ 			else if(!strcmp(ExtChan, "AboveControlChannel")){
+-				bandwidthChannelNum = bandwidthLo40Mhz;
+-				bandwidthChannelNum_another = bandwidthUp40Mhz;
++				strcpy(chanlist, LowerChan);
+ 			}
+ 		}
+ 		else if(!strcmp(opBandwidth, "80MHz")) {
+-			bandwidthChannelNum = bandwidth80Mhz;
++			strcpy(chanlist, BW80ChanList);
+ 		}
+ 		else if(!strcmp(opBandwidth, "160MHz")) {
+-			bandwidthChannelNum = bandwidth160Mhz;
++			strcpy(chanlist, BW160ChanList);
+ 		}
+ 		else
+ 			return CHAN_NOT_OK;
+ 
+-		if(tr98AutoChannel)
+-			return CHAN_OK;
+-
+ 		if(tr181Channel != tr98SetChannel) {
+ 			if(apIid->idx[0] > WIFI5_FIRST_AP && apIid->idx[0] <= WIFI5_LAST_AP)
+ 				return CHAN_NOT_OK;
+ 
+-			int n = 0;
+-			if(!strcmp(opBandwidth, "40MHz")){
+-				while(bandwidthChannelNum[n]){
+-					if(tr98SetChannel == bandwidthChannelNum[n]){
+-						return CHAN_OK;
++			if(WifiCheckChannelAvailable(chanlist, tr98SetChannel)){
++				return CHAN_OK;
++			}
++			else if(!strcmp(opBandwidth, "40MHz")){
++				// check channel is available for another channel list
++				if(!strcmp(ExtChan, "BelowControlChannel")){
++					strcpy(chanlist, LowerChan);
++					if(WifiCheckChannelAvailable(chanlist, tr98SetChannel)){
++						return CHAN_LOWER_OK;
+ 					}
+-					n++;
+ 				}
+-				n=0;
+-				while(bandwidthChannelNum_another[n]){
+-					if(tr98SetChannel == bandwidthChannelNum_another[n]){
+-						if(!strcmp(ExtChan, "BelowControlChannel")){
+-							return CHAN_LOWER_OK;
+-						}
+-						else{
+-							return CHAN_UPPER_OK;
+-						}
++				else if(!strcmp(ExtChan, "AboveControlChannel")){
++					strcpy(chanlist, UpperChan);
++					if(WifiCheckChannelAvailable(chanlist, tr98SetChannel)){
++						return CHAN_UPPER_OK;
+ 					}
+-					n++;
+ 				}
+-				return CHAN_NOT_OK;
+ 			}
+ 			else{
+-				while(bandwidthChannelNum[n] && (tr98SetChannel != bandwidthChannelNum[n]))
+-					n++;
+-
+-				return (bandwidthChannelNum[n]) ? CHAN_OK : CHAN_NOT_OK;
++				return CHAN_NOT_OK;
+ 			}
+ 		}
+ 	}
+@@ -5296,6 +5277,23 @@
+ 	return CHAN_OK;
+ }
+ 
++zcfgRet_t lanDevWlanConfirmBW(struct json_object *tr98Jobj, struct json_object *radioJobj)
++{
++	const char *opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
++	const char *BW80ChanList = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_AC80_Channels"));
++	const char *BW160ChanList = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_AX160_Channels"));
++
++	if(!strcmp(opBandwidth, "80MHz")){
++		if(!strcmp(BW80ChanList, ""))
++			return ZCFG_INVALID_PARAM_VALUE;
++	}
++	else if(!strcmp(opBandwidth, "160MHz")){
++		if(!strcmp(BW160ChanList, ""))
++			return ZCFG_INVALID_PARAM_VALUE;
++	}
++	return ZCFG_SUCCESS;
++}
++
+ #define MAX_WEPKEY_NUM   4
+ 
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i
+@@ -5619,6 +5617,9 @@
+ 			continue;
+ 		}
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_OperatingChannelBandwidth")) {
++			if((ret = lanDevWlanConfirmBW(tr98Jobj, radioJobj)) == ZCFG_INVALID_PARAM_VALUE){
++				goto finish;
++			}
+ 			json_object_object_add(radioJobj, "OperatingChannelBandwidth", JSON_OBJ_COPY(paramValue));
+ 			paramList++;
+ 			continue;

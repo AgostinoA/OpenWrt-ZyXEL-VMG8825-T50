@@ -1,0 +1,1744 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-12-22 11:14:30.338064329 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-12-22 11:14:30.346064329 +0800
+@@ -14,6 +14,7 @@
+ NETWORK_VLANGRP_PATH = ./network/vlanGroup
+ NETWORK_IGMPMLD_PATH = ./network/igmp_mld
+ NETWORK_WIRELESS_PATH = ./network/wireless
++NETWORK_QOS_PATH = ./network/qos
+ NETWORK_USBSERVICE_PATH = ./network/usbService
+ NETWORK_HOME_CONNECITIVY_PATH = ./network/homeConnectivity
+ MAINTENANCE_MGMT = ./maintenance/mgmt
+@@ -39,6 +40,7 @@
+ SOURCES += $(wildcard $(NETWORK_INTF_GP_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_VLANGRP_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_IGMPMLD_PATH)/*.c)
++SOURCES += $(wildcard $(NETWORK_QOS_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_USBSERVICE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_HOME_CONNECITIVY_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_MGMT)/*.c)
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_Qos.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_Qos.h	2016-12-22 11:14:30.346064329 +0800
+@@ -0,0 +1,32 @@
++#ifndef ZCFG_FE_QOS_H
++#define ZCFG_FE_QOS_H
++
++#define QOS_DAL_DEBUG 0
++
++typedef enum e_ActionType {
++	e_ActionType_ADD = 0,
++	e_ActionType_EDIT,
++	e_ActionType_DELETE
++}e_ActionType;
++
++#if 0
++void debug_RDM_item(int RDM_OID, int Iid_idx, char *item, int type) {
++	int res_int = 0;
++	int ret;
++	json_object *obj = NULL;
++	objIndex_t Iid = {0};
++	IID_INIT(Iid);
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID, &Iid, &obj) == ZCFG_SUCCESS) {
++		if((Iid.idx[0] == Iid_idx) || (Iid_idx == -1)) {
++			if(type == 1) {
++				res_int = json_object_get_int(json_object_object_get(obj, item));
++				printf("debug_RDM_item: OID %d, iid %d, item %s, value %d\n", RDM_OID, Iid.idx[0], item, res_int);
++			}
++		}
++		zcfgFeJsonObjFree(obj);
++	}
++	return;
++}
++#endif
++#endif
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosClass.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosClass.c	2016-12-22 11:14:30.346064329 +0800
+@@ -0,0 +1,626 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++#include <string.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_fe_Qos.h"
++
++typedef struct s_ClassObjInfo {
++	bool Enable;
++	char *X_ZYXEL_Name;
++	/* order */
++	int Order;
++	/* from interface */
++	char *Interface;
++	/* ether type*/
++	char *Ethertype;
++	/* source addr */
++	char *SourceIP;
++	char *SourceMask;
++	bool SourceIPExclude;
++	/* source port*/
++	int	SourcePort;
++	int SourcePortRangeMax;
++	bool SourcePortExclude;
++	/* source Mac */
++	char *SourceMACAddress;
++	char *SourceMACMask;
++	bool SourceMACExclude;
++	/* destination addr */
++	char *DestIP;
++	char *DestMask;
++	bool DestIPExclude;
++	/* destination port */
++	int DestPort;
++	int DestPortRangeMax;
++	bool DestPortExclude;
++	/* destination Mac */
++	char *DestMACAddress;
++	char *DestMACMask;
++	bool DestMACExclude;
++	/* service */
++	char *X_ZYXEL_Service;
++	bool X_ZYXEL_ServiceExclude;
++	/* protocol */
++	int Protocol;
++	bool ProtocolExclude;
++	/* dhcp options */
++	char *SourceVendorClassID;
++	bool SourceVendorClassIDExclude;
++	char *X_ZYXEL_SourceClientIDType;
++	char *SourceClientID;
++	bool SourceClientIDExclude;
++	char *SourceUserClassID;
++	bool SourceUserClassIDExclude;
++	int SourceVendorSpecificInfoEnterprise;
++	char *SourceVendorSpecificInfo;
++	bool SourceVendorSpecificInfoExclude;
++	/* packet length */
++	int IPLengthMin;
++	int IPLengthMax;
++	bool IPLengthExclude;
++	/* DSCP check */
++	int DSCPCheck;
++	bool DSCPExclude;
++	/* vlan prio check */
++	int EthernetPriorityCheck;
++	bool EthernetPriorityExclude;
++	/* vlan Id check */
++	int VLANIDCheck;
++	bool VLANIDExclude;
++	/* tcp ack */
++	bool TCPACK;
++	bool TCPACKExclude;
++	/* DSCP mark */
++	int DSCPMark;
++	/* vlan mark */
++	int X_ZYXEL_VLANIDAction;
++	int EthernetPriorityMark;
++	int X_ZYXEL_VLANIDMark;
++	/* class route */
++	int ForwardingPolicy;
++	int TrafficClass;
++	bool defaultQ;
++}s_ClassObjInfo;
++
++typedef struct s_QosClass {
++	int classIdx;
++	int clsQueueIdx; // the queue id which the class belong to
++	s_ClassObjInfo *ClassObj_Info;
++} s_QosClass;
++
++typedef struct s_QosClassDel {
++	int idx;
++}s_QosClassDel;
++
++typedef struct s_QosClassIidMapping{
++	int size;
++	int iid[20];
++}s_QosClassIidMapping;
++
++time_t t1, t2;
++
++dal_param_t QosClass_param[] = {
++	{"classIdx",			dalType_int, 0, 0, NULL},
++	{"clsQueueIdx",			dalType_int, 0, 0, NULL},	
++	{NULL,		0,	0,	0,	NULL}
++};
++
++s_QosClassIidMapping IidMappingTable = {0};
++extern uint32_t StrToIntConv(char *str);
++
++void dump_QosClass_Info(s_QosClass *QosClass_Info){
++	printf("======================= dump_QosClass_Info ==============================\n");
++	printf("classIdx %d\n", QosClass_Info->classIdx);
++	printf("clsQueueIdx %d\n", QosClass_Info->clsQueueIdx);
++	printf("=========================================================================\n");
++	return;
++}
++
++void getQosClassBasicInfo(struct json_object *Jobj, s_QosClass *QosClass_Info) {
++	json_object *ClassObj = NULL;
++	int tmp_idx = 0;
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("getQosClassBasicInfo\n");
++#endif
++	tmp_idx = json_object_get_int(json_object_object_get(Jobj, "classIdx"));
++	if(tmp_idx >= 0) {
++		QosClass_Info->classIdx = IidMappingTable.iid[tmp_idx];
++	}
++	else {
++		QosClass_Info->classIdx = tmp_idx;
++		/*for Add class*/
++	}
++	QosClass_Info->clsQueueIdx = json_object_get_int(json_object_object_get(Jobj, "clsQueueIdx"));
++	
++	
++	ClassObj = json_object_object_get(Jobj, "classObj");
++	QosClass_Info->ClassObj_Info = (s_ClassObjInfo*)malloc(sizeof(s_ClassObjInfo));
++	memset(QosClass_Info->ClassObj_Info, 0, sizeof(s_ClassObjInfo));
++
++	QosClass_Info->ClassObj_Info->Enable = json_object_get_boolean(json_object_object_get(ClassObj, "Enable"));
++	QosClass_Info->ClassObj_Info->X_ZYXEL_Name = (char*)json_object_get_string(json_object_object_get(ClassObj, "X_ZYXEL_Name"));
++	QosClass_Info->ClassObj_Info->Order = json_object_get_int(json_object_object_get(ClassObj, "Order"));
++	QosClass_Info->ClassObj_Info->Interface = (char*)json_object_get_string(json_object_object_get(ClassObj, "Interface"));
++	QosClass_Info->ClassObj_Info->Ethertype = (char*)json_object_get_string(json_object_object_get(ClassObj, "Ethertype"));
++	QosClass_Info->ClassObj_Info->SourceIP = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceIP"));
++	QosClass_Info->ClassObj_Info->SourceMask = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceMask"));
++	QosClass_Info->ClassObj_Info->SourceIPExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourceIPExclude"));
++	QosClass_Info->ClassObj_Info->SourcePort = json_object_get_int(json_object_object_get(ClassObj, "SourcePort"));
++	QosClass_Info->ClassObj_Info->SourcePortRangeMax = json_object_get_int(json_object_object_get(ClassObj, "SourcePortRangeMax"));
++	QosClass_Info->ClassObj_Info->SourcePortExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourcePortExclude"));
++	QosClass_Info->ClassObj_Info->SourceMACAddress = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceMACAddress"));
++	QosClass_Info->ClassObj_Info->SourceMACMask = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceMACMask"));
++	QosClass_Info->ClassObj_Info->SourceMACExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourceMACExclude"));
++	QosClass_Info->ClassObj_Info->DestIP = (char*)json_object_get_string(json_object_object_get(ClassObj, "DestIP"));
++	QosClass_Info->ClassObj_Info->DestMask = (char*)json_object_get_string(json_object_object_get(ClassObj, "DestMask"));
++	QosClass_Info->ClassObj_Info->DestIPExclude = json_object_get_boolean(json_object_object_get(ClassObj, "DestIPExclude"));
++	QosClass_Info->ClassObj_Info->DestPort = json_object_get_int(json_object_object_get(ClassObj, "DestPort"));
++	QosClass_Info->ClassObj_Info->DestPortRangeMax = json_object_get_int(json_object_object_get(ClassObj, "DestPortRangeMax"));
++	QosClass_Info->ClassObj_Info->DestPortExclude = json_object_get_boolean(json_object_object_get(ClassObj, "DestPortExclude"));
++	QosClass_Info->ClassObj_Info->DestMACAddress = (char*)json_object_get_string(json_object_object_get(ClassObj, "DestMACAddress"));
++	QosClass_Info->ClassObj_Info->DestMACMask = (char*)json_object_get_string(json_object_object_get(ClassObj, "DestMACMask"));
++	QosClass_Info->ClassObj_Info->DestMACExclude = json_object_get_boolean(json_object_object_get(ClassObj, "DestMACExclude"));
++	QosClass_Info->ClassObj_Info->X_ZYXEL_Service = (char*)json_object_get_string(json_object_object_get(ClassObj, "X_ZYXEL_Service"));
++	QosClass_Info->ClassObj_Info->X_ZYXEL_ServiceExclude = json_object_get_boolean(json_object_object_get(ClassObj, "X_ZYXEL_ServiceExclude"));
++	QosClass_Info->ClassObj_Info->Protocol = json_object_get_int(json_object_object_get(ClassObj, "Protocol"));
++	QosClass_Info->ClassObj_Info->ProtocolExclude = json_object_get_boolean(json_object_object_get(ClassObj, "ProtocolExclude"));
++	QosClass_Info->ClassObj_Info->SourceVendorClassID = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceVendorClassID"));
++	QosClass_Info->ClassObj_Info->SourceVendorClassIDExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourceVendorClassIDExclude"));
++	QosClass_Info->ClassObj_Info->X_ZYXEL_SourceClientIDType = (char*)json_object_get_string(json_object_object_get(ClassObj, "X_ZYXEL_SourceClientIDType"));
++	QosClass_Info->ClassObj_Info->SourceClientID = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceClientID"));
++	QosClass_Info->ClassObj_Info->SourceClientIDExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourceClientIDExclude"));
++	QosClass_Info->ClassObj_Info->SourceUserClassID = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceUserClassID"));
++	QosClass_Info->ClassObj_Info->SourceUserClassIDExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourceUserClassIDExclude"));
++	QosClass_Info->ClassObj_Info->SourceVendorSpecificInfoEnterprise = json_object_get_int(json_object_object_get(ClassObj, "SourceVendorSpecificInfoEnterprise"));
++	QosClass_Info->ClassObj_Info->SourceVendorSpecificInfo = (char*)json_object_get_string(json_object_object_get(ClassObj, "SourceVendorSpecificInfo"));
++	QosClass_Info->ClassObj_Info->SourceVendorSpecificInfoExclude = json_object_get_boolean(json_object_object_get(ClassObj, "SourceVendorSpecificInfoExclude"));
++	QosClass_Info->ClassObj_Info->IPLengthMin = json_object_get_int(json_object_object_get(ClassObj, "IPLengthMin"));
++	QosClass_Info->ClassObj_Info->IPLengthMax = json_object_get_int(json_object_object_get(ClassObj, "IPLengthMax"));
++	QosClass_Info->ClassObj_Info->IPLengthExclude = json_object_get_boolean(json_object_object_get(ClassObj, "IPLengthExclude"));
++	QosClass_Info->ClassObj_Info->DSCPCheck = json_object_get_int(json_object_object_get(ClassObj, "DSCPCheck"));
++	QosClass_Info->ClassObj_Info->DSCPExclude = json_object_get_boolean(json_object_object_get(ClassObj, "DSCPExclude"));
++	QosClass_Info->ClassObj_Info->EthernetPriorityCheck = json_object_get_int(json_object_object_get(ClassObj, "EthernetPriorityCheck"));
++	QosClass_Info->ClassObj_Info->EthernetPriorityExclude = json_object_get_boolean(json_object_object_get(ClassObj, "EthernetPriorityExclude"));
++	QosClass_Info->ClassObj_Info->VLANIDCheck = json_object_get_int(json_object_object_get(ClassObj, "VLANIDCheck"));
++	QosClass_Info->ClassObj_Info->VLANIDExclude = json_object_get_boolean(json_object_object_get(ClassObj, "VLANIDExclude"));
++	QosClass_Info->ClassObj_Info->TCPACK = json_object_get_boolean(json_object_object_get(ClassObj, "TCPACK"));
++	QosClass_Info->ClassObj_Info->TCPACKExclude = json_object_get_boolean(json_object_object_get(ClassObj, "TCPACKExclude"));
++	QosClass_Info->ClassObj_Info->DSCPMark = json_object_get_int(json_object_object_get(ClassObj, "DSCPMark"));
++	QosClass_Info->ClassObj_Info->X_ZYXEL_VLANIDAction = json_object_get_int(json_object_object_get(ClassObj, "X_ZYXEL_VLANIDAction"));
++	QosClass_Info->ClassObj_Info->EthernetPriorityMark = json_object_get_int(json_object_object_get(ClassObj, "EthernetPriorityMark"));
++	QosClass_Info->ClassObj_Info->X_ZYXEL_VLANIDMark = json_object_get_int(json_object_object_get(ClassObj, "X_ZYXEL_VLANIDMark"));
++	QosClass_Info->ClassObj_Info->ForwardingPolicy = json_object_get_int(json_object_object_get(ClassObj, "ForwardingPolicy"));
++	QosClass_Info->ClassObj_Info->defaultQ = json_object_get_boolean(json_object_object_get(ClassObj, "defaultQ"));
++	
++#if(QOS_DAL_DEBUG == 1)			
++	dump_QosClass_Info(QosClass_Info);
++#endif	
++	return;
++}
++
++void freeQosClassBasicInfo(s_QosClass *QosClass_Info) {
++	free(QosClass_Info->ClassObj_Info);
++	return;
++}
++
++void getQosClassDelKey(struct json_object *Jobj, s_QosClassDel *QosClassDel_Info) {
++	int tmp_idx = 0;
++#if(QOS_DAL_DEBUG == 1)			
++	printf("getQosClassDelKey\n");
++#endif	
++	tmp_idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	QosClassDel_Info->idx = IidMappingTable.iid[tmp_idx];
++#if(QOS_DAL_DEBUG == 1)			
++	printf("QosClassDel_Info->idx %d\n", QosClassDel_Info->idx);
++#endif
++	return;
++}
++
++void prepare_qos_classObj(json_object *classObj, s_ClassObjInfo *ClassObj_Info) {
++	json_object_object_add(classObj, "Enable", json_object_new_boolean(ClassObj_Info->Enable));
++	json_object_object_add(classObj, "X_ZYXEL_Name", json_object_new_string(ClassObj_Info->X_ZYXEL_Name));
++	json_object_object_add(classObj, "Order", json_object_new_int(ClassObj_Info->Order));
++	json_object_object_add(classObj, "Interface", json_object_new_string(ClassObj_Info->Interface));
++	json_object_object_add(classObj, "Ethertype", json_object_new_string(ClassObj_Info->Ethertype));
++	json_object_object_add(classObj, "SourceIP", json_object_new_string(ClassObj_Info->SourceIP));
++	json_object_object_add(classObj, "SourceMask", json_object_new_string(ClassObj_Info->SourceMask));
++	json_object_object_add(classObj, "SourceIPExclude", json_object_new_boolean(ClassObj_Info->SourceIPExclude));
++	json_object_object_add(classObj, "SourcePort", json_object_new_int(ClassObj_Info->SourcePort));
++	json_object_object_add(classObj, "SourcePortRangeMax", json_object_new_int(ClassObj_Info->SourcePortRangeMax));
++	json_object_object_add(classObj, "SourcePortExclude", json_object_new_boolean(ClassObj_Info->SourcePortExclude));
++	json_object_object_add(classObj, "SourceMACAddress", json_object_new_string(ClassObj_Info->SourceMACAddress));
++	json_object_object_add(classObj, "SourceMACMask", json_object_new_string(ClassObj_Info->SourceMACMask));
++	json_object_object_add(classObj, "SourceMACExclude", json_object_new_boolean(ClassObj_Info->SourceMACExclude));
++	json_object_object_add(classObj, "DestIP", json_object_new_string(ClassObj_Info->DestIP));
++	json_object_object_add(classObj, "DestMask", json_object_new_string(ClassObj_Info->DestMask));
++	json_object_object_add(classObj, "DestIPExclude", json_object_new_boolean(ClassObj_Info->DestIPExclude));
++	json_object_object_add(classObj, "DestPort", json_object_new_int(ClassObj_Info->DestPort));
++	json_object_object_add(classObj, "DestPortRangeMax", json_object_new_int(ClassObj_Info->DestPortRangeMax));
++	json_object_object_add(classObj, "DestPortExclude", json_object_new_boolean(ClassObj_Info->DestPortExclude));
++	json_object_object_add(classObj, "DestMACAddress", json_object_new_string(ClassObj_Info->DestMACAddress));
++	json_object_object_add(classObj, "DestMACMask", json_object_new_string(ClassObj_Info->DestMACMask));
++	json_object_object_add(classObj, "DestMACExclude", json_object_new_boolean(ClassObj_Info->DestMACExclude));
++	json_object_object_add(classObj, "X_ZYXEL_Service", json_object_new_string(ClassObj_Info->X_ZYXEL_Service));
++	json_object_object_add(classObj, "X_ZYXEL_ServiceExclude", json_object_new_boolean(ClassObj_Info->X_ZYXEL_ServiceExclude));
++	json_object_object_add(classObj, "Protocol", json_object_new_int(ClassObj_Info->Protocol));
++	json_object_object_add(classObj, "ProtocolExclude", json_object_new_boolean(ClassObj_Info->ProtocolExclude));
++	json_object_object_add(classObj, "SourceVendorClassID", json_object_new_string(ClassObj_Info->SourceVendorClassID));
++	json_object_object_add(classObj, "SourceVendorClassIDExclude", json_object_new_boolean(ClassObj_Info->SourceVendorClassIDExclude));
++	json_object_object_add(classObj, "X_ZYXEL_SourceClientIDType", json_object_new_string(ClassObj_Info->X_ZYXEL_SourceClientIDType));
++	json_object_object_add(classObj, "SourceClientID", json_object_new_string(ClassObj_Info->SourceClientID));
++	json_object_object_add(classObj, "SourceClientIDExclude", json_object_new_boolean(ClassObj_Info->SourceClientIDExclude));
++	json_object_object_add(classObj, "SourceUserClassID", json_object_new_string(ClassObj_Info->SourceUserClassID));
++	json_object_object_add(classObj, "SourceUserClassIDExclude", json_object_new_boolean(ClassObj_Info->SourceUserClassIDExclude));
++	json_object_object_add(classObj, "SourceVendorSpecificInfoEnterprise", json_object_new_int(ClassObj_Info->SourceVendorSpecificInfoEnterprise));
++	json_object_object_add(classObj, "SourceVendorSpecificInfo", json_object_new_string(ClassObj_Info->SourceVendorSpecificInfo));
++	json_object_object_add(classObj, "SourceVendorSpecificInfoExclude", json_object_new_boolean(ClassObj_Info->SourceVendorSpecificInfoExclude));
++	json_object_object_add(classObj, "IPLengthMin", json_object_new_int(ClassObj_Info->IPLengthMin));
++	json_object_object_add(classObj, "IPLengthMax", json_object_new_int(ClassObj_Info->IPLengthMax));
++	json_object_object_add(classObj, "IPLengthExclude", json_object_new_boolean(ClassObj_Info->IPLengthExclude));
++	json_object_object_add(classObj, "DSCPCheck", json_object_new_int(ClassObj_Info->DSCPCheck));
++	json_object_object_add(classObj, "DSCPExclude", json_object_new_boolean(ClassObj_Info->DSCPExclude));
++	json_object_object_add(classObj, "EthernetPriorityCheck", json_object_new_int(ClassObj_Info->EthernetPriorityCheck));
++	json_object_object_add(classObj, "EthernetPriorityExclude", json_object_new_boolean(ClassObj_Info->EthernetPriorityExclude));
++	json_object_object_add(classObj, "VLANIDCheck", json_object_new_int(ClassObj_Info->VLANIDCheck));
++	json_object_object_add(classObj, "VLANIDExclude", json_object_new_boolean(ClassObj_Info->VLANIDExclude));
++	json_object_object_add(classObj, "TCPACK", json_object_new_boolean(ClassObj_Info->TCPACK));
++	json_object_object_add(classObj, "TCPACKExclude", json_object_new_boolean(ClassObj_Info->TCPACKExclude));
++	json_object_object_add(classObj, "DSCPMark", json_object_new_int(ClassObj_Info->DSCPMark));
++	json_object_object_add(classObj, "X_ZYXEL_VLANIDAction", json_object_new_int(ClassObj_Info->X_ZYXEL_VLANIDAction));
++	json_object_object_add(classObj, "EthernetPriorityMark", json_object_new_int(ClassObj_Info->EthernetPriorityMark));
++	json_object_object_add(classObj, "X_ZYXEL_VLANIDMark", json_object_new_int(ClassObj_Info->X_ZYXEL_VLANIDMark));
++	json_object_object_add(classObj, "ForwardingPolicy", json_object_new_int(ClassObj_Info->ForwardingPolicy));
++	json_object_object_add(classObj, "TrafficClass", json_object_new_int(ClassObj_Info->TrafficClass));
++
++}
++
++char* find_changed_traffic_class(int org_classIdx, int new_clsQueueIdx, bool defaultQ, int *changedQueueIdx, e_ActionType action) {
++	int i = 0;
++	int TrafficClass = -1;
++	char *TrafficClasses_group_str = NULL;
++	char *new_TrafficClasses_group_str = NULL;
++	char *TrafficClasses_single_str = NULL;
++	char *rest_str = NULL;
++	bool FindQueue = false;
++	json_object *classObj = NULL;
++	json_object *queueObj = NULL;
++	objIndex_t classIid = {0};
++	objIndex_t queueIid = {0};
++
++	// the original class Iid idx
++	TrafficClass = org_classIdx;
++
++	// find the mapped queue of the original class
++	IID_INIT(queueIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++		TrafficClasses_group_str = (char*)json_object_get_string(json_object_object_get(queueObj, "TrafficClasses"));
++#if(QOS_DAL_DEBUG == 1)			
++		printf("TrafficClasses_group_str %s\n", TrafficClasses_group_str);
++#endif
++		if(TrafficClasses_group_str != NULL) {
++			TrafficClasses_single_str = strtok_r(TrafficClasses_group_str, ",", &rest_str);
++			while(TrafficClasses_single_str != NULL) {
++				if(StrToIntConv(TrafficClasses_single_str) == TrafficClass) {
++					FindQueue = true;
++					*changedQueueIdx = queueIid.idx[0];
++					break;
++				}
++				TrafficClasses_single_str = strtok_r(rest_str, ",", &rest_str);
++			}
++		}
++		zcfgFeJsonObjFree(queueObj);
++
++		if(FindQueue == true) {
++#if(QOS_DAL_DEBUG == 1)			
++			printf("FindQueue %d\n", queueIid.idx[0]);
++#endif
++			break;
++		}
++	}
++
++	// case 1: if the mapped queue iid != the set queueIid, it means queue change for this class
++	// case 2: for delete class, remove reference in TrafficClasses of old queue 
++	if(FindQueue == true) {
++		IID_INIT(queueIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++			if(queueIid.idx[0] == *changedQueueIdx) {
++				if((defaultQ)||(queueIid.idx[0] != new_clsQueueIdx) || (action == e_ActionType_DELETE)) {
++					TrafficClasses_group_str = (char*)json_object_get_string(json_object_object_get(queueObj, "TrafficClasses"));
++#if(QOS_DAL_DEBUG == 1)			
++					printf("TrafficClasses_group_str %s, TrafficClass %d\n", TrafficClasses_group_str, TrafficClass);
++#endif
++					new_TrafficClasses_group_str = malloc(sizeof(TrafficClasses_group_str));
++					memset(new_TrafficClasses_group_str, 0 ,sizeof(TrafficClasses_group_str));
++					if(TrafficClasses_group_str != NULL) {
++						TrafficClasses_single_str = strtok_r(TrafficClasses_group_str, ",", &rest_str);
++						while(TrafficClasses_single_str != NULL) {
++							// if the TrafficClass in queue include the original TrafficClass, remove it
++							if(StrToIntConv(TrafficClasses_single_str) != TrafficClass) {
++								strcat(new_TrafficClasses_group_str, TrafficClasses_single_str);
++								strcat(new_TrafficClasses_group_str, ",");
++							}
++							TrafficClasses_single_str = strtok_r(rest_str, ",", &rest_str);
++						}
++					}
++#if(QOS_DAL_DEBUG == 1)			
++					printf("new_TrafficClasses_group_str %s\n", new_TrafficClasses_group_str);
++#endif
++				}
++				zcfgFeJsonObjFree(queueObj);
++				break;
++			}
++			zcfgFeJsonObjFree(queueObj);
++		}
++	}
++	
++	return new_TrafficClasses_group_str;
++}
++
++void update_traffic_class_in_qos_queue(int org_classIdx, int new_clsQueueIdx, bool defaultQ, objIndex_t classIid, e_ActionType action) {
++	char *TrafficClasses = NULL;
++	char *NewTrafficClasses = NULL;
++	char *new_TrafficClasses_group_str = NULL;
++	char tmp[30] = {0};
++	int changedQueueIdx;
++	int array_size = 0;
++	json_object *queueObj = NULL;
++	objIndex_t queueIid = {0};
++	IID_INIT(queueIid);
++
++#if(QOS_DAL_DEBUG == 1)
++	printf("update_traffic_class_in_qos_queue\n");
++#endif
++	// update the TrafficClasses of RDM_OID_QOS_QUE which the original class related
++	if((action == e_ActionType_EDIT) || (action == e_ActionType_DELETE)) {
++		
++		new_TrafficClasses_group_str = find_changed_traffic_class(org_classIdx, new_clsQueueIdx, defaultQ, &changedQueueIdx, action);
++		if(new_TrafficClasses_group_str != NULL) {
++			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++				if(changedQueueIdx == queueIid.idx[0]) {
++					/* remove reference in TrafficClasses of old queue */
++					json_object_object_add(queueObj, "TrafficClasses", json_object_new_string(new_TrafficClasses_group_str));
++					zcfgFeObjJsonSetWithoutApply(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
++					zcfgFeJsonObjFree(queueObj);
++					break;
++				}
++				zcfgFeJsonObjFree(queueObj);
++			}
++			free(new_TrafficClasses_group_str);
++		}
++		else {
++#if(QOS_DAL_DEBUG == 1)			
++			printf("No need to change que!\n");
++#endif
++		}
++	}
++
++	if(action != e_ActionType_DELETE) {
++		IID_INIT(queueIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++			// find the queue which the class belong to and set its TrafficClasses 
++			if((!defaultQ)&&(queueIid.idx[0] == new_clsQueueIdx)) {
++				TrafficClasses = (char*)json_object_get_string(json_object_object_get(queueObj, "TrafficClasses"));
++#if(QOS_DAL_DEBUG == 1)			
++				printf("classId %d OrgTrafficClasses %s\n", classIid.idx[0], TrafficClasses);
++#endif
++				// NewTrafficClasses = TrafficClasses + NewAddClass
++				array_size = sizeof(TrafficClasses) + 10;
++				NewTrafficClasses = (char*)malloc(array_size); 
++				memset(NewTrafficClasses, 0, array_size);
++				memcpy(NewTrafficClasses, TrafficClasses, sizeof(TrafficClasses));
++				memset(tmp, 0, sizeof(tmp));
++				sprintf(tmp, "%d", classIid.idx[0]);
++				strcat(NewTrafficClasses, tmp);
++				strcat(NewTrafficClasses, ",");
++#if(QOS_DAL_DEBUG == 1)		
++				printf("classId %d NewTrafficClasses %s\n", classIid.idx[0], NewTrafficClasses);
++#endif
++				json_object_object_add(queueObj, "TrafficClasses", json_object_new_string(NewTrafficClasses));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
++				zcfgFeJsonObjFree(queueObj);
++				free(NewTrafficClasses);
++				break;
++			}
++			zcfgFeJsonObjFree(queueObj);
++		}
++	}
++
++	return;
++}
++
++void updateQosClassInfo(void){
++	uint8_t i = 0;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++	uint8_t Class_Order = 0;
++
++	memset(&IidMappingTable, 0 , sizeof(IidMappingTable));
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
++		Class_Order = json_object_get_int(json_object_object_get(classObj, "Order"));
++		IidMappingTable.size += 1;
++		IidMappingTable.iid[Class_Order-1] = classIid.idx[0];
++		zcfgFeJsonObjFree(classObj);
++	}
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("updateQosClassInfo\n");
++	for(i=0; i<IidMappingTable.size; i++){
++		printf("idx[%d] iid %d\n", i, IidMappingTable.iid[i]);
++	}
++#endif
++	return;
++}
++
++zcfgRet_t zcfgFeDalQosClassAdd(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	e_ActionType action = e_ActionType_ADD; //ADD, EDIT, DELETE
++	s_QosClass *QosClass_Info = NULL;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++	IID_INIT(classIid);
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("zcfgFeDalQosClassAdd\n");
++#endif
++	// POST RDM_OID_QOS_CLS
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_CLS, &classIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	QosClass_Info = (s_QosClass*)malloc(sizeof(s_QosClass));
++	memset(QosClass_Info, 0, sizeof(s_QosClass));
++	getQosClassBasicInfo(Jobj, QosClass_Info);
++
++	// Fill the TrafficClasses into RDM_OID_QOS_CLS
++	QosClass_Info->ClassObj_Info->TrafficClass = classIid.idx[0];
++#if(QOS_DAL_DEBUG == 1)			
++	printf("new add TrafficClass %d\n", QosClass_Info->ClassObj_Info->TrafficClass);
++#endif
++
++	// update RDM_OID_QOS_QUE - TrafficClasses
++	update_traffic_class_in_qos_queue(QosClass_Info->classIdx, QosClass_Info->clsQueueIdx, QosClass_Info->ClassObj_Info->defaultQ, classIid, action);
++	
++	
++	
++	
++		
++	// PUT RDM_OID_QOS_CLS
++	prepare_qos_classObj(classObj, QosClass_Info->ClassObj_Info);
++	zcfgFeObjJsonBlockedSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("update Order\n");
++#endif
++	updateQosClassInfo();
++	freeQosClassBasicInfo(QosClass_Info);
++	free(QosClass_Info);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosClassEdit(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	e_ActionType action = e_ActionType_EDIT; //ADD, EDIT, DELETE
++	s_QosClass *QosClass_Info = NULL;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("zcfgFeDalQosClassEdit\n");
++#endif
++	QosClass_Info = (s_QosClass*)malloc(sizeof(s_QosClass));
++	memset(QosClass_Info, 0, sizeof(s_QosClass));
++	getQosClassBasicInfo(Jobj, QosClass_Info);
++	// Fill the TrafficClasses into RDM_OID_QOS_CLS
++	QosClass_Info->ClassObj_Info->TrafficClass = QosClass_Info->classIdx;
++	
++	
++	
++	// PUT RDM_OID_QOS_CLS
++	IID_INIT(classIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
++		if(classIid.idx[0] == QosClass_Info->classIdx) {
++			// update RDM_OID_QOS_QUE - TrafficClasses
++			update_traffic_class_in_qos_queue(QosClass_Info->classIdx, QosClass_Info->clsQueueIdx, QosClass_Info->ClassObj_Info->defaultQ, classIid, action);
++			
++			prepare_qos_classObj(classObj, QosClass_Info->ClassObj_Info);
++			zcfgFeObjJsonBlockedSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
++			zcfgFeJsonObjFree(classObj);
++			break;
++		}
++		zcfgFeJsonObjFree(classObj);
++	}
++	
++	// update the order in RDM_OID_QOS_CLS
++#if(QOS_DAL_DEBUG == 1)			
++	printf("update Order\n");
++#endif
++	updateQosClassInfo();
++	
++	freeQosClassBasicInfo(QosClass_Info);
++	free(QosClass_Info);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosClassDelete(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	e_ActionType action = e_ActionType_DELETE; //ADD, EDIT, DELETE
++	s_QosClassDel QosClassDel_Info;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("zcfgFeDalQosClassDelete\n");
++#endif
++	
++	getQosClassDelKey(Jobj, &QosClassDel_Info);
++	
++	
++	
++	
++	// update RDM_OID_QOS_QUE - TrafficClasses
++	IID_INIT(classIid);
++	update_traffic_class_in_qos_queue(QosClassDel_Info.idx, -1, false, classIid, action);
++	
++	
++	
++	
++	// update the order in RDM_OID_QOS_CLS
++#if(QOS_DAL_DEBUG == 1)			
++	printf("update Order\n");
++#endif
++	
++	
++
++	IID_INIT(classIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
++		if(classIid.idx[0] == QosClassDel_Info.idx) {
++			zcfgFeObjJsonDel(RDM_OID_QOS_CLS, &classIid, NULL);
++			zcfgFeJsonObjFree(classObj);
++			break;
++		}
++		zcfgFeJsonObjFree(classObj);
++	}
++	updateQosClassInfo();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosClass(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	t1 = time(NULL);
++	
++	if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalQosClassAdd(Jobj, NULL);
++	}
++	else if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalQosClassEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalQosClassDelete(Jobj, NULL);
++	}
++	else {
++		printf("Unknown method:%s\n", method);
++	}
++
++	t2 = time(NULL);
++    printf("zcfgFeDalQosClass() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
++
++	return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosGeneral.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosGeneral.c	2016-12-22 11:14:30.346064329 +0800
+@@ -0,0 +1,97 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++#include <string.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_fe_Qos.h"
++
++typedef struct s_QoS {
++	bool X_ZYXEL_Enabled;
++	char *X_ZYXEL_AutoMapType;
++	uint32_t X_ZYXEL_UpRate;
++	uint32_t X_ZYXEL_DownRate;
++}s_QoS;
++
++time_t t1, t2;
++
++dal_param_t QosGeneral_param[] = {
++	{"X_ZYXEL_Enabled",				dalType_boolean, 0, 0, NULL},
++	{"X_ZYXEL_AutoMapType",			dalType_string, 0, 0, NULL},
++	{"X_ZYXEL_UpRate",				dalType_int, 0, 0, NULL},
++	{"X_ZYXEL_DownRate",			dalType_int, 0, 0, NULL},
++	{NULL,		0,	0,	0,	NULL}
++};
++
++void getQosGeneralBasicInfo(struct json_object *Jobj, s_QoS *QoS_Info) {
++	QoS_Info->X_ZYXEL_Enabled = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_Enabled"));
++	QoS_Info->X_ZYXEL_AutoMapType = (char*)json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_AutoMapType"));
++	QoS_Info->X_ZYXEL_UpRate = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_UpRate"));
++	QoS_Info->X_ZYXEL_DownRate = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_DownRate"));
++	return;
++}
++
++zcfgRet_t zcfgFeDalQosGeneralAdd(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosGeneralEdit(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	s_QoS QoS_Info;
++	json_object *qosObj = NULL;
++	objIndex_t qosIid = {0};
++	IID_INIT(qosIid);
++
++	memset(&QoS_Info, 0, sizeof(s_QoS));
++	getQosGeneralBasicInfo(Jobj, &QoS_Info);
++
++	while(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS, &qosIid, &qosObj) == ZCFG_SUCCESS) {
++		json_object_object_add(qosObj, "X_ZYXEL_Enabled", json_object_new_boolean(QoS_Info.X_ZYXEL_Enabled));
++		json_object_object_add(qosObj, "X_ZYXEL_AutoMapType", json_object_new_string(QoS_Info.X_ZYXEL_AutoMapType));
++		json_object_object_add(qosObj, "X_ZYXEL_UpRate", json_object_new_int(QoS_Info.X_ZYXEL_UpRate));
++		json_object_object_add(qosObj, "X_ZYXEL_DownRate", json_object_new_int(QoS_Info.X_ZYXEL_DownRate));
++		zcfgFeObjJsonBlockedSet(RDM_OID_QOS, &qosIid, qosObj, NULL);
++		zcfgFeJsonObjFree(qosObj);
++		break;
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosGeneralDelete(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++zcfgRet_t zcfgFeDalQosGeneral(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	t1 = time(NULL);
++	
++	if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalQosGeneralAdd(Jobj, NULL);
++	}
++	else if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalQosGeneralEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalQosGeneralDelete(Jobj, NULL);
++	}
++	else {
++		printf("Unknown method:%s\n", method);
++	}
++
++	t2 = time(NULL);
++    printf("zcfgFeDalQosGeneral() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
++
++	return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosPolicer.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosPolicer.c	2016-12-22 11:17:39.799237800 +0800
+@@ -0,0 +1,346 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++#include <string.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_fe_Qos.h"
++
++time_t t1, t2;
++
++dal_param_t QosPolicer_param[] = {
++	{"idx",						dalType_int, 0, 0, NULL},
++	{"Enable",					dalType_boolean, 0, 0, NULL},
++	{"X_ZYXEL_Name",			dalType_string, 0, 0, NULL},
++	{"MeterType",				dalType_string, 0, 0, NULL},
++	{"CommittedRate",			dalType_int, 0, 0, NULL},
++	{"CommittedBurstSize",		dalType_int, 0, 0, NULL},
++	{"PartialConformingAction",	dalType_string, 0, 0, NULL},
++	{"ExcessBurstSize",			dalType_int, 0, 0, NULL},
++	{"PeakRate",				dalType_int, 0, 0, NULL},
++	{"PeakBurstSize",			dalType_int, 0, 0, NULL},
++	{"ConformingAction",		dalType_string, 0, 0, NULL},
++	{"NonConformingAction",		dalType_string, 0, 0, NULL},
++	{NULL,		0,	0,	0,	NULL}
++};
++
++typedef struct s_ArrayInfo{
++	int length;
++	int *array;
++}s_ArrayInfo;
++
++typedef struct s_QosPolicer{
++	int idx;
++	bool Enable;
++	char *X_ZYXEL_Name;
++	char *MeterType;
++	int CommittedRate;
++	int CommittedBurstSize;
++	char *PartialConformingAction;
++	
++	/*for MeterType = "SingleRateThreeColor*/
++	int ExcessBurstSize;
++	
++	/*for MeterType = "TwoRateThreeColor"*/
++	int PeakRate;
++	int PeakBurstSize;
++
++	char *ConformingAction;
++	char *NonConformingAction;
++	s_ArrayInfo ChooseClassArray;
++}s_QosPolicer;
++
++typedef struct s_QosPolicerDel{
++	int idx;
++	s_ArrayInfo ChooseClassArray;
++}s_QosPolicerDel;
++
++typedef struct s_qosPolicerClassTable_info{
++	int iid;
++	char *ClassName;
++	char *Policer;
++	bool AvlDisplay;
++}s_qosPolicerClassTable_info;
++
++typedef struct s_qosPolicerClassTable{
++	int size;
++	s_qosPolicerClassTable_info info[20];
++}s_qosPolicerClassTable;
++
++s_qosPolicerClassTable qosPolicerClassTable = {0};
++extern uint32_t StrToIntConv(char *str);
++
++void getQosPolicerBasicInfo(struct json_object *Jobj, s_QosPolicer *QosPolicer_Info) {
++	int i = 0;
++	json_object *ArrayObj = NULL;
++
++	QosPolicer_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	QosPolicer_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	QosPolicer_Info->X_ZYXEL_Name = (char*) json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Name"));
++	QosPolicer_Info->MeterType = (char*) json_object_get_string(json_object_object_get(Jobj, "MeterType"));
++	QosPolicer_Info->CommittedRate = json_object_get_int(json_object_object_get(Jobj, "CommittedRate"));
++	QosPolicer_Info->CommittedBurstSize = json_object_get_int(json_object_object_get(Jobj, "CommittedBurstSize"));
++	QosPolicer_Info->PartialConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "PartialConformingAction"));
++	QosPolicer_Info->ExcessBurstSize = json_object_get_int(json_object_object_get(Jobj, "ExcessBurstSize"));
++	QosPolicer_Info->PeakRate = json_object_get_int(json_object_object_get(Jobj, "PeakRate"));
++	QosPolicer_Info->PeakBurstSize = json_object_get_int(json_object_object_get(Jobj, "PeakBurstSize"));
++	QosPolicer_Info->ConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "ConformingAction"));
++	QosPolicer_Info->NonConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "NonConformingAction"));
++
++	/*find the choose qos classes*/
++	ArrayObj = json_object_object_get(Jobj, "choose_class_array");
++	memset(&(QosPolicer_Info->ChooseClassArray), 0, sizeof(s_ArrayInfo));
++	if(ArrayObj) {
++		QosPolicer_Info->ChooseClassArray.length = json_object_array_length(ArrayObj);
++		QosPolicer_Info->ChooseClassArray.array = (int*)malloc((QosPolicer_Info->ChooseClassArray.length)*sizeof(int));
++		for(i=0; i<(QosPolicer_Info->ChooseClassArray.length); i++) {
++			QosPolicer_Info->ChooseClassArray.array[i] = json_object_get_int(json_object_array_get_idx(ArrayObj, i));
++		}
++	}
++
++#if(QOS_DAL_DEBUG == 1)
++	printf("============== dump QosPolicer_Info ===============\n");
++	printf("QosPolicer_Info->idx %d\n", QosPolicer_Info->idx);
++	printf("QosPolicer_Info->Enable %d\n", QosPolicer_Info->Enable);
++	printf("QosPolicer_Info->X_ZYXEL_Name %s\n", QosPolicer_Info->X_ZYXEL_Name);
++	printf("QosPolicer_Info->MeterType %s\n", QosPolicer_Info->MeterType);
++	printf("QosPolicer_Info->CommittedRate %d\n", QosPolicer_Info->CommittedRate);
++	printf("QosPolicer_Info->CommittedBurstSize %d\n", QosPolicer_Info->CommittedBurstSize);
++	printf("QosPolicer_Info->PartialConformingAction %s\n", QosPolicer_Info->PartialConformingAction);
++	printf("QosPolicer_Info->ExcessBurstSize %d\n", QosPolicer_Info->ExcessBurstSize);
++	printf("QosPolicer_Info->PeakRate %d\n", QosPolicer_Info->PeakRate);
++	printf("QosPolicer_Info->PeakBurstSize %d\n", QosPolicer_Info->PeakBurstSize);
++	printf("QosPolicer_Info->ConformingAction %s\n", QosPolicer_Info->ConformingAction);
++	printf("QosPolicer_Info->NonConformingAction %s\n", QosPolicer_Info->NonConformingAction);
++	printf("QosPolicer_Info->ChooseClassArray length = %d, ", QosPolicer_Info->ChooseClassArray.length);
++	for(i=0; i<(QosPolicer_Info->ChooseClassArray.length); i++) {
++		printf("%d ", QosPolicer_Info->ChooseClassArray.array[i]);
++	}
++	printf("\n");
++	printf("=====================================================\n");
++#endif
++	return;
++}
++
++void freeQosPolicerBasicInfo(s_QosPolicer *QosPolicer_Info) {
++	free(QosPolicer_Info->ChooseClassArray.array);
++	return;
++}
++
++void getQosPolicerDelInfo(struct json_object *Jobj, s_QosPolicerDel *QosPolicerDel_Info) {
++	int i = 0;
++	json_object *ArrayObj = NULL;
++
++	QosPolicerDel_Info->idx = json_object_get_int(json_object_object_get(Jobj, "key"));
++
++	/*find the choose qos classes*/
++	ArrayObj = json_object_object_get(Jobj, "choose_class_array");
++	memset(&(QosPolicerDel_Info->ChooseClassArray), 0, sizeof(s_ArrayInfo));
++	if(ArrayObj) {
++		QosPolicerDel_Info->ChooseClassArray.length = json_object_array_length(ArrayObj);
++		QosPolicerDel_Info->ChooseClassArray.array = (int*)malloc((QosPolicerDel_Info->ChooseClassArray.length)*sizeof(int));
++		for(i=0; i<(QosPolicerDel_Info->ChooseClassArray.length); i++) {
++			QosPolicerDel_Info->ChooseClassArray.array[i] = json_object_get_int(json_object_array_get_idx(ArrayObj, i));
++		}
++	}
++	return;
++}
++
++void freeQosPolicerDelInfo(s_QosPolicerDel *QosPolicerDel_Info) {
++	free(QosPolicerDel_Info->ChooseClassArray.array);
++	return;
++}
++
++void prepareQosPolicerObj(s_QosPolicer *QosPolicer_Info, json_object *policerObj) {
++	printf("prepareQosPolicerObj\n");
++	json_object_object_add(policerObj, "Enable", json_object_new_boolean(QosPolicer_Info->Enable));
++	json_object_object_add(policerObj, "X_ZYXEL_Name", json_object_new_string(QosPolicer_Info->X_ZYXEL_Name));
++	json_object_object_add(policerObj, "MeterType", json_object_new_string(QosPolicer_Info->MeterType));
++	json_object_object_add(policerObj, "CommittedRate", json_object_new_int(QosPolicer_Info->CommittedRate));
++	json_object_object_add(policerObj, "CommittedBurstSize", json_object_new_int(QosPolicer_Info->CommittedBurstSize));
++	if(QosPolicer_Info->PartialConformingAction) {
++		json_object_object_add(policerObj, "PartialConformingAction", json_object_new_string(QosPolicer_Info->PartialConformingAction));
++	}
++	json_object_object_add(policerObj, "ExcessBurstSize", json_object_new_int(QosPolicer_Info->ExcessBurstSize));
++	json_object_object_add(policerObj, "PeakRate", json_object_new_int(QosPolicer_Info->PeakRate));
++	json_object_object_add(policerObj, "PeakBurstSize", json_object_new_int(QosPolicer_Info->PeakBurstSize));
++	json_object_object_add(policerObj, "ConformingAction", json_object_new_string(QosPolicer_Info->ConformingAction));
++	json_object_object_add(policerObj, "NonConformingAction", json_object_new_string(QosPolicer_Info->NonConformingAction));
++	return;
++}
++
++void updateQosClass(e_ActionType action, char *policer_name, s_ArrayInfo ChooseClassArray){
++	int i = 0;
++	char *Class_Policer = NULL;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++	IID_INIT(classIid);
++
++	i = 0;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
++		Class_Policer = (char*)json_object_get_string(json_object_object_get(classObj, "Policer"));
++		if((action == e_ActionType_ADD) && (ChooseClassArray.array[i] == 1) && (strstr(Class_Policer, "Policer")== NULL)) {
++			json_object_object_add(classObj, "Policer", json_object_new_string(policer_name));
++			zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
++			printf("set Policer %s\n", policer_name);
++		}
++		else if(action == e_ActionType_EDIT) {
++			if((ChooseClassArray.array[i] == 0) && (!strcmp(Class_Policer, policer_name)))  {
++				// old config => remove
++				json_object_object_add(classObj, "Policer", json_object_new_string(""));
++			}
++			else if((ChooseClassArray.array[i] == 1) && (strstr(Class_Policer, "Policer")== NULL)) {
++				json_object_object_add(classObj, "Policer", json_object_new_string(policer_name));
++			}
++			zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
++		}
++		else if((action == e_ActionType_DELETE) && (ChooseClassArray.array[i] == 1) && (!strcmp(Class_Policer, policer_name))) {
++			json_object_object_add(classObj, "Policer", json_object_new_string(""));
++			zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
++		}
++		else {
++#if(QOS_DAL_DEBUG == 1)			
++			printf("updateQosClass: no update for qos class\n");
++			printf("action %d, ChooseClass %d, Class_Policer %d %s\n", action, ChooseClassArray.array[i], Class_Policer, Class_Policer);
++#endif			
++		}
++		zcfgFeJsonObjFree(classObj);
++		i++;
++	}
++
++	return;
++}
++
++zcfgRet_t zcfgFeDalQosPolicerAdd(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	s_QosPolicer QosPolicer_Info;
++	char policer_name[30] = {0};
++	json_object *policerObj = NULL;
++	objIndex_t policerIid = {0};
++	IID_INIT(policerIid);
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("zcfgFeDalQosPolicerAdd\n");
++#endif	
++	getQosPolicerBasicInfo(Jobj, &QosPolicer_Info);
++
++	// POST RDM_OID_QOS_SHAPER
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_POLICER, &policerIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_POLICER, &policerIid, &policerObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	prepareQosPolicerObj(&QosPolicer_Info, policerObj);
++	zcfgFeObjJsonSet(RDM_OID_QOS_POLICER, &policerIid, policerObj, NULL);
++
++	sprintf(policer_name, "Policer.%d", policerIid.idx[0]);
++	updateQosClass(e_ActionType_ADD, policer_name, QosPolicer_Info.ChooseClassArray); //PUT QOS CLASS
++	//updatePolicerClassInfo(); // update qosPolicerClassTable
++	freeQosPolicerBasicInfo(&QosPolicer_Info);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosPolicerEdit(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = 0;
++	char policer_name[30] = {0};
++	s_QosPolicer QosPolicer_Info;
++	json_object *policerObj = NULL;
++	objIndex_t policerIid = {0};
++	IID_INIT(policerIid);
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("zcfgFeDalQosPolicerEdit\n");
++#endif
++	getQosPolicerBasicInfo(Jobj, &QosPolicer_Info);
++
++	// PUT RDM_OID_QOS_SHAPER
++	i = 0;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_POLICER, &policerIid, &policerObj) == ZCFG_SUCCESS) {
++		if(i == QosPolicer_Info.idx) {
++			prepareQosPolicerObj(&QosPolicer_Info, policerObj);
++			zcfgFeObjJsonSet(RDM_OID_QOS_POLICER, &policerIid, policerObj, NULL);
++			zcfgFeJsonObjFree(policerObj);
++
++			sprintf(policer_name, "Policer.%d", policerIid.idx[0]);
++			updateQosClass(e_ActionType_EDIT, policer_name, QosPolicer_Info.ChooseClassArray); //PUT QOS CLASS
++			//updatePolicerClassInfo(); // update qosPolicerClassTable
++			break;
++		}
++		zcfgFeJsonObjFree(policerObj);
++		i++;
++	}
++	freeQosPolicerBasicInfo(&QosPolicer_Info);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosPolicerDelete(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = 0;
++	char policer_name[30] = {0};
++	s_QosPolicerDel QosPolicerDel_Info;
++	json_object *policerObj = NULL;
++	objIndex_t policerIid = {0};
++	IID_INIT(policerIid);
++
++#if(QOS_DAL_DEBUG == 1)			
++	printf("zcfgFeDalQosPolicerDelete\n");
++#endif	
++	getQosPolicerDelInfo(Jobj, &QosPolicerDel_Info);
++
++	// delete case
++	i = 0;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_POLICER, &policerIid, &policerObj) == ZCFG_SUCCESS) {
++		if(i == QosPolicerDel_Info.idx) {
++			sprintf(policer_name, "Policer.%d", policerIid.idx[0]);
++			updateQosClass(e_ActionType_DELETE, policer_name, QosPolicerDel_Info.ChooseClassArray); //PUT QOS CLASS
++
++			zcfgFeObjJsonDel(RDM_OID_QOS_POLICER, &policerIid, NULL);
++			zcfgFeJsonObjFree(policerObj);
++
++			//updatePolicerClassInfo(); // update qosPolicerClassTable
++			break;
++		}
++		zcfgFeJsonObjFree(policerObj);
++		i++;
++	}
++	freeQosPolicerDelInfo(&QosPolicerDel_Info);
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosPolicer(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	t1 = time(NULL);
++	
++	if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalQosPolicerAdd(Jobj, NULL);
++	}
++	else if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalQosPolicerEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalQosPolicerDelete(Jobj, NULL);
++	}
++	else {
++		printf("Unknown method:%s\n", method);
++	}
++
++	t2 = time(NULL);
++    printf("zcfgFeDalQosPolicer() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
++
++	return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c	2016-12-22 11:14:30.346064329 +0800
+@@ -0,0 +1,254 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++#include <string.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_fe_Qos.h"
++
++typedef struct s_QosQueue {
++	int idx;
++	bool Enable;
++	char *X_ZYXEL_Name;
++	char *Interface;
++	char *SchedulerAlgorithm;
++	int Precedence;
++	int Weight;
++	char *DropAlgorithm;
++	int X_ZYXEL_PtmPriority;
++	int X_ZYXEL_DslLatency;
++	int ShapingRate;
++}s_QosQueue;
++
++typedef struct s_QosQueueDel {
++	int idx;
++}s_QosQueueDel;
++
++typedef struct s_QosQueueIidMapping{
++	int size;
++	int iid[20];
++}s_QosQueueIidMapping;
++
++s_QosQueueIidMapping QosQueueIidMappingTable = {0};
++time_t t1, t2;
++
++dal_param_t QosQueue_param[] = {
++	{"idx",					dalType_int, 0, 0, NULL},
++	{"Enable",				dalType_boolean, 0, 0, NULL},
++	{"X_ZYXEL_Name",		dalType_string, 0, 0, NULL},
++	{"Interface",			dalType_string, 0, 0, NULL},
++	{"SchedulerAlgorithm",	dalType_string, 0, 0, NULL},
++	{"Precedence",			dalType_int, 0, 0, NULL},
++	{"Weight",				dalType_int, 0, 0, NULL},
++	{"DropAlgorithm",		dalType_string, 0, 0, NULL},
++	{"X_ZYXEL_PtmPriority",	dalType_int, 0, 0, NULL},
++	{"X_ZYXEL_DslLatency",	dalType_int, 0, 0, NULL},
++	{"ShapingRate",			dalType_int, 0, 0, NULL},
++	{NULL,		0,	0,	0,	NULL}
++};
++
++void getQosQueueBasicInfo(struct json_object *Jobj, s_QosQueue *QosQueue_Info) {
++	
++#if(QOS_DAL_DEBUG == 1)			
++	printf("getQosQueueBasicInfo\n");
++#endif	
++	
++	QosQueue_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	QosQueue_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	QosQueue_Info->X_ZYXEL_Name = (char*)json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Name"));
++	QosQueue_Info->Interface = (char*)json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	QosQueue_Info->SchedulerAlgorithm = (char*)json_object_get_string(json_object_object_get(Jobj, "SchedulerAlgorithm"));
++	QosQueue_Info->Precedence = json_object_get_int(json_object_object_get(Jobj, "Precedence"));
++	QosQueue_Info->Weight = json_object_get_int(json_object_object_get(Jobj, "Weight"));
++	QosQueue_Info->DropAlgorithm = (char*)json_object_get_string(json_object_object_get(Jobj, "DropAlgorithm"));
++	QosQueue_Info->X_ZYXEL_PtmPriority = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_PtmPriority"));
++	QosQueue_Info->X_ZYXEL_DslLatency = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_DslLatency"));
++	QosQueue_Info->ShapingRate = json_object_get_int(json_object_object_get(Jobj, "ShapingRate"));
++
++	return;
++}
++
++void prepare_QosQueue_Info(json_object *queueObj, s_QosQueue* QosQueue_Info) {
++	json_object_object_add(queueObj, "Enable", json_object_new_boolean(QosQueue_Info->Enable));
++	json_object_object_add(queueObj, "X_ZYXEL_Name", json_object_new_string(QosQueue_Info->X_ZYXEL_Name));
++	json_object_object_add(queueObj, "Interface", json_object_new_string(QosQueue_Info->Interface));
++	json_object_object_add(queueObj, "SchedulerAlgorithm", json_object_new_string(QosQueue_Info->SchedulerAlgorithm));
++	json_object_object_add(queueObj, "Precedence", json_object_new_int(QosQueue_Info->Precedence));
++	json_object_object_add(queueObj, "Weight", json_object_new_int(QosQueue_Info->Weight));
++	json_object_object_add(queueObj, "DropAlgorithm", json_object_new_string(QosQueue_Info->DropAlgorithm));
++	json_object_object_add(queueObj, "X_ZYXEL_PtmPriority", json_object_new_int(QosQueue_Info->X_ZYXEL_PtmPriority));
++	json_object_object_add(queueObj, "X_ZYXEL_DslLatency", json_object_new_int(QosQueue_Info->X_ZYXEL_DslLatency));
++	json_object_object_add(queueObj, "ShapingRate", json_object_new_int(QosQueue_Info->ShapingRate));
++	return;
++}
++
++
++void getQosQueueDelKey(struct json_object *Jobj, s_QosQueueDel *QosQueueDel_Info) {
++
++	QosQueueDel_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++#if(QOS_DAL_DEBUG == 1)			
++	printf("getQosQueueDelKey key: %d\n", QosQueueDel_Info->idx);
++#endif
++	return;
++}
++
++void updateQosQueueInfo(e_ActionType action, int target_iid){
++	uint8_t i = 0;	
++	json_object *queueObj = NULL;
++	objIndex_t queueIid = {0};
++
++	memset(&QosQueueIidMappingTable, 0, sizeof(s_QosQueueIidMapping));
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++		QosQueueIidMappingTable.iid[QosQueueIidMappingTable.size] = queueIid.idx[0];
++		QosQueueIidMappingTable.size += 1;
++		zcfgFeJsonObjFree(queueObj);
++	}
++#if(QOS_DAL_DEBUG == 1)			
++	printf("updateQosQueueInfo\n");
++	for(i=0; i<QosQueueIidMappingTable.size; i++){
++		printf("idx[%d] iid %d\n", i, QosQueueIidMappingTable.iid[i]);
++	}
++#endif	
++	return;
++}
++
++void remove_related_qosClass(char *TrafficClasses) {
++	char *rest_str = NULL;
++	char *TrafficClasses_single_str = NULL;
++	int TrafficClass = -1;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++	
++#if(QOS_DAL_DEBUG == 1)			
++	printf("remove_related_qos %s\n", TrafficClasses);
++#endif	
++	TrafficClasses_single_str = strtok_r(TrafficClasses, ",", &rest_str);
++	while(TrafficClasses_single_str != NULL) {
++		TrafficClass = StrToIntConv(TrafficClasses_single_str);
++		
++		IID_INIT(classIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
++			if(classIid.idx[0] == TrafficClass) {
++				zcfgFeObjJsonDel(RDM_OID_QOS_CLS, &classIid, NULL);
++				zcfgFeJsonObjFree(classObj);
++				break;
++			}
++			zcfgFeJsonObjFree(classObj);
++		}
++		updateQosClassInfo();
++		TrafficClasses_single_str = strtok_r(rest_str, ",", &rest_str);
++	}
++	return;
++}
++
++zcfgRet_t zcfgFeDalQosQueueAdd(struct json_object *Jobj, char *replyMsg) {
++	
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	s_QosQueue QosQueue_Info;
++	json_object *queueObj = NULL;
++	objIndex_t queueIid = {0};
++	IID_INIT(queueIid);
++
++	
++	getQosQueueBasicInfo(Jobj, &QosQueue_Info);
++
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_QUE, &queueIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	prepare_QosQueue_Info(queueObj, &QosQueue_Info);
++	zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
++	updateQosQueueInfo(e_ActionType_ADD, queueIid.idx[0]);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosQueueEdit(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = 0;
++	s_QosQueue QosQueue_Info;
++	json_object *queueObj = NULL;
++	objIndex_t queueIid = {0};
++	IID_INIT(queueIid);
++
++	getQosQueueBasicInfo(Jobj, &QosQueue_Info);
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++		if(i == QosQueue_Info.idx) {
++			prepare_QosQueue_Info(queueObj, &QosQueue_Info);
++			zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
++			zcfgFeJsonObjFree(queueObj);
++			break;
++		}
++		i++;
++		zcfgFeJsonObjFree(queueObj);
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosQueueDelete(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = 0;
++	s_QosQueueDel QosQueueDel_Info;
++	char *TrafficClasses = NULL;
++	json_object *queueObj = NULL;
++	objIndex_t queueIid = {0};
++	IID_INIT(queueIid);
++
++	getQosQueueDelKey(Jobj, &QosQueueDel_Info);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++		if(i == QosQueueDel_Info.idx) {
++			TrafficClasses = json_object_get_string(json_object_object_get(queueObj, "TrafficClasses"));
++#if(QOS_DAL_DEBUG == 1)			
++			printf("remove que iid %d TrafficClasses %d %s\n", queueIid.idx[0], TrafficClasses, TrafficClasses);
++#endif
++			zcfgFeObjJsonDel(RDM_OID_QOS_QUE, &queueIid, NULL);
++			if(TrafficClasses != NULL) {
++				/*remove the qos classed belong to the removed queue*/
++				remove_related_qosClass(TrafficClasses);		
++			}
++			zcfgFeJsonObjFree(queueObj);
++			break;
++		}
++		i++;
++		zcfgFeJsonObjFree(queueObj);
++	}
++	updateQosQueueInfo(e_ActionType_DELETE, QosQueueDel_Info.idx);
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosQueue(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	t1 = time(NULL);
++	
++	if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalQosQueueAdd(Jobj, NULL);
++	}
++	else if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalQosQueueEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalQosQueueDelete(Jobj, NULL);
++	}
++	else {
++		printf("Unknown method:%s\n", method);
++	}
++
++	t2 = time(NULL);
++    printf("zcfgFeDalQosQueue() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
++
++	return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c	2016-12-22 11:14:30.346064329 +0800
+@@ -0,0 +1,293 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++#include <string.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_fe_Qos.h"
++
++typedef struct s_QosShaper {
++	int idx;
++	bool Enable;
++	char *Interface;
++	int ShapingRate;
++}s_QosShaper;
++
++typedef struct s_QosShaperDel {
++	int idx;
++	int UpdateOrDel; //Update: 0, Del: 1
++}s_QosShaperDel;
++
++time_t t1, t2;
++
++dal_param_t QosShaper_param[] = {
++	{"idx",			dalType_int, 0, 0, NULL},
++	{"Enable",		dalType_boolean, 0, 0, NULL},
++	{"Interface",	dalType_string, 0, 0, NULL},
++	{"ShapingRate",	dalType_int, 0, 0, NULL},
++	{NULL,		0,	0,	0,	NULL}
++};
++extern uint32_t StrToIntConv(char *str);
++
++void getQosShaperBasicInfo(struct json_object *Jobj, s_QosShaper *QosShaper_Info) {
++	QosShaper_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	QosShaper_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	QosShaper_Info->Interface = (char*)json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	QosShaper_Info->ShapingRate = json_object_get_int(json_object_object_get(Jobj, "ShapingRate"));
++	return;
++}
++
++void getQosShaperDelInfo(struct json_object *Jobj, s_QosShaperDel *QosShaperDel_Info) {
++	QosShaperDel_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	QosShaperDel_Info->UpdateOrDel = json_object_get_int(json_object_object_get(Jobj, "UpdateOrDel"));
++	return;
++}
++
++void prepareQosShaperObj(s_QosShaper *QosShaper_Info, json_object *shaperObj) {
++	json_object_object_add(shaperObj, "Enable", json_object_new_boolean(QosShaper_Info->Enable));
++	json_object_object_add(shaperObj, "Interface", json_object_new_string(QosShaper_Info->Interface));
++	json_object_object_add(shaperObj, "ShapingRate", json_object_new_int(QosShaper_Info->ShapingRate));
++	return;
++}
++
++json_object* getObjByPathName(char* pathName) {
++	int pathNode = -1;
++	char *pathNode_ptr = NULL;
++	char *tmp = NULL;
++	char *rest_str = NULL;
++	char *pathName_cpy = NULL;
++	json_object *obj = NULL;
++	json_object *atmLinkObj = NULL;
++	json_object *ptmLinkObj = NULL;
++	json_object *ethIfaceObj = NULL;
++	json_object *bridgePortObj = NULL;
++	json_object *ipIfaceObj = NULL;
++	json_object *pppIfaceObj = NULL;
++	objIndex_t atmLinkIid = {0};
++	objIndex_t ptmLinkIid = {0};
++	objIndex_t ethIfaceIid = {0};
++	objIndex_t bridgePortIid = {0};
++	objIndex_t ipIfaceIid = {0};
++	objIndex_t pppIfaceIid = {0};
++
++	pathName_cpy = (char*) malloc(strlen(pathName)+1);
++	memcpy(pathName_cpy, pathName, strlen(pathName)+1);
++	// find the pathNode
++	tmp = strtok_r(pathName_cpy, ".", &rest_str);
++	while(tmp != NULL) {
++		tmp = strtok_r(rest_str, ".", &rest_str);
++		if(tmp != NULL) {
++			pathNode_ptr = tmp;
++		}
++	}
++	if(pathNode_ptr != NULL) {
++		pathNode = StrToIntConv(pathNode_ptr);
++#if(QOS_DAL_DEBUG == 1)			
++		printf("getObjByPathName pathNode %d\n", pathNode);
++#endif		
++	}
++	free(pathName_cpy);
++
++	if(strstr(pathName, "ATM") != NULL) {
++		IID_INIT(atmLinkIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ATM_LINK, &atmLinkIid, &atmLinkObj) == ZCFG_SUCCESS) {
++			if(atmLinkIid.idx[0] == pathNode) {
++				obj = atmLinkObj;
++				break;
++			}
++			zcfgFeJsonObjFree(atmLinkObj);
++		}
++	}
++	else if(strstr(pathName, "PTM") != NULL) {
++		IID_INIT(ptmLinkIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_PTM_LINK, &ptmLinkIid, &ptmLinkObj) == ZCFG_SUCCESS) {
++			if(ptmLinkIid.idx[0] == pathNode) {
++				obj = ptmLinkObj;
++				break;
++			}
++			zcfgFeJsonObjFree(ptmLinkObj);
++		}
++	}	
++	else if(strstr(pathName, "Ethernet") != NULL) {
++		IID_INIT(ethIfaceIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ETH_IFACE, &ethIfaceIid, &ethIfaceObj) == ZCFG_SUCCESS) {
++			if(ethIfaceIid.idx[0] == pathNode) {
++				obj = ethIfaceObj;
++				break;
++			}
++			zcfgFeJsonObjFree(ethIfaceObj);
++		}
++	}	
++	else if(strstr(pathName, "Bridging") != NULL) {
++		IID_INIT(bridgePortIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_BR_PORT, &bridgePortIid, &bridgePortObj) == ZCFG_SUCCESS) {
++			if(bridgePortIid.idx[0] == pathNode) {
++				obj = bridgePortObj;
++				break;
++			}
++			zcfgFeJsonObjFree(bridgePortObj);
++		}
++	}	
++	else if(strstr(pathName, "IP.Interface") != NULL) {
++		IID_INIT(ipIfaceIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceObj) == ZCFG_SUCCESS) {
++			if(ipIfaceIid.idx[0] == pathNode) {
++				obj = ipIfaceObj;
++				break;
++			}
++			zcfgFeJsonObjFree(ipIfaceObj);
++		}
++	}
++	else if(strstr(pathName, "PPP.Interface") != NULL) {
++		IID_INIT(pppIfaceIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_PPP_IFACE, &pppIfaceIid, &pppIfaceObj) == ZCFG_SUCCESS) {
++			if(pppIfaceIid.idx[0] == pathNode) {
++				obj = pppIfaceObj;
++				break;
++			}
++			zcfgFeJsonObjFree(pppIfaceObj);
++		}
++	}
++	return obj;
++}
++
++zcfgRet_t checkQosShaperInterface() {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char *Shaper_Interface = NULL;
++	char *Shaper_Interface_cpy = NULL;
++	json_object *obj = NULL;
++	json_object *shaperObj = NULL;
++	objIndex_t shaperIid = {0};
++	IID_INIT(shaperIid);
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
++		Shaper_Interface = (char*)json_object_get_string(json_object_object_get(shaperObj, "Interface"));
++		Shaper_Interface_cpy = (char*)malloc(strlen(Shaper_Interface)+1);
++		memcpy(Shaper_Interface_cpy, Shaper_Interface, strlen(Shaper_Interface)+1);
++		obj = getObjByPathName(Shaper_Interface_cpy);
++		if(obj == NULL) {
++			// if the interface doesn't exist, remove the corresponding shaper object
++#if(QOS_DAL_DEBUG == 1)			
++			printf("remove the interface: %s\n", Shaper_Interface); 
++#endif			
++			zcfgFeObjJsonDel(RDM_OID_QOS_SHAPER, &shaperIid, NULL);
++		}
++		else {
++			zcfgFeJsonObjFree(obj);
++		}
++		free(Shaper_Interface_cpy);
++		zcfgFeJsonObjFree(shaperObj);
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosShaperAdd(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	s_QosShaper QosShaper_Info;
++	json_object *shaperObj = NULL;
++	objIndex_t shaperIid = {0};
++	IID_INIT(shaperIid);
++
++	getQosShaperBasicInfo(Jobj, &QosShaper_Info);
++
++	// POST RDM_OID_QOS_SHAPER
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_SHAPER, &shaperIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	prepareQosShaperObj(&QosShaper_Info, shaperObj);
++	zcfgFeObjJsonSet(RDM_OID_QOS_SHAPER, &shaperIid, shaperObj, NULL);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosShaperEdit(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = 0;
++	s_QosShaper QosShaper_Info;
++	json_object *shaperObj = NULL;
++	objIndex_t shaperIid = {0};
++	IID_INIT(shaperIid);
++
++	getQosShaperBasicInfo(Jobj, &QosShaper_Info);
++
++	// PUT RDM_OID_QOS_SHAPER
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
++		if(i == QosShaper_Info.idx) {
++			prepareQosShaperObj(&QosShaper_Info, shaperObj);
++			zcfgFeObjJsonSet(RDM_OID_QOS_SHAPER, &shaperIid, shaperObj, NULL);
++			zcfgFeJsonObjFree(shaperObj);
++			break;
++		}
++		i++;
++		zcfgFeJsonObjFree(shaperObj);
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosShaperDelete(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = 0;
++	s_QosShaperDel QosShaperDel_Info;
++	json_object *shaperObj = NULL;
++	objIndex_t shaperIid = {0};
++	IID_INIT(shaperIid);
++
++	getQosShaperDelInfo(Jobj, &QosShaperDel_Info);
++
++	if(QosShaperDel_Info.UpdateOrDel == 0) {
++		// update Shaper
++		checkQosShaperInterface();
++	}
++	else {
++		// delete case
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
++			if(i == QosShaperDel_Info.idx) {
++				zcfgFeObjJsonDel(RDM_OID_QOS_SHAPER, &shaperIid, NULL);
++				zcfgFeJsonObjFree(shaperObj);
++				break;
++			}
++			i++;
++			zcfgFeJsonObjFree(shaperObj);
++		}
++
++	}
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalQosShaper(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	t1 = time(NULL);
++	
++	if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalQosShaperAdd(Jobj, NULL);
++	}
++	else if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalQosShaperEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalQosShaperDelete(Jobj, NULL);
++	}
++	else {
++		printf("Unknown method:%s\n", method);
++	}
++
++	t2 = time(NULL);
++    printf("zcfgFeDalQosShaper() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
++
++	return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-12-22 11:14:30.338064329 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-12-22 11:14:30.346064329 +0800
+@@ -39,6 +39,11 @@
+ extern dal_param_t FIREWALL_ACL_param[];
+ extern dal_param_t WIFI_GENERAL_param[];
+ extern dal_param_t MAC_Filter_param[];
++extern dal_param_t QosGeneral_param[];
++extern dal_param_t QosQueue_param[];
++extern dal_param_t QosClass_param[];
++extern dal_param_t QosShaper_param[];
++extern dal_param_t QosPolicer_param[];
+ extern dal_param_t WIFI_MACFILTER_param[];
+ extern dal_param_t WIFI_WPS_param[];
+ extern dal_param_t WIFI_WMM_param[];
+@@ -100,6 +105,11 @@
+ extern zcfgRet_t zcfgFeDalFirewallACL(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWifiGeneral(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMACFilter(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalQosGeneral(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalQosQueue(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalQosClass(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalQosShaper(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalQosPolicer(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWifiMACFilter(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWifiWps(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWifiWmm(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -169,6 +179,11 @@
+ {"ACL", 			FIREWALL_ACL_param, zcfgFeDalFirewallACL},
+ {"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral},
+ {"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter},
++{"QOS_GENERAL",		QosGeneral_param,	zcfgFeDalQosGeneral},
++{"QOS_QUEUE",		QosQueue_param,		zcfgFeDalQosQueue},
++{"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass},
++{"QOS_SHAPER",		QosShaper_param,	zcfgFeDalQosShaper},
++{"QOS_POLICER",		QosPolicer_param,	zcfgFeDalQosPolicer},
+ {"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter},
+ {"WIFI_WPS",		WIFI_WPS_param,		zcfgFeDalWifiWps},
+ {"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm},

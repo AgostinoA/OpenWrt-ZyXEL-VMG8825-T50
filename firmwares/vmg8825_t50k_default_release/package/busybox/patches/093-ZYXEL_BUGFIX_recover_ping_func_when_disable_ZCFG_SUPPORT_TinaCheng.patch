@@ -1,0 +1,129 @@
+Index: busybox-1_20_1/networking/ping.c
+===================================================================
+--- busybox-1_20_1.orig/networking/ping.c	2018-09-19 15:12:03.203877814 +0800
++++ busybox-1_20_1/networking/ping.c	2018-09-19 15:23:04.807263089 +0800
+@@ -1011,6 +1011,7 @@
+ 		ping4(lsa);
+ 	}
+ }
++
+ #ifdef ZCFG_SUPPORT
+ static int common_ping(int opt)
+ {
+@@ -1110,11 +1111,9 @@
+ 		strcat(pingscmd, param);
+ 	}
+ 
+-#ifdef ZCFG_SUPPORT
+ 	if(nhost == 1)
+ 		sprintf(param, " zyxel_pings_start_%s", hostname);
+ 	else
+-#endif
+ 		sprintf(param, " %s", hostname);
+ 	strcat(pingscmd, param);
+ 
+@@ -1122,7 +1121,6 @@
+ 	system(pingscmd);
+ }
+ 
+-#ifdef ZCFG_SUPPORT
+ static char *pingsvrs_resolvehosts(int opt, char *hostlist)
+ {
+ 	char *paramPtr, *paramPos;
+@@ -1174,7 +1172,6 @@
+ 
+ 	return resolvhosts;
+ }
+-#endif
+ 
+ static int pingsvrs_hosts(int opt, char *hostlist)
+ {
+@@ -1211,7 +1208,7 @@
+ 	strcpy(pingsdiagstat, "pings_complete");
+ 	print_stats_and_exit(EXIT_SUCCESS);
+ }
+-#endif
++
+ static int common_ping_main(int opt, char **argv)
+ {
+ 	char *str_s;
+@@ -1238,7 +1235,6 @@
+ 
+ 	myid = (uint16_t) getpid();
+ 
+-#ifdef ZCFG_SUPPORT
+ 	if(pingsvrs){
+ 		char *hosts = NULL;
+ 		char *resolvhosts = NULL;
+@@ -1303,20 +1299,69 @@
+ 	}else
+ 	{
+ 		hostname = argv[optind];
+-#ifdef ZCFG_SUPPORT
++
+ 		if(strstr(hostname, "zyxel_pings_start_")){
+ 			hostname += strlen("zyxel_pings_start_");
+ 			strcpy(pingsdiagstat, "pings_start");
+ 		}else{
+ 			strcpy(pingsdiagstat, "pings_host");
+ 		}
+-#endif
++
+ 		common_ping(opt);
+ 		print_stats_and_exit(EXIT_SUCCESS);
+ 	}
++	/*return EXIT_SUCCESS;*/
++}
++
++#else  //__zy_bsp__, withou ZCFG_SUPPORT >>>
++
++static int common_ping_main(int opt, char **argv)
++{
++	len_and_sockaddr *lsa;
++	char *str_s;
++
++	INIT_G();
++
++	/* exactly one argument needed; -v and -q don't mix; -c NUM, -t NUM, -w NUM, -W NUM */
++	opt_complementary = "=1:q--v:v--q:c+:t+:w+:W+";
++	opt |= getopt32(argv, OPT_STRING, &pingcount, &str_s, &opt_ttl, &deadline, &timeout, &str_I);
++	if (opt & OPT_s)
++		datalen = xatou16(str_s); // -s
++	if (opt & OPT_I) { // -I
++		if_index = if_nametoindex(str_I);
++		if (!if_index) {
++			/* TODO: I'm not sure it takes IPv6 unless in [XX:XX..] format */
++			source_lsa = xdotted2sockaddr(str_I, 0);
++			str_I = NULL; /* don't try to bind to device later */
++		}
++	}
++	myid = (uint16_t) getpid();
++	hostname = argv[optind];
++
++
++#if ENABLE_PING6
++	{
++		sa_family_t af = AF_UNSPEC;
++		if (opt & OPT_IPV4)
++			af = AF_INET;
++		if (opt & OPT_IPV6)
++			af = AF_INET6;
++		lsa = xhost_and_af2sockaddr(hostname, 0, af);
++	}
++#else
++	lsa = xhost_and_af2sockaddr(hostname, 0, AF_INET);
+ #endif
++
++	if (source_lsa && source_lsa->u.sa.sa_family != lsa->u.sa.sa_family)
++		/* leaking it here... */
++		source_lsa = NULL;
++
++	dotted = xmalloc_sockaddr2dotted_noport(&lsa->u.sa);
++	ping(lsa);
++	print_stats_and_exit(EXIT_SUCCESS);
+ 	/*return EXIT_SUCCESS;*/
+ }
++#endif //__zy_bsp__, withou ZCFG_SUPPORT <<<
+ #endif /* FEATURE_FANCY_PING */
+ 
+ 

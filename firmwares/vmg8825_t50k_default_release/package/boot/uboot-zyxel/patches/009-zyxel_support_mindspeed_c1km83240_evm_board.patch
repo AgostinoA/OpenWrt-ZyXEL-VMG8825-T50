@@ -1,0 +1,306 @@
+diff -ruN a/common/cmd_spi.c b/common/cmd_spi.c
+--- a/common/cmd_spi.c	2009-12-16 06:20:54.000000000 +0800
++++ b/common/cmd_spi.c	2012-09-11 17:14:17.000000000 +0800
+@@ -29,6 +29,7 @@
+ #include <command.h>
+ #include <spi.h>
+ 
++#if !defined(CONFIG_COMCERTO_100)
+ /*-----------------------------------------------------------------------
+  * Definitions
+  */
+@@ -144,3 +145,137 @@
+ 	"<bit_len> - Number of bits to send (base 10)\n"
+ 	"<dout>    - Hexadecimal string that gets sent"
+ );
++#else
++#define SPI_BASEADDR		0x10098000
++#define SPI_CTRLR0_REG		(SPI_BASEADDR+0x00)
++#define SPI_CTRLR1_REG		(SPI_BASEADDR+0x04)
++#define SPI_SSIENR_REG		(SPI_BASEADDR+0x08)
++#define SPI_MWCR_REG		(SPI_BASEADDR+0x0c)
++#define SPI_SER_REG		(SPI_BASEADDR+0x10)
++#define SPI_BAUDR_REG		(SPI_BASEADDR+0x14)
++#define SPI_TXFTLR_REG		(SPI_BASEADDR+0x18)
++#define SPI_RXFTLR_REG		(SPI_BASEADDR+0x1c)
++#define SPI_TXFLR_REG		(SPI_BASEADDR+0x20)
++#define SPI_RXFLR_REG		(SPI_BASEADDR+0x24)
++#define SPI_SR_REG		(SPI_BASEADDR+0x28)
++#define SPI_IMR_REG		(SPI_BASEADDR+0x2c)
++#define SPI_ISR_REG		(SPI_BASEADDR+0x30)
++#define SPI_RISR_REG		(SPI_BASEADDR+0x34)
++#define SPI_TXOICR_REG		(SPI_BASEADDR+0x38)
++#define SPI_RXOICR_REG		(SPI_BASEADDR+0x3c)
++#define SPI_RXUICR_REG		(SPI_BASEADDR+0x40)
++#define SPI_MSTICR_REG		(SPI_BASEADDR+0x44)
++#define SPI_ICR_REG		(SPI_BASEADDR+0x48)
++#define SPI_IDR_REG		(SPI_BASEADDR+0x58)
++#define SPI_DR_REG		(SPI_BASEADDR+0x60)
++
++#define MAX_SPI_BYTES 32	/* Maximum number of bytes we can handle */
++#define BAUDRATE ((((165 * 1000000) / 12000000) + 1) & 0xFFFE)
++
++#define SPI_READ_REG(reg)	*(volatile u32*)(reg)
++#define SPI_WRITE_REG(reg, val)	*(volatile u32*)(reg) = val
++
++static unsigned int baudrate = BAUDRATE;
++static unsigned int ctrl0 = 0xC7;
++
++/*
++ * Values from last command.
++ */
++static int device = -1;
++static int wcount;
++static uchar wdata[MAX_SPI_BYTES];
++static uchar rdata[MAX_SPI_BYTES];
++
++static uchar do_spi_write_read(uchar wbyte)
++{
++	uchar rbyte;
++	SPI_WRITE_REG(SPI_SSIENR_REG, 1);
++	SPI_WRITE_REG(SPI_DR_REG, wbyte);
++	while (SPI_READ_REG(SPI_RXFLR_REG) == 0)   /* wait for rx fifo not empty */
++		;
++	rbyte = SPI_READ_REG(SPI_DR_REG) & 0xFF;
++	while (SPI_READ_REG(SPI_SR_REG) & 0x01)  /* wait for not busy */
++		;
++	SPI_WRITE_REG(SPI_SSIENR_REG, 0);
++
++	return rbyte;
++}
++
++
++/*
++ * SPI read/write
++ *
++ * Syntax:
++ *   spi {dev} {wbyte0} {wbyte1} ...
++ *     {dev} is the device number for controlling chip select
++ *     {wbyteX} is write byte #X
++ */
++
++int do_spi (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
++{
++	int   rcode = 0;
++	int i;
++
++	/*
++	 * We use the last specified parameters, unless new ones are
++	 * entered.
++	 */
++
++	if ((flag & CMD_FLAG_REPEAT) == 0)
++	{
++	    	device = -1;
++		wcount = 0;
++		if (argc >= 2)
++			device = simple_strtoul(argv[1], NULL, 10);
++		for (i = 2; i < argc; i++)
++		{
++			if (wcount == MAX_SPI_BYTES)
++			{
++				printf("Too many write bytes.\n");
++				return 1;
++			}
++			wdata[wcount++] = simple_strtoul(argv[i], NULL, 16);
++		}
++	}
++
++	if (wcount == 0)
++	{
++		printf("Invalid command arguments.\n");
++		return 1;
++	}
++
++	while (SPI_READ_REG(SPI_SR_REG) & 0x01)  /* wait for not busy */
++		;
++
++	SPI_WRITE_REG(SPI_SSIENR_REG, 0);
++	SPI_WRITE_REG(SPI_CTRLR0_REG, (0x00 << 8) | ctrl0);
++	SPI_WRITE_REG(SPI_BAUDR_REG, baudrate);
++	SPI_WRITE_REG(SPI_SER_REG, 1 << device);
++	SPI_WRITE_REG(SPI_RXFTLR_REG, 8);
++	SPI_WRITE_REG(SPI_TXFTLR_REG, 0);
++	SPI_WRITE_REG(SPI_IMR_REG, 0);
++
++	for (i = 0; i < wcount; i++)
++	{
++		rdata[i] = do_spi_write_read(wdata[i]);
++	}
++	for (i = 0; i < wcount; i++)
++	{
++		printf("%02X", rdata[i]);
++		printf(i == wcount - 1 ? "\n" : " ");
++	}
++
++	return rcode;
++}
++
++/***************************************************/
++
++U_BOOT_CMD(
++	spi,	32,	1,	do_spi,
++	"spi     - SPI utility commands\n",
++	"<device> <wbyte0> <wbyte1> ... - Write/Read the SPI interface\n"
++	"<device>  - Identifies the chip select of the device (0-3)\n"
++	"<wbyteX>  - Write byte # X\n"
++);
++
++#endif  /* defined(CONFIG_COMCERTO_100) */
+diff -ruN a/common/command.c b/common/command.c
+--- a/common/command.c	2009-12-16 06:20:54.000000000 +0800
++++ b/common/command.c	2012-09-13 12:09:33.000000000 +0800
+@@ -28,11 +28,48 @@
+ #include <common.h>
+ #include <command.h>
+ 
++#if defined(CONFIG_COMCERTO)
++#include <asm/arch/bsp.h>
++#endif
++
++#if defined (CONFIG_COMCERTO_1000)
++extern unsigned char comcerto_part_no[8];
++#endif
++
+ int
+ do_version (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
+ {
+ 	extern char version_string[];
+ 	printf ("\n%s\n", version_string);
++#if defined(CONFIG_COMCERTO)
++{
++	int clk;
++	puts("\n-----------------------------\n");
++#if defined (CONFIG_COMCERTO_1000)
++	clk = HAL_get_arm_pll();
++	printf ("ARM PLL: %0d Hz\n", clk);
++	clk = HAL_get_ahb_pll();
++	printf ("AHB PLL: %0d Hz\n", clk);
++	clk = HAL_get_phy_pll();
++	printf ("PHY PLL: %0d Hz\n\n", clk);
++#endif
++	clk = HAL_get_arm_clk();
++	printf ("ARM Clock: %0d Hz\n", clk);
++	clk = HAL_get_amba_clk();
++	printf ("AHB Clock: %d Hz\n", clk);
++#if defined (CONFIG_COMCERTO_1000)
++	clk = HAL_get_ddr_clk();
++	printf ("DDR Clock: %d Hz\n", clk);
++	clk = HAL_get_ipsec_clk();
++	printf ("IPSEC Clock: %d Hz\n", clk);
++#endif
++        printf ("DDR Size : %d MByte\n", get_ddr_size() / (1024 * 1024));
++#if defined(CONFIG_M8326XG) || defined(CONFIG_M8325XG) || defined(CONFIG_M8324XG)
++        printf ("Part No: %s\n", comcerto_part_no);
++#endif
++	puts("-----------------------------\n");
++}
++#endif
+ 	return 0;
+ }
+ 
+diff -ruN a/cpu/arm920t/start.S b/cpu/arm920t/start.S
+--- a/cpu/arm920t/start.S	2009-12-16 06:20:54.000000000 +0800
++++ b/cpu/arm920t/start.S	2012-09-11 17:15:29.000000000 +0800
+@@ -26,6 +26,9 @@
+ 
+ #include <common.h>
+ #include <config.h>
++#if defined(CONFIG_COMCERTO)
++#include <asm/hardware.h>
++#endif
+ 
+ /*
+  *************************************************************************
+@@ -71,7 +74,11 @@
+  */
+ 
+ _TEXT_BASE:
++#if defined(CONFIG_COMCERTO)
++	.word	_start	
++#else
+ 	.word	TEXT_BASE
++#endif
+ 
+ .globl _armboot_start
+ _armboot_start:
+@@ -106,6 +113,24 @@
+  */
+ 
+ start_code:
++#if defined(CONFIG_COMCERTO)
++
++	/* test if we run from flash or RAM, don't reloc during debug */
++	adr	r0, _start              /* r0 <- current position of code   */
++	ldr	r1, _TEXT_BASE
++	cmp	r0, r1 
++	beq	cpu_init
++
++	/* We were running from offset 0x0, now jump to Boot FLASH address,
++           so that we can configure SDRAM */
++	ldr	pc, = EXP_CSBOOT_BASEADDR + rom_second_loc - TEXT_BASE
++rom_second_loc:
++	/* Disable low SDRAM remapping */
++	ldr	r2, = ASD_CSE
++	mov	r3, #CSE_BOOT
++	strh	r3, [r2]
++cpu_init:
++#endif
+ 	/*
+ 	 * set the cpu to SVC32 mode
+ 	 */
+diff -ruN a/drivers/net/Makefile b/drivers/net/Makefile
+--- a/drivers/net/Makefile	2012-09-18 18:39:47.978550186 +0800
++++ b/drivers/net/Makefile	2012-09-11 17:15:37.000000000 +0800
+@@ -74,6 +74,7 @@
+ COBJS-$(CONFIG_VSC7385_ENET) += vsc7385.o
+ COBJS-$(CONFIG_XILINX_EMACLITE) += xilinx_emaclite.o
+ COBJS-$(CONFIG_RT2880_ETH) += rt2880_eth.o rt2880_mii.o
++COBJS-$(CONFIG_COMCERTO_GEMAC) += comcerto_gem.o comcerto_gem_AL.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+diff -ruN a/include/miiphy.h b/include/miiphy.h
+--- a/include/miiphy.h	2009-12-16 06:20:54.000000000 +0800
++++ b/include/miiphy.h	2012-09-13 19:03:00.000000000 +0800
+@@ -154,6 +154,23 @@
+ #define PHY_BMSR_JD		0x0002
+ #define PHY_BMSR_EXT		0x0001
+ 
++/*phy ANAR */
++#define PHY_ANAR_NP		0x8000
++#define PHY_ANAR_ACK		0x4000
++#define PHY_ANAR_RF		0x2000
++#define PHY_ANAR_ASYMP		0x0800
++#define PHY_ANAR_PAUSE		0x0400
++#define PHY_ANAR_T4		0x0200
++#define PHY_ANAR_TXFD		0x0100
++#define PHY_ANAR_TX		0x0080
++#define PHY_ANAR_10FD		0x0040
++#define PHY_ANAR_10		0x0020
++#define PHY_ANAR_100		0x0380	/* we can run at 100 */
++
++#define PHY_ANAR_PSB_MASK	0x001f
++#define PHY_ANAR_PSB_802_3	0x0001
++#define PHY_ANAR_PSB_802_9	0x0002
++
+ /*phy ANLPAR */
+ #define PHY_ANLPAR_NP		0x8000
+ #define PHY_ANLPAR_ACK		0x4000
+diff -ruN a/net/eth.c b/net/eth.c
+--- a/net/eth.c	2012-09-18 18:39:49.686543957 +0800
++++ b/net/eth.c	2012-09-11 17:16:00.000000000 +0800
+@@ -211,6 +211,13 @@
+ #if defined(CONFIG_AR7240)
+     ag7240_enet_initialize(bis);
+ #endif
++#if defined(CONFIG_COMCERTO_900)
++	comcerto_gemac_initialize(bis, 0, "comcerto_gemac0");
++#endif
++#if defined(CONFIG_COMCERTO_100) || defined(CONFIG_COMCERTO_1000)
++	comcerto_gemac_initialize(bis, 0, "comcerto_gemac0");
++	comcerto_gemac_initialize(bis, 1, "comcerto_gemac1");
++#endif
+ 	if (!eth_devices) {
+ 		puts ("No ethernet found.\n");
+ 		show_boot_progress (-64);

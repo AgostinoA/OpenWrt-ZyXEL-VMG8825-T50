@@ -1,0 +1,215 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_protocol.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_protocol.c	2018-02-01 18:15:26.364378975 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_protocol.c	2018-02-01 18:08:23.988083900 +0800
+@@ -30,8 +30,9 @@
+ void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray){
+ 	int i, len = 0;
+ 	struct json_object *obj;
++	int protocol = 0, sourceport = 0, sourceportrange = 0, destport = 0, destportrange = 0;
+ 	const char *icmpv6type = NULL;
+-	char *procotolport[64] = {0};
++	char procotolport[256] = {0}, tmp1[32] = {0}, tmp2[32] = {0};
+ 	if(json_object_get_type(Jarray) != json_type_array){
+ 		printf("wrong Jobj format!\n");
+ 		return;
+@@ -40,14 +41,68 @@
+ 	len = json_object_array_length(Jarray);
+ 	for(i=0;i<len;i++){
+ 		procotolport[0] = '\0';
++		tmp1[0] = '\0';
++		tmp2[0] = '\0';
+ 		obj = json_object_array_get_idx(Jarray, i);
+-		icmpv6type = json_object_get_string(json_object_object_get(obj, "ICMPv6Type"));
+-		if(json_object_object_get(obj, "ICMPv6Type")){
+-			strcat(procotolport,json_object_get_string(json_object_object_get(obj, "ProtocolPort")));
++		protocol = json_object_get_int(json_object_object_get(obj, "Protocol"));
++		sourceport = json_object_get_int(json_object_object_get(obj, "SourcePort"));
++		sourceportrange= json_object_get_int(json_object_object_get(obj, "SourcePortEnd"));
++		destport = json_object_get_int(json_object_object_get(obj, "DestPort"));
++		destportrange = json_object_get_int(json_object_object_get(obj, "DestPortEnd"));
++		if(protocol == 1){			// ICMP
++			strcat(procotolport,"ICMP");
++		}
++		else if(protocol == 6){		//TCP
++			if((sourceport == -1) && (sourceportrange == -1)){
++				strcat(tmp1,"TCP: Any Port-->");
++			}
++			else if((sourceport != -1) && (sourceportrange == -1)){
++				sprintf(tmp1,"TCP: %d-->",sourceport);
++			}
++			else{ 
++				sprintf(tmp1,"TCP: %d:%d-->",sourceport,sourceportrange);
++			}
++			if((destport == -1) && (destportrange == -1)){
++				strcat(tmp2,"Any Port");
++			}
++			else if((destport != -1) && (destportrange == -1)){
++				sprintf(tmp2,"%d",destport);
++			}
++			else{
++				sprintf(tmp2,"%d:%d",destport,destportrange);
++			}
++			strcat(procotolport,tmp1);
++			strcat(procotolport,tmp2);
++		}
++		else if(protocol == 17){	//UDP
++			if((sourceport == -1) && (sourceportrange == -1)){
++				strcat(tmp1,"UDP: Any Port-->");
++			}
++			else if((sourceport != -1) && (sourceportrange == -1)){
++				sprintf(tmp1,"UDP: %d-->",sourceport);
++			}
++			else{ 
++				sprintf(tmp1,"UDP: %d:%d-->",sourceport,sourceportrange);
++			}
++			if((destport == -1) && (destportrange == -1)){
++				strcat(tmp2,"Any Port");
++			}
++			else if((destport != -1) && (destportrange == -1)){
++				sprintf(tmp2,"%d",destport);
++			}
++			else{ 
++				sprintf(tmp2,"%d:%d",destport,destportrange);
++			}
++			strcat(procotolport,tmp1);
++			strcat(procotolport,tmp2);
++		}
++		else if(protocol == 58){	//ICMPv6
++			strcat(procotolport,"ICMPv6:");
+ 			strcat(procotolport,json_object_get_string(json_object_object_get(obj, "ICMPv6Type")));
+ 		}
+-		else
+-			strcat(procotolport,json_object_get_string(json_object_object_get(obj, "ProtocolPort")));
++		else{						//Other
++			sprintf(procotolport,"Other:%d",protocol);
++		}
+ 		printf("%-10s %-10s %-15s %-30s \n",
+ 			json_object_get_string(json_object_object_get(obj, "Index")),
+ 			json_object_get_string(json_object_object_get(obj, "Name")),
+@@ -247,72 +302,62 @@
+ 	struct json_object *paramJobj = NULL;
+ 	struct json_object *protocolJobj = NULL;
+ 	objIndex_t protocolIid = {0};
+-	int count = 1, protocol = 0, icmptype = 0, icmptypecode = 0, sourceport = 0, sourceportrange = 0, destport = 0, destportrange = 0;
+-	char ProtocolNum[256] = {0}, tmp1[32] = {0}, tmp2[32] = {0}, icmpv6[8] = {0};
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolJobj) == ZCFG_SUCCESS){
+-		ProtocolNum[0] = '\0';
+-		tmp1[0] = '\0';
+-		tmp2[0] = '\0';
+-		protocol = json_object_get_int(json_object_object_get(protocolJobj, "Protocol"));
+-		icmptype = json_object_get_int(json_object_object_get(protocolJobj, "ICMPType"));
+-		icmptypecode = json_object_get_int(json_object_object_get(protocolJobj, "ICMPTypeCode"));
+-		sourceport = json_object_get_int(json_object_object_get(protocolJobj, "SourcePort"));
+-		sourceportrange = json_object_get_int(json_object_object_get(protocolJobj, "SourcePortRangeMax"));
+-		destport = json_object_get_int(json_object_object_get(protocolJobj, "DestPort"));
+-		destportrange = json_object_get_int(json_object_object_get(protocolJobj, "DestPortRangeMax"));
+-		paramJobj = json_object_new_object();
+-		json_object_object_add(paramJobj, "Index", json_object_new_int(count));
+-		json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Name")));
+-		json_object_object_add(paramJobj, "Description", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Description")));
+-		if(protocol == 1){			// ICMP
+-			strcat(ProtocolNum,"ICMP");
+-		}
+-		else if(protocol == 6){		//TCP
+-			if((sourceport == -1) && (sourceportrange == -1))
+-				strcat(tmp1,"TCP: Any Port-->");
+-			else if((sourceport != -1) && (sourceportrange == -1))
+-				sprintf(tmp1,"TCP: %d-->",sourceport);
+-			else 
+-				sprintf(tmp1,"TCP: %d:%d-->",sourceport,sourceportrange);
+-			if((destport == -1) && (destportrange == -1))
+-				strcat(tmp2,"Any Port");
+-			else if((destport != -1) && (destportrange == -1))
+-				sprintf(tmp2,"%d",destport);
+-		else
+-				sprintf(tmp2,"%d:%d",destport,destportrange);
+-			strcat(ProtocolNum,tmp1);
+-			strcat(ProtocolNum,tmp2);
++	int count = 1,icmptype = 0, icmptypecode = 0, protocol = 0, index = 0;
++	char icmpv6[8] = {0};
++	IID_INIT(protocolIid);	
++	if(json_object_object_get(Jobj, "Index")){
++		index =	json_object_get_int(json_object_object_get(Jobj, "Index"));		
++		ret = convertIndextoIid(index, &protocolIid, RDM_OID_NETWORK_SRV_GP, NULL, NULL, replyMsg);		
++		if(ret != ZCFG_SUCCESS)			
++			return ret;		
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_NETWORK_SRV_GP, &protocolIid , &protocolJobj) == ZCFG_SUCCESS){
++			paramJobj = json_object_new_object();
++			icmptype = json_object_get_int(json_object_object_get(protocolJobj, "ICMPType"));
++			icmptypecode = json_object_get_int(json_object_object_get(protocolJobj, "ICMPTypeCode"));
++			protocol = json_object_get_int(json_object_object_get(protocolJobj, "Protocol"));
++			json_object_object_add(paramJobj, "Index", json_object_new_int(index));
++			json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Name")));
++			json_object_object_add(paramJobj, "Description", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Description")));
++			json_object_object_add(paramJobj, "Protocol", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Protocol")));
++			json_object_object_add(paramJobj, "SourcePort", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "SourcePort")));
++			json_object_object_add(paramJobj, "SourcePortEnd", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "SourcePortRangeMax")));
++			json_object_object_add(paramJobj, "DestPort", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "DestPort")));
++			json_object_object_add(paramJobj, "DestPortEnd", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "DestPortRangeMax")));
++			json_object_object_add(paramJobj, "ICMPType", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "ICMPType")));
++			json_object_object_add(paramJobj, "ICMPTypeCode", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "ICMPTypeCode")));
++			if(protocol == 58){	//ICMPv6
++				sprintf(icmpv6,"%d,%d",icmptype,icmptypecode);
++				json_object_object_add(paramJobj, "ICMPv6Type", json_object_new_string(icmpv6));
++			}
++			json_object_array_add(Jarray, paramJobj);
++			zcfgFeJsonObjFree(protocolJobj);
+ 		}
+-		else if(protocol == 17){	//UDP
+-			if((sourceport == -1) && (sourceportrange == -1))
+-				strcat(tmp1,"UDP: Any Port-->");
+-			else if((sourceport != -1) && (sourceportrange == -1))
+-				sprintf(tmp1,"UDP: %d-->",sourceport);
+-			else 
+-				sprintf(tmp1,"UDP: %d:%d-->",sourceport,sourceportrange);
+ 
+-			if((destport == -1) && (destportrange == -1))
+-				strcat(tmp2,"Any Port");
+-			else if((destport != -1) && (destportrange == -1))
+-				sprintf(tmp2,"%d",destport);
+-			else 
+-				sprintf(tmp2,"%d:%d",destport,destportrange);
+-			strcat(ProtocolNum,tmp1);
+-			strcat(ProtocolNum,tmp2);
+-		}
+-		else if(protocol == 58){	//ICMPv6
+-			sprintf(icmpv6,"%d,%d",icmptype,icmptypecode);
+-			json_object_object_add(paramJobj, "ICMPv6Type", json_object_new_string(icmpv6));
+-			strcat(ProtocolNum,"ICMPv6:");
+-		}
+-		else{						//Other
+-			sprintf(ProtocolNum,"Other:%d",protocol);
+ 	}
+-		json_object_object_add(paramJobj, "ProtocolPort", json_object_new_string(ProtocolNum));
+-
+-		json_object_array_add(Jarray, paramJobj);
+-		count++;
+-		zcfgFeJsonObjFree(protocolJobj);
++	else{
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolJobj) == ZCFG_SUCCESS){
++			paramJobj = json_object_new_object();
++			icmptype = json_object_get_int(json_object_object_get(protocolJobj, "ICMPType"));
++			icmptypecode = json_object_get_int(json_object_object_get(protocolJobj, "ICMPTypeCode"));
++			protocol = json_object_get_int(json_object_object_get(protocolJobj, "Protocol"));
++			json_object_object_add(paramJobj, "Index", json_object_new_int(count));
++			json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Name")));
++			json_object_object_add(paramJobj, "Description", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Description")));
++			json_object_object_add(paramJobj, "Protocol", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Protocol")));
++			json_object_object_add(paramJobj, "SourcePort", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "SourcePort")));
++			json_object_object_add(paramJobj, "SourcePortEnd", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "SourcePortRangeMax")));
++			json_object_object_add(paramJobj, "DestPort", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "DestPort")));
++			json_object_object_add(paramJobj, "DestPortEnd", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "DestPortRangeMax")));
++			json_object_object_add(paramJobj, "ICMPType", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "ICMPType")));
++			json_object_object_add(paramJobj, "ICMPTypeCode", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "ICMPTypeCode")));
++			if(protocol == 58){	//ICMPv6
++				sprintf(icmpv6,"%d,%d",icmptype,icmptypecode);
++				json_object_object_add(paramJobj, "ICMPv6Type", json_object_new_string(icmpv6));
++			}
++			json_object_array_add(Jarray, paramJobj);
++			count++;
++			zcfgFeJsonObjFree(protocolJobj);
++		}
+ 	}
+ 	return ret;
+ }

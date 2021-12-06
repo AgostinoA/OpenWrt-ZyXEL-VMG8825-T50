@@ -1,0 +1,167 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-03-13 14:44:22.747768690 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-03-13 17:10:42.468943552 +0800
+@@ -3424,6 +3424,7 @@
+ 	char *ptr = NULL;
+ 	char wifiSsid[32] = {0};
+ 	char ssidRef[32] = {0};
++	char ConfigMethodsEnabled[64] = {0};
+ 	objIndex_t apIid;
+ 	struct json_object *apJobj = NULL, *apWpsJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+@@ -3465,7 +3466,32 @@
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+-		/*Write parameter value from tr181 objects to tr98 object*/		
++		/*Write parameter value from tr181 objects to tr98 object*/	
++		/*spetial case*/
++		if(!strcmp(paramList->name, "ConfigMethodsEnabled")) {
++			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_EnablePBC");
++			if(paramValue != NULL) {
++				if (json_object_get_boolean(paramValue) == true)
++					strcat(ConfigMethodsEnabled, "PushButton,");
++			}
++			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_EnableStaPin");
++			if(paramValue != NULL) {
++				if (json_object_get_boolean(paramValue) == true)
++					strcat(ConfigMethodsEnabled, "StationPIN,");
++			}
++			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_EnableAPPin");
++			if(paramValue != NULL) {
++				if (json_object_get_boolean(paramValue) == true)
++					strcat(ConfigMethodsEnabled, "ApPIN,");
++			}
++			if (ConfigMethodsEnabled[strlen(ConfigMethodsEnabled)-1] = ',')
++				ConfigMethodsEnabled[strlen(ConfigMethodsEnabled)-1] = '\0';
++			
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(ConfigMethodsEnabled));
++			paramList++;
++			continue;
++		}
++		
+ 		paramValue = json_object_object_get(apWpsJobj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -3475,12 +3501,11 @@
+ 
+ 		if(!strcmp(paramList->name, "UUID")) {
+ 			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_UUID");
+-		}
+-
+-		if(paramValue != NULL) {
+-			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-			paramList++;
+-			continue;
++			if(paramValue != NULL) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
+ 		}
+ 
+ 		/*Not defined in tr181, give it a default value*/
+@@ -3528,6 +3553,7 @@
+ 	char *ptr = NULL;
+ 	char wifiSsid[32] = {0};
+ 	char ssidRef[32] = {0};
++	char ConfigMethodsEnabled[64] = {0};
+ 	objIndex_t apIid;
+ 	struct json_object *apJobj = NULL, *apWpsJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+@@ -3583,9 +3609,13 @@
+ 	}
+ 
+ 	ret = ZCFG_SUCCESS;
++	
+ 
+ 	tr98WpsEnable = json_object_get_boolean(json_object_object_get(tr98Jobj, "Enable"));
+-
++	tr98WpsMthSupportStr =	json_object_get_string(json_object_object_get(tr98Jobj, "ConfigMethodsSupported"));
++	tr98WpsMthEnabledStr =	json_object_get_string(json_object_object_get(tr98Jobj, "ConfigMethodsEnabled"));
++	
++#if 0 //don't allow ACS trigger WPS method
+ 	if(tr98WpsEnable == false) {
+ 		json_object_object_add(apWpsJobj, "Enable", json_object_new_boolean(tr98WpsEnable));
+ 		goto write_parameters_complete;
+@@ -3595,6 +3625,7 @@
+     if(tr98WpsMthSupportStr && (strstr(tr98WpsMthSupportStr, "PIN"))) tr98WpsMthSupport |= WPS_PIN;
+ 	if(tr98WpsMthSupportStr && (strstr(tr98WpsMthSupportStr, "PushButton"))) tr98WpsMthSupport |= WPS_PBC;
+ 
++
+ 	tr98WpsMthEnabledStr =	json_object_get_string(json_object_object_get(tr98Jobj, "ConfigMethodsEnabled"));
+     if(tr98WpsMthEnabledStr && (!strcmp(tr98WpsMthEnabledStr, "PIN"))) tr98WpsMthEnabled = WPS_PIN;
+ 	else if(tr98WpsMthEnabledStr && (!strcmp(tr98WpsMthEnabledStr, "PushButton"))) tr98WpsMthEnabled = WPS_PBC;
+@@ -3606,6 +3637,9 @@
+ 	}
+ 
+ 	if(tr98WpsMthEnabled == WPS_PIN) wpsPin = WPS_STA_PIN;
++#else
++	
++#endif
+ 
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+@@ -3622,8 +3656,22 @@
+ 			if(tr98WpsMthSupportStr)
+ 				json_object_object_add(apWpsJobj, "ConfigMethodsSupported", json_object_new_string((const char *)tr98WpsMthSupportStr));
+ 		}else if(!strcmp(paramList->name, "ConfigMethodsEnabled")) {
+-			if(tr98WpsMthEnabledStr)
+-				json_object_object_add(apWpsJobj, "ConfigMethodsEnabled", json_object_new_string((const char *)tr98WpsMthEnabledStr));
++			if(tr98WpsMthEnabledStr){
++				if (strstr(tr98WpsMthEnabledStr, "PushButton"))
++					json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnablePBC", json_object_new_boolean(true));
++				else
++					json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnablePBC", json_object_new_boolean(false));
++
++				if (strstr(tr98WpsMthEnabledStr, "StationPIN"))
++					json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableStaPin", json_object_new_boolean(true));
++				else
++					json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableStaPin", json_object_new_boolean(false));
++
++				if (strstr(tr98WpsMthEnabledStr, "ApPIN"))
++					json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableAPPin", json_object_new_boolean(true));
++				else
++					json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableAPPin", json_object_new_boolean(false));
++			}
+ 		}else if(!strcmp(paramList->name, "DevicePassword")) {
+ 				wpsStationPin = json_object_get_int(paramValue);
+ 				printf("%s: wps pin %d\n", __FUNCTION__, wpsStationPin);
+@@ -3636,16 +3684,19 @@
+ #ifdef WPS_ACCESSPOINT_PIN
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_WPS_Configured")) {
+ 			tr181ParamValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_Configured");
++#if 0 //don't allow ACS trigger WPS method
+ 			wpsOldConfigured = json_object_get_boolean(tr181ParamValue);
+-
++#endif
+ 			wpsConfigured = json_object_get_boolean(paramValue);
+ 			json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_Configured", json_object_new_boolean(wpsConfigured));
+ 		}else if(!strcmp(paramList->name, "X_ZYXEL_WPS_GenDevicePin")) {
++#if 0 //don't allow ACS trigger WPS method
+ 			if((json_object_get_boolean(paramValue) == true) && (wpsConfigured == true)) {
+ 				json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableAPPin", json_object_new_boolean(true));
+ 				json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_StationPin", json_object_new_string("00000000"));
+ 				wpsPin = WPS_AP_PIN;
+ 			}
++#endif
+ 			json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_GenDevicePin", JSON_OBJ_COPY(paramValue));
+ 		}
+ #endif
+@@ -3662,6 +3713,7 @@
+ 		paramList++;
+ 	}
+ 
++#if 0 //don't allow ACS trigger WPS method
+ 	// special parameter config
+ 	if( ((wpsOldConfigured == true) && (wpsConfigured != true)) ||
+ 		((wpsOldConfigured == false) && (wpsConfigured == true)) ) {
+@@ -3687,6 +3739,7 @@
+ 		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableStaPin", json_object_new_boolean(true));				
+ 		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_StationPin", json_object_new_string(wpsStationPinStr));
+ 	}
++#endif
+ 
+ write_parameters_complete:
+ 	/*Set Device.WiFi.AccessPoint.i.Security*/

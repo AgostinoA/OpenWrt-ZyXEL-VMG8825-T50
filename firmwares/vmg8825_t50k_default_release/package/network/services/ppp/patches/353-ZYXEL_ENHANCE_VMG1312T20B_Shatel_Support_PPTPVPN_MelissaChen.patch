@@ -1,0 +1,129 @@
+Index: ppp-2.4.3/pppd/ccp.c
+===================================================================
+--- ppp-2.4.3.orig/pppd/ccp.c	2017-10-27 17:21:37.831050792 +0800
++++ ppp-2.4.3/pppd/ccp.c	2017-10-27 17:23:35.832170071 +0800
+@@ -368,6 +368,9 @@
+ 	} else if (!strncasecmp(cmdbuf, "stateless", strlen("stateless"))) {
+ 	    ccp_allowoptions[0].mppe_stateless = 1;
+ 	    goto next_param;
++	} else if (!strncasecmp(cmdbuf, "stateful", strlen("stateful"))) {
++	    ccp_allowoptions[0].mppe_stateless = 0;
++	    goto next_param;
+ 	} else if (!strncasecmp(cmdbuf, "required", strlen("required"))) {
+ 	    ccp_wantoptions[0].mppe = 1;
+ 	    goto next_param;
+Index: ppp-2.4.3/pppd/ipcp.c
+===================================================================
+--- ppp-2.4.3.orig/pppd/ipcp.c	2017-11-28 17:44:42.527819982 +0800
++++ ppp-2.4.3/pppd/ipcp.c	2017-11-28 17:48:40.458504400 +0800
+@@ -308,6 +308,42 @@
+ } ipcp_script_state;
+ static pid_t ipcp_script_pid;
+ 
++/*
++   __ZYXEL__, MelissaChen, 20171122, Support PPTP VPN.
++*/
++#ifdef CONFIG_PPTP_SUPPORT
++
++#ifdef BROADCOM_PLATFORM
++#define PPTP_RUTING_UP_SCRIPT "/var/pptp_up.sh"
++#define PPTP_RUTING_DOWN_SCRIPT "/var/pptp_down.sh"
++#else
++#define PPTP_RUTING_UP_SCRIPT "/etc/pptp_up.sh"
++#define PPTP_RUTING_DOWN_SCRIPT "/etc/pptp_down.sh"
++#endif
++static int
++pptp_up_routing(
++	ipcp_options *ho
++)
++{
++	char cmd[128];
++	u_int32_t ip;
++	ip = ntohl(ho->hisaddr);
++	sprintf(cmd, "sh %s %d.%d.%d.%d", PPTP_RUTING_UP_SCRIPT, ((ip >> 24) & 0xff), ((ip >> 16) & 0xff), ((ip >> 8) & 0xff), (ip & 0xff));
++	system(cmd);
++	return 0;
++}
++
++static int
++pptp_down_routing(
++	void
++)
++{
++	char cmd[128];
++	sprintf(cmd, "sh %s", PPTP_RUTING_DOWN_SCRIPT);
++	system(cmd);
++	return 0;
++}
++#endif
+ 
+ #if 1 /* ZyXEL, ZCFG */
+ extern zcfgRet_t pppdMsgSend(uint32_t, zcfgEid_t, int, const char *);
+@@ -1866,7 +1902,11 @@
+ 	}
+ 	demand_rexmit(PPP_IP,go->ouraddr);
+ 	sifnpmode(f->unit, PPP_IP, NPMODE_PASS);
+-
++	//__ZYXEL__, MelissaChen, 20171122, Support PPTP VPN.
++#ifdef CONFIG_PPTP_SUPPORT
++	notice("local  IP address %I", go->ouraddr);
++	notice("remote IP address %I", ho->hisaddr);
++#endif
+     } else {
+ 	/*
+ 	 * Set IP addresses and (if specified) netmask.
+@@ -1924,7 +1964,12 @@
+ 
+ 	//ipcp_wantoptions[0].ouraddr = go->ouraddr;
+ 	if (!strstr(ifname, "pppowwan")){
+-		ipcp_wantoptions[0].ouraddr = go->ouraddr;
++		ipcp_wantoptions[0].ouraddr = go->ouraddr;		
++	//__ZYXEL__, MelissaChen, 20171122, Support PPTP VPN.
++	#ifdef CONFIG_PPTP_SUPPORT
++		pptp_down_routing();
++		pptp_up_routing(ho); 
++	#endif
+ 	}
+ 
+ 	notice("local  IP address %I", go->ouraddr);
+@@ -2052,6 +2097,11 @@
+ 	ipcp_script_state = s_down;
+ 	ipcp_script(path_ipdown);
+     }
++
++	//__ZYXEL__, MelissaChen, 20171122, Support PPTP VPN.
++#ifdef CONFIG_PPTP_SUPPORT
++	pptp_down_routing();
++#endif
+ }
+ 
+ 
+Index: ppp-2.4.3/pppd/pathnames.h
+===================================================================
+--- ppp-2.4.3.orig/pppd/pathnames.h	2004-11-13 20:02:22.000000000 +0800
++++ ppp-2.4.3/pppd/pathnames.h	2017-10-27 17:24:10.509223348 +0800
+@@ -18,8 +18,15 @@
+ #define _ROOT_PATH
+ #endif
+ 
+-#define _PATH_UPAPFILE 	 _ROOT_PATH "/etc/ppp/pap-secrets"
++#if defined(BROADCOM_PLATFORM)&& defined(CONFIG_PPTP_SUPPORT) 
++#define _PATH_CHAPFILE 	 _ROOT_PATH "/var/ppp/chap-secrets"
++#define _PATH_PEERFILES	 _ROOT_PATH "/var/ppp/peers/"
++#else
+ #define _PATH_CHAPFILE 	 _ROOT_PATH "/etc/ppp/chap-secrets"
++#define _PATH_PEERFILES	 _ROOT_PATH "/etc/ppp/peers/"
++#endif
++
++#define _PATH_UPAPFILE 	 _ROOT_PATH "/etc/ppp/pap-secrets"
+ #define _PATH_SRPFILE 	 _ROOT_PATH "/etc/ppp/srp-secrets"
+ #define _PATH_SYSOPTIONS _ROOT_PATH "/etc/ppp/options"
+ #define _PATH_IPUP	 _ROOT_PATH "/etc/ppp/ip-up"
+@@ -28,7 +35,6 @@
+ #define _PATH_AUTHDOWN	 _ROOT_PATH "/etc/ppp/auth-down"
+ #define _PATH_TTYOPT	 _ROOT_PATH "/etc/ppp/options."
+ #define _PATH_CONNERRS	 _ROOT_PATH "/etc/ppp/connect-errors"
+-#define _PATH_PEERFILES	 _ROOT_PATH "/etc/ppp/peers/"
+ #define _PATH_RESOLV	 _ROOT_PATH "/etc/ppp/resolv.conf"
+ 
+ #define _PATH_USEROPT	 ".ppprc"

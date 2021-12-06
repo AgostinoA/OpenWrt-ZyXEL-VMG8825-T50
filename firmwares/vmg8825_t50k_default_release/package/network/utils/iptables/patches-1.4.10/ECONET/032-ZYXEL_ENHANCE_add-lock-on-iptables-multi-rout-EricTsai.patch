@@ -1,0 +1,59 @@
+Index: iptables-1.4.10/iptables-multi.c
+===================================================================
+--- iptables-1.4.10.orig/iptables-multi.c	2010-10-29 22:37:22.000000000 +0800
++++ iptables-1.4.10/iptables-multi.c	2020-01-06 13:45:46.699596750 +0800
+@@ -3,12 +3,22 @@
+ #include <string.h>
+ #include <libgen.h>
+ 
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++#include <stddef.h>
++#include "xtables.h"
++
++#define XTMSOCKET_NAME "xtables_multi"
++#define XTMSOCKET_LEN 14
++
+ int iptables_main(int argc, char **argv);
+ int iptables_save_main(int argc, char **argv);
+ int iptables_restore_main(int argc, char **argv);
+ int iptables_xml_main(int argc, char **argv);
+ 
+-int main(int argc, char **argv)
++
++int iptables_multi_main(int argc, char **argv)
+ {
+ 	char *progname;
+ 
+@@ -48,3 +58,30 @@
+ 	        "unknown subcommand \"%s\"\n", progname);
+ 	exit(EXIT_FAILURE);
+ }
++
++int main(int argc, char **argv)
++{
++	int i = 0, ret, xtm_socket;
++	struct sockaddr_un xtm_addr;
++
++	memset(&xtm_addr, 0, sizeof(xtm_addr));
++	xtm_addr.sun_family = AF_UNIX;
++	strcpy(xtm_addr.sun_path+1, XTMSOCKET_NAME);
++	xtm_socket = socket(AF_UNIX, SOCK_STREAM, 0);
++	/* If we can't even create a socket, just revert to prior (lockless) behavior */
++	if (xtm_socket < 0)
++		return iptables_multi_main(argc, argv);
++
++	do {
++		ret = bind(xtm_socket, (struct sockaddr*)&xtm_addr,
++			   offsetof(struct sockaddr_un, sun_path)+XTMSOCKET_LEN);
++		if (ret == 0)
++			return iptables_multi_main(argc, argv);
++		i++;
++		usleep(50000);
++	} while (i < 100);
++
++	fprintf(stderr, "ERROR: unable to obtain lock - another instance is already running\n");
++	exit(RESOURCE_PROBLEM);
++}
++

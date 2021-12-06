@@ -1,0 +1,246 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2016-09-21 13:57:02.112602070 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2016-09-21 13:48:58.086015200 +0800
+@@ -3637,24 +3637,35 @@
+ 	}
+ 
+ 	if(wanIpConnType == WAN_IPCONN_EINTELVLIP) {
++		struct json_object *multiObj = json_object_new_object();
++
+ 		/*Add Device.Ethernet.Link.i*/
+-		ret = ethLinkAdd(ethLinkPathName, wanLinkName);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		if((ret = multiObjEthLinkAdd(ethLinkPathName, wanLinkName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
+ 
+ 		/*add Device.Ethernet.VLANTermination.i*/
+-		ret = vlanTermAdd(vlanTermPathName, ethLinkPathName);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		if((ret = multiObjVlanTermAdd(vlanTermPathName, ethLinkPathName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
+ 
+ 		/*Add Device.IP.Interface.i*/
+-		ret = ipIfaceAdd(ipIfacePathName, vlanTermPathName);
++		if((ret = multiObjIpIfaceAdd(ipIfacePathName, vlanTermPathName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
++			return ret;
++		}
++
++		zcfgFeJsonMultiObjSetBlock(multiObj);
++		zcfgFeJsonMultiObjSetDelayApply(multiObj);
++
++		ret = zcfgFeMultiObjJsonSet(multiObj, NULL);
+ 		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-			printf("%s : Add Device.IP.Interface.i fail\n", __FUNCTION__);
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
++		json_object_put(multiObj);
+ 
+ 	}
+ 	else if(wanIpConnType == WAN_IPCONN_ATMIP) {
+@@ -6367,34 +6378,45 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
++	struct json_object *multiObj = json_object_new_object();
+ 	if(wanPppConnType == WAN_PPPCONN_EINTELVLPPP) {
+ 		/*Add Device.Ethernet.Link.i*/
+-		ret = ethLinkAdd(ethLinkPathName, wanLinkName);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		if((ret = multiObjEthLinkAdd(ethLinkPathName, wanLinkName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
+ 
+ 		/*add Device.Ethernet.VLANTermination.i*/
+-		ret = vlanTermAdd(vlanTermPathName, ethLinkPathName);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		if((ret = multiObjVlanTermAdd(vlanTermPathName, ethLinkPathName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
+ 
+ 		/*Add Device.PPP.Interface.i*/
+-		ret = pppIfaceAdd(pppIfacePathName, vlanTermPathName);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-			printf("%s : Add Device.PPP.Interface.i fail\n", __FUNCTION__);
++		if((ret = multiObjPppIfaceAdd(pppIfacePathName, vlanTermPathName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
+ 	}
+ 	else if(wanPppConnType == WAN_PPPCONN_ATMPPP) {
+ 		printf("ATM Link type is PPPoA\n");
+ 		/*Add Device.PPP.Interface.i and Device.IP.Interface.i ?*/
+-		ret = pppIfaceAdd(pppIfacePathName, wanLinkName);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		if((ret = multiObjPppIfaceAdd(pppIfacePathName, wanLinkName, multiObj)) != ZCFG_SUCCESS){
++			json_object_put(multiObj);
+ 			return ret;
+ 		}
+ 	}
++
++	zcfgFeJsonMultiObjSetBlock(multiObj);
++	zcfgFeJsonMultiObjSetDelayApply(multiObj);
++
++	ret = zcfgFeMultiObjJsonSet(multiObj, NULL);
++		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		json_object_put(multiObj);
++			return ret;
++		}
++	json_object_put(multiObj);
++
+ #ifndef ZCFG_DYNAMIC_NAMEMAPPING
+ 	if(ret == ZCFG_SUCCESS) {
+ 		if((ret = zcfgFe181To98MappingNameGet(pppIfacePathName, wanPppConnObj)) != ZCFG_SUCCESS) {
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2016-09-21 13:57:01.452602058 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2016-09-21 13:53:15.213767300 +0800
+@@ -430,6 +430,125 @@
+     return enable;
+ }
+ 
++zcfgRet_t multiObjEthLinkAdd(char *ethLinkPathName, char *lowerLayer, struct json_object *multiObj)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ethLinkObj = NULL;
++
++	printf("%s: %s\n", __FUNCTION__, lowerLayer);
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_ETH_LINK, &objIid, NULL)) != ZCFG_SUCCESS) {
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	sprintf(ethLinkPathName, "Ethernet.Link.%d", objIid.idx[0]);
++
++	/*Set LowerLayer for Ethernet.Link*/
++	if(zcfgFeObjJsonGet(RDM_OID_ETH_LINK, &objIid, &ethLinkObj) != ZCFG_SUCCESS){
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	json_object_object_add(ethLinkObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(ethLinkObj, "LowerLayers", json_object_new_string(lowerLayer));
++
++	zcfgFeJsonMultiObjAppend(RDM_OID_ETH_LINK, &objIid, multiObj, ethLinkObj);
++	zcfgFeJsonMultiObjAddParam(multiObj, RDM_OID_ETH_LINK, &objIid, "apply", json_object_new_boolean(true));
++	json_object_put(ethLinkObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t multiObjVlanTermAdd(char *vlanTermPathName, char *lowerLayer, struct json_object *multiObj)
++{
++	objIndex_t objIid;
++	struct json_object *vlanTermObj = NULL;
++
++	printf("%s: %s\n", __FUNCTION__, lowerLayer);
++
++	IID_INIT(objIid);
++	if(zcfgFeObjStructAdd(RDM_OID_ETH_VLAN_TERM, &objIid, NULL) != ZCFG_SUCCESS) {
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	sprintf(vlanTermPathName, "Ethernet.VLANTermination.%d", objIid.idx[0]);
++
++	if(zcfgFeObjJsonGet(RDM_OID_ETH_VLAN_TERM, &objIid, &vlanTermObj) != ZCFG_SUCCESS){
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	json_object_object_add(vlanTermObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(vlanTermObj, "LowerLayers", json_object_new_string(lowerLayer));
++	json_object_object_add(vlanTermObj, "VLANID", json_object_new_int(-1));
++
++	zcfgFeJsonMultiObjAppend(RDM_OID_ETH_VLAN_TERM, &objIid, multiObj, vlanTermObj);
++	zcfgFeJsonMultiObjAddParam(multiObj, RDM_OID_ETH_VLAN_TERM, &objIid, "apply", json_object_new_boolean(true));
++	json_object_put(vlanTermObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t multiObjIpIfaceAdd(char *ipIfacePathName, char *lowerLayer, struct json_object *multiObj)
++{
++	objIndex_t objIid;
++	struct json_object *ipIfaceObj = NULL;
++
++	printf("%s: %s\n", __FUNCTION__, lowerLayer);
++
++	IID_INIT(objIid);
++	if(zcfgFeObjStructAdd(RDM_OID_IP_IFACE, &objIid, NULL) != ZCFG_SUCCESS) {
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	sprintf(ipIfacePathName, "IP.Interface.%d", objIid.idx[0]);
++
++	if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &objIid, &ipIfaceObj) != ZCFG_SUCCESS){
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	json_object_object_add(ipIfaceObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(ipIfaceObj, "LowerLayers", json_object_new_string(lowerLayer));
++
++	zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &objIid, multiObj, ipIfaceObj);
++	zcfgFeJsonMultiObjAddParam(multiObj, RDM_OID_IP_IFACE, &objIid, "apply", json_object_new_boolean(true));
++	json_object_put(ipIfaceObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t multiObjPppIfaceAdd(char *pppIfacePathName, char *lowerLayer, struct json_object *multiObj)
++{
++	objIndex_t objIid;
++	struct json_object *pppIfaceObj = NULL;
++	char ipIfacePathName[32] = {0};
++
++	printf("%s: %s\n", __FUNCTION__, lowerLayer);
++
++	IID_INIT(objIid);
++	if(zcfgFeObjStructAdd(RDM_OID_PPP_IFACE, &objIid, NULL) != ZCFG_SUCCESS) {
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	sprintf(pppIfacePathName, "PPP.Interface.%d", objIid.idx[0]);
++
++	if(zcfgFeObjJsonGet(RDM_OID_PPP_IFACE, &objIid, &pppIfaceObj) != ZCFG_SUCCESS){
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	json_object_object_add(pppIfaceObj, "IPCPEnable", json_object_new_boolean(true));
++	json_object_object_add(pppIfaceObj, "LowerLayers", json_object_new_string(lowerLayer));
++
++	zcfgFeJsonMultiObjAppend(RDM_OID_PPP_IFACE, &objIid, multiObj, pppIfaceObj);
++	zcfgFeJsonMultiObjAddParam(multiObj, RDM_OID_PPP_IFACE, &objIid, "apply", json_object_new_boolean(true));
++	json_object_put(pppIfaceObj);
++
++	if(multiObjIpIfaceAdd(ipIfacePathName, pppIfacePathName, multiObj) != ZCFG_SUCCESS)
++		return ZCFG_INTERNAL_ERROR;
++
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t ethLinkAdd(char *ethLinkPathName, char *lowerLayer)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/wanDev_api.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.h	2016-09-21 13:57:01.452602058 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.h	2016-09-21 13:53:36.948949800 +0800
+@@ -16,6 +16,10 @@
+ zcfgRet_t dnsAddJobj(char *, objIndex_t *, struct json_object **);
+ #endif
+ bool isIGMPProxyEnable(char *ipIface);
++zcfgRet_t multiObjEthLinkAdd(char *, char *, struct json_object *);
++zcfgRet_t multiObjVlanTermAdd(char *, char *, struct json_object *);
++zcfgRet_t multiObjIpIfaceAdd(char *, char *, struct json_object *);
++zcfgRet_t multiObjPppIfaceAdd(char *, char *, struct json_object *);
+ zcfgRet_t ethLinkAdd(char *, char *);
+ zcfgRet_t vlanTermAdd(char *vlanTermPathName, char *lowerLayer);
+ zcfgRet_t ipIfaceAdd(char *, char *);

@@ -1,0 +1,178 @@
+--- a/networking/ftpgetput.c
++++ b/networking/ftpgetput.c
+@@ -115,8 +115,14 @@ static rdm_IpDiagUlDiag_t *ipDiagUlObj =
+ static unsigned int testSendLength = 0;
+ static char ipDscp = 0, ePriority = 0;
+ static int diagStateErrCode = 0;
++static unsigned long ifBytesReceivedStart = 0;
++static unsigned long ifBytesReceivedEnd = 0;
++static unsigned long ifBytesSentStart = 0;
++static unsigned long ifBytesSentEnd = 0;
+ 
+ static void outputDiagUlData(int);
++extern unsigned long getReceiveByte(char *ifName);
++extern unsigned long getSentByte(char *ifName);
+ #endif
+ 
+ 
+@@ -370,6 +376,8 @@ static void outputDiagUlData(int rt)
+ 	printf("ROMTime: %s\n", ipDiagUlObj->ROMTime);
+ 	printf("BOMTime: %s\n", ipDiagUlObj->BOMTime);
+ 	printf("EOMTime: %s\n", ipDiagUlObj->EOMTime);
++        printf("TestBytesSent: %u\n", ipDiagUlObj->TestBytesSent);
++        printf("TotalBytesReceived: %u\n", ipDiagUlObj->TotalBytesReceived);
+ 	printf("TotalBytesSent: %u\n", ipDiagUlObj->TotalBytesSent);
+ 	printf("TCPOpenRequestTime: %s\n", ipDiagUlObj->TCPOpenRequestTime);
+ 	printf("TCPOpenResponseTime: %s\n", ipDiagUlObj->TCPOpenResponseTime);
+@@ -444,7 +452,11 @@ static int send_dummy_data_and_QUIT(cons
+ 			((sent_data_size + DUMMY_DATA_UNIT_SIZE) > data_size) ? (data_size-sent_data_size) : DUMMY_DATA_UNIT_SIZE);
+ 	}
+ 
++#if 1
++        ipDiagUlObj->TestBytesSent = sent_data_size;
++#else
+ 	ipDiagUlObj->TotalBytesSent = sent_data_size;
++#endif
+ 
+ complete:
+ 	/* close data connection */
+@@ -455,6 +467,16 @@ complete:
+ 		ftp_die(NULL);
+ 	}else {
+ 		makeTimeStamp(ipDiagUlObj->EOMTime, sizeof(ipDiagUlObj->EOMTime));
++
++                ifBytesReceivedEnd = getReceiveByte(intf);
++                ipDiagUlObj->TotalBytesReceived = (ifBytesReceivedEnd > ifBytesReceivedStart) ?
++                       (unsigned int)(ifBytesReceivedEnd - ifBytesReceivedStart) : 0;
++                //printf("%s : Receive data end: %u\n", __FUNCTION__, ipDiagUlObj->TotalBytesReceived);
++
++                ifBytesSentEnd = getSentByte(intf);
++                ipDiagUlObj->TotalBytesSent = (ifBytesSentEnd > ifBytesSentStart) ?
++                       (unsigned int)(ifBytesSentEnd - ifBytesSentStart) : 0;
++                //printf("%s : Sent data end: %u\n", __FUNCTION__, ipDiagUlObj->TotalBytesSent);
+ 	}
+ 	ftpcmd("QUIT", NULL);
+ 
+@@ -603,6 +625,12 @@ int ftp_send(const char *server_path, ch
+ 		}
+ 
+ 		makeTimeStamp(ipDiagUlObj->BOMTime, sizeof(ipDiagUlObj->BOMTime));
++
++                ifBytesReceivedStart = getReceiveByte(intf);
++                //printf("%s : Receive data start: %ld\n", __FUNCTION__, ifBytesReceivedStart);
++                ifBytesSentStart = getSentByte(intf);
++                //printf("%s : Sent data start: %ld\n", __FUNCTION__, ifBytesSentStart);
++
+ 		rt = send_dummy_data_and_QUIT((const unsigned int)testSendLength, fd_data);
+ 
+ 		return rt;
+--- a/networking/wget.c
++++ b/networking/wget.c
+@@ -108,9 +108,12 @@ static char EOMTime[64] = DEFAULT_DATETI
+ static char TCPOpenRequestTime[64] = DEFAULT_DATETIME;
+ static char TCPOpenResponseTime[64] = DEFAULT_DATETIME;
+ static unsigned long TotalBytesReceived = 0;
++static unsigned long TotalBytesSent = 0;
+ static unsigned long TestBytesReceived = 0;
+ static unsigned long ifBytesReceivedStart = 0;
+ static unsigned long ifBytesReceivedEnd = 0;
++static unsigned long ifBytesSentStart = 0;
++static unsigned long ifBytesSentEnd = 0;
+ 
+ static char ipDscp = 0;
+ 
+@@ -118,6 +121,8 @@ int priorityMark=0;
+ char dstIP[32]={0};
+ 
+ unsigned long getReceiveByte(char *ifName);
++unsigned long getSentByte(char *ifName);
++
+ void set_priorityMark(int act);
+ #endif
+ 
+@@ -162,6 +167,7 @@ static void outputDiagDlData(void)
+ 	int payloadLen = 0;
+ 	char testByteRecv[21] = {0};
+ 	char totalByteRecv[21] = {0};
++	char totalByteSent[21] = {0};
+ 
+ 	if(!strcmp(DiagnosticsState, "Requested")) {
+ 		strcpy(DiagnosticsState, "Completed");
+@@ -181,6 +187,9 @@ static void outputDiagDlData(void)
+ 	sprintf(testByteRecv, "%u", TestBytesReceived);
+ 	json_object_object_add(diag_result, "TestBytesReceived", json_object_new_string(testByteRecv));
+ 
++        sprintf(totalByteSent, "%u", TotalBytesSent);
++        json_object_object_add(diag_result, "TotalBytesSent", json_object_new_string(totalByteSent));
++
+ 	json_object_object_add(diag_result, "TCPOpenRequestTime", json_object_new_string(TCPOpenRequestTime));
+ 	json_object_object_add(diag_result, "TCPOpenResponseTime", json_object_new_string(TCPOpenResponseTime));
+ 
+@@ -301,6 +310,35 @@ unsigned long getReceiveByte(char *ifNam
+ 
+ 		return 0;
+ }
++
++unsigned long getSentByte(char *ifName)
++{
++                FILE *fp;
++                unsigned long sentBytes, trash;
++                char interfaceName[32]={0};
++                char buf[512];
++
++                fp = popen("cat /proc/net/dev", "r");
++
++                while (fgets(buf, sizeof(buf), fp) != NULL) {
++                        char *ptr;
++
++                        if ( (ptr = strchr(buf, ':')) == NULL )
++                                continue;
++                        else
++                                *ptr = ' ';
++
++                        sscanf(buf, "%s %ld %ld %ld %ld %ld %ld %ld %ld %ld ", interfaceName, &trash, &trash, &trash, &trash, &trash, &trash, &trash, &trash, &sentBytes);
++
++                        if( !strcmp(interfaceName, ifName) ){
++                                //printf("interfaceName:%s, sentBytes:%ld\n", interfaceName, sentBytes);
++                                return sentBytes;
++                        }
++                }
++                pclose(fp);
++
++                return 0;
++}
+ #endif
+ 
+ 
+@@ -738,6 +776,9 @@ static FILE* prepare_ftp_session(FILE **
+ 	if (option_mask32 & WGET_OPT_INTERFACE) {
+ 		ifBytesReceivedStart = getReceiveByte(G.ifName);
+ 		printf("Receive data start: %ld\n", ifBytesReceivedStart);
++
++                ifBytesSentStart = getSentByte(G.ifName);
++                //printf("Sent data start: %ld\n", ifBytesSentStart);
+ 	}
+ 
+ 	getDateTime(ROMTime);
+@@ -1064,6 +1105,9 @@ static void download_one_url(const char
+         if (option_mask32 & WGET_OPT_INTERFACE){
+ 			ifBytesReceivedStart = getReceiveByte(G.ifName);
+ 			printf("Receive data start: %ld\n", ifBytesReceivedStart);
++
++                        ifBytesSentStart = getSentByte(G.ifName);
++                        //printf("Sent data start: %ld\n", ifBytesSentStart);
+         }
+ #endif
+ 
+@@ -1295,6 +1339,11 @@ However, in real world it was observed t
+ 		TotalBytesReceived = (ifBytesReceivedEnd > ifBytesReceivedStart) ? 
+ 			(ifBytesReceivedEnd - ifBytesReceivedStart) : 0;
+ 		printf("Receive data end: %ld\n", ifBytesReceivedEnd);
++
++                ifBytesSentEnd = getSentByte(G.ifName);
++                TotalBytesSent = (ifBytesSentEnd > ifBytesSentStart) ?
++                        (ifBytesSentEnd - ifBytesSentStart) : 0;
++                //printf("Sent data end: %ld\n", ifBytesSentEnd);
+ 	}
+    	getDateTime(EOMTime);
+ 

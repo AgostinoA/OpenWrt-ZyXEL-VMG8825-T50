@@ -1,0 +1,87 @@
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2015-07-20 18:45:11.589391765 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2015-07-20 18:41:48.684834000 +0800
+@@ -1504,6 +1504,57 @@
+ 	return ret;
+ }
+ 
++/*
++
++  InternetGatewayDevice.Layer2Bridging.Bridge.{i}.Port.{i}.            Device.Bridging.Bridge.{i}.Port.{i}.
++*/
++zcfgRet_t l2BrPortObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t brPortObjIid;
++	char mappingPathName[100] = {0};
++	struct json_object *tr181BrPortObj = NULL;
++	struct json_object *paramValue;
++	tr98Parameter_t *paramList = NULL;
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++		printf("98 to 181 Mapping Fail!!\n");
++		return ret;
++	}
++
++	printf("%s: tr181 %s\n", __FUNCTION__, mappingPathName);
++
++	IID_INIT(brPortObjIid);
++	brPortObjIid.level = 2;
++	sscanf(mappingPathName, "Bridging.Bridge.%hhu.Port.%hhu", &brPortObjIid.idx[0], &brPortObjIid.idx[1]);
++	if((ret = feObjJsonGet(RDM_OID_BRIDGING_BR_PORT, &brPortObjIid, &tr181BrPortObj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS)
++		return ret;
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		paramValue = json_object_object_get(tr181BrPortObj, paramList->name);
++		if(!paramValue){
++			if(!strcmp(paramList->name, "PortEnable"))
++				paramValue = json_object_object_get(tr181BrPortObj, "Enable");
++			else if(!strcmp(paramList->name, "PortInterface"))
++				paramValue = json_object_object_get(tr181BrPortObj, "X_ZYXEL_AvailableInterfaceKey");
++		}
++
++		if(paramValue){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++	json_object_put(tr181BrPortObj);
++
++	return ZCFG_SUCCESS;
++}
+ 
+ zcfgRet_t l2BrVlanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+Index: libzcfg_fe_tr98-1.0/l2bridge.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.h	2015-07-20 18:45:11.369391763 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.h	2015-07-20 18:45:11.953391768 +0800
+@@ -21,6 +21,7 @@
+ extern int l2BrObjAttrGet(char *, int, char *);
+ extern zcfgRet_t l2BrObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
++extern zcfgRet_t l2BrPortObjGet(char *, int , struct json_object **, bool );
+ 
+ extern zcfgRet_t l2BrFilterObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t l2BrFilterObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-07-20 18:45:11.937391768 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-07-20 18:45:11.953391768 +0800
+@@ -274,7 +274,7 @@
+ {TR98_FWD,                      ATTR_INDEX_CREA,para_Fwd,               l3fwdFwdTbObjGet,        l3fwdFwdTbObjSet,       l3fwdFwdTbObjAdd, l3fwdFwdTbObjDel,  NULL, NULL, l3fwdFwdTbObjAttrSet},
+ {TR98_L2_BR,                    0,               para_L2Br,              l2BridingObjGet,         NULL,                   NULL,             NULL,            l2BridingObjNotify, l2BridingObjAttrGet, l2BridingObjAttrSet},
+ {TR98_BR,                       ATTR_INDEX_CREA, para_Br,                l2BrObjGet,              l2BrObjSet,             l2BrObjAdd,       l2BrObjDel,      l2BrObjNotify, l2BrObjAttrGet, l2BrObjAttrSet},
+-{TR98_PORT,                     ATTR_INDEXNODE, para_Port,              NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_PORT,                     ATTR_INDEXNODE, para_Port,              l2BrPortObjGet,           NULL,         NULL,                   NULL,             NULL,            NULL, NULL},
+ {TR98_VLAN,                     ATTR_INDEXNODE,  para_Vlan,              l2BrVlanObjGet,          l2BrVlanObjSet,        l2BrVlanObjAdd,   l2BrVlanObjDel,  l2BrVlanObjNotify, l2BrVlanObjAttrGet, l2BrVlanObjAttrSet},
+ {TR98_FILTER,                   ATTR_INDEX_CREA, para_Filter,            l2BrFilterObjGet,        l2BrFilterObjSet,       l2BrFilterObjAdd, l2BrFilterObjDel,l2BrFilterObjNotify, l2BrFilterObjAttrGet, l2BrFilterObjAttrSet},
+ {TR98_MARK,                     ATTR_INDEXNODE, para_Mark,              NULL,                    NULL,                   NULL,             NULL,            NULL},

@@ -1,0 +1,314 @@
+Index: libzcfg_fe_tr98-1.0/voice.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.c	2016-02-25 15:42:39.090146584 +0800
++++ libzcfg_fe_tr98-1.0/voice.c	2016-02-25 16:07:48.070748442 +0800
+@@ -760,11 +760,209 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#if ZYXEL_VOICE_CONFIG_TR069_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST
++
++#define ERROR_PHONE_SELECT_BITMAP 0xFFFF
++int getSipLineCnt()
++{
++	int cnt = 0;
++	objIndex_t objIid;
++	struct json_object *lineObj = NULL;
++
++	IID_INIT(objIid);
++	while((zcfgFeObjJsonGetNext(RDM_OID_VOICE_LINE, &objIid, &lineObj)) == ZCFG_SUCCESS){
++		if(lineObj != NULL){
++			cnt++;
++		}
++		zcfgFeJsonObjFree(lineObj);
++	}
++	return cnt;
++}
++
++int getFxsPhyInterfaceCnt()
++{
++	int cnt = 0;
++	objIndex_t objIid;
++	struct json_object *PhyIntfObj = NULL;
++
++	IID_INIT(objIid);
++	while((zcfgFeObjJsonGetNext(RDM_OID_VOICE_PHY_INTF, &objIid, &PhyIntfObj)) == ZCFG_SUCCESS){
++		if(PhyIntfObj != NULL){
++			cnt++;
++		}
++		zcfgFeJsonObjFree(PhyIntfObj);
++	}
++	return cnt;
++}
++
++uint32_t parsePhonePortList(char *phoneList){//ex. input(PhyReferenceList):0,1(1,2)  output(bitmap):0x3
++	char List[256] = {0};
++	char *tmpStr = NULL;
++	int phyPort;
++	uint32_t listBitMap = 0;
++
++	if(phoneList == NULL){
++		printf("%s()-PhonePortList is NULL...fail return!\n  ",__FUNCTION__);
++		return ERROR_PHONE_SELECT_BITMAP; //0xFFFF to indicate Error/Fail return.
++	}
++
++	strcpy(List, phoneList);
++	tmpStr = strtok(List,",");
++	while (tmpStr != NULL){
++		if(true != sscanf(tmpStr,"%d",&phyPort)){
++		#if SKIP_NON_NUMBER_PHONE_PORT_VALUE_WHILE_PARSE_PHY_REFERENCE_LIST
++			zcfgLog(ZCFG_LOG_ERR, "%s : parse phone port num fail ==> Skip this one and goto next!!\n", __FUNCTION__);
++			tmpStr = strtok (NULL, ",");
++			continue;
++		#else
++			zcfgLog(ZCFG_LOG_ERR, "%s : parse phone port num fail ==> Fail retuen!!\n", __FUNCTION__);
++			return ERROR_PHONE_SELECT_BITMAP;
++		#endif //SKIP_NON_NUMBER_PHONE_PORT_VALUE_WHILE_PARSE_PHY_REFERENCE_LIST.
++		}
++#if defined (ZYPRJ_CUSTOMER_WIND) || defined (WIND_CUSTOMIZATION)//0-base
++		phyPort = phyPort+1;
++#endif
++		if((phyPort > sizeof(uint32_t)*8) || (phyPort <= 0)){
++			zcfgLog(ZCFG_LOG_ERR, "%s : Invalid value (%d), the accepatble range: [1, %d]!!\n", __FUNCTION__, phyPort, sizeof(uint32_t)*8);
++			return ERROR_PHONE_SELECT_BITMAP;
++		}
++		listBitMap |= 1 << (phyPort-1);
++		tmpStr = strtok (NULL, ",");
++	}
++	return listBitMap;
++}
++
++bool voiceLinePhyReferenceListCheckObj(struct json_object *multiJobj, objIndex_t lineIid, uint32_t referenceList)
++{
++	struct json_object *oidJobj = NULL;
++	struct json_object *paramJobj = NULL;
++	struct json_object *iidJobj = NULL;
++	struct json_object *lineObj = NULL;
++	uint32_t *multiObjList = NULL;
++	uint32_t *readyList = NULL;
++	uint32_t checkMultiList = 0;
++	uint32_t checkCfgList = 0;
++	uint32_t finalCheckList = 0;
++	uint32_t tmpList = 0;
++	char *value = NULL;
++	char *LineSelect = NULL;
++	char objIndexID[32] = {0};
++	char objID[8] = {0};
++	objIndex_t Iid;
++	int lineNumber = 0;
++	int lineIdx = 0;
++	bool ret = false;
++
++	lineNumber = getSipLineCnt();
++	if(lineNumber == 0){
++		printf("<<Error>>No any SipLine exist, so phone port can't be binded!!\n");
++		return ret;//false
++	}
++	//printf("lineNumber : %d\n",lineNumber);
++
++	readyList = (uint32_t *)malloc(lineNumber*sizeof(uint32_t));
++	if(readyList == NULL){
++		printf("%s(): <<Error>> 'readyList' init: NO enough memory!!\n", __FUNCTION__);
++		return ret;//false
++	}
++	memset(readyList, 0, lineNumber*sizeof(uint32_t));
++
++	multiObjList = (uint32_t *)malloc(lineNumber*sizeof(uint32_t));
++	if(multiObjList == NULL){
++		printf("%s(): <<Error>> 'multiObjList' init: NO enough memory!!\n", __FUNCTION__);
++		free(readyList);
++		return ret;//false
++	}
++	memset(multiObjList, 0, lineNumber*sizeof(uint32_t));
++
++	//Step 1.To parse data model of phone binding.
++	IID_INIT(Iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_VOICE_LINE, &Iid, &lineObj) == ZCFG_SUCCESS) {
++		LineSelect = json_object_get_string(json_object_object_get(lineObj, "PhyReferenceList"));
++		//1.1 Don't check the same index of sip account.
++		lineIdx = Iid.idx[2];
++		if(lineIdx == lineIid.idx[2]){
++			continue;
++		}
++
++		//1.2 List of data model
++		tmpList = parsePhonePortList(LineSelect);
++		//printf("tmpList (lineIdx=%d) : 0x%08X (from the System Config).\n", lineIdx, tmpList);
++		if(tmpList != ERROR_PHONE_SELECT_BITMAP){
++			readyList[lineIdx-1] = tmpList;
++		}else{
++			printf("%s: <<Error>>Parse sip line object parameter 'PhyReferenceList' from the Syetem Config fail!!\n", __FUNCTION__);
++			zcfgFeJsonObjFree(lineObj);
++			free(readyList);
++			free(multiObjList);
++			return ret;//false
++		}
++		zcfgFeJsonObjFree(lineObj);
++	}
++
++	//Step2.To parse multiObj of phone binding
++	sprintf(objID, "%d", RDM_OID_VOICE_LINE);
++	oidJobj = json_object_object_get(multiJobj, objID);
++	if(oidJobj != NULL) {
++		for(lineIdx=1; lineIdx <= lineNumber; lineIdx++){
++			sprintf(objIndexID, "%d.%d.%d.%d.%d.%d.%d", 3, lineIid.idx[0], lineIid.idx[1], lineIdx, 0, 0, 0);
++			//printf("objIndexID : %s\n",objIndexID);
++			iidJobj = json_object_object_get(oidJobj, objIndexID);
++
++			if(iidJobj != NULL){// Multi Object is not empty.
++				//printf("[Multi]Object :\n [%s]\n",json_object_to_json_string(iidJobj));
++				paramJobj = json_object_object_get(iidJobj, "PhyReferenceList");
++				if(paramJobj != NULL){
++					value = json_object_get_string(paramJobj);
++					//printf("[Multi]PhyRefernceList(%d) : %s\n", lineIdx, value?value:"(NULL)");
++
++					tmpList = parsePhonePortList(value);
++					//printf("tmpList (lineIdx=%d) : 0x%08X (from the MultiObject).\n", lineIdx, tmpList);
++					if(tmpList != ERROR_PHONE_SELECT_BITMAP){
++						multiObjList[lineIdx-1] = tmpList;
++						readyList[lineIdx-1] = 0;// Don't check data model.
++					}else{
++						printf("%s: <<Error>>Parse sip line object parameter 'PhyReferenceList' from the MultiObject fail!!\n", __FUNCTION__);
++						free(readyList);
++						free(multiObjList);
++						return ret;//false
++					}
++				}
++			}
++		}
++	}
++
++	//Step3.To check result of phone binding is not duplicated.
++	for(lineIdx=0 ; lineIdx < lineNumber; lineIdx++){
++		checkCfgList |= readyList[lineIdx];
++		finalCheckList |= readyList[lineIdx];
++		checkMultiList |= multiObjList[lineIdx];
++		finalCheckList |= multiObjList[lineIdx];
++	}
++	//printf("out checkCfgList   : 0x%08X.\n",checkCfgList);
++	//printf("out checkMultiList : 0x%08X.\n",checkMultiList);
++	//printf("out finalCheckList : 0x%08X.\n",finalCheckList);
++
++	free(readyList);
++	free(multiObjList);
++
++	if((referenceList&finalCheckList) == 0){
++		ret = true;
++	}else{//phone port is duplicated.
++		ret = false;
++	}
++
++	return ret; //true: No Conflict, false: Confict.
++}
++#endif
++
+ zcfgRet_t voiceLineSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t lineIid;
+ 	char *enable = NULL;
++	uint32_t tmpList = 0;
++	uint32_t maxList = 0;
+ 
+ 	IID_INIT(lineIid);
+ 	lineIid.level = 3;
+@@ -783,64 +981,46 @@
+     }
+ 
+ #if ZYXEL_VOICE_CONFIG_TR069_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST
+-    /*Brady 20151127.To support phone port binding by standard branches of TR104.To avoid bind the same phone port*/
+-    printf("%s(): Check PHY_REFERENCE_LIST..\n",__FUNCTION__);
+-    struct json_object *lineObj = NULL;
+-    char *PhyReferenceList = NULL;
+-    char *LineSelect = NULL;
+-    char List[256]={0};
+-    int phyPort;
+-    char *tmpStr=NULL;
+-    objIndex_t Iid;
+-    uint32_t referenceList = 0;
+-    uint32_t readyList = 0;
+-
+-    PhyReferenceList = json_object_get_string(json_object_object_get(tr98Jobj,"PhyReferenceList"));
+-
+-    strcpy(List,PhyReferenceList);
+-    tmpStr = strtok(List,",");
+-    while (tmpStr != NULL){ //1.To parse list of input
+-        if(true != sscanf(tmpStr,"%d",&phyPort)){
+-            zcfgLog(ZCFG_LOG_ERR, "%s : parse phone port num fail!!\n", __FUNCTION__);
+-            return ZCFG_INTERNAL_ERROR;
+-        }
+-#if ZYPRJ_CUSTOMER_WIND//0-base
+-        phyPort= phyPort+1;
+-#endif
+-        referenceList |=phyPort;
+-        tmpStr = strtok (NULL, ",");
++	/*Brady 20151127.To support phone port binding by standard branches of TR104.To avoid bind the same phone port*/
++	printf("%s(): Check PHY_REFERENCE_LIST..\n",__FUNCTION__);
++	char *PhyReferenceList = NULL;
++	uint32_t referenceList = 0;
++	int FxsPhyInterfaceCnt = 0;
++
++	PhyReferenceList = json_object_get_string(json_object_object_get(tr98Jobj,"PhyReferenceList"));
++	tmpList = parsePhonePortList(PhyReferenceList);
++	if(tmpList != ERROR_PHONE_SELECT_BITMAP){
++		referenceList = tmpList;
++	}else{
++		printf("%s: <<Error>>Parse sip line object parameter 'PhyReferenceList' from the TR069 Input fail!!\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++	//printf("input list : %d (0x%08X)\n", referenceList, referenceList);
++	FxsPhyInterfaceCnt = getFxsPhyInterfaceCnt();
++	//printf("FxsPhyInterfaceCnt : %d\n",FxsPhyInterfaceCnt);
++	if(FxsPhyInterfaceCnt <= 0){
++		printf("<<Error>>No any FxsPhyInterface exist,so sip account can't bind phone port!!\n");
++		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
+-	//2. To parse all of already binding.
+-	IID_INIT(Iid);
+-	while(zcfgFeObjJsonGetNext(RDM_OID_VOICE_LINE, &Iid, &lineObj) == ZCFG_SUCCESS) {
+-	    LineSelect = json_object_get_string(json_object_object_get(lineObj, "PhyReferenceList"));
+-	    //2.1 Don't check the same index of sip account.
+-	    if(Iid.idx[2] == lineIid.idx[2]){
+-	        continue;
+-	    }
+-	    strcpy(List,LineSelect);
+-	    tmpStr = strtok(List,",");
+-	    while (tmpStr != NULL){
+-	        if(true != sscanf(tmpStr,"%d",&phyPort)){
+-	            zcfgLog(ZCFG_LOG_ERR, "%s : parse phone port num fail!!\n", __FUNCTION__);
+-	            return ZCFG_INTERNAL_ERROR;
+-	        }
+-#if ZYPRJ_CUSTOMER_WIND//0-base
+-	        phyPort= phyPort+1;
+-#endif
+-	        readyList |=phyPort;
+-	        tmpStr = strtok (NULL, ",");
+-	    }
+-
+-	    json_object_put(lineObj);
+-	}
+-	//3. If "other" sip bind the same port, reject this request.
+-	if((readyList&referenceList) != 0 && readyList !=0){
+-	    return ZCFG_INTERNAL_ERROR;
++	for(int i=0;i<FxsPhyInterfaceCnt;i++){//maxlist indicate how many phone port exist.
++		maxList |= 1 <<(i);
++	}
++	//printf("maxList : (0x%08X)\n", maxList);
++
++	if(referenceList > maxList){// Input list can't exeed  maxList.
++		printf("<<Error>>'PhyReferenceList'(0x%08X) exceed max value(0x%08X)!!\n", referenceList, maxList);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	/*To check input list is duplicated or not*/
++	if(voiceLinePhyReferenceListCheckObj(multiJobj, lineIid, referenceList) != true){
++		zcfgLog(ZCFG_LOG_ERR, "%s : phone port binding is failed!!\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 	/*Brady end*/
+ #endif
++
+ 	if((ret = setVoiceConfig(RDM_OID_VOICE_LINE, &lineIid, handler, tr98Jobj, multiJobj)) != ZCFG_SUCCESS){
+ 		zcfgLog(ZCFG_LOG_ERR, "%s: fail to set config to tr181 for object RDM_OID_VOICE_LINE with ret=%d", __FUNCTION__, ret);
+ 		return ret;

@@ -1,0 +1,315 @@
+Index: libzcfg_fe_tr98-1.0/mgmtSrv_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/mgmtSrv_parameter.h	2018-12-21 14:02:48.641992683 +0800
++++ libzcfg_fe_tr98-1.0/mgmtSrv_parameter.h	2018-12-21 14:02:48.689992683 +0800
+@@ -51,6 +51,8 @@
+ 	{ "X_ZYXEL_Supplemental_ConnReqPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
+ 	{ "X_ZYXEL_Supplemental_ConnReqPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ #endif
++	{ "X_ZYXEL_ReplyAllObjectsWhileRootQuery", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_RootQueryWouldNotReplyObjects", PARAMETER_ATTR_WRITE, 513, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2018-12-21 14:02:48.613992683 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2018-12-21 14:04:11.877157900 +0800
+@@ -422,6 +422,11 @@
+ {0, NULL}
+ };
+ 
++
++static bool enableRootQuryBlackObjPath = 0;
++static objPathIdx_t *rootQuryBlackObjPathIdx = NULL;
++static int tr98QryRootPath;
++
+ static struct json_object *tr181QueryHandleRoutObj = NULL;
+ 
+ #endif
+@@ -1486,10 +1491,15 @@
+ 	json_object_put(parmList);
+ }
+ 
++
+ zcfgRet_t zcfgFeTr98ObjSpvGet(const char *tr98ObjName, struct json_object **value)
+ {
+-	struct json_object *tr98SpvObj = zcfgFeSessionTr98SpvObjRetrieve();
++	struct json_object *tr98SpvObj = NULL;
++
++	if(zcfgFeTr98QryRootPath() && zcfgObjectPathListPickObjPath(tr98ObjName))
++		return ZCFG_NO_MORE_INSTANCE;
+ 
++	tr98SpvObj = zcfgFeSessionTr98SpvObjRetrieve();
+ 	if(!tr98SpvObj)
+ 		return zcfgFeTr98ObjGet(tr98ObjName, value);
+ 
+@@ -1547,6 +1557,16 @@
+ 	return (multiobj) ? (json_object_object_get(multiobj, "tr98applyonsesscomp") ? true : tr98applyonsesscomp) : tr98applyonsesscomp;
+ }
+ 
++int zcfgFeTr98QryRootPath()
++{
++	return tr98QryRootPath;
++}
++
++void zcfgFeTr98SetQryRootPath(int qryRootPath)
++{
++	tr98QryRootPath = qryRootPath;
++}
++
+ zcfgRet_t zcfgFeAddTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath, struct json_object *obj, struct json_object *spv)
+ {
+ 	struct json_object *arrayObj;
+@@ -3126,6 +3146,175 @@
+ 	return new_Csv;
+ }
+ 
++bool strdigit(char *str)
++{
++	int n;
++	bool strdigit = (str && *str != '\0');
++
++	n = 0;
++	while(*(str+n) != '\0' && strdigit){
++		strdigit = _isdigit(*(str+n));
++		n++;
++	}
++
++	return strdigit;
++}
++
++static bool objectPathToObjPathIdx(char *objectPathName, objPathIdx_t *objPathIdx)
++{
++	char *tmp = NULL;
++	char *token = NULL;
++	int n = 0, len;
++	char objectPath[256+1] = {0};
++
++	if(!objectPathName || !(len = strlen(objectPathName)))
++		return 0;
++
++	if(objectPathName[len-1] == '.')
++		objectPathName[len-1] = '\0';
++
++	token = strtok_r(objectPathName, ".", &tmp);
++	while(token) {
++
++		if(!strcmp(token, "i")){
++			objPathIdx->idx[n++] = -1;
++			strcat(objectPath, "i");
++		}else if(strdigit(token)){
++			objPathIdx->idx[n++] = atoi(token);
++			strcat(objectPath, "i");
++		}else{
++			strcat(objectPath, token);
++		}
++
++		token = strtok_r(NULL, ".", &tmp);
++		if(token) strcat(objectPath, ".");
++	}
++
++	printf("%s: objectPath: %s\n", __FUNCTION__, objectPath);
++	tr98NameObj_t *entry = json_object_object_get(tr98StaticNameTable, (const char *)objectPath);
++
++	objPathIdx->objnum = (entry && IS_SEQNUM_RIGHT((int)entry->nameSeqNum)) ? (int)entry->nameSeqNum : 0;
++	printf("%s: objPathIdx: %u, idx:%d,%d,%d,%d,%d,%d\n", __FUNCTION__, objPathIdx->objnum, objPathIdx->idx[0],
++			objPathIdx->idx[1], objPathIdx->idx[2], objPathIdx->idx[3], objPathIdx->idx[4], objPathIdx->idx[5]);
++	return IS_SEQNUM_RIGHT(objPathIdx->objnum);
++}
++
++void zcfgEnableRootQuryBlackObjPath(int enable)
++{
++
++	enableRootQuryBlackObjPath = enable;
++}
++
++// objectPathList: objpath1,objpath2,objpath3
++// possibilities:
++//    i=='i'/digits
++//   objpath1=obj1.i.obj2.i.obj3
++//   objpath2=obj1.n.obj2.i.obj3
++//   objpath3=obj4.obj5.n.obj6.i
++bool zcfgObjectPathListToStruct(const char *objectPathList, int save)
++{
++	char *objectPathName, *tmp;
++	char *objectPathListSave;
++	int objPathListLen, nObjectPath = 0, n;
++	objPathIdx_t *objPathIdxNew;
++
++	if(!objectPathList || !(objPathListLen = strlen(objectPathList))){
++		printf("%s: clear objectPathList\n", __FUNCTION__);
++		if(rootQuryBlackObjPathIdx){
++			free(rootQuryBlackObjPathIdx);
++			rootQuryBlackObjPathIdx = NULL;
++		}
++		return 0;
++	}
++
++	printf("%s: objectPathList: %s\n", __FUNCTION__, objectPathList);
++	objectPathListSave = malloc(objPathListLen+1);
++	memset(objectPathListSave, 0, objPathListLen+1);
++	strcpy(objectPathListSave, objectPathList);
++
++	objectPathName = strtok_r(objectPathListSave, ",", &tmp);
++	while(objectPathName) {
++		nObjectPath++;
++		objectPathName = strtok_r(NULL, ",", &tmp);
++	}
++
++	objPathIdxNew = malloc(sizeof(objPathIdx_t)*(nObjectPath+1));
++	memset(objPathIdxNew, 0, sizeof(objPathIdx_t)*(nObjectPath+1));
++	strcpy(objectPathListSave, objectPathList);
++	bool objPathIdxOk = 1;
++	objectPathName = strtok_r(objectPathListSave, ",", &tmp);
++	n = 0;
++	while(objectPathName && objPathIdxOk) {
++		objPathIdxOk = objectPathToObjPathIdx(objectPathName, &objPathIdxNew[n++]);
++		objectPathName = strtok_r(NULL, ",", &tmp);
++	}
++
++	if(!objPathIdxOk){
++		free(objPathIdxNew);
++		free(objectPathListSave);
++	}else if(!save){
++		free(objPathIdxNew);
++		free(objectPathListSave);
++		return objPathIdxOk;
++	}else{
++		if(rootQuryBlackObjPathIdx)
++			free(rootQuryBlackObjPathIdx);
++		rootQuryBlackObjPathIdx = objPathIdxNew;
++
++		free(objectPathListSave);
++	}
++
++	return objPathIdxOk;
++}
++
++static bool objPathIdxMatch(objPathIdx_t *objPathIdx, zcfg_name_t objnum, objIndex_t *objIid)
++{
++	int n = 0;
++
++	if(objPathIdx->objnum != objnum)
++		return 0;
++
++	while(n != SUPPORTED_INDEX_LEVEL){
++		if((objPathIdx->idx[n] == 0 && !objIid->idx[n]) ||
++			(objPathIdx->idx[n] == -1 && objIid->idx[n]) ||
++			(objPathIdx->idx[n] == objIid->idx[n]))
++			n++;
++		else
++			return 0;
++	}
++
++	return 1;
++}
++
++bool zcfgObjectPathListPickObjPath(const char *objectPathName)
++{
++	objIndex_t tr98ObjIid;
++	zcfg_name_t seqnum;
++	objPathIdx_t *objPathIdx = NULL;
++	int n = 0;
++
++	if(!enableRootQuryBlackObjPath)
++		return 0;
++
++	IID_INIT(tr98ObjIid);
++	if(zcfgFe98NameToSeqnum(objectPathName, &seqnum, &tr98ObjIid) != ZCFG_SUCCESS)
++		return 0;
++
++	//printf("%s: object: %u, idx:%hhu,%hhu,%hhu,%hhu,%hhu,%hhu\n", __FUNCTION__, seqnum, tr98ObjIid.idx[0],
++	//		tr98ObjIid.idx[1], tr98ObjIid.idx[2], tr98ObjIid.idx[3], tr98ObjIid.idx[4], tr98ObjIid.idx[5]);
++
++	objPathIdx = rootQuryBlackObjPathIdx ? &rootQuryBlackObjPathIdx[n++] : NULL;
++
++	while(objPathIdx->objnum){
++		if(objPathIdxMatch(objPathIdx, seqnum, &tr98ObjIid))
++			return 1;
++		else
++			objPathIdx = &rootQuryBlackObjPathIdx[n++];
++	}
++
++	return 0;
++}
++
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *tr98ObjName, struct json_object **value)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2018-12-21 14:02:48.493992682 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2018-12-21 14:05:29.129157900 +0800
+@@ -225,6 +225,18 @@
+ 
+ #endif
+ 
++
++typedef struct objPathIdx_s {
++	uint32_t objnum;
++	int16_t idx[SUPPORTED_INDEX_LEVEL];
++}objPathIdx_t;
++
++void zcfgEnableRootQuryBlackObjPath(int);
++bool zcfgObjectPathListToStruct(const char *objectPathList, int);
++bool zcfgObjectPathListPickObjPath(const char *objectPathName);
++int zcfgFeTr98QryRootPath();
++void zcfgFeTr98SetQryRootPath(int );
++
+ #define TR98_MAX_OBJ_NAME_LENGTH 257
+ #define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+ 
+Index: libzcfg_fe_tr98-1.0/mgmtSrv.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/mgmtSrv.c	2018-12-21 14:02:46.109992671 +0800
++++ libzcfg_fe_tr98-1.0/mgmtSrv.c	2018-12-21 14:02:48.689992683 +0800
+@@ -89,28 +89,39 @@
+ 	if(multiJobj){
+ 		tmpObj = mgmtSrvObj;
+ 		mgmtSrvObj = NULL;
+-		mgmtSrvObj = zcfgFeJsonMultiObjAppend(RDM_OID_MGMT_SRV, &mgmtSrvIid, multiJobj, tmpObj);	
++		mgmtSrvObj = zcfgFeJsonMultiObjAppend(RDM_OID_MGMT_SRV, &mgmtSrvIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
+ 		zcfgFeJsonMultiObjSetNonDelayApply(multiJobj);
+ 	}
+ 
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-		if(paramValue != NULL) {
+-			tr181ParamValue = json_object_object_get(mgmtSrvObj, paramList->name);
+-			if(tr181ParamValue != NULL) {
+-				json_object_object_add(mgmtSrvObj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				paramList++;
+-				continue;
++		if(paramValue == NULL) {
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "X_ZYXEL_RootQueryWouldNotReplyObjects")){
++			const char *objectPathList = json_object_get_string(paramValue);
++			if(!zcfgObjectPathListToStruct(objectPathList, 0)){
++				if(!multiJobj)
++					json_object_put(mgmtSrvObj);
++				return ZCFG_INVALID_PARAM_VALUE;
+ 			}
+ 		}
+-		paramList++;	
++
++		json_object_object_add(mgmtSrvObj, paramList->name, JSON_OBJ_COPY(paramValue));
++		paramList++;
++		continue;
+ 	} /*Edn while*/
+ 	
+ 	/*Set Device.ManagementServer*/
+ 	if(multiJobj){
+-		json_object_put(tmpObj);
++		//json_object_put(tmpObj);
+ 	}
+ 	else{
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_MGMT_SRV, &mgmtSrvIid, mgmtSrvObj, NULL)) != ZCFG_SUCCESS ) {

@@ -1,0 +1,287 @@
+diff -ruN a/drivers/mtd/spi/Makefile b/drivers/mtd/spi/Makefile
+--- a/drivers/mtd/spi/Makefile	2009-12-16 06:20:54.000000000 +0800
++++ b/drivers/mtd/spi/Makefile	2012-05-16 13:55:05.000000000 +0800
+@@ -33,6 +33,7 @@
+ COBJS-$(CONFIG_SPI_FLASH_STMICRO)	+= stmicro.o
+ COBJS-$(CONFIG_SPI_FLASH_WINBOND)	+= winbond.o
+ COBJS-$(CONFIG_SPI_M95XXX) += eeprom_m95xxx.o
++COBJS-$(CONFIG_SPI_FLASH_RT6855A) += rt6855a_spiflash.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+diff -ruN a/drivers/net/Makefile b/drivers/net/Makefile
+--- a/drivers/net/Makefile	2009-12-16 06:20:54.000000000 +0800
++++ b/drivers/net/Makefile	2012-05-18 10:57:33.000000000 +0800
+@@ -73,6 +73,7 @@
+ COBJS-$(CONFIG_ULI526X) += uli526x.o
+ COBJS-$(CONFIG_VSC7385_ENET) += vsc7385.o
+ COBJS-$(CONFIG_XILINX_EMACLITE) += xilinx_emaclite.o
++COBJS-$(CONFIG_RT2880_ETH) += rt2880_eth.o rt2880_mii.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+diff -ruN a/include/common.h b/include/common.h
+--- a/include/common.h	2009-12-16 06:20:54.000000000 +0800
++++ b/include/common.h	2012-05-20 11:32:13.000000000 +0800
+@@ -719,4 +719,6 @@
+ #define ALIGN(x,a)		__ALIGN_MASK((x),(typeof(x))(a)-1)
+ #define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
+ 
++#define __maybe_unused                  __attribute__((unused))
++
+ #endif	/* __COMMON_H_ */
+diff -ruN a/include/net.h b/include/net.h
+--- a/include/net.h	2009-12-16 06:20:54.000000000 +0800
++++ b/include/net.h	2012-05-18 10:13:28.000000000 +0800
+@@ -381,6 +381,29 @@
+ extern int NetTimeOffset;			/* offset time from UTC		*/
+ #endif
+ 
++#if defined(CONFIG_RT2880_ETH)
++#define NUM_RX_DESC 24
++#define NUM_TX_DESC 24
++typedef struct _BUFFER_ELEM_    BUFFER_ELEM;
++
++struct _BUFFER_ELEM_
++{
++    int tx_idx;
++    unsigned char *pbuf;
++    BUFFER_ELEM   *next;
++
++
++};
++
++typedef struct _VALID_BUFFER_STRUCT_    VALID_BUFFER_STRUCT;
++
++struct _VALID_BUFFER_STRUCT_
++{
++    BUFFER_ELEM    *head;
++    BUFFER_ELEM    *tail;
++};
++#endif
++
+ /* Initialize the network adapter */
+ extern int	NetLoop(proto_t);
+ 
+diff -ruN a/lib_mips/board.c b/lib_mips/board.c
+--- a/lib_mips/board.c	2009-12-16 06:20:54.000000000 +0800
++++ b/lib_mips/board.c	2012-05-21 18:45:26.000000000 +0800
+@@ -78,6 +78,14 @@
+ }
+ int board_early_init_f(void) __attribute__((weak, alias("__board_early_init_f")));
+ 
++int __board_last_init_f(void)
++{
++	/*
++	 * Nothing to do in this dummy implementation
++	 */
++	return 0;
++}
++int board_last_init_f(void) __attribute__((weak, alias("__board_last_init_f")));
+ 
+ static int init_func_ram (void)
+ {
+@@ -159,6 +167,7 @@
+ 	display_banner,		/* say that we are here */
+ 	checkboard,
+ 	init_func_ram,
++    board_last_init_f,  /* must be last */
+ 	NULL,
+ };
+ 
+@@ -268,6 +277,12 @@
+ 	copy_code(addr);
+ #endif
+ 
++#if defined RT6855_FPGA_BOARD || defined RT6352_FPGA_BOARD  || RT71100_FPGA_BOARD 
++	value = le32_to_cpu(*(volatile u_long *)(RALINK_SYSCTL_BASE + 0x0B10));
++	value &= ~(0x7);
++	*(volatile u_long *)(RALINK_SYSCTL_BASE + 0x0B10) = cpu_to_le32(value);	
++#endif
++
+ 	relocate_code (addr_sp, id, addr);
+ 
+ 	/* NOTREACHED - relocate_code() does not return */
+@@ -298,12 +313,22 @@
+ 	gd = id;
+ 	gd->flags |= GD_FLG_RELOC;	/* tell others: relocation done */
+ 
++#if defined(CONFIG_RT2880_SOC)
++{
++    extern void rt2880_freq_calculate(void);
++    rt2880_freq_calculate();
++}
++#endif
++
+ 	debug ("Now running in RAM - U-Boot at: %08lx\n", dest_addr);
+ 
+ 	gd->reloc_off = dest_addr - CONFIG_SYS_MONITOR_BASE;
+ 
+ 	monitor_flash_len = (ulong)&uboot_end_data - dest_addr;
+ 
++	//printf("Now running in RAM - U-Boot at: %08lx\n", dest_addr);
++	//printf("\n &uboot_end_data=%08lx\n",&uboot_end_data);
++	//printf("\n monitor_flash_len =%d gd->reloc_off=%08lx\n",monitor_flash_len, gd->reloc_off);
+ 	/*
+ 	 * We have to relocate the command table manually
+ 	 */
+diff -ruN a/lib_mips/config.mk b/lib_mips/config.mk
+--- a/lib_mips/config.mk	2009-12-16 06:20:54.000000000 +0800
++++ b/lib_mips/config.mk	2012-05-17 19:23:23.000000000 +0800
+@@ -23,7 +23,7 @@
+ 
+ CROSS_COMPILE ?= mips_4KC-
+ 
+-STANDALONE_LOAD_ADDR = 0x80200000 -T mips.lds
++STANDALONE_LOAD_ADDR ?= 0x80200000 -T mips.lds
+ 
+ PLATFORM_CPPFLAGS += -DCONFIG_MIPS -D__MIPS__
+ 
+diff -ruN a/lib_mips/time.c b/lib_mips/time.c
+--- a/lib_mips/time.c	2009-12-16 06:20:54.000000000 +0800
++++ b/lib_mips/time.c	2012-05-19 23:06:18.000000000 +0800
+@@ -24,6 +24,10 @@
+ #include <common.h>
+ #include <asm/mipsregs.h>
+ 
++#ifdef CONFIG_RT2880_SOC
++extern unsigned long mips_cpu_feq;
++#endif
++
+ static unsigned long timestamp;
+ 
+ /* how many counter cycles in a jiffy */
+diff -ruN a/net/net.c b/net/net.c
+--- a/net/net.c	2009-12-16 06:20:54.000000000 +0800
++++ b/net/net.c	2012-05-20 00:27:22.000000000 +0800
+@@ -96,6 +96,7 @@
+ #include "dns.h"
+ #endif
+ 
++
+ #if defined(CONFIG_CMD_NET)
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+@@ -185,7 +186,16 @@
+ int nc_input_packet(uchar *pkt, unsigned dest, unsigned src, unsigned len);
+ #endif
+ 
++#if defined(CONFIG_RT2880_ETH)
++#include <asm/addrspace.h>
++extern VALID_BUFFER_STRUCT  rt2880_free_buf_list;
++extern BUFFER_ELEM *rt2880_free_buf_entry_dequeue(VALID_BUFFER_STRUCT *hdr);
++
++volatile uchar  *PktBuf;
++volatile uchar  Pkt_Buf_Pool[(PKTBUFSRX+2) * PKTSIZE_ALIGN + PKTALIGN];
++#else
+ volatile uchar	PktBuf[(PKTBUFSRX+1) * PKTSIZE_ALIGN + PKTALIGN];
++#endif
+ 
+ volatile uchar *NetRxPackets[PKTBUFSRX]; /* Receive packets			*/
+ 
+@@ -321,9 +331,33 @@
+ 	NetArpWaitPacketIP = 0;
+ 	NetArpWaitReplyIP = 0;
+ 	NetArpWaitTxPacket = NULL;
+-	NetTxPacket = NULL;
+ 	NetTryCount = 1;
+ 
++#if defined(CONFIG_RT2880_ETH)
++	if (!NetTxPacket) {
++		int     i;
++		BUFFER_ELEM *buf;
++		/*
++		 *      Setup packet buffers, aligned correctly.
++		*/
++		buf = rt2880_free_buf_entry_dequeue(&rt2880_free_buf_list);
++		NetTxPacket = buf->pbuf;
++		debug("\n NetTxPacket = 0x%08X \n",NetTxPacket);
++		for (i = 0; i < NUM_RX_DESC; i++) {
++			buf = rt2880_free_buf_entry_dequeue(&rt2880_free_buf_list);
++			if(buf == NULL) {
++				printf("\n Packet Buffer is empty ! \n");
++				return (-1);
++			}
++			NetRxPackets[i] = buf->pbuf;
++			//printf("\n NetRxPackets[%d] = 0x%08X\n",i,NetRxPackets[i]);
++		}
++	}
++
++	NetTxPacket = KSEG1ADDR(NetTxPacket);
++	debug("\n KSEG1ADDR(NetTxPacket) = 0x%08X \n",NetTxPacket);
++#else
++	NetTxPacket = NULL;
+ 	if (!NetTxPacket) {
+ 		int	i;
+ 		/*
+@@ -335,6 +369,7 @@
+ 			NetRxPackets[i] = NetTxPacket + (i+1)*PKTSIZE_ALIGN;
+ 		}
+ 	}
++#endif
+ 
+ 	if (!NetArpWaitTxPacket) {
+ 		NetArpWaitTxPacket = &NetArpWaitPacketBuf[0] + (PKTALIGN - 1);
+@@ -1485,6 +1520,15 @@
+ 				NetArpWaitTxPacketSize = 0;
+ 				NetArpWaitPacketMAC = NULL;
+ 
++#if defined(CONFIG_RT2880_ETH)
++				/* if Arp response requested by TFTP,
++				 * send "TFTP Read Request" packet 
++				 * immediately */
++				extern int TftpStarted;
++				if(TftpStarted == 1) {
++				    TftpSend ();
++				}
++#endif
+ 			}
+ 			return;
+ 		default:
+diff -ruN a/net/tftp.c b/net/tftp.c
+--- a/net/tftp.c	2009-12-16 06:20:54.000000000 +0800
++++ b/net/tftp.c	2012-05-20 00:14:43.000000000 +0800
+@@ -32,6 +32,8 @@
+ #define TFTP_ERROR	5
+ #define TFTP_OACK	6
+ 
++int		TftpStarted;		/* To know ARP reply requested by TFTP  */
++
+ static ulong TftpTimeoutMSecs = TIMEOUT;
+ static int TftpTimeoutCountMax = TIMEOUT_COUNT;
+ 
+@@ -164,12 +166,12 @@
+ 		NetBootFileXferSize = newsize;
+ }
+ 
+-static void TftpSend (void);
++void TftpSend (void);
+ static void TftpTimeout (void);
+ 
+ /**********************************************************************/
+ 
+-static void
++void
+ TftpSend (void)
+ {
+ 	volatile uchar *	pkt;
+@@ -504,6 +506,8 @@
+ {
+ 	char *ep;             /* Environment pointer */
+ 
++	TftpStarted=1;
++
+ 	/* Allow the user to choose tftpblocksize */
+ 	if ((ep = getenv("tftpblocksize")) != NULL)
+ 		TftpBlkSizeOption = simple_strtol(ep, NULL, 10);
+diff -ruN a/net/tftp.h b/net/tftp.h
+--- a/net/tftp.h	2009-12-16 06:20:54.000000000 +0800
++++ b/net/tftp.h	2012-05-20 11:14:01.000000000 +0800
+@@ -15,6 +15,7 @@
+ 
+ /* tftp.c */
+ extern void	TftpStart (void);	/* Begin TFTP get */
++extern void TftpSend (void);
+ 
+ /**********************************************************************/
+ 

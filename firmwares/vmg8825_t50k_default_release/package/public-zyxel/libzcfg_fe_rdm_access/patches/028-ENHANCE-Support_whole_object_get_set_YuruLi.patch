@@ -1,0 +1,140 @@
+Index: libzcfg_fe_rdm_access-1.0/zcfg_fe_rdm_access.c
+===================================================================
+--- libzcfg_fe_rdm_access-1.0.orig/zcfg_fe_rdm_access.c	2016-11-09 10:51:44.473599473 +0800
++++ libzcfg_fe_rdm_access-1.0/zcfg_fe_rdm_access.c	2016-11-09 11:06:47.285616791 +0800
+@@ -252,6 +252,122 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeWholeObjReadByName(char *tr181path, uint32_t type, char **result)
++{
++	zcfgRet_t ret;
++	char *recvStr = NULL;
++	void *recvBuf = NULL;
++	void *sendBuf = NULL;
++	int len = 0;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;
++
++	if(myEid == -1) {
++		zcfgLog(ZCFG_LOG_ERR, "Invalid eid\n");
++		return ZCFG_INVALID_EID;
++	}
++
++	if(schemaShmAddr == NULL)
++		zcfgFeSharedMemInit();
++
++	if(tr181path == NULL || strlen(tr181path)<=0)
++		return ZCFG_REQUEST_REJECT;
++	
++	len = strlen(tr181path) + 1;
++	sendBuf = (void *)malloc(sizeof(zcfgMsg_t) + len);
++	sendMsgHdr = (zcfgMsg_t *)sendBuf;
++	sendMsgHdr->length = len;
++	sendMsgHdr->type = type;
++	sendMsgHdr->srcEid = myEid;
++	sendMsgHdr->dstEid = ZCFG_EID_ZCMD;
++	strcpy((char *)(sendMsgHdr + 1), tr181path);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recvMsgHdr = (zcfgMsg_t*)recvBuf;
++
++		if(recvMsgHdr->type == RESPONSE_GET_FAIL) {
++			ret = recvMsgHdr->statCode;
++		}
++		else {
++			/*Get json string from message*/
++			recvStr = (char *)(recvBuf+sizeof(zcfgMsg_t));
++
++			*result = (char *)malloc(strlen(recvStr)+1);
++			strcpy(*result, recvStr);
++
++			if(recvMsgHdr->type == RESPONSE_GET_SUCCESS)
++				ret = ZCFG_SUCCESS;
++			else{
++				free(*result);
++				*result = NULL;
++				ret = ZCFG_EMPTY_OBJECT;
++			}
++		}
++	}
++
++	free(recvBuf);
++	return ret;	
++}
++
++zcfgRet_t zcfgFeWholeObjWriteByName(char *tr181path, char *setValue, uint32_t type, char *feedbackMsg)
++{
++	zcfgRet_t ret;
++	int len = 0;
++	char *recvStr = NULL;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;	
++
++	if(myEid == -1) {
++		zcfgLog(ZCFG_LOG_ERR, "Invalid eid\n");
++		return ZCFG_INVALID_EID;
++	}
++
++	if(schemaShmAddr == NULL)
++		zcfgFeSharedMemInit();
++
++	if(setValue == NULL || tr181path == NULL || strlen(tr181path)<=0 || strlen(setValue)<=0)
++		return ZCFG_REQUEST_REJECT;
++
++	len = strlen(tr181path) + strlen(setValue) + 2;
++
++	sendBuf = (void *)malloc(sizeof(zcfgMsg_t) + len);
++	sendMsgHdr = (zcfgMsg_t *)sendBuf;
++	sendMsgHdr->type = type;
++	sendMsgHdr->length = len;
++	sendMsgHdr->srcEid = myEid;
++	sendMsgHdr->dstEid = ZCFG_EID_ZCMD;
++	sprintf((char *)(sendMsgHdr + 1), "%s,%s", tr181path, setValue);
++
++	ret = zcfgMsgSendAndGetReply(sendBuf, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recvMsgHdr = (zcfgMsg_t*)recvBuf;
++
++		if(recvMsgHdr->type == RESPONSE_WRITE_OBJ_SUCCESS) {
++			ret = recvMsgHdr->statCode;
++			//ret = ZCFG_SUCCESS;
++		}
++		else {
++			/*Check if there is a feedback error message*/
++			if( recvMsgHdr->length > 0 ) {
++				recvStr = (char *)(recvBuf+sizeof(zcfgMsg_t));
++				if(feedbackMsg != NULL) {
++					strcpy(feedbackMsg, recvStr);
++				}
++			}
++			ret = recvMsgHdr->statCode;
++		}
++	}
++
++	free(recvBuf);
++	return ret;
++}
++
++
+ zcfgRet_t zcfgFeReqSend(uint32_t msgType, char *payload)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+Index: libzcfg_fe_rdm_access-1.0/zcfg_fe_rdm_access.h
+===================================================================
+--- libzcfg_fe_rdm_access-1.0.orig/zcfg_fe_rdm_access.h	2016-11-09 10:51:44.457599472 +0800
++++ libzcfg_fe_rdm_access-1.0/zcfg_fe_rdm_access.h	2016-11-09 11:07:54.129944758 +0800
+@@ -8,6 +8,8 @@
+ zcfgRet_t zcfgFeSharedMemInit();
+ zcfgRet_t zcfgFeObjRead(zcfg_offset_t, objIndex_t *, uint32_t, char **);
+ zcfgRet_t zcfgFeObjWrite(zcfg_offset_t, objIndex_t *, char *, uint32_t, char *);
++zcfgRet_t zcfgFeWholeObjReadByName(char *tr181path, uint32_t type, char **result);
++zcfgRet_t zcfgFeWholeObjWriteByName(char *tr181path, char *setValue, uint32_t type, char *feedbackMsg);
+ 
+ zcfgRet_t zcfgFeReqSend(uint32_t, char *);
+ 

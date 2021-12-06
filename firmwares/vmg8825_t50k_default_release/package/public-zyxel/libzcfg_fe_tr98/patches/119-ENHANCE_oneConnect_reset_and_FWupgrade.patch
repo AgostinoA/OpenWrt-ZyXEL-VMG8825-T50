@@ -1,0 +1,219 @@
+Index: libzcfg_fe_tr98-1.0/oneConnect.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/oneConnect.c	2015-05-14 14:53:32.079324642 +0800
++++ libzcfg_fe_tr98-1.0/oneConnect.c	2015-05-14 15:00:57.215809366 +0800
+@@ -19,6 +19,11 @@
+ #define DATABASE_PATH    "/tmp/netprobe.db"
+ #define BROADCASTMAC     "00:00:00:00:00:00"
+ 
++#define FWCHECK			(1 << 0)
++#define FW_UPGRADE		(1 << 1)
++#define FW_DOWNLOAD		(1 << 2)
++
++
+ int tr_db_init()
+ {
+     int rc = 0;
+@@ -112,6 +117,9 @@
+ 	char cmd[256] = {0}; 
+ 	char alMac[65] = {0}; 
+ 	bool broadcast = false;
++	unsigned int actOption = 0;
++	char fwUrl[256] = {0};
++	int urlOption = 0;
+ 	
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
+ 	
+@@ -154,6 +162,11 @@
+ 	else
+ 		return ZCFG_NOT_FOUND;
+ 	
++	if(strcmp(macAddress, "") == 0){ 
++		printf("Can't find information in config\n");
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++	
+ 	// open database
+ 	if(tr_db_init() != 0){
+ 		fprintf( stderr , "can't init database\n");
+@@ -169,11 +182,11 @@
+ 					broadcast = true;
+ 				}
+ 			}
+-			/*else if(strcmp(paramList->name, "L2DevCtrl_WiFiEnable") == 0){
++			else if(strcmp(paramList->name, "L2DevCtrl_WiFiEnable") == 0){
+ 				if(json_object_get_boolean(paramValue) == true) {
+ 					// To Do
+ 				}
+-			}*/
++			}
+ 			else if(strcmp(paramList->name, "L2DevCtrl_Reboot") == 0){
+ 				if(json_object_get_boolean(paramValue) == true) {
+ 					if(broadcast){
+@@ -182,28 +195,96 @@
+ 						printf("zy1905 cmd = %s\n", cmd);
+ 					}
+ 					else{
+-						if(tr_db_is_subIntf(macAddress, alMac) != 0){
++						if(tr_db_is_subIntf(macAddress, alMac) != 0){ 
+ 							fprintf( stderr , "can't find ALMac\n");
+ 							return ZCFG_INTERNAL_ERROR;
+ 						}
+ 						
+-						if(strcmp(alMac, "") != 0)
++						if(strcmp(alMac, "") != 0){
+ 							sprintf(cmd, "/usr/sbin/zy1905App 2 %s", alMac);
+-						else
+-							sprintf(cmd, "/usr/sbin/zy1905App 2 %s", macAddress);
+-						system(cmd);
++							system(cmd);
++						}
+ 						printf("zy1905 cmd = %s\n", cmd);
+ 					}
+ 				}
+ 			}
+ 			else if(strcmp(paramList->name, "L2DevCtrl_Reset") == 0){
+ 				if(json_object_get_boolean(paramValue) == true) {
+-					printf("Reset to default\n");
++					if(broadcast){
++						sprintf(cmd, "/usr/sbin/zy1905App 10 %s", BROADCASTMAC);
++						system(cmd);
++						printf("zy1905 cmd = %s\n", cmd);
++					}
++					else{
++						if(tr_db_is_subIntf(macAddress, alMac) != 0){
++							fprintf( stderr , "can't find ALMac\n");
++							return ZCFG_INTERNAL_ERROR;
++						}
++						
++						if(strcmp(alMac, "") != 0){
++							sprintf(cmd, "/usr/sbin/zy1905App 10 %s", alMac);
++							system(cmd);
++						}
++						printf("zy1905 cmd = %s\n", cmd);
++					}
++				}
++			}
++			else if(strcmp(paramList->name, "L2DevCtrl_FWCheck") == 0){ 
++				if(json_object_get_boolean(paramValue) == true)
++					actOption |= FWCHECK;
++			}
++			else if(strcmp(paramList->name, "L2DevCtrl_FWDownload") == 0){ 
++				if(json_object_get_boolean(paramValue) == true)
++					actOption |= FW_DOWNLOAD;
++			}
++			else if(strcmp(paramList->name, "L2DevCtrl_FWUpgrade") == 0){
++				if(json_object_get_boolean(paramValue) == true)
++					actOption |= FW_UPGRADE;
++			}
++			else if(strcmp(paramList->name, "FWUpgrade_URL") == 0){ 
++				strcpy(fwUrl, json_object_get_string(paramValue));
++				if(strcmp(fwUrl, "") == 0){
++					strcpy(fwUrl, "NULL");
++					urlOption = 0;
++				}
++				else{
++					if(strncmp(fwUrl, "ftp", strlen("ftp")) == 0)
++						urlOption = 1;
++					else if(strncmp(fwUrl, "https", strlen("https")) == 0)
++						urlOption = 3;
++					else if(strncmp(fwUrl, "http", strlen("http")) == 0)
++						urlOption = 2;
++					else{ // if protocol is not supported, set url to NULL
++						strcpy(fwUrl, "NULL");
++						urlOption = 0;
++					}
+ 				}
+ 			}
+ 		}
+ 		paramList++;
+ 	}
++
++// Firmware Control Start-------------------------	
++	if(actOption != 0) {	
++		if(broadcast){
++			sprintf(cmd, "/usr/sbin/zy1905App 9 %s %d %d %s", BROADCASTMAC, actOption, urlOption, fwUrl);
++			system(cmd);
++			printf("zy1905 cmd = %s\n", cmd);
++		}
++		else{
++			if(tr_db_is_subIntf(macAddress, alMac) != 0){
++				fprintf( stderr , "can't find ALMac\n");
++				return ZCFG_INTERNAL_ERROR;
++			}
++			
++			if(strcmp(alMac, "") != 0){
++				sprintf(cmd, "/usr/sbin/zy1905App 9 %s %d %d %s", alMac, actOption, urlOption, fwUrl);
++				system(cmd);
++			}
++			printf("zy1905 cmd = %s\n", cmd);
++		}
++	}	
++// Firmware Control End-------------------------	
+ 	
+ 	if(db != NULL)
+ 		tr_db_close();
+@@ -247,7 +328,27 @@
+ 			paramList++;
+ 			continue;
+ 		}
+-		else if(!strcmp(paramList->name, "ModelName")) {
++		else if(!strcmp(paramList->name, "L2DevCtrl_FWCheck")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_FWDownload")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_FWUpgrade")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "FWUpgrade_URL")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			paramList++;
++			continue;
++		}
++		/*else if(!strcmp(paramList->name, "ModelName")) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
+ 			paramList++;
+ 			continue;
+@@ -261,7 +362,7 @@
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
+ 			paramList++;
+ 			continue;
+-		}
++		}*/
+ 		
+ 	//Not defined in tr181, give it a default value
+ #if TR98_MAPPING_DEBUG
+@@ -272,4 +373,3 @@
+ 	
+ 	return ZCFG_SUCCESS;
+ }
+-
+Index: libzcfg_fe_tr98-1.0/oneConnect_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/oneConnect_parameter.h	2015-05-14 14:53:32.079324642 +0800
++++ libzcfg_fe_tr98-1.0/oneConnect_parameter.h	2015-05-14 15:01:02.057367514 +0800
+@@ -5,9 +5,13 @@
+ 	{ "L2DevCtrl_WiFiEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_Reboot", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_Reset", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "ModelName", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "L2DevCtrl_FWCheck", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_FWDownload", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_FWUpgrade", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "FWUpgrade_URL", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	/*{ "ModelName", PARAMETER_ATTR_READONLY, 256, json_type_string},
+ 	{ "FWUpgradeState", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "NewFWUpgradeVersion", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "NewFWUpgradeVersion", PARAMETER_ATTR_READONLY, 256, json_type_string},*/
+ 	{ NULL, 0, 0, 0}
+ };
+ #endif
+\ No newline at end of file

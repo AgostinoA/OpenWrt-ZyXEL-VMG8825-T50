@@ -1,0 +1,92 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-08-05 21:09:37.796766826 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-08-05 21:10:51.684700100 +0800
+@@ -237,6 +237,7 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#define ADSL_DSL_CHANNEL_INST_NUM  1
+ zcfgRet_t WANDslDiagObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -244,11 +245,10 @@
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char *ptr = NULL;
+ 	objIndex_t objIid;
+-	struct json_object *DslDiagObj = NULL;
++	struct json_object *DslDiagObj = NULL, *dslChannelObj = NULL;
+ 	struct json_object *tr98ParamObj = NULL;
+ 	struct json_object *tmpObj = NULL;
+-	char *tr98ParamStr = NULL;
+-	char *tr181ParamStr = NULL;
++	const char *tr98ParamStr, *tr181ParamStr = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 	if(!strstr(tr98FullPathName, ".WANDevice")) return ZCFG_NO_SUCH_OBJECT;
+@@ -263,8 +263,8 @@
+ 		return ret;
+ 	}
+ 	printf("%s: tr181 %s\n", __FUNCTION__, tr181Obj);
+-	if(!strstr(tr181Obj, "DSL.Channel")) return ZCFG_NO_SUCH_OBJECT;
+-		
++	if(!strstr(tr181Obj, "DSL.Channel"))
++		return ZCFG_NO_SUCH_OBJECT;
+ 	
+ 	if(!(tr98ParamObj = json_object_object_get(tr98Jobj, "LoopDiagnosticsState"))) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : retrieve tr98 LoopDiagnosticsState Fail\n", __FUNCTION__);
+@@ -272,10 +272,33 @@
+ 	}
+ 
+ 	tr98ParamStr = json_object_get_string(tr98ParamObj);
+-	if(!strstr(tr98ParamStr, "Requested")) return ZCFG_INVALID_PARAM_VALUE;
++	if(!strstr(tr98ParamStr, "Requested"))
++		return ZCFG_INVALID_PARAM_VALUE;
++
++	IID_INIT(objIid);
++	sscanf(tr181Obj, "DSL.Channel.%hhu", &objIid.idx[0]);
++	if(!objIid.idx[0] || objIid.idx[0] > 2)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	if(objIid.idx[0] != ADSL_DSL_CHANNEL_INST_NUM) {
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++
++	objIid.level = 1;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DSL_CHANNEL, &objIid, &dslChannelObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s : retrieve DSL Channel object Fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	tr181ParamStr = json_object_get_string(json_object_object_get(dslChannelObj, "Status"));
++	if(!tr181ParamStr || (tr181ParamStr && strcmp(tr181ParamStr, "Up"))) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: DSL Channel status not active!\n", __FUNCTION__);
++		json_object_put(dslChannelObj);
++		return ZCFG_REQUEST_REJECT;
++	}
++	json_object_put(dslChannelObj);
+ 
+ 	IID_INIT(objIid);
+-	objIid.idx[0] = 1;
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, &DslDiagObj)) != ZCFG_SUCCESS){
+ 		//zcfgLog(ZCFG_LOG_ERR, "%s : retrieve ADSLLineTest object Fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+@@ -284,7 +307,7 @@
+ 	tr181ParamStr = json_object_get_string(json_object_object_get(DslDiagObj, "DiagnosticsState"));
+ 	if((!tr181ParamStr) || strstr(tr181ParamStr, "Requested")) {
+ 		zcfgLog(ZCFG_LOG_DEBUG, "%s : DSL.Diagnostics is on processing\n", __FUNCTION__);
+-		zcfgFeJsonObjFree(DslDiagObj);
++		json_object_put(DslDiagObj);
+ 		return ZCFG_REQUEST_REJECT;
+ 	}
+ 	json_object_object_add(DslDiagObj, "DiagnosticsState", json_object_new_string("Requested"));
+@@ -303,7 +326,8 @@
+ 		else {
+ 			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set DSL.Diagnostics Success\n", __FUNCTION__);
+ 		}
+-		zcfgFeJsonObjFree(DslDiagObj);
++
++		json_object_put(DslDiagObj);
+ 	}
+ 
+ 	return ret;

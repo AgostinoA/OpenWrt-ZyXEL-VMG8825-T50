@@ -1,0 +1,139 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2016-10-07 16:53:59.967323515 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2016-10-07 16:54:00.095323517 +0800
+@@ -320,6 +320,7 @@
+ 	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0}, tr181ObjName[MAX_TR181_PATHNAME] = {0};
+ 	char higherLayer[MAX_IFACE_LENGTH] = {0};
+ 	bool wrongParamValue = false;
++	char srcIpAddr[MAX_IP4STR_SIZE] = {0}, srcNetMask[MAX_IP4STR_SIZE] = {0};
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -343,15 +344,25 @@
+ 		json_object_put(tmpObj);
+ 	}
+ 
++	const char *paramstr = json_object_get_string(json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceIpAddress"));
++	if(paramstr && strlen(paramstr)) strncpy(srcIpAddr, paramstr, sizeof(srcIpAddr)-1);
++	paramstr = json_object_get_string(json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceSubnetMask"));
++	if(paramstr && strlen(paramstr)) strncpy(srcNetMask, paramstr, sizeof(srcNetMask)-1);
++
++
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/		
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(!paramValue) {
++			paramList++;
++			continue;
++		}
++
+ 		if(!strcmp(paramList->name, "Interface")) {
+-			paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-			if(paramValue != NULL)
+-				strncpy(tr98ConnObjName, json_object_get_string(paramValue), sizeof(tr98ConnObjName));
++			strncpy(tr98ConnObjName, json_object_get_string(paramValue), sizeof(tr98ConnObjName));
+ 			if(strlen(tr98ConnObjName) > 0) {
+-				if(!strstr(tr98ConnObjName, "IPConnection") && !strstr(tr98ConnObjName, "PPPConnection")) {
++				if(!strstr(tr98ConnObjName, "IPConnection") && !strstr(tr98ConnObjName, "PPPConnection") && !strstr(tr98ConnObjName, "IPInterface")) {
+ 					wrongParamValue = true;
+ 					break;
+ 				}
+@@ -363,7 +374,7 @@
+ 				else {
+ 					if(strstr(iface, "PPP.Interface") != NULL) {
+ 						zcfgFeTr181IfaceStackHigherLayerGet(iface, higherLayer);
+-						strncpy(iface, higherLayer, sizeof(iface));
++						strncpy(iface, higherLayer, sizeof(iface)-1);
+ 					}
+ 					
+ 					json_object_object_add(ipv4FwdObj, paramList->name, json_object_new_string(iface));
+@@ -372,32 +383,30 @@
+ 			paramList++;
+ 			continue;
+ 		}
+-		else if(!strcmp(paramList->name, "SourceIPAddress"))
+-			paramValue = json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceIpAddress");
+-		else if(!strcmp(paramList->name, "SourceSubnetMask"))
+-			paramValue = json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceSubnetMask");
+-		else 
+-		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 
+-		if(paramValue != NULL) {
+-			if(!strcmp(paramList->name, "GatewayIPAddress") || !strcmp(paramList->name, "DestIPAddress") ||
+-				!strcmp(paramList->name, "SourceIPAddress")) {
+-				const char *ipAddress = (const char *)json_object_get_string(paramValue);
+-				if(ipAddress && (strlen(ipAddress) > 0) && (inet_addr((const char *)ipAddress) < 0)) {
+-					wrongParamValue = true;
+-					break;
+-				}
+-			}
+-
+-			tr181ParamValue = json_object_object_get(ipv4FwdObj, paramList->name);
+-			if(tr181ParamValue != NULL) {
+-				json_object_object_add(ipv4FwdObj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				paramList++;
+-				continue;
++		if(!strcmp(paramList->name, "GatewayIPAddress") || !strcmp(paramList->name, "DestIPAddress") ||
++			!strcmp(paramList->name, "SourceIPAddress")) {
++			const char *ipAddress = (const char *)json_object_get_string(paramValue);
++			if(ipAddress && (strlen(ipAddress) > 0) && (inet_addr((const char *)ipAddress) < 0)) {
++				wrongParamValue = true;
++				break;
+ 			}
+ 		}
+ 
+-		printf("Can't find parameter %s in TR181\n", paramList->name);
++		if(!strcmp(paramList->name, "SourceIPAddress") || !strcmp(paramList->name, "X_ZYXEL_SourceIpAddress")){
++			paramstr = json_object_get_string(paramValue);
++			if(paramstr && strlen(paramstr) && strcmp(paramstr, srcIpAddr))
++				json_object_object_add(ipv4FwdObj, "X_ZYXEL_SourceIpAddress", JSON_OBJ_COPY(paramValue));
++		}
++		else if(!strcmp(paramList->name, "SourceSubnetMask") || !strcmp(paramList->name, "X_ZYXEL_SourceSubnetMask")){
++			paramstr = json_object_get_string(paramValue);
++			if(paramstr && strlen(paramstr) && strcmp(paramstr, srcNetMask))
++				json_object_object_add(ipv4FwdObj, "X_ZYXEL_SourceSubnetMask", JSON_OBJ_COPY(paramValue));
++		}
++		else if(json_object_object_get(ipv4FwdObj, paramList->name)){
++				json_object_object_add(ipv4FwdObj, paramList->name, JSON_OBJ_COPY(paramValue));
++		}else
++			printf("Can't find parameter %s in TR181\n", paramList->name);
+ 
+ 		paramList++;	
+ 	}
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2016-10-07 16:53:59.831323512 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2016-10-07 16:54:00.095323517 +0800
+@@ -21,6 +21,8 @@
+ #define TR98_GET_WITHOUT_UPDATE 1
+ #define NAME_SIZE 256
+ 
++#define MAX_IP4STR_SIZE 16
++
+ #ifndef TR069ERR_E
+ #define TR069ERR_E
+ // need to sync to libzcfg_fe_tr98/zcfg_fe_tr98.h
+Index: libzcfg_fe_tr98-1.0/l3fwd_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd_parameter.h	2016-10-07 16:53:59.967323515 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd_parameter.h	2016-10-07 16:44:29.353699000 +0800
+@@ -12,12 +12,12 @@
+ 	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
+ 	{ "StaticRoute", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
+ 	{ "Type", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DEFAULTATTR|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 9, json_type_string}, //
+-	{ "DestIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
+-	{ "DestSubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},
+-	{ "SourceIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
+-	{ "SourceSubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "DestIPAddress", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "DestSubnetMask", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "SourceIPAddress", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "SourceSubnetMask", PARAMETER_ATTR_WRITE, 16, json_type_string},
+ 	{ "ForwardingPolicy", PARAMETER_ATTR_WRITE, 0, json_type_int},
+-	{ "GatewayIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "GatewayIPAddress", PARAMETER_ATTR_WRITE, 16, json_type_string},
+ 	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
+ 	{ "ForwardingMetric", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "MTU", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DEFAULTATTR|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32}, //

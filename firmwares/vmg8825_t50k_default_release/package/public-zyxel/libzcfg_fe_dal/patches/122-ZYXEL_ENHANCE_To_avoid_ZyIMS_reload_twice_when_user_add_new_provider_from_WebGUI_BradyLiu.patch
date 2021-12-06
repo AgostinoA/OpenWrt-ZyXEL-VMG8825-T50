@@ -1,0 +1,189 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-02-07 17:15:11.481979135 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-02-07 17:18:27.174104800 +0800
+@@ -4,6 +4,10 @@
+ LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct -lzcfg_fe_schema
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+ 
++ifeq ($(CONFIG_PACKAGE_ZyIMS),y)
++INC_PATH += -I$(STAGING_DIR)/usr/include/voice/iptk_ext_if
++endif
++
+ FE_PATH = ./
+ NETWORK_BR_PATH = ./network/broadband
+ NETWORK_DNS_PATH = ./network/dns
+@@ -48,11 +52,13 @@
+ SOURCES += $(wildcard $(MAINTENANCE_DIAGNOSTIC_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_USER_ACCOUNT_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE)/*.c)
++ifeq ($(CONFIG_PACKAGE_ZyIMS),y)
+ SOURCES += $(wildcard $(VOIP_SIP_PATH)/*.c)
+ SOURCES += $(wildcard $(VOIP_SIP_PHONE_PATH)/*.c)
++SOURCES += $(wildcard $(VOIP_SIP_CALLRULE_PATH)/*.c)
++endif
+ SOURCES += $(wildcard $(MAINTENANCE_EMAIL_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_LOG_PATH)/*.c)
+-SOURCES += $(wildcard $(VOIP_SIP_CALLRULE_PATH)/*.c)
+ SOURCES += $(wildcard $(SECURITY_FIREWALL_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_WIRELESS_PATH)/*.c)
+ SOURCES += $(wildcard $(SECURITY_MACFILTER_PATH)/*.c)
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_provider.c	2017-02-07 17:15:11.481979135 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c	2017-02-07 17:17:22.119604800 +0800
+@@ -11,6 +11,7 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_webgui_flag.h"
++#include "switch.h"
+ 
+ dal_param_t VOIP_PROFILE_param[]={
+ 	{"ProfName",								dalType_string,	0,	0,	NULL},
+@@ -254,6 +255,24 @@
+ 	return;
+ }
+ 
++bool checkMaxProfileNum(){
++	unsigned int profNum = 0;
++	objIndex_t getProfIid;
++	struct json_object* targetobj = NULL;
++
++	IID_INIT(getProfIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_PROF, &getProfIid, &targetobj) == ZCFG_SUCCESS) {
++		profNum++;
++		zcfgFeJsonObjFree(targetobj);
++	}
++
++	if(profNum >= ZYXEL_SIP_PROFILE_NUM_MAX){
++		printf("%s():<WARRNING>Max Profile number(%d) Currect Profile number(%d) - User can't add more profile.\n", __FUNCTION__, ZYXEL_SIP_PROFILE_NUM_MAX, profNum);
++		return false;
++	}
++
++	return true;
++}
+ 
+ void zcfgFeDalProfObjEditIidGet(struct json_object *Jobj){
+ 	//const char* tmpprofName = NULL;
+@@ -666,9 +685,12 @@
+ 
+ zcfgRet_t zcfgFeDalVoipProfileAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	char path[16] = {0};
+ 	//printf("%s(): Enter.. \n ",__FUNCTION__);
+ 	//printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-
++	if(checkMaxProfileNum() == false){
++		return ZCFG_INTERNAL_ERROR;
++	}
+ 	initProfGlobalObjects();
+ 	zcfgFeDalCustomflagGet();
+ 	getProfBasicInfo(Jobj);
+@@ -715,10 +737,9 @@
+ 		}
+ 	}
+ 
+-	if((ret = zcfgFeMultiObjJsonBlockedSet(multiJobj, NULL)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to set MultiObj %d\n", __FUNCTION__, RDM_OID_VOICE_PROF);
+-		goto exit;
+-	}
++	sprintf(path,"VoiceProfile.%d",profIid.idx[1]);
++	json_object_object_add(Jobj, "AddPath", json_object_new_string(path));
++	ret = zcfgFeDalVoipLineAdd(Jobj, multiJobj, NULL);
+ 
+ exit:
+ 	freeAllProfObjects();
+@@ -1017,13 +1038,7 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "POST")) {
+-		char buf[16] = {0};
+ 		ret = zcfgFeDalVoipProfileAdd(Jobj, NULL);
+-		if(ret == ZCFG_SUCCESS){
+-			sprintf(buf,"VoiceProfile.%d",profIid.idx[1]);
+-			json_object_object_add(Jobj, "AddPath", json_object_new_string(buf));
+-			ret = zcfgFeDalVoipLineAdd(Jobj, NULL);
+-		}
+ 	}
+ 	else if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalVoipProfileEdit(Jobj, NULL);
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_account.c	2017-02-07 17:15:11.481979135 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2017-02-07 17:20:12.435104800 +0800
+@@ -11,6 +11,7 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_webgui_flag.h"
++#include "switch.h"
+ 
+ #define IVR_PLAY_INDEX_ONLY_SHOW_DEFAULT	0
+ 
+@@ -156,6 +157,28 @@
+ 	return ret;
+ }
+ 
++
++bool checkMaxLineNum(int bindProfIndex){
++	unsigned int lineNum = 0;
++	objIndex_t getLineIid;
++	struct json_object* targetobj = NULL;
++
++	IID_INIT(getLineIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_LINE, &getLineIid, &targetobj) == ZCFG_SUCCESS) {
++		if(getLineIid.idx[1] == bindProfIndex){
++			lineNum++;
++		}
++		zcfgFeJsonObjFree(targetobj);
++	}
++
++	if(lineNum >= ZYXEL_SIP_LINE_PER_PROFILE_NUM_MAX){
++		printf("%s():<WARRNING>Max line number(%d) Currect Line number(%d) - User can't add more line.\n", __FUNCTION__, ZYXEL_SIP_LINE_PER_PROFILE_NUM_MAX, lineNum);
++		return false;
++	}
++
++	return true;
++}
++
+ zcfgRet_t zcfgFeDalLineSchemaGet(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	//initLineSchemaGlobalObjects();
+@@ -373,6 +396,10 @@
+ 	sscanf(path,"VoiceProfile.%d",&profileNum);
+ 	//printf("Edit Line - profile: %d \n ",profileNum);
+ 
++	if(checkMaxLineNum(profileNum) == false){
++		return ZCFG_INTERNAL_ERROR;
++	}
++
+ 	lineIid.level = 2;
+ 	lineIid.idx[0] = 1;
+ 	lineIid.idx[1] = profileNum;
+@@ -707,7 +734,7 @@
+ }
+ 
+ 
+-zcfgRet_t zcfgFeDalVoipLineAdd(struct json_object *Jobj, char *replyMsg){
++zcfgRet_t zcfgFeDalVoipLineAdd(struct json_object *Jobj,struct json_object * prepareMultiJobj,char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	//printf("%s(): Enter.. \n ",__FUNCTION__);
+ 	//printf("%s(): input Jobj :%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+@@ -715,6 +742,9 @@
+ 	initLineGlobalObjects();
+ 	getLineBasicInfo(Jobj);
+ 	multiJobj = zcfgFeJsonObjNew();
++	if(prepareMultiJobj != NULL){
++		multiJobj = prepareMultiJobj;
++	}
+ 
+ 	if((ret = zcfgFeDalLineObjAdd(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) fail to add line obj \n", __FUNCTION__);
+@@ -1313,7 +1343,7 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalVoipLineAdd(Jobj, NULL);
++		ret = zcfgFeDalVoipLineAdd(Jobj, NULL, NULL);
+ 	}
+ 	else if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalVoipLineEdit(Jobj, NULL);

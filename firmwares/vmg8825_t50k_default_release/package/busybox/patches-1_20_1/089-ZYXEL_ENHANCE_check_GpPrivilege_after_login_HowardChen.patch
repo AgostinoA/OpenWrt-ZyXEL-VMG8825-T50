@@ -1,0 +1,291 @@
+Index: busybox-1_20_1/loginutils/login.c
+===================================================================
+--- busybox-1_20_1.orig/loginutils/login.c	2018-05-08 22:36:53.403214895 +0800
++++ busybox-1_20_1/loginutils/login.c	2018-05-08 23:08:58.055276484 +0800
+@@ -728,140 +728,6 @@
+ 				free(spTrustDomainObj);
+ 			}
+ 		}
+-		if (authGpPrivilege){
+-			objIndex_t logAccountObjIid;
+-			rdm_ZyLogCfgGpAccount_t *accountObj = NULL;
+-			IID_INIT(logAccountObjIid);
+-			while(zcfgFeObjStructGetNext(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &logAccountObjIid, (void **) &accountObj) == ZCFG_SUCCESS) {
+-				if (!strcmp(accountObj->Username, username)){
+-					retry_times = accountObj->AccountRetryTime;
+-					lock_period = accountObj->AccountLockTime;
+-					idle_times = accountObj->AccountIdleTime;
+-					cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
+-					cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
+-#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
+-					if (accountObj->RemoteAccessPrivilege){
+-						strcpy(userPriviege, accountObj->RemoteAccessPrivilege);
+-						syslog(LOG_INFO, "Account privilege:  %s Priviege = %s !!!!", username, userPriviege);
+-					}
+-#endif
+-					free(accountObj);
+-					break;
+-				}
+-				free(accountObj);
+-			}
+-			/*group privilege authentication */
+-			objIndex_t logGpObjIid;
+-			rdm_ZyLogCfgGp_t *logGpObj = NULL;
+-			IID_INIT(logGpObjIid);	
+-			logGpObjIid.level = logAccountObjIid.level - 1;
+-			logGpObjIid.idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID];
+-			logGpObjIid.idx[ACCOUNT_IID] = 0;
+-			if(zcfgFeObjStructGet(RDM_OID_ZY_LOG_CFG_GP, &logGpObjIid, (void **) &logGpObj) == ZCFG_SUCCESS) {
+-				if (strstr(logGpObj->GP_Privilege, "telnet") == NULL){
+-					snprintf(logStr, sizeof(logStr), "Account: '%s' TELNET permission denied.", username);
+-					puts(logStr);
+-					syslog(LOG_INFO, "Account:'%s' TELNET permission denied.", username);
+-					free(logGpObj);
+-					return EXIT_FAILURE;
+-				}
+-				free(logGpObj);
+-			}
+-#ifdef ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
+- 			if (ipType(addr) == AF_INET){
+-				if (ipComeFromWiFi(addr) == 1){ // Check WLAN
+-					syslog(LOG_INFO, "TELNET permission denied with WLAN connection." );
+-					return EXIT_FAILURE;
+-				}
+-			}
+-#endif //ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
+-
+-#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
+-			
+-			//syslog(LOG_INFO, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN !!!!");
+-			//syslog(LOG_INFO, "Account privilege: get remoAddr = %s ", addr);
+-
+-			// check remote IP v4/v6
+-			int addrType = 0;
+-			char remoAddr_Type[32] = {0}; //WAN LAN
+-			addrType = ipType(addr);
+-			
+-			if (addrType == AF_INET){
+-				//v4 checking
+-				
+-				//syslog(LOG_INFO, "Account privilege: %s remoAddr type = %d ", addr, addrType);
+-				
+-				/*Remote Ip WAN/LAN Ip check */
+-				
+-				//Get host IP	
+-				int n;
+-				int remoAddrType = 0;
+-				objIndex_t objIid;
+-				rdm_IpIface_t *ipObj = NULL;
+-				rdm_IpIfaceV4Addr_t *ipv4Obj = NULL;	
+-				char lanip[32] = {0};
+-				char subnetMask[32] = {0};
+-				char perfix[10]={0};
+-
+-				/*LANIP*/
+-				IID_INIT(objIid);
+-				while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&ipObj) == ZCFG_SUCCESS) {
+-					if(strcmp(ipObj->X_ZYXEL_IfName, "br0") ==0) {
+-						free(ipObj);
+-						break;
+-					}
+-					free(ipObj);
+-				}
+-				
+-				bool checkPrivilege = false;
+-				objIndex_t v4AddrIid;
+-				v4AddrIid.level = 2;
+-			
+-				IID_INIT(v4AddrIid);
+-				while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&ipv4Obj)== ZCFG_SUCCESS){
+-					if (objIid.idx[0] == v4AddrIid.idx[0]){ //check br0(LAN) group
+-						strcpy(lanip, ipv4Obj->IPAddress);
+-						strcpy(subnetMask, ipv4Obj->SubnetMask);
+-
+-						inet_pton(AF_INET, subnetMask, &n);
+-						int i = 0;
+-
+-						while (n > 0) {
+-								n = n >> 1;
+-								i++;
+-						}
+-						sprintf(perfix, "%d", i);
+-						if (checkCidrBlock(lanip, perfix, addr) == 1){
+-							strcpy(remoAddr_Type, "LAN");
+-						}
+-						else{
+-							strcpy(remoAddr_Type, "WAN");
+-						}
+-						
+-						if (strstr(userPriviege, remoAddr_Type) != NULL){
+-							checkPrivilege = true;
+-						}
+-					}
+-					free(ipv4Obj);
+-				}
+-
+-				if (checkPrivilege == false){
+-					snprintf(logStr, sizeof(logStr), "Account privilege: '%s' TELNET permission denied.", username);
+-					puts(logStr);
+-					syslog(LOG_INFO, "Account privilege:'%s' TELNET permission denied.", username);
+-					return EXIT_FAILURE;
+-				}
+-			}
+-			else if (addrType == AF_INET6){
+-				//not support V6 for WIND Italy
+-			}
+-			else{
+-				//skip check unknow IP type
+-			}
+-
+-#endif
+-
+-		}
+ 
+ #ifdef ZYXEL_CLI_IDLE_TIMEOUT
+ 		/* __ZyXEL__, GraceXiao, 20180227, Add timeout mechanism by using AccountIdleTime */
+@@ -916,7 +782,7 @@
+ #else
+ 			goto auth_failed;
+ #endif
+-//SHA512_PASSWD 
++//SHA512_PASSWD
+  fake_it:
+ 		/* Password reading and authorization takes place here.
+ 		 * Note that reads (in no-echo mode) trash tty attributes.
+@@ -926,6 +792,136 @@
+ #ifdef ZCFG_SUPPORT
+ 			reset_authorize_fail_cnt(cur_user_idx);
+ #endif
++			if (authGpPrivilege){
++				objIndex_t logAccountObjIid;
++				rdm_ZyLogCfgGpAccount_t *accountObj = NULL;
++				IID_INIT(logAccountObjIid);
++				while(zcfgFeObjStructGetNext(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &logAccountObjIid, (void **) &accountObj) == ZCFG_SUCCESS) {
++					if (!strcmp(accountObj->Username, username)){
++						retry_times = accountObj->AccountRetryTime;
++						lock_period = accountObj->AccountLockTime;
++						idle_times = accountObj->AccountIdleTime;
++						cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
++						cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++						if (accountObj->RemoteAccessPrivilege){
++							strcpy(userPriviege, accountObj->RemoteAccessPrivilege);
++							syslog(LOG_INFO, "Account privilege:  %s Priviege = %s !!!!", username, userPriviege);
++						}
++#endif
++						free(accountObj);
++						break;
++					}
++					free(accountObj);
++				}
++				/*group privilege authentication */
++				objIndex_t logGpObjIid;
++				rdm_ZyLogCfgGp_t *logGpObj = NULL;
++				IID_INIT(logGpObjIid);
++				logGpObjIid.level = logAccountObjIid.level - 1;
++				logGpObjIid.idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID];
++				logGpObjIid.idx[ACCOUNT_IID] = 0;
++				if(zcfgFeObjStructGet(RDM_OID_ZY_LOG_CFG_GP, &logGpObjIid, (void **) &logGpObj) == ZCFG_SUCCESS) {
++					if (strstr(logGpObj->GP_Privilege, "telnet") == NULL){
++						snprintf(logStr, sizeof(logStr), "Account: '%s' TELNET permission denied.", username);
++						puts(logStr);
++						syslog(LOG_INFO, "Account:'%s' TELNET permission denied.", username);
++						free(logGpObj);
++						return EXIT_FAILURE;
++					}
++					free(logGpObj);
++				}
++#ifdef ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
++				if (ipType(addr) == AF_INET){
++					if (ipComeFromWiFi(addr) == 1){ // Check WLAN
++						syslog(LOG_INFO, "TELNET permission denied with WLAN connection." );
++						return EXIT_FAILURE;
++					}
++				}
++#endif //ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
++
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++				//syslog(LOG_INFO, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN !!!!");
++				//syslog(LOG_INFO, "Account privilege: get remoAddr = %s ", addr);
++
++				// check remote IP v4/v6
++				int addrType = 0;
++				char remoAddr_Type[32] = {0}; //WAN LAN
++				addrType = ipType(addr);
++
++				if (addrType == AF_INET){ //v4 checking
++					//syslog(LOG_INFO, "Account privilege: %s remoAddr type = %d ", addr, addrType);
++
++					/*Remote Ip WAN/LAN Ip check */
++					//Get host IP
++					int n;
++					int remoAddrType = 0;
++					objIndex_t objIid;
++					rdm_IpIface_t *ipObj = NULL;
++					rdm_IpIfaceV4Addr_t *ipv4Obj = NULL;
++					char lanip[32] = {0};
++					char subnetMask[32] = {0};
++					char perfix[10]={0};
++
++					/*LANIP*/
++					IID_INIT(objIid);
++					while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&ipObj) == ZCFG_SUCCESS) {
++						if(strcmp(ipObj->X_ZYXEL_IfName, "br0") ==0) {
++							free(ipObj);
++							break;
++						}
++						free(ipObj);
++					}
++
++					bool checkPrivilege = false;
++					objIndex_t v4AddrIid;
++					v4AddrIid.level = 2;
++
++					IID_INIT(v4AddrIid);
++					while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&ipv4Obj)== ZCFG_SUCCESS){
++						if (objIid.idx[0] == v4AddrIid.idx[0]){ //check br0(LAN) group
++							strcpy(lanip, ipv4Obj->IPAddress);
++							strcpy(subnetMask, ipv4Obj->SubnetMask);
++
++							inet_pton(AF_INET, subnetMask, &n);
++							int i = 0;
++
++							while (n > 0) {
++									n = n >> 1;
++									i++;
++							}
++							sprintf(perfix, "%d", i);
++							if (checkCidrBlock(lanip, perfix, addr) == 1){
++								strcpy(remoAddr_Type, "LAN");
++							}
++							else{
++								strcpy(remoAddr_Type, "WAN");
++							}
++
++							if (strstr(userPriviege, remoAddr_Type) != NULL){
++								checkPrivilege = true;
++							}
++						}
++						free(ipv4Obj);
++					}
++
++					if (checkPrivilege == false){
++						snprintf(logStr, sizeof(logStr), "Account privilege: '%s' TELNET permission denied.", username);
++						puts(logStr);
++						syslog(LOG_INFO, "Account privilege:'%s' TELNET permission denied.", username);
++						return EXIT_FAILURE;
++					}
++				}
++				else if (addrType == AF_INET6){
++					//not support V6 for WIND Italy
++				}
++				else{
++					//skip check unknow IP type
++				}
++
++#endif
++			}
++
+ 			break;
+ 		}
+ #endif /* ENABLE_PAM */

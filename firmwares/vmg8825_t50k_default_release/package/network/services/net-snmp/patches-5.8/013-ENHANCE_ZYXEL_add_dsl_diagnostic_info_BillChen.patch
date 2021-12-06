@@ -1,0 +1,122 @@
+diff -urN net-snmp-5.8.org/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.c net-snmp-5.8/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.c
+--- net-snmp-5.8.org/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.c	2019-04-08 16:07:01.180345500 +0800
++++ net-snmp-5.8/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.c	2019-04-08 16:47:30.274003104 +0800
+@@ -7,19 +7,23 @@
+ #include <net-snmp/net-snmp-includes.h>
+ #include <net-snmp/agent/net-snmp-agent-includes.h>
+ #include "prestigeXDSL.h"
+-#include "ccclib.h"
++//#include "ccclib.h"
+ 
+ /** Initializes the prestigeXDSL module */
+ void
+ init_prestigeXDSL(void)
+ {
++#if 0
+     static oid FarEndCRCError_oid[] = { 1,3,6,1,4,1,890,1,2,1,6,1 };
+     static oid NearEndCRCError_oid[] = { 1,3,6,1,4,1,890,1,2,1,6,2 };
+     static oid DSLModemUptime_oid[] = { 1,3,6,1,4,1,890,1,2,1,6,3 };
+     static oid DSLModemDowntime_oid[] = { 1,3,6,1,4,1,890,1,2,1,6,4 };
++#endif
++static oid DSLDiagnostic_oid[] = { 1,3,6,1,4,1,890,1,2,1,6,1 };
+ 
+   DEBUGMSGTL(("prestigeXDSL", "Initializing\n"));
+ 
++#if 0
+     netsnmp_register_scalar(
+         netsnmp_create_handler_registration("FarEndCRCError", handle_FarEndCRCError,
+                                FarEndCRCError_oid, OID_LENGTH(FarEndCRCError_oid),
+@@ -40,8 +44,15 @@
+                                DSLModemDowntime_oid, OID_LENGTH(DSLModemDowntime_oid),
+                                HANDLER_CAN_RONLY
+         ));
++#endif
++    netsnmp_register_scalar(
++        netsnmp_create_handler_registration("DSLDiagnostic", handle_DSLDiagnostic,
++                               DSLDiagnostic_oid, OID_LENGTH(DSLDiagnostic_oid),
++                               HANDLER_CAN_RONLY
++        ));
+ }
+ 
++#if 0
+ int
+ handle_FarEndCRCError(netsnmp_mib_handler *handler,
+                           netsnmp_handler_registration *reginfo,
+@@ -58,8 +69,9 @@
+     	switch(reqinfo->mode) {
+         case MODE_GET:
+ 			case MODE_GETBULK:
+-            			ret=handleOfGetParameter(InternetGatewayDevice_WANDevice_1_WANDSLInterfaceConfig_Stats_Showtime, "ATUCCRCErrors", requests,ASN_INTEGER);
+-           break;
++            ret = handleOfLanDhcpParam(ifname, "MinAddress", requests, ASN_OCTET_STR ,HANDLE_GET);
++            if(ret != SNMP_ERR_NOERROR) netsnmp_set_request_error(reqinfo, requests, ret );
++            break;
+         default:
+             /* we should never get here, so this is a really bad error */
+             snmp_log(LOG_ERR, "unknown mode (%d) in %s\n", reqinfo->mode,__FUNCTION__ );
+@@ -154,4 +166,41 @@
+ 	
+ 	return ret;
+ 
++}
++#endif
++int
++handle_DSLDiagnostic(netsnmp_mib_handler *handler,
++                          netsnmp_handler_registration *reginfo,
++                          netsnmp_agent_request_info   *reqinfo,
++                          netsnmp_request_info         *requests)
++{
++  /* We are never called for a GETNEXT if it's registered as a
++  "instance", as it's "magically" handled for us.  */
++
++  /* a instance handler also only hands us one request at a time, so
++  we don't need to loop over a list of requests; we'll only get one. */
++  FILE *pop = NULL;
++  char result[512] = {0}, lst[128] = {0};
++  pop = popen("xdslctl info --show | egrep \"((Max|Bearer|Mode|Profile|ES|SES|UAS|Bitswap):|SNR)\"", "r");
++  if(pop != NULL){
++    while((fgets(lst, 128, pop)) != NULL) {
++      strcat(result, lst);        
++    }
++    pclose(pop);
++  }
++
++  switch(reqinfo->mode) {
++    case MODE_GET:
++      case MODE_GETBULK:
++        snmp_set_var_typed_value(requests->requestvb, ASN_OCTET_STR,
++                                     (u_char *)result/* XXX: a pointer to the scalar's data */,
++                                    strlen(result)/* XXX: the length of the data in bytes */);
++      break;
++    default:
++      /* we should never get here, so this is a really bad error */
++      snmp_log(LOG_ERR, "unknown mode (%d) in %s\n", reqinfo->mode,__FUNCTION__ );
++      return SNMP_ERR_GENERR;
++  }
++
++  return SNMP_ERR_NOERROR;
+ }
+\ No newline at end of file
+diff -urN net-snmp-5.8.org/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.h net-snmp-5.8/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.h
+--- net-snmp-5.8.org/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.h	2019-04-08 16:08:14.653522800 +0800
++++ net-snmp-5.8/agent/mibgroup/ZYXEL-PRESTIGE-MIB/prestigeXDSL.h	2019-04-08 16:47:46.974247828 +0800
+@@ -11,5 +11,6 @@
+ Netsnmp_Node_Handler handle_NearEndCRCError;
+ Netsnmp_Node_Handler handle_DSLModemUptime;
+ Netsnmp_Node_Handler handle_DSLModemDowntime;
++Netsnmp_Node_Handler handle_DSLDiagnostic;
+ 
+ #endif /* PRESTIGEXDSL_H */
+\ No newline at end of file
+diff -urN net-snmp-5.8.org/agent/mibgroup/ZYXEL-PRESTIGE-MIB.h net-snmp-5.8/agent/mibgroup/ZYXEL-PRESTIGE-MIB.h
+--- net-snmp-5.8.org/agent/mibgroup/ZYXEL-PRESTIGE-MIB.h	2019-04-08 16:16:05.158210800 +0800
++++ net-snmp-5.8/agent/mibgroup/ZYXEL-PRESTIGE-MIB.h	2019-04-08 16:42:29.208725665 +0800
+@@ -11,7 +11,7 @@
+ //config_require(ZYXEL-PRESTIGE-MIB/ipStaticRouteTable);
+ //config_require(ZYXEL-PRESTIGE-MIB/filterRuleTable);
+ config_require(ZYXEL-PRESTIGE-MIB/prestigeDynDns);
+-//config_require(ZYXEL-PRESTIGE-MIB/prestigeXDSL);
++config_require(ZYXEL-PRESTIGE-MIB/prestigeXDSL);
+ //config_require(ZYXEL-PRESTIGE-MIB/prestigeTraps);
+ 
+ config_exclude(mibII/system_mib)

@@ -1,0 +1,599 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-01-09 22:45:06.567434027 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-01-09 22:45:06.631434028 +0800
+@@ -61,24 +61,57 @@
+ 	char *ptr = NULL;
+ 	objIndex_t objIid;
+ 	rdm_DslDiagAdslLineTest_t *DslDiagObj = NULL;
++	struct json_object *dslDiagJObj = NULL, *tr181ParamObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++	char *tr181ParamStr = NULL;
+ 	
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+-	if(strstr(tr98FullPathName, ".WANDevice.1.") != NULL)
+-	{
+-		strcpy(tr98TmpName, tr98FullPathName);
+-		ptr = strstr(tr98TmpName, ".WANDSLDiagnostics");
+-		*ptr = '\0';
+-		/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
+-		if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, tr181Obj)) != ZCFG_SUCCESS) {
+-			/*No such object*/
+-			return ret;
+-		}
+-		*tr98Jobj = json_object_new_object();
++	if(!strstr(tr98FullPathName, ".WANDevice")) return ZCFG_NO_SUCH_OBJECT;
++
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".WANDSLDiagnostics");
++	*ptr = '\0';
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, tr181Obj)) != ZCFG_SUCCESS) {
++		/*No such object*/
++		return ret;
++	}
++	*tr98Jobj = json_object_new_object();
+ 		
+-		IID_INIT(objIid);
++	IID_INIT(objIid);
++
++	//if((ret = feObjStructGet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, (void **)&DslDiagObj, updateFlag)) == ZCFG_SUCCESS){
++	//sscanf(tr181Obj, "DSL.Channel.%hhu", &objIid.idx[0]);
++	//objIid.idx[0] = 1;
++	//objIid.level = 1;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, &dslDiagJObj)) != ZCFG_SUCCESS){
++		//zcfgLog(ZCFG_LOG_ERR, "%s : retrieve ADSLLineTest object Fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++	tr181ParamStr = json_object_get_string(json_object_object_get(dslDiagJObj, "Interface"));
++	if(strstr(tr181ParamStr, tr181Obj)) {
++		tr181ParamStr = NULL;
++		tr181ParamObj = json_object_object_get(dslDiagJObj, "DiagnosticsState");
++		tr181ParamStr = json_object_get_string(tr181ParamObj);
++	}else tr181ParamStr = NULL;
++	if(strstr(tr181ParamStr, "Complete")) {
++		paramList = tr98Obj[handler].parameter;
++		json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(tr181ParamObj));
++		paramList += 2;
++		while(paramList->name != NULL) {
++			struct json_object *paramValue = json_object_object_get(dslDiagJObj, paramList->name);
++			if(paramValue) json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++
++			paramList++;
++		}
++	}else {
++		if(!tr181ParamStr) {
++			json_object_object_add(*tr98Jobj, "LoopDiagnosticsState", json_object_new_string("None"));
++		}else json_object_object_add(*tr98Jobj, "LoopDiagnosticsState", JSON_OBJ_COPY(tr181ParamObj));
+ 
+-		if((ret = feObjStructGet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, (void **)&DslDiagObj, updateFlag)) == ZCFG_SUCCESS){
+-			json_object_object_add(*tr98Jobj, "LoopDiagnosticsState", json_object_new_string(DslDiagObj->DiagnosticsState));
++		{
++			DslDiagObj = (rdm_DslDiagAdslLineTest_t *)malloc(sizeof(rdm_DslDiagAdslLineTest_t));
++			memset(DslDiagObj, 0, sizeof(rdm_DslDiagAdslLineTest_t));
+ 			json_object_object_add(*tr98Jobj, "ACTPSDds", json_object_new_int(DslDiagObj->ACTPSDds));
+ 			json_object_object_add(*tr98Jobj, "ACTPSDus", json_object_new_int(DslDiagObj->ACTPSDus));
+ 			json_object_object_add(*tr98Jobj, "ACTATPds", json_object_new_int(DslDiagObj->ACTATPds));
+@@ -114,51 +147,85 @@
+ 			json_object_object_add(*tr98Jobj, "BITSpsds", json_object_new_string(DslDiagObj->BITSpsds));
+ 			json_object_object_add(*tr98Jobj, "BITSpsus", json_object_new_string(DslDiagObj->BITSpsus));
+ //			json_object_object_add(*tr98Jobj, "GAINSpsds", json_object_new_string(DslDiagObj->GAINSpsds));
+-			zcfgFeObjStructFree(DslDiagObj);
++			//zcfgFeObjStructFree(DslDiagObj);
++			free(DslDiagObj);
+ 		}
+ 	}
++	zcfgFeJsonObjFree(dslDiagJObj);
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t WANDslDiagObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char tr181Obj[32] = {0};
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char *ptr = NULL;
+ 	objIndex_t objIid;
+-	rdm_DslDiagAdslLineTest_t *DslDiagObj = NULL;
+-	
++	struct json_object *DslDiagObj = NULL;
++	struct json_object *tr98ParamObj = NULL;
++	char *tr98ParamStr = NULL;
++	char *tr181ParamStr = NULL;
++
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+-	if(strstr(tr98FullPathName, ".WANDevice.1.") != NULL)
+-	{
+-		strcpy(tr98TmpName, tr98FullPathName);
+-		ptr = strstr(tr98TmpName, ".WANDSLDiagnostics");
+-		*ptr = '\0';
++	if(!strstr(tr98FullPathName, ".WANDevice")) return ZCFG_NO_SUCH_OBJECT;
++
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".WANDSLDiagnostics");
++	*ptr = '\0';
+ 		
+-		/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
+-		if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, tr181Obj)) != ZCFG_SUCCESS) {
+-			/*No such object*/
+-			return ret;
+-		}
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, tr181Obj)) != ZCFG_SUCCESS) {
++		/*No such object*/
++		return ret;
++	}
++	printf("%s: tr181 %s\n", __FUNCTION__, tr181Obj);
++	if(!strstr(tr181Obj, "DSL.Channel")) return ZCFG_NO_SUCH_OBJECT;
+ 		
+-		IID_INIT(objIid);
++	
++	if(!(tr98ParamObj = json_object_object_get(tr98Jobj, "LoopDiagnosticsState"))) {
++		//zcfgLog(ZCFG_LOG_ERR, "%s : retrieve tr98 LoopDiagnosticsState Fail\n", __FUNCTION__);
++		return ZCFG_INVALID_ARGUMENTS;
++	}
+ 
+-		if((ret = zcfgFeObjJsonGet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, (void **)&DslDiagObj)) == ZCFG_SUCCESS){
+-			json_object_object_add(DslDiagObj, "DiagnosticsState", JSON_OBJ_COPY(json_object_object_get(tr98Jobj, "LoopDiagnosticsState")));
++	tr98ParamStr = json_object_get_string(tr98ParamObj);
++	if(!strstr(tr98ParamStr, "Requested")) return ZCFG_INVALID_PARAM_VALUE;
+ 
+-			if((ret = zcfgFeObjJsonSet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, DslDiagObj, NULL)) != ZCFG_SUCCESS ) {
+-				zcfgLog(ZCFG_LOG_ERR, "%s : Set DSL.Diagnostics Fail\n", __FUNCTION__);
+-				zcfgFeJsonObjFree(DslDiagObj);
+-				return ret;
+-			}
+-			else {
+-				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set DSL.Diagnostics Success\n", __FUNCTION__);
+-			}
+-			zcfgFeJsonObjFree(DslDiagObj);
+-		}
++	IID_INIT(objIid);
++	//objIid.idx[0] = 1;
++	//objIid.level = 1;
++	//sscanf(tr181Obj, "DSL.Channel.%hhu", &objIid.idx[0]);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, &DslDiagObj)) != ZCFG_SUCCESS){
++		//zcfgLog(ZCFG_LOG_ERR, "%s : retrieve ADSLLineTest object Fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
+ 	}
+-	return ZCFG_SUCCESS;
++
++	tr181ParamStr = json_object_get_string(json_object_object_get(DslDiagObj, "DiagnosticsState"));
++	if((!tr181ParamStr) || strstr(tr181ParamStr, "Requested")) {
++		zcfgLog(ZCFG_LOG_DEBUG, "%s : DSL.Diagnostics is on processing\n", __FUNCTION__);
++		printf("%s : DSL.Diagnostics is on processing\n", __FUNCTION__);
++		zcfgFeJsonObjFree(DslDiagObj);
++		return ZCFG_REQUEST_REJECT;
++	}
++	json_object_object_add(DslDiagObj, "DiagnosticsState", json_object_new_string("Requested"));
++	json_object_object_add(DslDiagObj, "Interface", json_object_new_string(tr181Obj));
++
++	ret = zcfgFeObjJsonSet(RDM_OID_DSL_DIAG_ADSL_LINE_TEST, &objIid, DslDiagObj, NULL);
++	if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Set DSL.Diagnostics Fail\n", __FUNCTION__);
++		printf("%s: Set DSL.Diagnostics Fail\n", __FUNCTION__);
++		printf("%d \n", ret);
++	}
++	else {
++		ret = ZCFG_SUCCESS;
++		zcfgLog(ZCFG_LOG_DEBUG, "%s : Set DSL.Diagnostics Success\n", __FUNCTION__);
++		printf("%s: Set DSL.Diagnostics Success\n", __FUNCTION__);
++	}
++
++	zcfgFeJsonObjFree(DslDiagObj);
++
++	return ret;
+ }
+ 
+ 
+@@ -1203,6 +1270,15 @@
+ 		}
+ 		/*End of special case*/
+ 
++		if(!strcmp(paramList->name, "LinkStatus")) {
++			paramValue = json_object_object_get(atmLinkJobj, "Status");
++			char *tr181Status = json_object_get_string(paramValue);
++			if(strstr(tr181Status, "Up") || strstr(tr181Status, "Down")) json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			else json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Unavailable"));
++			paramList++;
++			continue;
++		}
++
+ 		/*Not defined in tr181, give it a default value*/
+ #if TR98_MAPPING_DEBUG
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+@@ -1235,7 +1311,9 @@
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	
++	int dstAdrModified = 0, atmStatus = 0;
++	boolean atmSetDisable = false;
++
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 	
+ 	strcpy(tr98TmpName, tr98FullPathName);
+@@ -1271,11 +1349,6 @@
+ 		atmLinkQosJobj = NULL;
+ 		atmLinkQosJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ATM_LINK_QOS, &atmLinkIid, multiJobj, tmpObj);
+ 		json_object_put(tmpObj);
+-
+-		tmpObj = atmLinkJobj;
+-		atmLinkJobj = NULL;
+-		atmLinkJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ATM_LINK, &atmLinkIid, multiJobj, tmpObj);
+-		json_object_put(tmpObj);
+ 	}
+ 		
+ 	/*write tr181 Device.ATM.Link.i and Device.ATM.Link.i.QoS object*/
+@@ -1287,14 +1360,24 @@
+ 			tr181ParamValue = json_object_object_get(atmLinkJobj, paramList->name);
+ 			if(strstr(paramList->name, "DestinationAddress") != NULL)
+ 			{
++				struct json_object *tr181ParamStatus = json_object_object_get(atmLinkJobj, "Status");
+ 				if(tr181ParamValue != NULL) {
++					char *tr181adr = json_object_get_string(tr181ParamValue);
++					char *atmLinkStatus = json_object_get_string(tr181ParamStatus);
+ 					test = (char *)json_object_get_string(paramValue);
+ 					if(strstr(test, "PVC:") != NULL){
+ 						test = test + 4;
+-						json_object_object_add(atmLinkJobj, paramList->name, JSON_OBJ_COPY(json_object_new_string(test)));
++						if(!strstr(tr181adr, test)) dstAdrModified = 1;
++						json_object_object_add(atmLinkJobj, paramList->name, json_object_new_string(test));
+ 					}else{
++						if(!strstr(tr181adr, test)) dstAdrModified = 1;
+ 						json_object_object_add(atmLinkJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 					}
++					if(strstr(atmLinkStatus, "Up")) atmStatus = 1;
++					if((paramValue = json_object_object_get(tr98Jobj, "Enable")))
++					{
++						if(!json_object_get_boolean(paramValue)) atmSetDisable = true;
++					}
+ 					paramList++;
+ 					continue;
+ 				}
+@@ -1352,6 +1435,25 @@
+ 			paramList++;
+ 		}
+ 	} /*Edn while*/
++
++    if(multiJobj) {
++        if(dstAdrModified && atmStatus && (atmSetDisable == false)) {
++			json_object_object_add(atmLinkJobj, "Enable", json_object_new_boolean(false));
++			ret = zcfgFeObjJsonSet(RDM_OID_ATM_LINK, &atmLinkIid, atmLinkJobj, NULL);
++			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.ATM.Link.i fail, %d\n", __FUNCTION__, ret);
++				json_object_put(atmLinkJobj);
++				json_object_put(atmLinkQosJobj);
++				return ret;	
++			}
++
++			json_object_object_add(atmLinkJobj, "Enable", json_object_new_boolean(true));
++		}
++		tmpObj = atmLinkJobj;
++		atmLinkJobj = NULL;
++		atmLinkJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ATM_LINK, &atmLinkIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
++	}
+ 		
+ 	if(multiJobj == NULL){
+ 		/*Set Device.ATM.Link.i.QoS first*/
+@@ -1361,6 +1463,17 @@
+ 			json_object_put(atmLinkQosJobj);
+ 			return ret;
+ 		}
++		if(dstAdrModified && atmStatus && (atmSetDisable == false))
++		{
++			json_object_object_add(atmLinkJobj, "Enable", json_object_new_boolean(false));
++			if((ret = zcfgFeObjJsonSet(RDM_OID_ATM_LINK, &atmLinkIid, atmLinkJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.ATM.Link.i fail\n", __FUNCTION__);
++				json_object_put(atmLinkJobj);
++				json_object_put(atmLinkQosJobj);
++				return ret;	
++			}
++			json_object_object_add(atmLinkJobj, "Enable", json_object_new_boolean(true));
++		}
+ 
+ 		/*Set Device.ATM.Link.i*/
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_ATM_LINK, &atmLinkIid, atmLinkJobj, NULL)) != ZCFG_SUCCESS ) {
+@@ -1391,6 +1504,8 @@
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 
++	char *ptmLinkParm = NULL;
++
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+@@ -1428,7 +1543,26 @@
+ 			continue;
+ 		}
+ 
+-		/*Not defined in tr181, give it a default value*/
++		/*Distinct name in tr181*/
++		if(!strcmp(paramList->name, "LinkStatus")) {
++			paramValue = json_object_object_get(ptmLinkJobj, "Status");
++			if(!paramValue) {
++				printf("%s: Can't get %s Status\n", __FUNCTION__, ptmLink);
++				paramList++;
++				continue;
++			}
++			
++			ptmLinkParm = json_object_get_string(paramValue);
++			if(!strcmp(ptmLinkParm, "Up") || !strcmp(ptmLinkParm, "Down")) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}else if(!strcmp(ptmLinkParm, "Dormant")) {
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Initializing"));
++			}else {
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Unavailable"));
++			}
++			paramList++;
++			continue;
++    	}
+ #if TR98_MAPPING_DEBUG
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+ #endif
+@@ -2794,24 +2928,29 @@
+ 	}
+ 
+ 	/* get child DHCP client sent options */
+-	if((ret = feObjJsonGet(RDM_OID_DHCPV4_SENT_OPT, &optIid, &optObj, updateFlag)) == ZCFG_SUCCESS){
+-		*tr98Jobj = json_object_new_object();
+-		paramList = tr98Obj[handler].parameter;
+-		while(paramList->name != NULL) {
+-			/* get parameter value from tr181 */
+-			paramValue = json_object_object_get(optObj, paramList->name);
++	if((ret = feObjJsonGet(RDM_OID_DHCPV4_SENT_OPT, &optIid, &optObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
+ 
+-			/* write it to tr098 json object */
+-			if(paramValue != NULL) {
+-				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				paramList++;
+-			}
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/* get parameter value from tr181 */
++		paramValue = json_object_object_get(optObj, paramList->name);
++
++		/* write it to tr098 json object */
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		}else if(!strcmp(paramList->name, "Enable")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(false));
++		}else if(!strcmp(paramList->name, "Tag")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(0));
++		}else if(!strcmp(paramList->name, "Value")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(NULL));
+ 		}
+-		zcfgFeJsonObjFree(optObj);
+-	}
+-	else{
+-		return ret;
++		paramList++;
+ 	}
++	zcfgFeJsonObjFree(optObj);
+ 
+ 	return ZCFG_SUCCESS;
+ }
+@@ -2850,6 +2989,7 @@
+ 			tmpObj = optObj;
+ 			optObj = NULL;
+ 			optObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_SENT_OPT, &optIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
+ 		}
+ 
+ 		/* set(update) value to target object */
+@@ -2863,20 +3003,64 @@
+ 				if(paramValue != NULL) {
+ 					json_object_object_add(optObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				}
++				paramList++;
++			}
++		}
+ 
+-				paramList++;;
++		if(multiJobj){
++			char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++			char wanIntfName[100] = {0}, *ptr = NULL;
++			struct json_object *wanLinkObj = NULL;
++			objIndex_t wanLinkObjIndex;
++			zcfg_offset_t linkOid = 0;
++			int applied = 0;
++
++			//Retrieve tr181 link with InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i
++			strcpy(tr98TmpName, tr98FullPathName);
++			ptr = strstr(tr98TmpName, ".WANConnectionDevice");
++			*ptr = '\0';
++
++			/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++			if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wanIntfName)) != ZCFG_SUCCESS) {
++				zcfgFeJsonObjFree(optObj);
++				return ret;
++			}
++			printf("%s: %s relink\n", __FUNCTION__, wanIntfName);
++
++			paramValue = NULL;
++			//if !linkOid, wanLinkObj is NULL
++			linkOid = zcfgFeTr181WanSetLink(wanIntfName, false, (void **)&wanLinkObj, &wanLinkObjIndex, &applied);
++			if(linkOid && applied) {
++				if((paramValue = json_object_object_get(wanLinkObj, "Enable"))) {
++					json_object_object_add(wanLinkObj, "Enable", json_object_new_boolean(true));
++					tmpObj = wanLinkObj;
++					wanLinkObj = zcfgFeJsonMultiObjAppend(linkOid, &wanLinkObjIndex, multiJobj, tmpObj);
++					json_object_put(tmpObj);
++				}else {
++					zcfgFeJsonObjFree(wanLinkObj);
++					zcfgFeJsonObjFree(optObj);
++					return ZCFG_INTERNAL_ERROR;
++				}
++			}else {
++				if(wanLinkObj) zcfgFeJsonObjFree(wanLinkObj);
++
++				if(!linkOid) {
++					zcfgFeJsonObjFree(optObj);
++					return ZCFG_INTERNAL_ERROR;
++				}
+ 			}
+ 		}
+ 
+ 		/* is not multiple set, jsut set object immediately after update parameter value */
+ 		if(!multiJobj){
+-			if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SENT_OPT, &optIid, optObj, NULL)) != ZCFG_SUCCESS ) {
++			ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SENT_OPT, &optIid, optObj, NULL);
++ 			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+ 				zcfgLog(ZCFG_LOG_ERR, "%s : Set RDM_OID_DHCPV4_SENT_OPT object Fail with ret=%d\n", __FUNCTION__, ret);
+ 				zcfgFeJsonObjFree(optObj);
+ 				return ret;
+ 			}
++			zcfgFeJsonObjFree(optObj);
+ 		}
+-		zcfgFeJsonObjFree(optObj);
+ 	}
+ 	else{
+ 		return ret;
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2015-01-09 22:45:06.571434027 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2015-01-09 22:45:06.631434028 +0800
+@@ -295,7 +295,7 @@
+ 	{ "RSIPAvailable", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
+ 	{ "NATEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "AddressingType", PARAMETER_ATTR_WRITE, 8, json_type_string},
+-	{ "ExternalIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "ExternalIPAddress", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_ACTIVENOTIFY, 17, json_type_string},
+ 	{ "SubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "DefaultGateway", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "DNSEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+@@ -468,7 +468,7 @@
+ 	{ "PPPEncryptionProtocol", PARAMETER_ATTR_READONLY, 6, json_type_string},
+ 	{ "PPPCompressionProtocol", PARAMETER_ATTR_READONLY, 14, json_type_string},
+ 	{ "PPPAuthenticationProtocol", PARAMETER_ATTR_READONLY, 9, json_type_string},
+-	{ "ExternalIPAddress", PARAMETER_ATTR_READONLY, 17, json_type_string},
++	{ "ExternalIPAddress", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_ACTIVENOTIFY, 17, json_type_string},
+ 	{ "RemoteIPAddress", PARAMETER_ATTR_READONLY, 17, json_type_string},
+ 	{ "MaxMRUSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "CurrentMRUSize", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-01-09 22:45:06.467434025 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-01-09 22:45:36.193167300 +0800
+@@ -197,6 +197,102 @@
+ 	return ZCFG_NO_SUCH_OBJECT;
+ }
+ 
++
++#define setLinkObjParm(linkObj, value) { \
++	struct json_object *obj = (struct json_object *)(linkObj); \
++	bool paramValue = value; \
++	json_object_object_add(obj, "Enable", json_object_new_boolean(paramValue)); }
++
++#define relObj(obj) {json_object_put((struct json_object *)(obj));}
++#define TR181_STATUS_UP "Up"
++
++/*
++ * retObj !=0 means it wants to retrieve obj
++ */
++zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied)
++{
++	objIndex_t *linkIid = NULL;
++	void *linkObj = NULL;
++	zcfg_offset_t linkOid = 0;
++	char *paramStr = NULL;
++	bool linkParmStatus;
++	char hLIntfName[100];
++
++	if(retObj) *retObj = NULL;
++
++	*applied = 0;
++
++	if(retObjIndex) {
++		linkIid = retObjIndex;
++	}else linkIid = (objIndex_t *)malloc(sizeof(objIndex_t));
++
++	memset(linkIid, 0, sizeof(objIndex_t));
++
++	if(strstr(wanLinkName, "DSL.Channel")) {
++		memset(hLIntfName, 0, sizeof(hLIntfName));
++		if(zcfgFeTr181IfaceStackHigherLayerGet(wanLinkName, hLIntfName) ==  ZCFG_SUCCESS) {
++			wanLinkName = hLIntfName;
++		}else return 0;
++	}
++
++	if(strstr(wanLinkName, "Ethernet.Link")) {
++		sscanf(wanLinkName, "Ethernet.Link.%hhu", &linkIid->idx[0]);
++		linkOid = RDM_OID_ETH_LINK;
++		zcfgLog(ZCFG_LOG_INFO, "%s : set Ethernet.Link.%d\n", __FUNCTION__, linkIid->idx[0]);
++	} else if(strstr(wanLinkName, "ATM.Link")) {
++		sscanf(wanLinkName, "ATM.Link.%hhu", &linkIid->idx[0]);
++		linkOid = RDM_OID_ATM_LINK;
++		zcfgLog(ZCFG_LOG_INFO, "%s : set ATM.Link.%d\n", __FUNCTION__, linkIid->idx[0]);
++	} else if(strstr(wanLinkName, "PTM.Link")) {
++		sscanf(wanLinkName, "PTM.Link.%hhu", &linkIid->idx[0]);
++		linkOid = RDM_OID_PTM_LINK;
++		zcfgLog(ZCFG_LOG_INFO, "%s : set PTM.Link.%d\n", __FUNCTION__, linkIid->idx[0]);
++	}else {
++		//might recognize another
++
++		return 0;
++	}
++	linkIid->level = 1;
++
++	//if(zcfgFeObjStructGet(linkOid, linkIid, (void **)&linkObj) != ZCFG_SUCCESS) {
++	if(zcfgFeObjJsonGet(linkOid, linkIid, (struct json_object **)&linkObj) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get Link Fail\n", __FUNCTION__);
++		if(!retObjIndex) free(linkIid);
++
++		return 0;
++	}
++
++	paramStr = json_object_get_string(json_object_object_get((struct json_object *)linkObj, "Status"));
++	linkParmStatus = (strstr(paramStr, TR181_STATUS_UP)) ? true : false;
++	printf("%s: set link %d, %d\n", __FUNCTION__, linkParmStatus, set);
++	
++	if(linkParmStatus == set) {
++		if(retObj) *retObj = linkObj;
++		else relObj(linkObj);
++
++		if(!retObjIndex) free(linkIid);
++
++	}else {
++		zcfgRet_t ret = ZCFG_SUCCESS;
++		setLinkObjParm(linkObj, set);
++		//ret = zcfgFeObjStructSet(linkOid, linkIid, (void *)linkObj, NULL);
++		ret = zcfgFeObjJsonSet(linkOid, linkIid, (struct json_object *)linkObj, NULL);
++		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Link fail\n", __FUNCTION__);
++			relObj(linkObj);
++			linkOid = 0;
++		}else {
++			if(retObj) *retObj = linkObj;
++			else relObj(linkObj);
++			
++			*applied = 1;
++		}
++		if(!retObjIndex) free(linkIid);
++	}
++
++	return linkOid;
++}
++
+ zcfgRet_t zcfgFeTr98ObjGet(char *tr98ObjName, struct json_object **value)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2015-01-09 22:45:06.523434026 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2015-01-09 22:45:06.631434028 +0800
+@@ -62,6 +62,8 @@
+ zcfgRet_t zcfgFeTr98ParamChk(char *, char *, char *);
+ zcfgSubObjNameList_t* zcfgFeTr98SubObjNameListGet(char *);
+ 
++zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied);
++
+ zcfgRet_t zcfgFeTr181IfaceStackLowerLayerGet(char *higherLayer, char *result);
+ zcfgRet_t zcfgFeTr181IfaceStackHigherLayerGet(char *lowerLayer, char *result);
+ 

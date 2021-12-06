@@ -1,0 +1,194 @@
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2016-12-05 16:08:19.814733302 +0800
++++ udhcp-0.9.8/dhcpc.c	2016-12-05 16:08:19.834723303 +0800
+@@ -90,7 +90,12 @@
+ #ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
+ char Forecerenewkey[128]="";
+ #endif
++
++#if defined(ECONET_PLATFORM) && !defined(SUPPORT_XPON) //only for en7512 projects
++#define INIT_TIMEOUT 60	//original source code definition
++#else
+ #define INIT_TIMEOUT 5
++#endif
+ 
+ #define DEFAULT_SCRIPT	"/usr/share/udhcpc/default.script"
+ 
+Index: udhcp-0.9.8/clientpacket.c
+===================================================================
+--- udhcp-0.9.8.orig/clientpacket.c	2016-12-05 16:08:19.654813301 +0800
++++ udhcp-0.9.8/clientpacket.c	2016-12-05 16:08:19.834723303 +0800
+@@ -187,7 +187,76 @@
+ 	return kernel_packet(&packet, ciaddr, CLIENT_PORT, server, SERVER_PORT, inf);
+ }
+ 
++#if defined(ECONET_PLATFORM) && !defined(SUPPORT_XPON) //only for en7512 projects
++#include <netinet/ether.h>
++/* return -1 on errors that are fatal for the socket, -2 for those that aren't */
++int get_raw_packet(struct dhcpMessage *payload, int fd)
++{
++	int bytes;
++	//struct udp_dhcp_packet packet;
++	char buffer[(sizeof(struct ether_header)+sizeof(struct udp_dhcp_packet))];
++	struct udp_dhcp_packet *packet;
++	u_int32_t source, dest;
++	u_int16_t check;
++
++	memset(buffer, 0, sizeof(buffer));
++	bytes = read(fd, buffer, sizeof(buffer));
++	if (bytes < 0) {
++		DEBUG(LOG_INFO, "couldn't read on raw listening socket -- ignoring");
++		usleep(500000); /* possible down interface, looping condition */
++		return -1;
++	}
++	if (bytes < (int) (sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct udphdr))) {
++		DEBUG(LOG_INFO, "message too short, ignoring");
++		return -2;
++	}
++
++	packet = (struct udp_dhcp_packet *)(buffer + sizeof(struct ether_header));
++	if (bytes < ntohs(packet->ip.tot_len)) {
++		DEBUG(LOG_INFO, "Truncated packet");
++		return -2;
++	}
++	/* ignore any extra garbage bytes */
++	bytes = ntohs(packet->ip.tot_len);
++	/* Make sure its the right packet for us, and that it passes sanity checks */
++	if (packet->ip.protocol != IPPROTO_UDP || packet->ip.version != IPVERSION ||
++	    packet->ip.ihl != sizeof(packet->ip) >> 2 || packet->udp.dest != htons(CLIENT_PORT) ||
++	    bytes > (int) sizeof(struct udp_dhcp_packet) ||
++	    ntohs(packet->udp.len) != (short) (bytes - sizeof(packet->ip))) {
++	    	DEBUG(LOG_INFO, "unrelated/bogus packet");
++	    	return -2;
++	}
++	/* check IP checksum */
++	check = packet->ip.check;
++	packet->ip.check = 0;
++	if (check != checksum(&(packet->ip), sizeof(packet->ip))) {
++		DEBUG(LOG_INFO, "bad IP header checksum, ignoring");
++		return -1;
++	}
++	/* verify the UDP checksum by replacing the header with a psuedo header */
++	source = packet->ip.saddr;
++	dest = packet->ip.daddr;
++	check = packet->udp.check;
++	packet->udp.check = 0;
++	memset(&packet->ip, 0, sizeof(packet->ip));
++	packet->ip.protocol = IPPROTO_UDP;
++	packet->ip.saddr = source;
++	packet->ip.daddr = dest;
++	packet->ip.tot_len = packet->udp.len; /* cheat on the psuedo-header */
++	if (check && check != checksum(packet, bytes)) {
++		DEBUG(LOG_ERR, "packet with bad UDP checksum received, ignoring");
++		return -2;
++	}
++	memcpy(payload, &(packet->data), bytes - (sizeof(packet->ip) + sizeof(packet->udp)));
+ 
++	if (ntohl(payload->cookie) != DHCP_MAGIC) {
++		LOG(LOG_ERR, "received bogus message (bad magic) -- ignoring");
++		return -2;
++	}
++	DEBUG(LOG_INFO, "oooooh!!! got some!");
++	return bytes - (sizeof(packet->ip) + sizeof(packet->udp));
++}
++#else
+ /* return -1 on errors that are fatal for the socket, -2 for those that aren't */
+ int get_raw_packet(struct dhcpMessage *payload, int fd)
+ {
+@@ -258,6 +327,6 @@
+ 	}
+ 	DEBUG(LOG_INFO, "oooooh!!! got some!");
+ 	return bytes - (sizeof(packet.ip) + sizeof(packet.udp));
+-	
+ }
++#endif
+ 
+Index: udhcp-0.9.8/socket.c
+===================================================================
+--- udhcp-0.9.8.orig/socket.c	2002-09-21 04:36:15.000000000 +0800
++++ udhcp-0.9.8/socket.c	2016-12-05 16:08:19.834723303 +0800
+@@ -131,7 +131,64 @@
+ 	return fd;
+ }
+ 
++#if defined(ECONET_PLATFORM) && !defined(SUPPORT_XPON) //only for en7512 projects
++#include <linux/filter.h>
++int raw_socket(int ifindex)
++{
++	int fd;
++	struct sockaddr_ll sock;
++	struct sock_fprog filter;
++	/*
++	"tcpdump -dd udp dst port 68"
++	"-dd: Dump packet-matching code as a C program fragment."
++	*/
++	struct sock_filter ft[] = {
++		{ 0x28, 0, 0, 0x0000000c },
++		{ 0x15, 0, 4, 0x000086dd },
++		{ 0x30, 0, 0, 0x00000014 },
++		{ 0x15, 0, 11, 0x00000011 },
++		{ 0x28, 0, 0, 0x00000038 },
++		{ 0x15, 8, 9, 0x00000044 },
++		{ 0x15, 0, 8, 0x00000800 },
++		{ 0x30, 0, 0, 0x00000017 },
++		{ 0x15, 0, 6, 0x00000011 },
++		{ 0x28, 0, 0, 0x00000014 },
++		{ 0x45, 4, 0, 0x00001fff },
++		{ 0xb1, 0, 0, 0x0000000e },
++		{ 0x48, 0, 0, 0x00000010 },
++		{ 0x15, 0, 1, 0x00000044 },
++		{ 0x6, 0, 0, 0x0000ffff },
++		{ 0x6, 0, 0, 0x00000000 }
++	};
++	int i, lineCount;
+ 
++	DEBUG(LOG_INFO, "Opening raw socket on ifindex %d\n", ifindex);
++	if ((fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0) {
++		DEBUG(LOG_ERR, "socket call failed: %s", strerror(errno));
++		return -1;
++	}
++
++	sock.sll_family = AF_PACKET;
++	sock.sll_protocol = htons(ETH_P_IP);
++	sock.sll_ifindex = ifindex;
++	if (bind(fd, (struct sockaddr *) &sock, sizeof(sock)) < 0) {
++		DEBUG(LOG_ERR, "bind call failed: %s", strerror(errno));
++		close(fd);
++		return -1;
++	}
++
++	filter.filter = ft;
++	filter.len = 16;
++	if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &filter, sizeof(filter)) < 0 )
++	{
++		perror("Cannot attach filter");
++		close(fd);
++		return -1;
++	}
++
++	return fd;
++}
++#else
+ int raw_socket(int ifindex)
+ {
+ 	int fd;
+@@ -154,4 +211,4 @@
+ 
+ 	return fd;
+ }
+-
++#endif
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2016-12-05 16:08:19.826727303 +0800
++++ udhcp-0.9.8/Makefile	2016-12-05 16:08:52.629981563 +0800
+@@ -72,7 +72,7 @@
+ else ifeq ("$(strip ${ZCFG_PLATFORM})","ECONET")
+ CFLAGS += -DECONET_PLATFORM 
+ endif
+-ifeq ($(strip $(CONFIG_XPON_SUPPORT)),)
++ifneq ($(strip $(CONFIG_XPON_SUPPORT)),)
+ CFLAGS += -DSUPPORT_XPON
+ endif
+ 

@@ -1,0 +1,155 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_broadband.c	2016-05-25 14:32:25.947416908 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_broadband.c	2016-05-25 14:46:57.212067400 +0800
+@@ -6,6 +6,7 @@
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_string.h"
+ #include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_rdm_access.h"
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+@@ -2697,6 +2698,118 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t objectStepStackLowerLayer(const char *startLayer, const char *destLowLayer, char *higherLayer, char *lowerLayer)
++{
++	objIndex_t iid;
++	zcfg_offset_t oid;
++	const char *ptr = NULL;
++	struct json_object *tmpJobj = NULL;
++	char tr181Name[64] = {0};
++	char buf[64];
++	char *bufptr;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(!startLayer || !destLowLayer || !higherLayer)
++		return ZCFG_INTERNAL_ERROR;
++
++	higherLayer[0] = '\0';
++
++	strncpy(tr181Name, startLayer, sizeof(tr181Name)-1);
++	IID_INIT(iid);
++	oid = zcfgFeObjNameToObjId(tr181Name, &iid);
++	if((int)oid < 0)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	while(zcfgFeObjJsonGetWithoutUpdate(oid, &iid, &tmpJobj) == ZCFG_SUCCESS){
++		ptr = json_object_get_string(json_object_object_get(tmpJobj, "LowerLayers"));
++
++		if (ptr == NULL || !strcmp(ptr, "")){
++			json_object_put(tmpJobj);
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++
++		//prevent multi lowerlayers case
++		strncpy(buf, ptr, sizeof(buf)-1);
++		bufptr = strchr(buf, ',');
++		if(bufptr)
++			*bufptr = '\0';
++		strcpy(lowerLayer, buf);
++
++		json_object_put(tmpJobj);
++
++		if(!strcmp(lowerLayer, destLowLayer)){
++			strcpy(higherLayer, tr181Name);
++			return ZCFG_SUCCESS;
++		}
++		else{
++			strcpy(tr181Name, lowerLayer);
++			IID_INIT(iid);
++			oid = zcfgFeObjNameToObjId(tr181Name, &iid);
++			if((int)oid < 0)
++				return ZCFG_NO_SUCH_OBJECT;
++		}
++	}
++
++	return ZCFG_INTERNAL_ERROR;
++}
++
++zcfgRet_t configEthIfaceWan(struct json_object *Jobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char higherLayers[64] = {0}, lowerLayers[64] = {0};
++	bool enable = json_object_get_boolean(json_object_object_get(Jobj, (const char *)"EnableEthWAN"));
++	const char *ethIfaceName = json_object_get_string(json_object_object_get(Jobj, (const char *)"EthIfaceName"));
++	struct json_object *ipIntObj = NULL, *ethIntfObj = NULL;
++	objIndex_t ipIntIid, ethIntfIid;
++
++	if(!ethIfaceName || !strstr(ethIfaceName, "Ethernet")){
++		return ZCFG_INVALID_OBJECT;
++	}
++
++	printf("%s: enable/disable %d EthWAN %s\n", __FUNCTION__, (int)enable, ethIfaceName);
++
++	IID_INIT(ethIntfIid);
++	ethIntfIid.level = 1;
++	sscanf(ethIfaceName, "Ethernet.Interface.%hhu", &ethIntfIid.idx[0]);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_IFACE, &ethIntfIid, &ethIntfObj)) != ZCFG_SUCCESS)
++		return ret;
++
++	json_object_object_add(ethIntfObj, "X_ZYXEL_Upstream", json_object_new_boolean(enable));
++	if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_ETH_IFACE, &ethIntfIid, ethIntfObj, NULL)) != ZCFG_SUCCESS){
++		json_object_put(ethIntfObj);
++		return ret;
++	}
++	json_object_put(ethIntfObj);
++
++	if(enable != true)
++		return ZCFG_SUCCESS;
++
++	IID_INIT(ipIntIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipIntIid, &ipIntObj) == ZCFG_SUCCESS) {
++		const char *ipIfaceLowerLayers = json_object_get_string(json_object_object_get(ipIntObj, "LowerLayers"));
++		if(ipIfaceLowerLayers && strlen(ipIfaceLowerLayers)){
++			if(objectStepStackLowerLayer(ipIfaceLowerLayers, ethIfaceName, higherLayers, lowerLayers) == ZCFG_SUCCESS){
++				break;
++			}
++			json_object_put(ipIntObj);
++			ipIntObj = NULL;
++		}
++	}
++
++	if(ipIntObj){
++		json_object_object_add(ipIntObj, "X_ZYXEL_AccessDescription", json_object_new_string("SetIpIfaceStackModified"));
++		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_IP_IFACE, &ipIntIid, ipIntObj, NULL)) != ZCFG_SUCCESS){
++			json_object_put(ipIntObj);
++			return ret;
++		}
++		json_object_put(ipIntObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++
+ zcfgRet_t zcfgFeDalWanEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+@@ -2707,6 +2819,14 @@
+ 
+ 	t2 = time(NULL);
+     printf("line=%d, time=%d\n", __LINE__, (int) difftime(t2, t1));
++
++	if(json_object_object_get(Jobj, "EnableEthWAN")){
++		// it's EthWAN enable/disable
++		if(configEthIfaceWan(Jobj) == ZCFG_SUCCESS)
++			zcfgFeReqReboot(NULL);
++
++		goto dalwan_edit_fail;
++	}
+ 	
+ 	if ((ret = getCurrentConfig(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+@@ -2771,7 +2891,7 @@
+ 	if((ret = editVlanTermObject(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+ 	
+-    printf("line=%\n", __LINE__);
++    printf("line=%d\n", __LINE__);
+ 	
+ 	if((ret = editLayer3Objects(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;

@@ -1,0 +1,241 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2016-05-19 17:52:22.534913419 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2016-05-19 17:58:54.532442137 +0800
+@@ -425,6 +425,7 @@
+ #define cg_http_packet_getcontent(httpPkt) cg_string_getvalue(httpPkt->content)
+ 
+ void cg_http_packet_post(CgHttpPacket *httpPkt, CgSocket *sock);
++void tr069_cg_http_packet_post(CgHttpPacket *httpPkt, CgSocket *sock); // 20160519 Max add
+ void cg_http_packet_read_headers(CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize);
+ BOOL cg_http_packet_read_body(
+ 							  CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize);
+Index: clinkc/include/cybergarage/net/csocket.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/csocket.h	2016-05-19 17:52:21.070962433 +0800
++++ clinkc/include/cybergarage/net/csocket.h	2016-05-19 18:00:51.371701679 +0800
+@@ -117,6 +117,11 @@
+ #if defined(CG_USE_OPENSSL)
+ 	SSL_CTX* ctx;
+ 	SSL* ssl;
++#if 1 // 20160519 Max add
++	BIO *io;
++	BIO *ssl_bio;
++#endif
++
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 	void *ctxdata;
+ #endif
+@@ -197,6 +202,8 @@
+ #endif
+ int cg_socket_read(CgSocket *sock, char *buffer, int bufferLen);
+ int cg_socket_write(CgSocket *sock, char *buffer, int bufferLen);
++int tr069_cg_socket_write(CgSocket *sock, char *buffer, int bufferLen); // 20160519 Max add
++int proto_flush(CgSocket *sock); // 20160519 Max add
+ int cg_socket_readline(CgSocket *sock, char *buffer, int bufferLen);
+ long cg_socket_skip(CgSocket *sock, long skipLen);
+ 
+Index: clinkc/include/cybergarage/ssl/cssl.h
+===================================================================
+--- clinkc.orig/include/cybergarage/ssl/cssl.h	2016-05-19 17:52:20.094995013 +0800
++++ clinkc/include/cybergarage/ssl/cssl.h	2016-05-19 18:03:05.838707789 +0800
+@@ -20,6 +20,7 @@
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ #if defined(CG_USE_OPENSSL)
+ #include <openssl/ssl.h>
++#include <openssl/bio.h> // 20160519 Max add
+ 
+ #include <cybergarage/typedef.h>
+ #include <cybergarage/net/csocket.h>
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2016-05-19 17:52:22.686908324 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2016-05-19 18:05:05.450207256 +0800
+@@ -368,6 +368,48 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++// 20160519 Max add
++void tr069_cg_http_packet_post(CgHttpPacket *httpPkt, CgSocket *sock)
++{
++	CgHttpHeader *header;
++	char *name, *value;
++	char *content;
++	CgInt64 contentLen;
++
++	cg_log_debug_l4("Entering...\n");
++
++	/**** send headers ****/
++	for (header = cg_http_packet_getheaders(httpPkt); header != NULL; header = cg_http_header_next(header))
++	{
++		name = cg_http_header_getname(header);
++		if (name == NULL)
++			continue;
++
++		tr069_cg_socket_write(sock, name, cg_strlen(name));
++		tr069_cg_socket_write(sock, CG_HTTP_COLON, sizeof(CG_HTTP_COLON)-1);
++		tr069_cg_socket_write(sock, CG_HTTP_SP, sizeof(CG_HTTP_SP)-1);
++		value = cg_http_header_getvalue(header);
++		if (value != NULL)
++		{
++			tr069_cg_socket_write(sock, value, cg_strlen(value));
++		}
++		tr069_cg_socket_write(sock, CG_HTTP_CRLF, sizeof(CG_HTTP_CRLF)-1);
++	}
++	tr069_cg_socket_write(sock, CG_HTTP_CRLF, sizeof(CG_HTTP_CRLF)-1);
++	proto_flush(sock);
++
++	/**** send content ****/
++	content = cg_http_packet_getcontent(httpPkt);
++	contentLen = cg_http_packet_getcontentlength(httpPkt);
++	if (content != NULL && 0 < contentLen)
++	{
++		tr069_cg_socket_write(sock, content, contentLen);
++		proto_flush(sock);
++	}
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
+ /****************************************
+ * cg_http_packet_read_headers
+ ****************************************/
+Index: clinkc/src/cybergarage/net/csocket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/csocket.c	2016-05-19 17:52:22.798904570 +0800
++++ clinkc/src/cybergarage/net/csocket.c	2016-05-19 18:06:55.869976703 +0800
+@@ -418,6 +418,7 @@
+ 		if (sock->ctx) {
+ 			SSL_shutdown(sock->ssl); 
+ 			SSL_free(sock->ssl);
++			BIO_free(sock->ssl_bio); // 20160519 Max add
+ 			sock->ssl = NULL;
+ 		}
+ 		if (sock->ctx) {
+@@ -976,6 +977,13 @@
+ 			cg_socket_close(sock);
+ 			return FALSE;
+ 		}
++#if 1 // 20160519 Max add
++		sock->ssl_bio = BIO_new (BIO_f_buffer ());
++		sock->io = BIO_new (BIO_f_ssl ());
++		BIO_set_ssl (sock->io, sock->ssl, BIO_NOCLOSE);
++		BIO_push (sock->ssl_bio, sock->io);
++#endif
++
+ 		if (SSL_connect(sock->ssl) < 1) {
+ 			cg_socket_close(sock);
+ 			return FALSE;
+@@ -992,6 +1000,36 @@
+ 	return (ret == 0) ? TRUE : FALSE;
+ }
+ 
++#if 1 // 20160519 Max add
++int proto_flush(CgSocket *sock)
++{
++	long num1;
++	int count = 0;
++
++	if (sock == NULL)
++		return 0;
++
++#if defined(CG_USE_OPENSSL)
++ReSendF:
++	num1 = BIO_flush(sock->ssl_bio);
++
++	if( num1 < 0 )
++	{
++		usleep(20000);
++		if(count == 49)
++		printf("@@@@@@@@@@@%s, %d, count = %d\n", __FUNCTION__, __LINE__, count);
++
++		count++;
++		if( count < 50 )
++			goto ReSendF;
++	}
++#endif
++
++	return 0;
++
++}  /* End of proto_flush() */
++#endif
++
+ /****************************************
+ * cg_socket_read
+ ****************************************/
+@@ -1107,6 +1145,75 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return nTotalSent;
++}
++
++// 20160519 Max add
++int tr069_cg_socket_write(CgSocket *sock, char *cmd, int cmdLen)
++{
++	int nSent;
++	int nTotalSent = 0;
++	int cmdPos = 0;
++	int retryCnt = 0;
++
++	cg_log_debug_l4("Entering...\n");
++
++	if (cmdLen <= 0)
++		return 0;
++
++	do {
++#if defined(CG_USE_OPENSSL)
++		if (cg_socket_isssl(sock) == FALSE) {
++#endif
++
++#if defined(BTRON) || (defined(TENGINE) && !defined(CG_TENGINE_NET_KASAGO))
++		nSent = so_send(sock->id, (B*)(cmd + cmdPos), cmdLen, 0);
++#elif defined(TENGINE) && defined(CG_TENGINE_NET_KASAGO)
++		nSent = ka_send(sock->id, (B*)(cmd + cmdPos), cmdLen, 0);
++#elif defined(ITRON)
++		nSent = tcp_snd_dat(sock->id, cmd + cmdPos, cmdLen, TMO_FEVR);
++#else
++		nSent = send(sock->id, cmd + cmdPos, cmdLen, 0);
++#endif
++
++#if defined(CG_USE_OPENSSL)
++		}
++		else {
++			nSent = BIO_write(sock->ssl_bio, cmd + cmdPos, cmdLen);
++		}
++#endif
++
++		/* Try to re-send in case sending has failed */
++		if (nSent <= 0)
++		{
++			retryCnt++;
++			if (CG_NET_SOCKET_SEND_RETRY_CNT < retryCnt)
++			{
++				/* Must reset this because otherwise return
++				   value is interpreted as something else than
++				   fault and this function loops forever */
++				nTotalSent = 0;
++				break;
++			}
++
++			cg_wait(CG_NET_SOCKET_SEND_RETRY_WAIT_MSEC);
++		}
++		else
++		{
++			nTotalSent += nSent;
++			cmdPos += nSent;
++			cmdLen -= nSent;
++			retryCnt = 0;
++		}
++
++	} while (0 < cmdLen);
++
++#ifdef SOCKET_DEBUG
++	cg_log_debug_s("w %d : %s\n", nTotalSent, ((cmd != NULL) ? cmd : ""));
++#endif
++
++	cg_log_debug_l4("Leaving...\n");
++
++	return nTotalSent;
+ }
+ 
+ #ifdef ZYXEL_PATCH

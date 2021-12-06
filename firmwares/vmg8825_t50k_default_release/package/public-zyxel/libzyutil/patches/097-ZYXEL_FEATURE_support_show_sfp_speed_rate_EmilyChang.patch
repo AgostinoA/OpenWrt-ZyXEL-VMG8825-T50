@@ -1,0 +1,150 @@
+Index: libzyutil-1.0/zyutil_sfp.c
+===================================================================
+--- libzyutil-1.0.orig/zyutil_sfp.c	2018-11-23 14:03:25.817341001 +0800
++++ libzyutil-1.0/zyutil_sfp.c	2018-12-12 13:49:28.398816588 +0800
+@@ -13,6 +13,10 @@
+ 
+ #include <math.h>	// for log10
+ 
++#ifdef BROADCOM_PLATFORM
++#include <net/if.h>
++#include "bcmnet.h"
++#endif
+ #include "zyutil.h"
+ #include "zyutil_sfp.h"
+ 
+@@ -89,6 +93,8 @@
+ #define DEBUG_PRINT(fmt, args...)    /* Don't do anything in release builds */
+ #endif
+ 
++#define FETCH_BIT_N(v, n)    (v>>n) & 1
++
+ int zyUtil_i2c_open()
+ {
+     int fd = open(DEFAULT_I2C_BUS, O_RDWR);
+@@ -198,6 +204,37 @@
+     return value;
+ }
+ 
++/*!
++ *  @return     1 means up, 0 means down, -1 means access fail.
++ *
++ */
++int zyUtil_is_sfp_linkup(void)
++{
++    FILE *fp;
++    char str[256] ={0};
++	int value = 0;
++    fp = popen("ethctl phy int 6 1 | awk '{print $5}'", "r");
++	if(fp){
++		fgets(str, sizeof(str), fp);
++		pclose(fp);
++	}
++    if(sscanf(str, "0x%x", &value)==1)
++    {
++    	DEBUG_PRINT("[%s] : mii register 0x1 is 0x%x.\n", __func__, value);
++ 		if( value == 0xffff )
++			return 0;
++		else{
++			value = FETCH_BIT_N(value , 2);
++			DEBUG_PRINT("[%s] : bit2 value is %d.\n", __func__, value);
++		}
++    }
++	else{
++		DEBUG_PRINT("[%s] : read mii error.\n", __func__);
++        return -1;
++    }
++    return value;
++}
++
+ int _printString(unsigned char *_string, int length)
+ {
+     int i=0;
+@@ -221,8 +258,24 @@
+ 
+ }
+ 
++void dumpString(unsigned char *_string, int length)
++{
++	int i;
++	for(i=0;i<length;i++){
++		/* cut garbled ending, ASC char out of 32~126*/
++		if( _string[i] < 32 || _string[i] > 126 )
++			_string[i] = '\0';
++	}
++	if(0<length)
++		_string[length-1] = '\0';
++}
++
+ int dump_DDMI_state(sfp_ddmi_state_t *ddmi_state)
+ {
++	dumpString( &ddmi_state->sfp_vendor, DDMI_STRING_MAX_LENGTH);
++	dumpString( &ddmi_state->sfp_pn, DDMI_STRING_MAX_LENGTH);
++	dumpString( &ddmi_state->sfp_sn, DDMI_STRING_MAX_LENGTH);
++
+     printf("DDMI state:\n");
+     printf("sfp presetnt      = %d\n",        ddmi_state->present);
+     printf("sfp vendor name   = %s\n",        ddmi_state->sfp_vendor);
+@@ -411,3 +464,24 @@
+     return 0;
+ }
+ 
++#ifdef BROADCOM_PLATFORM
++int zyUtil_netdevice_sfp_info(char* ifname, int* intIfBitRate, int* intIfDuplex)
++{
++    struct ifreq i = {0};
++    IOCTL_MIB_INFO out = {0};
++    strcpy(i.ifr_name, ifname);
++    i.ifr_data = &out;
++    int32_t sock = socket(AF_INET, SOCK_DGRAM, 0);
++    int32_t ret = ioctl(sock, SIOCMIBINFO, &i);
++    if(ioctl(sock, SIOCMIBINFO, &i) != 0){
++        perror("ioctl error");
++      close(sock);
++        return -1;
++    }
++    close(sock);
++   *intIfDuplex = (int)out.ulIfDuplex;
++   *intIfBitRate = (int)out.ulIfSpeed;
++    return 0;
++}
++#endif
++
+Index: libzyutil-1.0/zyutil_sfp.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil_sfp.h	2018-11-23 14:03:25.549341003 +0800
++++ libzyutil-1.0/zyutil_sfp.h	2018-12-12 11:45:12.136477796 +0800
+@@ -13,6 +13,8 @@
+    unsigned char sfp_sn[DDMI_STRING_MAX_LENGTH];		// Vendor serial number, end with 0x20
+ }sfp_ddmi_state_t;
+ 
++
++
+ /*!
+  *  Open first i2c bus, /dev/i2c-0
+  *
+@@ -68,4 +70,24 @@
+  */
+ int zyUtil_sfp_read_ddmi_state(sfp_ddmi_state_t *ddmi_state);
+ 
++/*!
++ *  Check mii if the SFP module is link up or not.
++ *
++ *  @return     1 means up, 0 means down, -1 means access fail.
++ *
++ */
++int zyUtil_is_sfp_linkup(void);
++
++ 
++#ifdef BROADCOM_PLATFORM
++  /*!
++  *  ioctl get SFP speed/duplex.
++  *
++  *  @return	 0 if succeed
++  *
++  */
++int zyUtil_netdevice_sfp_info(char* ifname, int* intIfBitRate, int* intIfDuplex);
++
++#endif
++
+ #endif

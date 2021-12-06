@@ -1,0 +1,132 @@
+Index: linux-3.18.21/include/ecnt_hook/ecnt_hook_ppe.h
+===================================================================
+--- linux-3.18.21.orig/include/ecnt_hook/ecnt_hook_ppe.h	2019-10-24 15:15:10.063846806 +0800
++++ linux-3.18.21/include/ecnt_hook/ecnt_hook_ppe.h	2019-10-24 15:22:25.885731800 +0800
+@@ -101,6 +101,7 @@
+      PPE_API_ID_SET_KA_CFG,
+      PPE_API_ID_GET_AGING_CFG,
+      PPE_API_ID_SET_AGING_CFG,
++	 PPE_API_ID_LOCAL_IN_RCV,
+ 	PPE_API_ID_MAX_NUM
+ } PPE_HookFunctionID_t ;
+ 
+@@ -203,6 +204,23 @@
+     
+ 	ret = __ECNT_HOOK(ECNT_PPE, ECNT_DRIVER_PPE_API, (struct ecnt_data *)&in_data);
+     
++	if(ret != ECNT_HOOK_ERROR)
++		return in_data.retValue;
++	else
++		return ECNT_HOOK_ERROR;
++}
++
++static inline int PPE_API_LOCAL_IN_RCV(void *skb) 
++{
++	struct ecnt_ppe_data in_data; 
++	int ret = 0;
++	
++	in_data.function_id = PPE_API_ID_LOCAL_IN_RCV ;
++
++	in_data.skb = skb;
++    
++	ret = __ECNT_HOOK(ECNT_PPE, ECNT_DRIVER_PPE_API, (struct ecnt_data *)&in_data);
++    
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+Index: linux-3.18.21/include/linux/foe_hook.h
+===================================================================
+--- linux-3.18.21.orig/include/linux/foe_hook.h	2019-10-24 15:15:13.319846781 +0800
++++ linux-3.18.21/include/linux/foe_hook.h	2019-10-24 15:23:03.273731800 +0800
+@@ -26,12 +26,14 @@
+ #define	FOE_MAGIC_L2TP_VPN_DOWNSTREAM	0x7282
+ 
+ #define FOE_MAGIC_LOCAL				0x7283
++#define FOE_MAGIC_XSI				0x7284
+ 
+-#define	FOE_MAGIC_GRE_UP_1	    0x7284
+-#define	FOE_MAGIC_GRE_UP_2	    0x7285
+-#define	FOE_MAGIC_GRE_DOWN_1	0x7286
+-#define	FOE_MAGIC_GRE_DOWN_2	0x7287
++#define	FOE_MAGIC_GRE_UP_1	    0x7285
++#define	FOE_MAGIC_GRE_UP_2	    0x7286
++#define	FOE_MAGIC_GRE_DOWN_1	0x7287
++#define	FOE_MAGIC_GRE_DOWN_2	0x7288
+ 
++#define	FOE_MAGIC_SPEED_TEST_UPSTREAM	0x7289
+ 
+ #define	L2TP_VPN_PPP_NAME	"ppp100"
+ #define	HWNAT_PKT_ERROR		0
+@@ -235,6 +237,7 @@
+ extern int (*ra_sw_nat_hook_xfer) (struct sk_buff *skb, const struct sk_buff *prev_p);
+ extern int (*ra_sw_nat_hook_foeentry) (void * inputvalue,int operation);
+ extern int (*ra_sw_nat_hook_is_alive_pkt)(unsigned int crsn);
++extern int (*ra_sw_nat_local_in_tx) (struct sk_buff * skb,unsigned short port);
+ #if 1 //ZYXEL for port map defined(TCSUPPORT_CPU_MT7520) || defined(TCSUPPORT_CPU_EN7512)
+ extern int (*MT7530LanPortMap2Switch_hook)(int port); 
+ #endif
+@@ -251,3 +254,5 @@
+ 
+ extern int (*ra_sw_nat_hook_cpu_meter)(struct sk_buff* skb,FETxMsg_T* txMsg,struct port_info* pinfo,unsigned char dir,unsigned short mtrIndex);
+ #endif
++
++extern int (*ra_sw_nat_hook_sendto_ppe)(struct sk_buff *skb);
+\ No newline at end of file
+Index: linux-3.18.21/net/core/ecnt_net_utility.c
+===================================================================
+--- linux-3.18.21.orig/net/core/ecnt_net_utility.c	2019-10-24 15:15:13.319846781 +0800
++++ linux-3.18.21/net/core/ecnt_net_utility.c	2019-10-24 15:21:46.461731800 +0800
+@@ -52,6 +52,7 @@
+ #include <net/addrconf.h>
+ #include "ecnt_net_core.h"
+ #include "../ipv6/ecnt_net_ipv6.h"
++#include <net/tcp.h>
+ 
+ 
+ /************************************************************************
+@@ -464,7 +465,11 @@
+ {
+ 	struct iphdr *iph = NULL;
+ 
+-    skb->pkt_type = PACKET_HOST;
++	skb_reset_mac_header(skb);
++	skb_pull_inline(skb, ETH_HLEN);
++	
++	skb->pkt_type = PACKET_HOST;
++	skb->protocol = htons(ETH_P_IP);
+ 	skb->ip_summed = CHECKSUM_UNNECESSARY ;
+ 
+ 	skb_reset_network_header(skb);
+Index: linux-3.18.21/net/ipv4/tcp_ipv4.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/tcp_ipv4.c	2019-10-24 15:15:11.447846795 +0800
++++ linux-3.18.21/net/ipv4/tcp_ipv4.c	2019-10-24 15:21:04.714731800 +0800
+@@ -85,6 +85,7 @@
+ #include <linux/crypto.h>
+ #include <linux/scatterlist.h>
+ #include "ecnt_net_ipv4.h"
++#include <linux/foe_hook.h>
+ 
+ int sysctl_tcp_tw_reuse __read_mostly;
+ int sysctl_tcp_low_latency __read_mostly;
+@@ -1644,6 +1645,9 @@
+ 		goto discard_it;
+ 	if (!sk)
+ 		goto no_tcp_socket;
++	
++	if(ra_sw_nat_local_in_tx)
++		ra_sw_nat_local_in_tx(skb,th->dest);
+ 
+ process:
+ 	if (sk->sk_state == TCP_TIME_WAIT)
+Index: linux-3.18.21/net/nat/foe_hook/hook.c
+===================================================================
+--- linux-3.18.21.orig/net/nat/foe_hook/hook.c	2019-10-24 15:15:13.323846781 +0800
++++ linux-3.18.21/net/nat/foe_hook/hook.c	2019-10-24 15:20:36.228731800 +0800
+@@ -265,4 +265,6 @@
+ int (*wan_speed_test_hook)(struct sk_buff*) = NULL;
+ EXPORT_SYMBOL(wan_speed_test_hook);
+ 
++int (*wan_speed_test_pinpong_handle_hook)(struct sk_buff*) = NULL;
++EXPORT_SYMBOL(wan_speed_test_pinpong_handle_hook);
+ 

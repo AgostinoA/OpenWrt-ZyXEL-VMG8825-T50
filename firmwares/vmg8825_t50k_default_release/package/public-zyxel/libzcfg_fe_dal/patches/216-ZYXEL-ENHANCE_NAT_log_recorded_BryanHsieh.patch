@@ -1,0 +1,182 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-06-09 17:59:34.490469614 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-06-09 18:02:10.734464164 +0800
+@@ -134,6 +134,10 @@
+ CFLAGS += -DCONFIG_TARGET_en75xx
+ endif 
+ 
++ifeq ($(CONFIG_ZYXEL_NAT_LOG),y)
++CFLAGS += -DZYXEL_NAT_LOG
++endif
++
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+ 
+Index: libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_log_setting.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/logsetting/zcfg_fe_dal_log_setting.c	2017-06-09 17:59:33.954469633 +0800
++++ libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_log_setting.c	2017-06-09 18:01:23.387887900 +0800
+@@ -34,7 +34,16 @@
+ 	{"AlarmIndex",							dalType_int,	0,	0,	NULL},
+ 	{"islog",								dalType_boolean,0,	0,	NULL},
+ 	{"islog",								dalType_boolean,0,	0,	NULL},
+-	{NULL,									0,				0,	0,	NULL},
++#ifdef ZYXEL_NAT_LOG
++	{"NatEnable",							dalType_boolean,0,	0,	NULL},
++	{"NatEvent",							dalType_string,	0,	0,	NULL},
++	{"NatEmailSubject",						dalType_string,	0,	0,	NULL},
++	{"NatEmailBody",						dalType_string,	0,	0,	NULL},
++	{"NatSericeRef",						dalType_string,	0,	0,	NULL},
++	{"NatLogIndex",							dalType_int,	0,	0,	NULL},
++#endif
++	{NULL,									dalType_int,	0,	0,	NULL},
++
+ };
+ 
+ bool Enable;
+@@ -70,6 +79,19 @@
+ objIndex_t logIid;
+ objIndex_t alarmIid;
+ 
++#ifdef ZYXEL_NAT_LOG
++bool NatEnable;
++const char* NatEmailSubject;
++const char* NatEmailBody;
++const char* NatEvent;
++const char* NatEmailTo;
++const char* NatSericeRef;
++unsigned int NatLogIndex;
++bool isnatlog;
++objIndex_t natIid;
++#endif
++
++
+ void freeAllLogSettingObjects(){
+ 	if(logSettingJobj) json_object_put(logSettingJobj);
+ 	if(categoryJobj) json_object_put(categoryJobj);
+@@ -115,6 +137,14 @@
+ 	LogSericeRef = json_object_get_string(json_object_object_get(Jobj, "LogSericeRef"));
+ 	AlarmSericeRef = json_object_get_string(json_object_object_get(Jobj, "AlarmSericeRef"));
+ 
++	#ifdef ZYXEL_NAT_LOG
++	NatEnable = json_object_get_boolean(json_object_object_get(Jobj, "NatEnable"));
++	NatEvent = json_object_get_string(json_object_object_get(Jobj, "NatEvent"));
++	NatEmailSubject = json_object_get_string(json_object_object_get(Jobj, "NatEmailSubject"));
++	NatEmailBody = json_object_get_string(json_object_object_get(Jobj, "NatEmailBody"));
++	NatEmailTo = json_object_get_string(json_object_object_get(Jobj, "NatEmailTo"));
++	NatSericeRef = json_object_get_string(json_object_object_get(Jobj, "NatSericeRef"));
++	#endif
+ 	return;
+ }
+ 
+@@ -122,6 +152,9 @@
+ 	islog = json_object_get_boolean(json_object_object_get(Jobj, "islog"));
+ 	isalarm = json_object_get_boolean(json_object_object_get(Jobj, "isalarm"));
+ 
++	#ifdef ZYXEL_NAT_LOG
++	isnatlog = json_object_get_boolean(json_object_object_get(Jobj, "isnatlog"));
++	#endif
+ 	return;
+ }
+ 
+@@ -129,6 +162,7 @@
+ 	LogIndex = json_object_get_int(json_object_object_get(Jobj, "LogIndex"));
+ 	AlarmIndex 	= json_object_get_int(json_object_object_get(Jobj, "AlarmIndex"));
+ 
++
+ 	IID_INIT(logIid);
+ 	IID_INIT(alarmIid);
+ 	logIid.level = 1;
+@@ -136,6 +170,12 @@
+ 	alarmIid.level = 1;
+ 	alarmIid.idx[0] = AlarmIndex;
+ 
++	#ifdef ZYXEL_NAT_LOG
++	NatLogIndex = json_object_get_int(json_object_object_get(Jobj, "NatLogIndex"));
++	IID_INIT(natIid);
++	natIid.level = 1;
++	natIid.idx[0] = NatLogIndex;
++	#endif
+ 	return;
+ }
+ 
+@@ -207,8 +247,42 @@
+ 	}
+ 	return ret;
+ }
++#ifdef ZYXEL_NAT_LOG
++zcfgRet_t zcfgFeDaleMailEventNatLogCfg(objIndex_t Iid){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailEventJobj)) != ZCFG_SUCCESS) {
++		printf("%s:(ERROR) Get mail event Obj fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(emailEventJobj != NULL){
++		if(NatEnable == true){
++			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(NatEnable));
++			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(NatEmailSubject));
++			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(NatEmailTo));
++			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(NatSericeRef));
++			if(isnatlog == true){//for add
++				json_object_object_add(emailEventJobj, "Event", json_object_new_string(NatEvent));
++				json_object_object_add(emailEventJobj, "EmailBody", json_object_new_string(NatEmailBody));
++			}
++
++		}else{
++			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(NatEnable));
++			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(""));
++			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(""));
++			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(""));
++		}
+ 
++		if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailEventJobj, NULL)) != ZCFG_SUCCESS)
++		{
++			printf("%s:(ERROR) Set email event fail\n", __FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
+ 
++	return ret;
++}
++#endif
+ zcfgRet_t zcfgFeDalLogSettingcfg(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	getLogSettingBasicInfo(Jobj);
+@@ -316,7 +390,21 @@
+ 		}
+ 
+ 	}
++#ifdef ZYXEL_NAT_LOG
++	if(isnatlog == true){
++		IID_INIT(mailEventIid);
++		if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &mailEventIid, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) zcfgFeObjJsonAdd add line fail~ \n ",__FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++		if((ret = zcfgFeDaleMailEventNatLogCfg(mailEventIid)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Mail event Log cfg fail~ \n ",__FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
+ 
++	}
++#endif
+ 	return ret;
+ }
+ 
+@@ -352,7 +440,12 @@
+ 		printf("%s: Set log category fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+-
++#ifdef ZYXEL_NAT_LOG
++	if((ret = zcfgFeDaleMailEventNatLogCfg(natIid)) != ZCFG_SUCCESS) {
++		printf("%s: Set log category fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++#endif
+ 	return ret;
+ }
+ 

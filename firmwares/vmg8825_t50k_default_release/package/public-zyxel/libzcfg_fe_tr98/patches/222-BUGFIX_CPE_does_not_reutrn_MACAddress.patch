@@ -1,0 +1,249 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-09-30 15:27:59.074497527 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-09-30 15:45:38.542099282 +0800
+@@ -1965,14 +1965,15 @@
+  */
+ zcfgRet_t WANIpConnObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char ipIface[32] = {0};
+ 	objIndex_t ipIfaceIid, vlanTermIid, ipv4AddrIid;
+-	objIndex_t dnsSrvIid, natIid, natSessionIid;
++	objIndex_t dnsSrvIid, natIid, natSessionIid, ethLinkIid;
+ 	struct json_object *ipIfaceJobj = NULL, *ipAddrJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *dnsSrvJobj = NULL;
+ 	struct json_object *vlanTermJobj = NULL;
++	struct json_object *ethLinkJobj = NULL;
+ 	struct json_object *natJobj = NULL;
+ 	struct json_object *natSessionJobj = NULL;
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -2010,7 +2011,7 @@
+ 
+ 	if((ret = feObjJsonGet(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get IP.Interface Fail\n", __FUNCTION__);
+-		return ret;
++		goto ipConnFree;
+ 	}
+ 	
+ 	/* Get Device.Ethernet.VLANTermination.i */
+@@ -2020,19 +2021,29 @@
+ 		sscanf(lowerLayer, "Ethernet.VLANTermination.%hhu", &vlanTermIid.idx[0]);
+ 		vlanTermIid.level = 1;
+ 		if((ret = feObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj, updateFlag)) != ZCFG_SUCCESS)
+-			return ret;
++			goto ipConnFree;
+ 	}
+-	
++
++	/* Get Device.Ethernet.Link.i */
++	lowerLayer = json_object_get_string(json_object_object_get(vlanTermJobj, "LowerLayers"));
++	if (strstr(lowerLayer, "Ethernet.Link.") != NULL){
++		IID_INIT(ethLinkIid);
++		sscanf(lowerLayer, "Ethernet.Link.%hhu", &ethLinkIid.idx[0]);
++		ethLinkIid.level = 1;
++		if((ret = feObjJsonGet(RDM_OID_ETH_LINK, &ethLinkIid, &ethLinkJobj, updateFlag)) != ZCFG_SUCCESS)
++			goto ipConnFree;
++	}
++
+ 	IID_INIT(natIid);
+ 	if((ret = feObjJsonGet(RDM_OID_NAT, &natIid, &natJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get NAT Fail\n", __FUNCTION__);
+-		return ret;
++		goto ipConnFree;
+ 	}
+ 	
+ 	IID_INIT(natSessionIid);
+ 	if((ret = feObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get RDM_OID_NAT_SESSION_CTL Fail\n", __FUNCTION__);
+-		return ret;
++		goto ipConnFree;
+ 	}
+ 	
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -2040,7 +2051,7 @@
+ 	rtIid.level = 1;
+ 	rtIid.idx[0] = 1;
+ 	if((ret = feObjJsonGet(RDM_OID_ROUTING_ROUTER, &rtIid, &rtJobj, updateFlag)) != ZCFG_SUCCESS) {
+-		return ret;
++		goto ipConnFree;
+ 	}
+ #endif
+ 
+@@ -2095,6 +2106,13 @@
+ 			}
+ 		}
+ 
++		paramValue = json_object_object_get(ethLinkJobj, paramList->name);
++		if(paramValue != NULL && strcmp(paramList->name, "MACAddress") == 0) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
+ 		/*special case*/
+ 		if(!strcmp(paramList->name, "ExternalIPAddress")) {
+ 			if(ipAddrJobj != NULL) {
+@@ -2348,16 +2366,17 @@
+ 
+ 		paramList++;
+ 	}
+-
++ipConnFree:
++	if (ipIfaceJobj)
+ 	json_object_put(ipIfaceJobj);
+-	if(ipAddrJobj != NULL)
++	if(ipAddrJobj)
+ 		json_object_put(ipAddrJobj);
+-	if(dnsSrvJobj){
++	if(dnsSrvJobj)
+ 		json_object_put(dnsSrvJobj);
+-	}
+-	if(vlanTermJobj){
++	if(vlanTermJobj)
+ 		json_object_put(vlanTermJobj);
+-	}
++	if (ethLinkJobj)
++		json_object_put(ethLinkJobj);
+ 	if(natJobj){
+ 		json_object_put(natJobj);
+ 	}
+@@ -2369,7 +2388,7 @@
+ 		json_object_put(dnsV6SrvJobj);
+ 	}
+ #endif	
+-	return ZCFG_SUCCESS;	
++	return ret;	
+ }
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i
+@@ -4501,17 +4520,18 @@
+  */
+ zcfgRet_t WANPppConnObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char tr181Obj[128] = {0};
+ 	char pppIface[32] = {0}, ipIface[32] = {0};
+ 	tr98Parameter_t *paramList = NULL;
+ 	uint32_t  pppConnOid = 0;
+-	objIndex_t pppConnIid, ipIfaceIid, vlanTermIid;
++	objIndex_t pppConnIid, ipIfaceIid, vlanTermIid, ethLinkIid;
+ 	objIndex_t dnsSrvIid, natIid, natSessionIid;
+ 	struct json_object *pppConnJobj = NULL, *pppoeJobj = NULL, *ipcpJobj = NULL, *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *dnsSrvJobj = NULL;
+ 	struct json_object *vlanTermJobj = NULL;
++	struct json_object *ethLinkJobj = NULL;
+ 	struct json_object *natJobj = NULL;
+ 	struct json_object *natSessionJobj = NULL;
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -4540,7 +4560,7 @@
+ 	/*Get related tr181 objects*/
+ 	/*Get PPP.Interface.i*/
+ 	if((ret = feObjJsonGet(pppConnOid, &pppConnIid, &pppConnJobj, updateFlag)) != ZCFG_SUCCESS)
+-		return ret;
++		goto pppConnFree;
+ 
+ 	/* Get Device.Ethernet.VLANTermination.i */
+ 	lowerLayer = json_object_get_string(json_object_object_get(pppConnJobj, "LowerLayers"));
+@@ -4549,41 +4569,51 @@
+ 		sscanf(lowerLayer, "Ethernet.VLANTermination.%hhu", &vlanTermIid.idx[0]);
+ 		vlanTermIid.level = 1;
+ 		if((ret = feObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj, updateFlag)) != ZCFG_SUCCESS)
+-			return ret;
++			goto pppConnFree;
+ 	}
+-	
++
++	/* Get Device.Ethernet.Link.i */
++	lowerLayer = json_object_get_string(json_object_object_get(vlanTermJobj, "LowerLayers"));
++	if (strstr(lowerLayer, "Ethernet.Link.") != NULL){
++		IID_INIT(ethLinkIid);
++		sscanf(lowerLayer, "Ethernet.Link.%hhu", &ethLinkIid.idx[0]);
++		ethLinkIid.level = 1;
++		if((ret = feObjJsonGet(RDM_OID_ETH_LINK, &ethLinkIid, &ethLinkJobj, updateFlag)) != ZCFG_SUCCESS)
++			goto pppConnFree;
++	}
++
+ 	IID_INIT(natIid);
+ 	if((ret = feObjJsonGet(RDM_OID_NAT, &natIid, &natJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get NAT Fail\n", __FUNCTION__);
+-		return ret;
++		goto pppConnFree;
+ 	}
+ 	
+ 	IID_INIT(natSessionIid);
+ 	if((ret = feObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get RDM_OID_NAT_SESSION_CTL Fail\n", __FUNCTION__);
+-		return ret;
++		goto pppConnFree;
+ 	}
+ 
+ 	/*Get PPP.Interface.i.PPPoA(gnore now)*/
+ 
+ 	/*Get PPP.Interface.i.PPPoE*/
+ 	if((ret = feObjJsonGet(RDM_OID_PPP_IFACE_PPPOE, &pppConnIid, &pppoeJobj, updateFlag)) != ZCFG_SUCCESS)
+-		return ret;
++		goto pppConnFree;
+ 
+ 	/*Get PPP.Interface.i.IPCP*/
+ 	if((ret = feObjJsonGet(RDM_OID_PPP_IFACE_IPCP, &pppConnIid, &ipcpJobj, updateFlag)) != ZCFG_SUCCESS)
+-		return ret;
++		goto pppConnFree;
+ 
+ 	/*Get IP.Interface.i above PPP.Interface.i*/
+ 	if(zcfgFeTr181IfaceStackHigherLayerGet(pppIface, ipIface) != ZCFG_SUCCESS)
+-		return ret;
++		goto pppConnFree;
+ 
+ 	/*Get IP.Interface.i*/
+ 	IID_INIT(ipIfaceIid);
+ 	ipIfaceIid.level = 1;
+ 	sscanf(ipIface, "IP.Interface.%hhu", &ipIfaceIid.idx[0]);
+ 	if((ret = feObjJsonGet(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceJobj, updateFlag)) != ZCFG_SUCCESS)
+-		return ret;
++		goto pppConnFree;
+ 
+ 	/*DNSServer*/
+ 	dnsInfoGetJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj, false, updateFlag); //dns v4
+@@ -4630,6 +4660,13 @@
+ 			}
+ 		}
+ 
++		paramValue = json_object_object_get(ethLinkJobj, paramList->name);
++		if(paramValue != NULL && strcmp(paramList->name, "MACAddress") == 0) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
+ 		/*Is IP.Interface.i necessary here?*/
+ 
+ 		/*special case*/
+@@ -4842,9 +4879,14 @@
+ 		paramList++;	
+ 	}
+ 
++pppConnFree:
++	if (pppConnJobj)
+ 	json_object_put(pppConnJobj);
++	if (pppoeJobj)
+ 	json_object_put(pppoeJobj);
++	if (ipcpJobj)
+ 	json_object_put(ipcpJobj);
++	if (ipIfaceJobj)
+ 	json_object_put(ipIfaceJobj);
+ 	if(dnsSrvJobj){
+ 		json_object_put(dnsSrvJobj);
+@@ -4858,7 +4900,7 @@
+ 	}
+ #endif	
+ 
+-	return ZCFG_SUCCESS;
++	return ret;
+ }
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i

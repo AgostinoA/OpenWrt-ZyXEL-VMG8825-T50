@@ -1,0 +1,169 @@
+Index: libzcfg_msg-1.0/zcfg_msg.c
+===================================================================
+--- libzcfg_msg-1.0.orig/zcfg_msg.c	2016-01-07 12:32:37.074474736 +0800
++++ libzcfg_msg-1.0/zcfg_msg.c	2016-01-07 19:06:04.137718074 +0800
+@@ -5,7 +5,8 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <fcntl.h>
+-
++#include <signal.h>
++#include <pthread.h>
+ #include "zcfg_msg.h"
+ #include "zcfg_debug.h"
+ 
+@@ -95,6 +96,12 @@
+ 	struct sockaddr_un clientaddr;
+ 	zcfgMsg_t rcvMsg;
+ 	fd_set fdR;
++	
++	sigset_t mask;
++	sigemptyset(&mask);
++	sigaddset(&mask, SIGUSR1);
++	sigaddset(&mask, SIGUSR2);
++	sigaddset(&mask, SIGALRM);
+ 
+ 	if( myEid == -1 ){
+ 		zcfgLog(ZCFG_LOG_ERR, "Invalid eid. In %s\n", __FUNCTION__);
+@@ -117,17 +124,18 @@
+ #if MSG_DEBUG
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Wait connection...\n", __FUNCTION__);
+ #endif
+-	result = select(myMsgfd+1, &fdR, NULL, NULL, tv);
++_retry:
++	result = pselect(myMsgfd+1, &fdR, NULL, NULL, tv, &mask);
+ 	/* check the select result */
+-	switch(result) {
+-		case 0:
+-			zcfgLog(ZCFG_LOG_WARNING, "Timeout\n");
+-			return ZCFG_TIMEOUT;
+-		case -1:
+-			perror("select:");
+-			return ZCFG_INTERNAL_ERROR;
+-		default:
+-			break;
++	if (result < 0 ){
++		perror("select:");
++//		if(EINTR == errno) goto _retry;
++//		else
++		return ZCFG_INTERNAL_ERROR;
++	}
++	else if(result == 0){
++		zcfgLog(ZCFG_LOG_WARNING, "Timeout\n");
++		return ZCFG_TIMEOUT;
+ 	}
+ 
+ 	if(FD_ISSET(myMsgfd, &fdR)) { //Is there a new connection coming?
+@@ -214,7 +222,7 @@
+ 	sendSize = send(sendMsg->connFd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, MSG_NOSIGNAL);
+ #else
+ 	clientaddr.sun_family = AF_UNIX;
+-	sprintf(clientaddr.sun_path, "%s%hhu-%d", ZCFG_ADDRESS_PREFIX, sendMsg->dstEid, sendMsg->clientPid);
++	sprintf(clientaddr.sun_path, "%s%hhu-%u", ZCFG_ADDRESS_PREFIX, sendMsg->dstEid, sendMsg->clientPid);
+ 	len = sizeof(clientaddr);
+ 	sendSize = sendto(myMsgfd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, 0, (struct sockaddr*)&clientaddr, len);
+ #endif
+@@ -236,6 +244,8 @@
+  *  Description: Used by client to send a message to the server process and get a response.
+  *
+  */
++static pthread_mutex_t __zcfg_msg_lock__=PTHREAD_MUTEX_INITIALIZER; 
++static int32_t __zcfg_msg_req_idx__ = 0;
+ zcfgRet_t zcfgMsgSendAndGetReply(zcfgMsg_t *sendMsg, zcfgMsg_t **replyMsg, uint32_t timeout_msec)
+ {
+ 	int fd, rc;
+@@ -247,13 +257,20 @@
+ 	fd_set readFds;
+ 	zcfgRet_t ret;
+ 	int flags;
++	sigset_t mask;
++	int32_t seqid;
++	
++	sigemptyset(&mask);
++	sigaddset(&mask, SIGUSR1);
++	sigaddset(&mask, SIGUSR2);
++	sigaddset(&mask, SIGALRM);
+ 
+ 	if( myEid == -1 ){
+ 		free(sendMsg);
+ 		zcfgLog(ZCFG_LOG_ERR, "Invalid eid\n");
+ 		return ZCFG_INVALID_EID;
+ 	}
+-
++	
+ 	memset(&rcvMsg, 0, sizeof(zcfgMsg_t));
+ 
+ 	if ((fd = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
+@@ -261,14 +278,29 @@
+ 		free(sendMsg);
+    	    return ZCFG_INTERNAL_ERROR;
+ 	}
++	
++	flags = 1;
++	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &flags, sizeof(flags)) < 0){
++		perror("SO_REUSEADDR failed");
++		return ZCFG_INTERNAL_ERROR;
++	}
+ 
+ 	/*nonblocking operation*/
+ 	flags = fcntl(fd, F_GETFL, 0);
+ 	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+ 
+ 	clientaddr.sun_family = AF_UNIX;
++#if 1
++	seqid = getpid();
++	pthread_mutex_lock(&__zcfg_msg_lock__);
++	__zcfg_msg_req_idx__ = ((__zcfg_msg_req_idx__) % 0xFFFF)+1;
++
++	seqid |= (__zcfg_msg_req_idx__ << 16);
++	pthread_mutex_unlock(&__zcfg_msg_lock__);
++	sprintf(clientaddr.sun_path, "%s%d-%u", ZCFG_ADDRESS_PREFIX, myEid, seqid);
++#else
+ 	sprintf(clientaddr.sun_path, "%s%d-%d", ZCFG_ADDRESS_PREFIX, myEid, getpid());
+-
++#endif
+    	len = sizeof(clientaddr);
+ 
+ 	if (bind(fd, (struct sockaddr*)&clientaddr, len) < 0) {
+@@ -277,7 +309,7 @@
+ 		close(fd);
+ 		unlink(clientaddr.sun_path);
+ 		free(sendMsg);
+-		return -1;
++		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 	chmod(clientaddr.sun_path, 0777);
+ 	
+@@ -315,10 +347,16 @@
+ 		tmpTv.tv_usec = timeout_msec*1000;
+ 		tv = &tmpTv;
+ 	}
+-
++	
+ 	/* starting timer and wait data available */
+-	rc = select(fd+1, &readFds, NULL, NULL, tv);
+-	if ((rc == 1) && (FD_ISSET(fd, &readFds))) {
++	rc = pselect(fd+1, &readFds, NULL, NULL, tv, &mask);
++	if (rc < 0){
++		perror("select:");
++//		if(EINTR == errno) goto _retry;
++//		else 
++		ret = ZCFG_INTERNAL_ERROR;
++	}
++	else if ((rc == 1) && (FD_ISSET(fd, &readFds))) {
+ 		/* receive message header first */
+ 		rcvSize = recvfrom(fd, (char *)(&rcvMsg), sizeof(zcfgMsg_t), MSG_PEEK, (struct sockaddr*)&serveraddr, &len);
+ 		if(rcvSize != sizeof(zcfgMsg_t)){
+Index: libzcfg_msg-1.0/Makefile
+===================================================================
+--- libzcfg_msg-1.0.orig/Makefile	2016-01-07 12:32:37.174475235 +0800
++++ libzcfg_msg-1.0/Makefile	2016-01-07 15:45:21.385556024 +0800
+@@ -5,7 +5,7 @@
+ all: clean libzcfg_msg
+ 
+ libzcfg_msg : zcfg_msg.o
+-	$(CC) -shared -o libzcfg_msg.so zcfg_msg.o
++	$(CC) -shared -o libzcfg_msg.so zcfg_msg.o -lpthread
+ 
+ zcfg_msg.o : zcfg_msg.c
+ 	$(CC) -c -fPIC zcfg_msg.c -Wall -I$(TOOLCHAIN)/include -I. -std=gnu99

@@ -1,0 +1,272 @@
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2019-05-27 11:20:51.799696696 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2019-05-27 11:23:16.724415339 +0800
+@@ -157,6 +157,11 @@
+ #define DYNV6_REQUEST "/api/update"
+ 
+ 
++//support DNSOMatic
++#define DNSOMATIC_DEFAULT_SERVER "updates.dnsomatic.com"
++#define DNSOMATIC_DEFAULT_PORT "80"
++#define DNSOMATIC_REQUEST "/nic/update"
++
+ //support User-defined
+ #define DEFAULT_PORT "80"
+ #define DEFAULT_HTTPS_PORT "443"
+@@ -448,6 +453,11 @@
+ static char *DYNV6_fields_used[] = { "server", "address", "user", "host", NULL};
+ 
+ 
++//Support DNSOMatic
++int DNSOMATIC_update_entry(void);
++int DNSOMATIC_check_info(void);
++static char *DNSOMATIC_fields_used[] = { "server", "user", "address", "wildcard", "mx", "host", NULL };
++
+ //support User-defined
+ int UserDefined_update_entry(void);
+ int UserDefined_HTTPS_update_entry(void);
+@@ -711,6 +721,17 @@
+   	DYNV6_DEFAULT_PORT,
+   	DYNV6_REQUEST  
+   	},
++  //Support DNSOMatic
++  { "DNSOMatic",
++    { "dnsomatic", 0, 0, },
++    NULL,
++    DNSOMATIC_update_entry,
++    DNSOMATIC_check_info,
++    DNSOMATIC_fields_used,
++    DNSOMATIC_DEFAULT_SERVER,
++    DNSOMATIC_DEFAULT_PORT,
++    DNSOMATIC_REQUEST
++  },
+  	//Support User-defined
+ 	{ "userdefined",
+   	{ "userdefined", "unknow", 0, },
+@@ -6083,6 +6104,225 @@
+ }
+ //freedns  end
+ 
++//support DNSOMatic
++int DNSOMATIC_update_entry(void)
++{
++  char buf[BUFFER_SIZE+1];
++  char *tmpbuf;
++  char *bp = buf;
++  int bytes;
++  int btot;
++  int ret;
++  int retval = UPDATERES_OK;
++
++  buf[BUFFER_SIZE] = '\0';
++
++  if(do_connect((int*)&client_sockfd, server, port) != 0)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      show_message("error connecting to %s:%s\n", server, port);
++    }
++    return(UPDATERES_ERROR);
++  }
++
++  snprintf(buf, BUFFER_SIZE, "GET %s?", request);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "hostname=%s&",host);
++  output(buf); 
++  if(address != NULL && *address != '\0')
++  {
++    snprintf(buf, BUFFER_SIZE, "myip=%s&", address);
++    output(buf);
++  }
++
++  snprintf(buf, BUFFER_SIZE, "%s=%s&", "wildcard", wildcard ? "ON" : "OFF");
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, "mx=NOCHG&backmx=NOCHG");
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, " HTTP/1.0\015\012");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "Authorization: Basic %s\015\012", auth);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "User-Agent: %s-%s %s [%s] (%s)\015\012",
++      "ez-update", VERSION, OS, (options & OPT_DAEMON) ? "daemon" : "", "by Angus Mackay");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "\015\012");
++  output(buf);
++
++  if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++      close(client_sockfd);
++      return(UPDATERES_ERROR);
++  }
++  buf[bytes] = '\0';
++
++  dprintf((stderr, "server output: %s\n", buf));
++
++  if(sscanf(buf, " HTTP/1.%*c %3d", &ret) != 1)
++  {
++    ret = -1;
++  }
++
++  switch(ret)
++  {
++    case -1:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("strange server response, are you connecting to the right server?\n");
++      }
++      break;
++
++    case 200:
++      if((tmpbuf = strstr(buf, "\ngood ")) != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          sscanf(tmpbuf, "\ngood %s", address_log);
++		  success[0]='0';
++          address_log[16]='\0';
++          printf("request successful\n");
++		  retval = UPDATERES_OK;
++        }
++      }
++      else
++      {
++        if(strstr(buf, "\nnohost") != NULL)
++        {
++          show_message("invalid hostname: %s\n", host);
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else if(strstr(buf, "\nnotfqdn") != NULL)
++        {
++          show_message("malformed hostname: %s\n", host);
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else if(strstr(buf, "\nabuse") != NULL)
++        {
++          show_message("host \"%s\" has been blocked for abuse\n", host);
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else if((tmpbuf = strstr(buf, "\nnochg")) != NULL)
++        {
++          show_message("%s says that your IP address has not changed since the last update\n", server);
++          // lets say that this counts as a successful update
++          // but we'll roll back the last update time to max_interval/2
++          if(max_interval > 0)
++          {
++            last_update = time(NULL) - max_interval/2;
++          }
++          sscanf(tmpbuf, "\nnochg %s", address_log);
++		  success[0]='0';
++          address_log[16]='\0';
++          retval = UPDATERES_OK;
++        }
++        else if(strstr(buf, "\nbadauth") != NULL)
++        {
++          show_message("authentication failure\n");
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else if(strstr(buf, "\nbadagent") != NULL)
++        {
++          show_message("this useragent has been blocked\n");
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else if(strstr(buf, "\nnumhost") != NULL)
++        {
++          show_message("too many or too few hosts found\n");
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else if(strstr(buf, "\ndnserr") != NULL)
++        {
++          char *p = strstr(buf, "\ndnserr");
++          show_message("dyndns internal error, please report this number to "
++              "their support people: %s\n", N_STR(p));
++          retval = UPDATERES_ERROR;
++        }
++        else if(strstr(buf, "\n911") != NULL)
++        {
++          show_message("ahhhh! call 911!\n");
++          retval = UPDATERES_SHUTDOWN;
++        }
++        else
++        {
++          show_message("error processing request\n");
++          if(!(options & OPT_QUIET))
++          {
++            fprintf(stderr, "==== server output: ====\n%s\n", buf);
++          }
++          retval = UPDATERES_ERROR;
++        }
++      }
++      break;
++
++    case 401:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("authentication failure\n");
++      }
++      retval = UPDATERES_SHUTDOWN;
++      break;
++
++    default:
++      if(!(options & OPT_QUIET))
++      {
++        *auth = '\0';
++        sscanf(buf, " HTTP/1.%*c %*3d %255[^\r\n]", auth);
++        show_message("unknown return code: %d\n", ret);
++        show_message("server response: %s\n", auth);
++      }
++      retval = UPDATERES_ERROR;
++      break;
++  }
++
++  if(retval != UPDATERES_OK){
++	success[0]='1';
++  }
++  DDNS_StatusLog();
++  return(retval);
++}
++
++int DNSOMATIC_check_info(void)
++{
++  char buf[BUFSIZ+1];
++
++  if((host == NULL) || (*host == '\0'))
++  {
++    if(options & OPT_DAEMON)
++    {
++      return(-1);
++    }
++    if(host) { free(host); }
++    printf("host: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    host = strdup(buf);
++    chomp(host);
++  }
++
++  if(interface == NULL && address == NULL)
++  {
++    if(options & OPT_DAEMON)
++    {
++      fprintf(stderr, "you must provide either an interface or an address\n");
++      return(-1);
++    }
++    if(interface) { free(interface); }
++    printf("interface: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    chomp(buf);
++    option_handler(CMD_interface, buf);
++  }
++
++  warn_fields(service->fields_used);
++
++  return 0;
++}
++//DNSOMatic  end
+ 
+ //support NOIP
+ int NOIP_update_entry(void)

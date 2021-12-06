@@ -1,0 +1,659 @@
+Index: busybox-1_20_1/networking/wget.c
+===================================================================
+--- busybox-1_20_1.orig/networking/wget.c	2019-05-30 16:05:19.101585071 +0800
++++ busybox-1_20_1/networking/wget.c	2019-05-30 16:27:22.665425600 +0800
+@@ -42,6 +42,12 @@
+ #include "zcfg_msg.h"
+ #endif
+ 
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++#define TCP_WINDOW_SIZE_VARIABLE "/tmp/download_variables"
++#define DEFAULT_TCP_SCALE 7
++#define DEFAULT_TCP_WINDOW 50000
++#endif
++
+ //#define log_io(...) bb_error_msg(__VA_ARGS__)
+ #define log_io(...) ((void)0)
+ 
+@@ -87,6 +93,9 @@
+ 	char *ifName;
+ 	char *dscp;
+ 	char *ethernetPriority;
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	char *speedTestEnable;
++#endif //PLATFORM_ECONET
+ #endif
+ 	int output_fd;
+ 	int o_flags;
+@@ -129,6 +138,7 @@
+ static unsigned long long ifBytesSentEnd = 0;
+ 
+ static char ipDscp = 0;
++static char speedTestEnable = 0;
+ 
+ static uint32_t tr143options = 0;
+ 
+@@ -155,10 +165,18 @@
+ 	WGET_OPT_INTERFACE  = (1 << 8),
+ 	WGET_OPT_DSCP       = (1 << 9),
+ 	WGET_OPT_ETNERPRIORITY = (1 << 10),
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	WGET_OPT_SPEEDTEST  = (1 << 11),
++	WGET_OPT_RETRIES    = (1 << 12),
++	WGET_OPT_PASSIVE    = (1 << 13),
++	WGET_OPT_HEADER     = (1 << 14) * ENABLE_FEATURE_WGET_LONG_OPTIONS,
++	WGET_OPT_POST_DATA  = (1 << 15) * ENABLE_FEATURE_WGET_LONG_OPTIONS,
++#else
+ 	WGET_OPT_RETRIES    = (1 << 11),
+ 	WGET_OPT_PASSIVE    = (1 << 12),
+ 	WGET_OPT_HEADER     = (1 << 13) * ENABLE_FEATURE_WGET_LONG_OPTIONS,
+ 	WGET_OPT_POST_DATA  = (1 << 14) * ENABLE_FEATURE_WGET_LONG_OPTIONS,
++#endif //PLATFORM_ECONET
+ #else
+ 	WGET_OPT_RETRIES    = (1 << 8),
+ 	WGET_OPT_PASSIVE    = (1 << 9),
+@@ -251,6 +269,9 @@
+ 
+ 	json_object_put(diag_result);
+ 	set_priorityMark(0);
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	set_qdmaRateLimit(1);
++#endif
+ 
+ 	exit(0);
+ }
+@@ -306,7 +327,31 @@
+ 		system(cmd);
+ 	}
+ }
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++void set_qdmaRateLimit(int act)
++{
++	char cmd[128];
+ 
++	if(act == 0)
++	{
++		sprintf(cmd, "/userfs/bin/qdmamgr_wan set rxratelimit config disable packet");
++		printf("%s (disable) cmd: %s\n", __FUNCTION__, cmd);
++		system(cmd);
++		sprintf(cmd, "/userfs/bin/qdmamgr_lan set rxratelimit config disable packet");
++		printf("%s (disable) cmd: %s\n", __FUNCTION__, cmd);
++		system(cmd);
++	}
++	else if(act == 1)
++	{
++		sprintf(cmd, "/userfs/bin/qdmamgr_wan set rxratelimit config enable packet");
++		printf("%s (enable) cmd: %s\n", __FUNCTION__, cmd);
++		system(cmd);
++		sprintf(cmd, "/userfs/bin/qdmamgr_lan set rxratelimit config enable packet");
++		printf("%s (enable) cmd: %s\n", __FUNCTION__, cmd);
++		system(cmd);
++	}
++}
++#endif
+ 
+ /* Write NMEMB elements of SIZE bytes from PTR to STREAM.  Returns the
+  * number of elements written, and a short count if an eof or non-interrupt
+@@ -334,7 +379,7 @@
+     struct tm *p;
+     gettimeofday(&c_tv,&c_tz);
+     p = localtime(&c_tv.tv_sec);
+-	sprintf(buf, "%d-%02d-%02dT%02d:%02d:%02d.%u", (1900+p->tm_year), (1+p->tm_mon), p->tm_mday, p->tm_hour, p->tm_min, p->tm_sec, c_tv.tv_usec);	
++	sprintf(buf, "%d-%02d-%02dT%02d:%02d:%02d.%06u", (1900+p->tm_year), (1+p->tm_mon), p->tm_mday, p->tm_hour, p->tm_min, p->tm_sec, c_tv.tv_usec);	
+ #ifdef ZYXEL_DL_DIAG_CALCULATION
+ 	return (1000000 * c_tv.tv_sec + c_tv.tv_usec);
+ #else
+@@ -342,7 +387,42 @@
+ #endif
+ }
+ 
+-unsigned long long getReceiveByte(const char *ifName)
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++/* New EOMTime = BOMTime + speedtest diff time */
++void calculate_EOMTime_speedtest(char *buf, unsigned long diff_stime, unsigned long diff_ustime)
++{
++    struct timeval c_tv, max_timeout, timeout;
++    struct timezone c_tz;
++    struct tm *p;
++	unsigned long new_EOMtime = 0;
++	unsigned long hours = 0, minute = 0, sec = 0, tmp_t = 0, total_sec = 0, usec = 0;
++	unsigned long new_hours = 0, new_minute = 0, new_sec = 0, new_usec = 0;
++	
++	gettimeofday(&c_tv,&c_tz);
++	p = localtime(&c_tv.tv_sec);
++	
++	sscanf(BOMTime, "%*[0-9]%*[-]%*[0-9]%*[-]%*[0-9]%*c%02u%*[:]%02u%*[:]%02u%*[.]%06u", &hours, &minute, &sec, &usec);
++	//printf("%s: 111111 hours=%02d, minute=%02d, sec=%02d, usec=%06u, diff_stime=%u, diff_ustime=%u\n", __FUNCTION__, hours, minute, sec, usec, diff_stime, diff_ustime);
++	total_sec = (hours * 60 * 60) + (minute * 60) + sec;
++	//new_EOMtime = ((total_sec * 1000000) + usec) + diff_time;
++	total_sec = total_sec + diff_stime;
++	usec = usec + diff_ustime;
++	if(usec >= 1000000)
++	{
++		total_sec = total_sec + 1;
++		usec = usec - 1000000;
++	}
++	hours = total_sec / 3600;
++	minute = (total_sec - (hours * 60 * 60)) / 60;
++	sec = total_sec - (hours * 60 * 60) - (minute * 60);
++	//printf("%s: 22222 hours=%02d, minute=%02d, sec=%02d, usec=%06u\n", __FUNCTION__, hours, minute, sec, usec);
++	sprintf(buf, "%d-%02d-%02dT%02d:%02d:%02d.%06u", (1900+p->tm_year), (1+p->tm_mon), p->tm_mday, hours, minute, sec, usec);
++
++	return ;
++}
++#endif
++
++unsigned long long getReceiveByte(const char *ifName)
+ {
+ 		FILE *fp;
+ 		unsigned long long receiveBytes;
+@@ -399,7 +479,329 @@
+ 
+                 return 0;
+ }
++
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++void execute_speedtest(char *s, char *host_info, char *target_path, int *rev_bytes, int *send_bytes)
++{
++	FILE *fp, *fp2;
++	char str[200] = {0}, str2[200] = {0};
++	bool fin_msg = false;
++	char *f_ip, *f_url = NULL,*f_port, *tmp, *host;
++	int file_line_count = 0, tcp_scale = 0, tcp_window = 0, ret = 0, i = 0;
++	int conn = 0, diag_state = 0, err_state = 0, tcp_close = 0;
++	struct sockaddr_in sa, resolve_sa;
++	struct addrinfo hint, *result = NULL;
++	unsigned long sec_BOM = 0, sec_EOM = 0, usec_BOM = 0, usec_EOM = 0, diff_s = 0, diff_us = 0, diff = 0;
++	unsigned long total_byte_recv = 0, test_byte_recv = 0,total_byte_send = 0, http_average_rate = 0, download_len = 0,fsize = 0;
++	char diff_time[200] = {0};
++	
++	/*
++	   Set last part of speedtest.ko parameters,
++	   echo "destip=192.168.176.13" > /proc/tc3162/speed_test
++	   echo "destport=21" > /proc/tc3162/speed_test
++	   echo "host=192.168.176.1" > /proc/tc3162/speed_test
++	   echo "action=GET /100MB.zip 192.168.176.1 80" > /proc/tc3162/speed_test
++	*/
++	f_ip = strtok(s, ":");
++	if(f_ip != NULL)
++		f_port = strtok(NULL, ":");
++#if 1
++	memset(&hint, 0 , sizeof(hint));
++	hint.ai_family = AF_INET; // ipv4 only
++	hint.ai_socktype = SOCK_STREAM;
++	//if(inet_pton(AF_INET, host_info, &(sa.sin_addr)) == 0)
++	if(getaddrinfo(host_info, NULL, &hint, &result) == 0)
++	{
++		printf("%s:It's a domain name!!\n", __FUNCTION__);
++		//This is a domain name.
++		f_url = strdup(host_info);
++	}
++	freeaddrinfo(result);
+ #endif
++	if(access(TCP_WINDOW_SIZE_VARIABLE, F_OK) != -1)
++	{
++		printf("get from %s to set tcp window variables!\n", TCP_WINDOW_SIZE_VARIABLE);
++		fp = fopen(TCP_WINDOW_SIZE_VARIABLE, "r");
++		if(fp != NULL)
++		{
++			while(fgets(str, sizeof(str), fp) != NULL)
++			{
++				file_line_count++;
++				/* first line is for tcp scale */
++				if(file_line_count == 1)
++					tcp_scale = atoi(str);
++				else if(file_line_count == 2)
++					tcp_window = atoi(str);
++				else
++					break;
++			}
++			fclose(fp);
++		}
++	}
++	else
++	{
++		printf("file not exist!\n");
++		/* use the original UPLOAD_MULTI_PART */
++		tcp_scale = DEFAULT_TCP_SCALE;
++		tcp_window = DEFAULT_TCP_WINDOW;
++	}
++	// printf("tcp_scale=%d tcp_window=%d\n",tcp_scale,tcp_window);
++
++	/* Set TCP window scale */
++	// sprintf(str, "echo \"scale=%d\" > /proc/tc3162/speed_test", tcp_scale);
++	// printf("sysCmd= %s\n",str);
++	// system(str);
++	/* Set TCP window size */
++	// sprintf(str, "echo \"windowsmall=%d\" > /proc/tc3162/speed_test", tcp_window);
++	// printf("sysCmd= %s\n",str);
++	// system(str);
++	
++	/* Set destination IP */
++	printf("f_ip=%s, f_url=%s, f_port=%s\n", f_ip, f_url, f_port);
++		//Only IP address, no domain name.
++		sprintf(str, "echo \"destip=%s\" > /proc/tc3162/speed_test", f_ip);
++		printf("sysCmd= %s\n",str);
++		system(str);
++		/* Set destination port */
++		sprintf(str, "echo \"destport=%s\" > /proc/tc3162/speed_test", f_port);
++		printf("sysCmd= %s\n",str);
++		system(str);
++
++	// Keep this procedure if need to process URL case.
++	/*if(f_url == NULL)
++	{
++		// Only IP address, no domain name.
++		sprintf(str, "echo \"destip=%s\" > /proc/tc3162/speed_test", f_ip);
++		printf("sysCmd= %s\n",str);
++		system(str);
++		// Set destination port
++		sprintf(str, "echo \"destport=%s\" > /proc/tc3162/speed_test", f_port);
++		printf("sysCmd= %s\n",str);
++		system(str);
++	}
++	else
++	{
++		// Have domain name.
++		sprintf(str, "echo \"destip=%s\" > /proc/tc3162/speed_test", f_ip);
++		printf("sysCmd= %s\n",str);
++		system(str);
++		// Set destination port
++		sprintf(str, "echo \"destport=%s\" > /proc/tc3162/speed_test", f_port);
++		printf("sysCmd= %s\n",str);
++		system(str);
++		// Set host
++		sprintf(str, "echo \"host=%s\" > /proc/tc3162/speed_test", f_url);
++		printf("sysCmd= %s\n",str);
++		system(str);
++	}*/
++
++	/* Set count way */
++	// sprintf(str, "echo \"countway=3\" > /proc/tc3162/speed_test");
++	// printf("sysCmd= %s\n",str);
++	// system(str);
++
++	/* Check if wandev is "(null)" or not, if it's "(null)", return Error_InitConnectionFailed  */
++	sprintf(str, "cat /proc/tc3162/speed_test > /tmp/speed_test");
++	printf("sysCmd= %s\n",str);
++	system(str);
++	fp = fopen("/tmp/speed_test", "r");
++	if(fp != NULL)
++	{
++		//system("sed -n 10p /tmp/speed_test > /tmp/speed_test_wandev");
++		system("sed -n /wandev/p /tmp/speed_test > /tmp/speed_test_wandev");
++		fclose(fp);
++	}
++
++	fp = fopen("/tmp/speed_test_wandev", "r");
++	if(fp != NULL)
++	{
++		if(fgets(str, sizeof(str), fp) != NULL)
++		{
++			if(strstr(str, "(null)") != NULL)
++			{
++				printf("No WAN interface!!\n");
++				strcpy(DiagnosticsState, "Error_InitConnectionFailed");
++				outputDiagDlData();
++			}
++		}
++		fclose(fp);
++	}
++	
++	//Ralph 20190402: Econet suggest run 4 sessions for downloading to effective use of bandwidth.
++	for(i = 0; i < 4; i++)
++	{
++		//if(f_url == NULL)
++		//{
++			// /* Set host */
++			sprintf(str, "echo \"host=%s:%s\" > /proc/tc3162/speed_test", f_ip,f_port);
++			printf("sysCmd= %s\n",str);
++			system(str);
++			sprintf(str, "echo \"action=GET /%s %s %s\" > /proc/tc3162/speed_test", target_path, f_ip, f_port);
++			printf("sysCmd= %s\n", str);
++			system(str);
++			
++			//When set one by one session, it should first set ROMTime.
++			system("dmesg | tail -n 1 > /var/output");
++			fp = fopen("/var/output", "r");
++			if(fp != NULL)
++			{
++				while(fgets(str, sizeof(str), fp) != NULL)
++				{
++					if(strstr(str, "speed_test_set_action:") != NULL)
++					{
++						// set ROMTime
++						getDateTime(ROMTime);
++						printf("[%s][%d] speed_test started\n",__FUNCTION__,__LINE__);
++					}
++				}
++				fclose(fp);
++			}
++		//}
++		//else
++		//{
++			// /* Set host */
++		//	sprintf(str, "echo \"host=%s\" > /proc/tc3162/speed_test", f_url);
++		//	printf("sysCmd= %s\n",str);
++		//	system(str);
++		//	sprintf(str, "echo \"action=GET /%s %s %s\" > /proc/tc3162/speed_test", target_path, f_url, f_port);
++		//	printf("sysCmd= %s\n", str);
++		//	system(str);
++			// free(f_url);
++		//}
++	}
++	free(f_url);
++	
++	getDateTime(BOMTime);
++
++	/* Get last message of dmesg until matching "speed_test_tcp_close:" */
++	while(1)
++	{
++		system("cat /proc/tc3162/speedtest_result_tr143 > /var/speedtest_result_tr143_tmp");
++		fp = fopen("/var/speedtest_result_tr143_tmp", "r");
++		if(fp != NULL)
++		{
++			fseek(fp, 0, SEEK_END);
++			fsize = ftell(fp);
++			if(fsize != 0)
++			{
++				printf("[%s][%d] speed_test finished 1\n",__FUNCTION__,__LINE__);
++				//fin_msg = true;
++				fclose(fp);
++				break;
++			}
++		}
++		fclose(fp);
++		
++		system("cat /proc/tc3162/speed_test | grep err > /var/speed_test_tmp");
++		fp = fopen("/var/speed_test_tmp", "r");
++		if(fp != NULL)
++		{
++			while(fgets(str, sizeof(str), fp) != NULL)
++			{
++				if(strstr(str, "TCP Conn[0]:") != NULL)
++				{
++					//sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn_0, &diag_state_0, &err_state_0);
++					sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn, &diag_state, &err_state);
++				}
++				else if(strstr(str, "TCP Conn[1]:") != NULL)
++				{
++					//sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn_1, &diag_state_1, &err_state_1);
++					sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn, &diag_state, &err_state);
++				}
++				else if(strstr(str, "TCP Conn[2]:") != NULL)
++				{
++					//sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn_2, &diag_state_2, &err_state_2);
++					sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn, &diag_state, &err_state);
++				}
++				else if(strstr(str, "TCP Conn[3]:") != NULL)
++				{
++					//sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn_3, &diag_state_3, &err_state_3);
++					sscanf(str, "%*[^[][%d]: %d %*[^:]: %d", &conn, &diag_state, &err_state);
++				}
++				
++				//If any diag_state value is 1, mean keep downloading.
++				if((conn == 0 && diag_state == 0) && (conn == 1 && diag_state == 0) && (conn == 2 && diag_state == 0) && (conn == 3 && diag_state == 0))
++				{
++					//All download complete.
++					printf("[%s][%d] speed_test finished 2\n",__FUNCTION__,__LINE__);
++					fin_msg = true;
++					break;
++				}
++				
++			}
++		}
++		fclose(fp);
++		if(fin_msg == true)
++		{
++			printf("%s: Download session complete!!\n", __FUNCTION__);
++			break;
++		}
++	}
++	
++	fp = fopen("/var/speedtest_result_tr143_tmp", "r");
++	if(fp != NULL)
++	{
++		fseek(fp, 0, SEEK_END);
++		fsize = ftell(fp);
++		if(fsize == 0)
++		{
++			printf("!!! speedtest_result_tr143 was empty!!\n");
++			strcpy(DiagnosticsState, "Error_TransferFailed");
++			outputDiagDlData();
++			fclose(fp);
++			goto exit;
++		}
++		
++		fseek(fp, 0, SEEK_SET);
++		while(fgets(str, sizeof(str), fp) != NULL)
++		{
++			
++			if(strstr(str, "TestByteReceived") != NULL)
++			{
++				sscanf(str, "%*[^:]:%*[(]%d%*[)]", &test_byte_recv);
++			}
++			
++			if(strstr(str, "TotalByteReceived") != NULL)
++			{
++				sscanf(str, "%*[^:]:%*[(]%d%*[)]", &total_byte_recv);
++			}
++			
++			if(strstr(str, "TotalByteSend") != NULL)
++			{
++				sscanf(str, "%*[^:]:%*[(]%d%*[)]", send_bytes);
++			}
++			
++			if(strstr(str, "Http Average Rate") != NULL)
++			{
++				sscanf(str, "%*[^:]:%*[(]%d%*[)]", &http_average_rate);
++			}
++			
++			if(strstr(str, "downloadRealLen") != NULL)
++			{
++				sscanf(str, "%*[^:]:%*[(]%d%*[)]", &download_len);
++			}
++		}
++		fclose(fp);
++	}
++	
++	*rev_bytes = (int)((((float)total_byte_recv/1024) * ((float)download_len/1024) / ((float)test_byte_recv/1024)) * 1024);
++	//printf("rev_bytes = %d, total=%f, download=%f, test=%f\n", *rev_bytes, ((float)total_byte_recv/1024), ((float)download_len/1024), ((float)test_byte_recv/1024));
++	TestBytesReceived = download_len;
++	diff_s = download_len / (http_average_rate * 1024);
++	diff_us = (((float)download_len / ((float)http_average_rate * 1024)) * 1000000) - (diff_s * 1000000);
++	//printf("%s: diff_s=%u, diff_us=%06u\n",__FUNCTION__, diff_s, diff_us);
++	calculate_EOMTime_speedtest(EOMTime,diff_s, diff_us);
++	
++		//printf("%s: sec_BOM:%u, usec_BOM:%u, sec_EOM:%u, usec_EOM:%u\n", __FUNCTION__, sec_BOM, usec_BOM, sec_EOM, usec_EOM);
++exit:
++	system("rm /var/output");
++	system("rm /tmp/speed_test");
++	system("rm /tmp/speed_test_wandev");
++	system("rm /var/speedtest_result_tr143_tmp");
++	system("rm /var/speed_test_tmp");
++}
++#endif //PLATFORM_ECONET
++#endif //ZCFG_SUPPORT
+ 
+ 
+ #if ENABLE_FEATURE_WGET_STATUSBAR
+@@ -427,6 +829,7 @@
+ static ALWAYS_INLINE void progress_meter(int flag UNUSED_PARAM) { }
+ #endif
+ 
++bool is_ipv6 = false;
+ 
+ /* IPv6 knows scoped address types i.e. link and site local addresses. Link
+  * local addresses can have a scope identifier to specify the
+@@ -460,6 +863,10 @@
+ 		return;
+ 	}
+ 
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	is_ipv6 = true;
++#endif
++
+ 	/* cp points to "]...", scope points to "%eth0]..." */
+ 	overlapping_strcpy(scope, cp);
+ }
+@@ -1020,7 +1427,11 @@
+ 	target.allocated = NULL;
+ 	server.user = NULL;
+ 	target.user = NULL;
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	int rev_bytes = 0, send_bytes = 0;
++#endif
+ 
++	is_ipv6 = false;
+ 	parse_url(url, &target);
+ 
+ 	/* Use the proxy if necessary */
+@@ -1097,7 +1508,11 @@
+ #if defined(ZCFG_SUPPORT) //TR143
+     strcpy(dstIP, inet_ntoa(lsa->u.sin.sin_addr));
+ 	set_priorityMark(1);
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	set_qdmaRateLimit(0);
++#endif
+ #endif
++
+  establish_session:
+ 	/*G.content_len = 0; - redundant, got_clen = 0 is enough */
+ 	G.got_clen = 0;
+@@ -1123,10 +1538,17 @@
+ 		}
+         if (sfp == NULL)
+         {
++			printf("[%s][%d]: open_socket error!!\n", __FUNCTION__, __LINE__);
+ 			strcpy(DiagnosticsState, "Error_InitConnectionFailed");
+ 			outputDiagDlData();
+         }
+ 		getDateTime(TCPOpenResponseTime);
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++		if(!strcmp(G.speedTestEnable, "1") && !is_ipv6)
++		{
++			goto speed_test;
++		}
++#endif
+ #else
+ 		sfp = open_socket(lsa);
+ #endif
+@@ -1406,24 +1828,65 @@
+ 		/* ftpcmd("QUIT", NULL, sfp); - why bother? */
+ 	}
+ 	fclose(sfp);
+-	
++
+ #if defined(ZCFG_SUPPORT) //TR143:DownloadDiagnstic
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++speed_test:
++	if(!strcmp(G.speedTestEnable, "1") && !is_ipv6)
++	{
++		char *s = xmalloc_sockaddr2dotted(&lsa->u.sa);
++		printf("%s: server and port: %s\n",__FUNCTION__,s);
++		execute_speedtest(s, server.host,target.path, &rev_bytes, &send_bytes);
++		free(s);
++	}
++
++	//printf("%s: rev_bytes=%d, send_bytes=%d\n",__FUNCTION__, rev_bytes, send_bytes);
++	if(!strcmp(G.speedTestEnable, "1") && !is_ipv6)
++	{
++		//TotalBytesReceived = TestBytesReceived = rev_bytes;
++		TotalBytesReceived = rev_bytes;
++		TotalBytesSent = send_bytes;
++	}
++	else
++	{
++		if (option_mask32 & WGET_OPT_INTERFACE) {
++		ifBytesReceivedEnd = getReceiveByte(G.ifName);
++		TotalBytesReceived = (ifBytesReceivedEnd > ifBytesReceivedStart) ? 
++			(ifBytesReceivedEnd - ifBytesReceivedStart) : 0;
++		printf("Receive data end: %ld\n", ifBytesReceivedEnd);
++
++		ifBytesSentEnd = getSentByte(G.ifName);
++		TotalBytesSent = (ifBytesSentEnd > ifBytesSentStart) ?
++				(ifBytesSentEnd - ifBytesSentStart) : 0;
++		//printf("Sent data end: %ld\n", ifBytesSentEnd);
++		}
++	}
++#else
+ 	if (option_mask32 & WGET_OPT_INTERFACE) {
+ 		ifBytesReceivedEnd = getReceiveByte(G.ifName);
+ 		TotalBytesReceived = (ifBytesReceivedEnd > ifBytesReceivedStart) ? 
+ 			(ifBytesReceivedEnd - ifBytesReceivedStart) : 0;
+ 		printf("Receive data end: %ld\n", ifBytesReceivedEnd);
+ 
+-                ifBytesSentEnd = getSentByte(G.ifName);
+-                TotalBytesSent = (ifBytesSentEnd > ifBytesSentStart) ?
+-                        (ifBytesSentEnd - ifBytesSentStart) : 0;
+-                //printf("Sent data end: %ld\n", ifBytesSentEnd);
++		ifBytesSentEnd = getSentByte(G.ifName);
++		TotalBytesSent = (ifBytesSentEnd > ifBytesSentStart) ?
++				(ifBytesSentEnd - ifBytesSentStart) : 0;
++		//printf("Sent data end: %ld\n", ifBytesSentEnd);
+ 	}
++#endif
+ #ifdef ZYXEL_DL_DIAG_CALCULATION
+    	EOMTimeMs = getDateTime(EOMTime);
+ #else
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	if(!strcmp(G.speedTestEnable, "0") && !is_ipv6)
++	{
++		//Get user-space time
++		getDateTime(EOMTime);
++	}
++#else
+ 	getDateTime(EOMTime);
+ #endif
++#endif
+ 
+ 	outputDiagDlData();
+ #endif
+@@ -1463,6 +1926,9 @@
+         "interfaceName"      Required_argument "i"
+         "DSCP"               Required_argument "d"
+         "ethernetPriority"   Required_argument "M"
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++        "speedTestEnable"    Required_argument "E"
++#endif //PLATFORM_ECONET
+ #endif
+ 		;
+ #endif
+@@ -1486,11 +1952,18 @@
+ #endif
+ 	opt_complementary = "-1" IF_FEATURE_WGET_TIMEOUT(":T+") IF_FEATURE_WGET_LONG_OPTIONS(":\xfe::");
+ #if defined(ZCFG_SUPPORT) //TR143
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	getopt32(argv, "csqO:P:Y:U:T:i:wd:M:E:R:" /*ignored:*/ "t:",
++#else
+ 	getopt32(argv, "csqO:P:Y:U:T:i:wd:M:R:" /*ignored:*/ "t:",
++#endif
+ 		&G.fname_out, &G.dir_prefix,
+ 		&G.proxy_flag, &G.user_agent,
+ 		IF_FEATURE_WGET_TIMEOUT(&G.timeout_seconds) IF_NOT_FEATURE_WGET_TIMEOUT(NULL),
+ 		&G.ifName, &G.dscp, &G.ethernetPriority,
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++		&G.speedTestEnable,
++#endif //PLATFORM_ECONET
+ 		NULL /* -t RETRIES */
+ 		IF_FEATURE_WGET_LONG_OPTIONS(, &headers_llist)
+ 		IF_FEATURE_WGET_LONG_OPTIONS(, &G.post_data)
+@@ -1498,6 +1971,10 @@
+ 
+ 	ipDscp = (G.dscp) ? xatou_range(G.dscp, 0, 255) : 0;
+ 	printf("Dscp: %u\n", ipDscp);
++#if defined(ZYXEL_DIAGNOSTIC_SPEEDTEST) && defined(PLATFORM_ECONET) && defined(TC_SDK_7_3_207_4)
++	speedTestEnable = (G.speedTestEnable) ? xatou_range(G.speedTestEnable, 0, 255) : 0;
++	printf("speedTestEnable: %u\n", speedTestEnable);
++#endif //PLATFORM_ECONET
+ 
+ #else
+ 	getopt32(argv, "csqO:P:Y:U:T:" /*ignored:*/ "t:",
+@@ -1553,7 +2030,6 @@
+ 		/* compat with wget: -O FILE can overwrite */
+ 		G.o_flags = O_WRONLY | O_CREAT | O_TRUNC;
+ 	}
+-
+ 	while (*argv)
+ 		download_one_url(*argv++);
+ 

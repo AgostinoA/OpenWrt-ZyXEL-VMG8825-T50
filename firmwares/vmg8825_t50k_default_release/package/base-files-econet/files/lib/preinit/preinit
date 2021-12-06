@@ -1,0 +1,60 @@
+#!/bin/sh
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+pi_ifname=
+pi_ip=192.168.1.1
+pi_broadcast=192.168.1.255
+pi_netmask=255.255.255.0
+
+fs_failsafe_ifname=
+fs_failsafe_ip=192.168.1.1
+fs_failsafe_broadcast=192.168.1.255
+fs_failsafe_netmask=255.255.255.0
+
+fs_failsafe_wait_timeout=2
+
+pi_suppress_stderr="y"
+pi_init_suppress_stderr="y"
+pi_init_path="/bin:/sbin:/usr/bin:/usr/sbin"
+pi_init_cmd="/sbin/init"
+
+KERNELVER=`uname -r`
+
+# get new setting for above variables from /lib/preinit/00_preinit.conf if file exist.
+[ -e /lib/preinit/00_preinit.conf ] && . /lib/preinit/00_preinit.conf
+
+# mount /proc, /sys & /tmp
+mount -o noatime -t proc proc /proc
+mount -o noatime -t sysfs sysfs /sys
+pi_size=$(awk '/MemTotal:/ {l=5242880;mt=($2*1024);print((s=mt/2)<l)&&(mt>l)?mt-l:s}' /proc/meminfo)
+mount -o noatime -t tmpfs -o size=$pi_size,nosuid,nodev,mode=1777 tmpfs /tmp
+#mkdir -p /tmp/var
+
+# create device nodes
+if [ "$KERNELVER" = "3.18.21" ];then
+# For Econet SDK 7.3.245.300 with new kernel, let /dev use devtmpfs, not tmpfs.
+mount -t devtmpfs devtmpfs /dev
+else
+mount -t tmpfs -o noatime,mode=0755,size=512K tmpfs /dev
+fi
+if [ -x /lib/preinit/makeDevNodes.sh ]; then
+	/lib/preinit/makeDevNodes.sh
+else
+	echo "!!! can't create device nodes, system halt..."
+	while true; do :; done
+fi
+[ -x /lib/preinit/makeExtDevNodes.sh ] && /lib/preinit/makeExtDevNodes.sh
+[ -d /dev/shm ] || mkdir -p /dev/shm
+[ -d /dev/pts ] || mkdir -p /dev/pts
+mount -o noatime -t devpts devpts /dev/pts
+
+# init console
+exec </dev/console >/dev/console 2>/dev/console
+
+# prepare /etc
+cp -a /usr/etc /tmp
+echo "**************prepare var*****************"
+cp -a /usr/var /tmp
+
+# run init
+exec env - PATH=$pi_init_path $pi_init_env $pi_init_cmd

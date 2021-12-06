@@ -1,0 +1,109 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2018-05-25 15:47:54.048086355 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2018-05-25 15:47:54.144086355 +0800
+@@ -4454,7 +4454,7 @@
+ 	char lst[5] = {0};
+ 	char clientBuf[5] = {0};
+ 	char cmd[64] = {0};
+-	int clientNum = 0;
++	int clientNum = 0, ssid_attr = 0;
+ 	char tmp[256] = {0}, *pch = NULL;
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, wifiSsid)) != ZCFG_SUCCESS) {
+@@ -4475,6 +4475,12 @@
+ 		return ret;
+ 	}
+ 
++	ssid_attr = json_object_get_int(json_object_object_get(ssidJobj, "X_ZYXEL_Attribute"));
++	if(ssid_attr != 0){
++		json_object_put(ssidJobj);
++		return ZCFG_INVALID_OBJECT;
++	}
++
+ 	if((ret = feObjJsonGet(RDM_OID_WIFI_SSID_STAT, &ssidIid, &ssidStatsJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.SSID.i.Stats Fail\n", __FUNCTION__);
+ 		json_object_put(ssidJobj);
+@@ -4567,6 +4573,13 @@
+ 			paramList++;
+ 			continue;
+ 		}
++#else
++		if((paramValue != NULL) && !strcmp(paramList->name, "MaxBitRate")){
++			paramValue = json_object_object_get(radioJobj, "X_ZYXEL_MaxBitRate");
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
+ #endif
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -4927,9 +4940,18 @@
+ }
+ 
+ #define WIFI24_FIRST_AP  1
++#if defined(TOTAL_INTERFACE_24G)
++#define WIFI24_LAST_AP  TOTAL_INTERFACE_24G
++#else
+ #define WIFI24_LAST_AP  4
+-#define WIFI5_FIRST_AP  5
++#endif
++
++#define WIFI5_FIRST_AP  (WIFI24_LAST_AP+1)
++#if defined(TOTAL_INTERFACE_5G)
++#define WIFI5_LAST_AP  (WIFI24_LAST_AP+TOTAL_INTERFACE_5G)
++#else
+ #define WIFI5_LAST_AP  8
++#endif
+ 
+ #define BANDWIDTH24_20Mhz { 1, 13};
+ #define BANDWIDTH24_L40Mhz { 1, 9};
+@@ -5144,7 +5166,7 @@
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	int wepKeyLen = 0, wepKey64Len = 0, chan = 0;
++	int wepKeyLen = 0, wepKey64Len = 0, chan = 0, ssid_attr = 0;
+ 	wlanChanStat ret_chan;
+ 	struct json_object *wepKey = NULL, *wepKey64 = NULL;
+ 	bool apWpsEnable = false;
+@@ -5179,6 +5201,12 @@
+ 		return ret;
+ 	}
+ 
++	ssid_attr = json_object_get_int(json_object_object_get(ssidJobj, "X_ZYXEL_Attribute"));
++	if(ssid_attr != 0){
++		json_object_put(ssidJobj);
++		return ZCFG_INVALID_OBJECT;
++	}
++
+ 	strcpy(wifiRadio, json_object_get_string(json_object_object_get(ssidJobj, "LowerLayers")));
+ 	IID_INIT(radioIid);
+ 	radioIid.level = 1;
+@@ -5390,6 +5418,12 @@
+ 				goto finish;
+ 			}
+ 		}
++#else
++		if(!strcmp(paramList->name, "MaxBitRate")){
++			json_object_object_add(radioJobj, "X_ZYXEL_MaxBitRate", JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
+ #endif
+ 
+ 		if(paramValue != NULL) {
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2018-05-25 15:47:54.112086355 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2018-05-25 15:48:38.612086355 +0800
+@@ -166,6 +166,9 @@
+ ifeq ($(CONFIG_ZYXEL_SONIQ),y)
+     CFLAGS += -DBUILD_SONIQ
+ endif
++#SONiQ used but for all projects
++CFLAGS += -DTOTAL_INTERFACE_24G=$(CONFIG_ZYXEL_WIFI_NUM_OF_24G_SSID_INTERFACE)
++CFLAGS += -DTOTAL_INTERFACE_5G=$(CONFIG_ZYXEL_WIFI_NUM_OF_5G_SSID_INTERFACE)
+ 
+ #ONESSID
+ ifeq ($(CONFIG_ZYXEL_ONESSID),y)

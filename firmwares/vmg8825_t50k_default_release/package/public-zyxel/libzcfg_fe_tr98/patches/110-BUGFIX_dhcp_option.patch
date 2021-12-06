@@ -1,0 +1,145 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-03-17 20:22:58.526787838 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-03-17 20:22:58.550787838 +0800
+@@ -3264,12 +3264,20 @@
+ 			zcfg_offset_t linkOid = 0;
+ 			int applied = 0;
+ 
++#if 0
+ 			//Retrieve tr181 link with InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i
+ 			strcpy(tr98TmpName, tr98FullPathName);
+ 			ptr = strstr(tr98TmpName, ".WANConnectionDevice");
+ 			*ptr = '\0';
+ 
+ 			/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++#endif
++			//Retrieve tr181 link with InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i
++			strcpy(tr98TmpName, tr98FullPathName);
++			ptr = strstr(tr98TmpName, ".DHCPClient");
++			*ptr = '\0';
++
++			/* tr98TmpName will be InternetGatewayDevice.WANDevice.i.WANIPConnection.i */
+ 			if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wanIntfName)) != ZCFG_SUCCESS) {
+ 				zcfgFeJsonObjFree(optObj);
+ 				return ret;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-03-17 20:22:58.482787837 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-03-17 20:23:14.726802000 +0800
+@@ -207,7 +207,16 @@
+ #define TR181_STATUS_UP "Up"
+ 
+ /*
+- * retObj !=0 means it wants to retrieve obj
++ * zcfgFeTr181WanSetLink is generic interface object enable/disable routine
++ *
++ * wanLinkName: interface stack to enable/disable, 
++ *            as DSL.Channel.i, IP.Interface.i, Ethernet.Link.i, ATM.Link.i, PTM.Link.i
++ * set: true is enable, false is disable
++ * retObj: means it could return retrieved object, once !=0
++ * retObjIndex: means it could return object index, once !=0
++ * applied: return whether demand is applied
++ *
++ * Return: 'Object Identity' it is applied while not zero
+  */
+ zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied)
+ {
+@@ -218,36 +227,54 @@
+ 	bool linkParmStatus;
+ 	char hLIntfName[100];
+ 
++	if(!applied) {
++		zcfgLog(ZCFG_LOG_INFO, "%s : no 'applied' parameter\n", __FUNCTION__);
++		return 0;
++	}
++
+ 	if(retObj) *retObj = NULL;
+ 
+ 	*applied = 0;
+ 
+ 	if(retObjIndex) {
+ 		linkIid = retObjIndex;
+-	}else linkIid = (objIndex_t *)malloc(sizeof(objIndex_t));
++	}
++	else linkIid = (objIndex_t *)malloc(sizeof(objIndex_t));
+ 
+ 	memset(linkIid, 0, sizeof(objIndex_t));
+ 
+-	if(strstr(wanLinkName, "DSL.Channel")) {
++	if(strstr(wanLinkName, "DSL.Channel") || strstr(wanLinkName, "Ethernet.Link")) {
+ 		memset(hLIntfName, 0, sizeof(hLIntfName));
+ 		if(zcfgFeTr181IfaceStackHigherLayerGet(wanLinkName, hLIntfName) ==  ZCFG_SUCCESS) {
+ 			wanLinkName = hLIntfName;
+-		}else return 0;
++		}
++		else return 0;
++	}
++	else {
++		//might recognize another
+ 	}
+ 
+-	if(strstr(wanLinkName, "Ethernet.Link")) {
++	if(strstr(wanLinkName, "IP.Interface")) {
++		sscanf(wanLinkName, "IP.Interface.%hhu", &linkIid->idx[0]);
++		linkOid = RDM_OID_IP_IFACE;
++		zcfgLog(ZCFG_LOG_INFO, "%s : set IP.Interface.%d\n", __FUNCTION__, linkIid->idx[0]);
++	}
++	else if(strstr(wanLinkName, "Ethernet.Link")) {
+ 		sscanf(wanLinkName, "Ethernet.Link.%hhu", &linkIid->idx[0]);
+ 		linkOid = RDM_OID_ETH_LINK;
+ 		zcfgLog(ZCFG_LOG_INFO, "%s : set Ethernet.Link.%d\n", __FUNCTION__, linkIid->idx[0]);
+-	} else if(strstr(wanLinkName, "ATM.Link")) {
++	}
++	else if(strstr(wanLinkName, "ATM.Link")) {
+ 		sscanf(wanLinkName, "ATM.Link.%hhu", &linkIid->idx[0]);
+ 		linkOid = RDM_OID_ATM_LINK;
+ 		zcfgLog(ZCFG_LOG_INFO, "%s : set ATM.Link.%d\n", __FUNCTION__, linkIid->idx[0]);
+-	} else if(strstr(wanLinkName, "PTM.Link")) {
++	}
++	else if(strstr(wanLinkName, "PTM.Link")) {
+ 		sscanf(wanLinkName, "PTM.Link.%hhu", &linkIid->idx[0]);
+ 		linkOid = RDM_OID_PTM_LINK;
+ 		zcfgLog(ZCFG_LOG_INFO, "%s : set PTM.Link.%d\n", __FUNCTION__, linkIid->idx[0]);
+-	}else {
++	}
++	else {
+ 		//might recognize another
+ 
+ 		return 0;
+@@ -264,7 +291,7 @@
+ 
+ 	paramStr = json_object_get_string(json_object_object_get((struct json_object *)linkObj, "Status"));
+ 	linkParmStatus = (strstr(paramStr, TR181_STATUS_UP)) ? true : false;
+-	printf("%s: set link %d, %d\n", __FUNCTION__, linkParmStatus, set);
++	printf("%s: set %s %d, %d\n", __FUNCTION__, wanLinkName, linkParmStatus, set);
+ 	
+ 	if(linkParmStatus == set) {
+ 		if(retObj) *retObj = linkObj;
+@@ -272,20 +299,23 @@
+ 
+ 		if(!retObjIndex) free(linkIid);
+ 
+-	}else {
++	}
++	else {
+ 		zcfgRet_t ret = ZCFG_SUCCESS;
+ 		setLinkObjParm(linkObj, set);
+ 		//ret = zcfgFeObjStructSet(linkOid, linkIid, (void *)linkObj, NULL);
+ 		ret = zcfgFeObjJsonSet(linkOid, linkIid, (struct json_object *)linkObj, NULL);
+ 		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-			zcfgLog(ZCFG_LOG_ERR, "%s : Set Link fail\n", __FUNCTION__);
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set %s fail\n", __FUNCTION__, wanLinkName);
+ 			relObj(linkObj);
+ 			linkOid = 0;
+-		}else {
++		}
++		else {
+ 			if(retObj) *retObj = linkObj;
+ 			else relObj(linkObj);
+ 			
+ 			*applied = 1;
++			zcfgLog(ZCFG_LOG_INFO, "%s : Set %s complete\n", __FUNCTION__, wanLinkName);
+ 		}
+ 		if(!retObjIndex) free(linkIid);
+ 	}

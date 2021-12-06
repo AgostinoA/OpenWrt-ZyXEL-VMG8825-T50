@@ -1,0 +1,235 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2014-06-27 11:32:57.794636159 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2014-06-27 11:36:13.158639823 +0800
+@@ -56,6 +56,159 @@
+ 	return ret;	
+ }
+ 
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.Hosts
++
++    Related object in TR181:
++    Device.Hosts
++*/
++zcfgRet_t lanDevHostsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	char tr181Name[32] = {0};
++	char tr98TmpName[32] = {0};
++	char mappingPathName[32] = {0};
++	char higherLayerPath[32] = {0};
++	char *ptr = NULL;
++	uint32_t hostNum = 0;
++	rdm_HostsHost_t *stHost = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++	
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".Hosts");
++	*ptr = '\0';
++	
++	/* mappingPathName will be Ethernet.Link.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS) {
++		/*No such object*/
++		printf("No such object\n");
++		return ret;
++	}
++	
++	strcpy(tr181Name, mappingPathName);
++	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
++		return ret;
++		
++	if(strstr(higherLayerPath, "IP.Interface") != NULL) {
++		IID_INIT(objIid);
++		objIid.level = 1;
++		
++		while(feObjStructGetNext(RDM_OID_HOSTS_HOST, &objIid, (void **)&stHost, updateFlag) == ZCFG_SUCCESS){
++			if(strcmp(stHost->Layer3Interface, higherLayerPath) == 0){
++				hostNum++;
++			}
++			zcfgFeObjStructFree(stHost);
++		}
++	}
++	
++	*tr98Jobj = json_object_new_object();
++	json_object_object_add(*tr98Jobj, "HostNumberOfEntries", json_object_new_int(hostNum));
++
++	return ZCFG_SUCCESS;
++}
++
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.Hosts.Host.i
++
++    Related object in TR181:
++    Device.Hosts.Host.i
++    Device.Hosts.Host.i.IPv4Address.i
++    Device.Hosts.Host.i.IPv6Address.i
++*/
++zcfgRet_t lanDevHostObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid, hostIid;
++	tr98Parameter_t *paramList = NULL;
++	char tr181Name[32] = {0};
++	char tr98TmpName[128] = {0};
++	char higherLayerPath[32] = {0};
++	char mappingPathName[32] = {0};
++	char hostName[128] = {0};
++	char *ptr = NULL;
++	char paramName[64] = {0};
++	int idx = 0;
++	uint32_t hostNum = 0;
++	struct json_object *hostJobj = NULL;
++	struct json_object *paramValue = NULL;
++	rdm_HostsHost_t *stHost = NULL;
++	
++	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++	
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".Hosts");
++	*ptr = '\0';
++	
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++		return ret;
++	}
++	
++	strcpy(tr181Name, mappingPathName);
++	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
++		return ret;
++		
++	if(strstr(higherLayerPath, "IP.Interface") != NULL) {
++		IID_INIT(objIid);
++		IID_INIT(hostIid);
++		objIid.level = 1;
++		sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.Hosts.Host.%d", &idx);
++		
++		while(feObjStructGetNext(RDM_OID_HOSTS_HOST, &objIid, (void **)&stHost, updateFlag) == ZCFG_SUCCESS){
++			if(strcmp(stHost->Layer3Interface, higherLayerPath) == 0){
++				hostNum++;
++				if(idx == hostNum) {
++					hostIid = objIid;
++					zcfgFeObjStructFree(stHost);
++					break;
++				}
++			}
++			zcfgFeObjStructFree(stHost);
++		}
++	}
++	else
++		return;
++	
++	if((ret = feObjJsonGet(RDM_OID_HOSTS_HOST, &hostIid, &hostJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++	
++	/*fill up tr98 Host object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(hostJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*special case*/
++		if(!strcmp(paramList->name, "MACAddress")) {
++			paramValue = json_object_object_get(hostJobj, "PhysAddress");
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "InterfaceType")) {
++			paramValue = json_object_object_get(hostJobj, "X_ZYXEL_ConnectionType");
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++	/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++	
++	json_object_put(hostJobj);
++	
++	return ZCFG_SUCCESS;
++}
++
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i
+ 
+     Related object in TR181:
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2014-06-27 11:32:57.706636157 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2014-06-27 11:36:31.182640161 +0800
+@@ -23,8 +23,13 @@
+ extern tr98Parameter_t para_LanDevWlanCfgWps[];
+ extern tr98Parameter_t para_WepKey[];
+ extern tr98Parameter_t para_Psk[];
++extern tr98Parameter_t para_Hosts[];
++extern tr98Parameter_t para_Host[];
+ 
+ /*Handler Function*/
++extern zcfgRet_t lanDevHostsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t lanDevHostObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++
+ extern zcfgRet_t lanDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevObjAdd(char *tr98FullPathName, int *idx);
+ extern zcfgRet_t lanDevObjDel(char *tr98FullPathName);
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2014-06-27 11:32:57.794636159 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2014-06-27 11:37:14.302640970 +0800
+@@ -303,3 +303,22 @@
+ 	{ "AssociatedDeviceMACAddress", PARAMETER_ATTR_WRITE, 19, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
++
++tr98Parameter_t para_Hosts[] = {
++	{ "HostNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Host[] = {
++	{ "IPAddress", PARAMETER_ATTR_READONLY, 46, json_type_string},
++	{ "AddressSource", PARAMETER_ATTR_READONLY, 7, json_type_string},
++	{ "LeaseTimeRemaining", PARAMETER_ATTR_READONLY, 0, json_type_int},
++	{ "MACAddress", PARAMETER_ATTR_READONLY, 18, json_type_string},
++	{ "VendorClassID", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "ClientID", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ "UserClassID", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ "HostName", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "InterfaceType", PARAMETER_ATTR_READONLY, 17, json_type_string},
++	{ "Active", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ NULL, 0, 0, 0}
++};
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2014-06-27 11:32:57.806636159 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2014-06-27 11:37:40.238641456 +0800
+@@ -107,8 +107,8 @@
+ #define TR98_PSK                      "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.PreSharedKey.i"
+ #define TR98_AP_WMM_PARAM             "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.APWMMParameter.i"
+ #define TR98_STA_WMM_PARAM            "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.STAWMMParameter.i"
+-#define TR98_HOSTS                    "InternetGatewayDevice.LANDevice.i.Hosts.i"
+-#define TR98_HOST                     "InternetGatewayDevice.LANDevice.i.Hosts.i.Host.i"
++#define TR98_HOSTS                    "InternetGatewayDevice.LANDevice.i.Hosts"
++#define TR98_HOST                     "InternetGatewayDevice.LANDevice.i.Hosts.Host.i"
+ #define TR98_LAN_INTF                 "InternetGatewayDevice.LANInterfaces"
+ #define TR98_LAN_INTF_ETH_INTF_CONF   "InternetGatewayDevice.LANInterfaces.LANEthernetInterfaceConfig.i"
+ #define TR98_USB_INTF_CONF            "InternetGatewayDevice.LANInterfaces.USBInterfaceConfig.i"
+@@ -271,8 +271,8 @@
+ {TR98_PSK,                      ATTR_INDEXNODE, para_Psk,               lanDevWlanCfgPskObjGet,  lanDevWlanCfgPskObjSet, NULL,             NULL,            NULL},
+ //{TR98_AP_WMM_PARAM,             ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_STA_WMM_PARAM,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_HOSTS,                    ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_HOST,                     ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_HOSTS,                    ATTR_INDEXNODE, para_Hosts,				lanDevHostsObjGet,			NULL,                   NULL,             NULL,            NULL},
++{TR98_HOST,                     ATTR_INDEXNODE, para_Host,				lanDevHostObjGet,			NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_INTF,                 0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_INTF_ETH_INTF_CONF,   ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_USB_INTF_CONF,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},

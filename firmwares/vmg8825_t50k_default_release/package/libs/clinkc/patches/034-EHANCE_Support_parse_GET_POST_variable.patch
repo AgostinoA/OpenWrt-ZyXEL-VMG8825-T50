@@ -1,0 +1,259 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-08-05 10:14:58.624930112 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-08-05 10:14:58.636929962 +0800
+@@ -520,6 +520,8 @@
+ #define cg_http_request_getifname(httpReq) cg_socket_getifname(httpReq->sock)
+ #endif
+ #ifdef ZYXEL_PATCH  /*for form data, ZyXEL 2014*/
++#define cg_http_request_getval_GET(httpReq, name) cg_http_vallist_getvalue(httpReq->form._GET, name)
++#define cg_http_request_getval_POST(httpReq, name) cg_http_vallist_getvalue(httpReq->form._POST, name)
+ #define cg_http_request_get_GET(httpReq, name) (CgHttpVal *)cg_http_vallist_get(httpReq->form._GET, name)
+ #define cg_http_request_get_POST(httpReq, name) (CgHttpVal *)cg_http_vallist_get(httpReq->form._POST, name)
+ #define cg_http_request_get_FILE(httpReq, name) (CgFile *)cg_filelist_getBy_valname(httpReq->form._FILE, name)
+@@ -734,7 +736,9 @@
+ void cg_http_val_setvalue(CgHttpVal *val, char *value);
+ void cg_http_val_appendvalue(CgHttpVal *val, char *value, int len);
+ char *cg_http_val_getvalue(CgHttpVal *val);
++void cg_http_parse_val(char *, CgHttpValList **);
+ 
++void cg_http_request_parse_uri(CgHttpRequest *);
+ /******************************************
+ * List for CgHttpVal
+ *******************************************/
+@@ -749,7 +753,7 @@
+ CgHttpVal *cg_http_vallist_get(CgHttpValList *valList, char *name);
+ void cg_http_vallist_set(CgHttpValList *valList, char *name, char *value);
+ char *cg_http_vallist_getvalue(CgHttpValList *valList, char *name);
+-
++char *cg_http_vallist_dump(CgHttpValList *valList);
+ #endif
+ 
+ #ifdef  __cplusplus
+Index: clinkc/src/cybergarage/http/chttp_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_request.c	2014-08-05 10:14:58.600930414 +0800
++++ clinkc/src/cybergarage/http/chttp_request.c	2014-08-05 11:40:41.628261747 +0800
+@@ -852,6 +852,8 @@
+ 
+ #ifdef ZYXEL_PATCH
+ 	/*File upload preprocessor*/
++	cg_http_request_parse_uri(httpReq); //support parse GET variable
++	
+ 	method = cg_http_request_getmethod(httpReq);
+ 	if((method && strcmp(method, CG_HTTP_GET)) && //method != GET
+ 		(cg_http_packet_hasheader((CgHttpPacket *)httpReq, CG_HTTP_CONTENT_LENGTH) ||
+@@ -881,6 +883,8 @@
+ 		}
+ 		else{
+ 			cg_http_packet_read_body((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf));
++			if(contentType && !strcmp(contentType, HTTP_POST_FORM_URLENCODE))
++				cg_http_request_parse_content(httpReq);
+ 		}
+ 			
+ 		if(contentType) free(contentType);
+@@ -1084,3 +1088,46 @@
+ 	
+ 	cg_log_debug_l4("Leaving...\n");
+ }
++
++#ifdef ZYXEL_PATCH
++/*******************************************
++* cg_http_request_parse_uri
++********************************************/
++void cg_http_request_parse_uri(CgHttpRequest *httpReq)
++{
++	char *uri = NULL, *valStr = NULL, *tmp = NULL;
++	
++	if(!httpReq) return;
++	
++	uri = cg_http_request_geturi(httpReq);
++	if(uri){
++		if((tmp = strrchr(uri, '?'))){
++			valStr = strdup(tmp+1);
++		}
++		else return;
++	}
++	if(valStr){
++		cg_http_parse_val(valStr, &httpReq->form._GET);
++		free(valStr);
++	}
++}
++
++void cg_http_request_parse_content(CgHttpRequest *httpReq)
++{
++	char *content = NULL, *valStr = NULL;
++	
++	if(!httpReq) return;
++	
++	content = cg_http_request_getcontent(httpReq);
++	if(content){
++		if(*content == '[' || *content == '{' || 
++			!(*content >= 'a' && *content <= 'z') || 
++			!(*content >= 'A' && *content <= 'Z')) return ;
++		valStr = strdup(content);
++	}
++	if(valStr){
++		cg_http_parse_val(valStr, &httpReq->form._POST);
++		free(valStr);
++	}
++}
++#endif
+\ No newline at end of file
+Index: clinkc/src/cybergarage/http/chttp_val.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_val.c	2014-08-05 10:14:58.588930565 +0800
++++ clinkc/src/cybergarage/http/chttp_val.c	2014-08-05 10:14:58.636929962 +0800
+@@ -19,6 +19,70 @@
+ #include <cybergarage/http/chttp.h>
+ #include <cybergarage/util/clog.h>
+ 
++static char hexToDec(char *what) {
++   char digit;
++
++   digit = (what[0] >= 'A' ? ((what[0] & 0xdf) - 'A')+10 : (what[0] - '0'));
++   digit *= 16;
++   digit += (what[1] >= 'A' ? ((what[1] & 0xdf) - 'A')+10 : (what[1] - '0'));
++
++   return (digit);
++}
++
++static void unescapeUrl(char *url) {
++   int x,y,len;
++
++   len = strlen(url);
++
++   for ( x = 0, y = 0; url[y]; x++, y++) {
++      if ( (url[x] = url[y]) == '%' &&
++           y < (len - 2) ) {
++         url[x] = hexToDec(&url[y+1]);
++         y += 2;
++      }
++   }
++   url[x] = '\0';
++}
++
++static void UrlDecode(char *s) {
++   char *pstr = s;
++   if(!s) return;
++   /* convert plus (+) to space (' ') */
++   for ( pstr = s;
++          pstr != NULL && *pstr != '\0';
++          pstr++ )
++      if ( *pstr == '+' ) *pstr = ' ';
++
++   unescapeUrl(s);
++}
++
++void cg_http_parse_val(char *query, CgHttpValList **valList){
++	char *name, *value, *next;
++	CgHttpVal *val = NULL;
++	
++	if(!*valList) *valList = cg_http_vallist_new();
++	
++	for (value = query; value; value = next) {
++		//printf(">>>>  %s\n", value);
++		name = strsep(&value, "=");
++		if (name) {
++			next = value;
++			value = strsep(&next, "&");
++			if (!value) {
++				value = next;
++				next = NULL;
++			}
++			UrlDecode(value);
++			val = cg_http_val_new();
++			cg_http_val_setname(val, name);
++			cg_http_val_setvalue(val, value);
++			cg_http_vallist_add(*valList, val);
++			val = NULL;
++		} else
++			next = NULL;
++	}
++}
++
+ /****************************************
+ * cg_http_val_new
+ ****************************************/
+@@ -50,11 +114,8 @@
+ void cg_http_val_delete(CgHttpVal *val)
+ {
+ 	cg_log_debug_l4("Entering...\n");
+-/*	char *value  = cg_string_getvalue(val->value);
+-	char *name = cg_string_getvalue(val->name);
+-
+-	printf("== Delete Val [name=%s, value=%s, next=0x%x, prev=0x%x] ==\n", 
+-			(name)?name:"NULL", (value)?value:"NULL", val->next, val->prev);*/
++	
++	if(!val) return;
+ 	cg_list_remove((CgList *)val);
+ 	cg_string_delete(val->name);
+ 	cg_string_delete(val->value);
+@@ -70,7 +131,8 @@
+ void cg_http_val_setname(CgHttpVal *val, char *name)
+ {
+ 	cg_log_debug_l4("Entering...\n");
+-
++	
++	if(!val) return;
+ 	cg_string_setvalue(val->name, name);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -84,6 +146,7 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	if(!val) return NULL;
+ 	return cg_string_getvalue(val->name);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -97,6 +160,7 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	if(!val) return ;
+ 	cg_string_setvalue(val->value, value);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -106,6 +170,7 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	if(!val) return ;
+ 	cg_string_naddvalue(val->value, value, len);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -117,7 +182,8 @@
+ char *cg_http_val_getvalue(CgHttpVal *val)
+ {
+ 	cg_log_debug_l4("Entering...\n");
+-
++	
++	if(!val) return NULL;
+ 	return cg_string_getvalue(val->value);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+Index: clinkc/src/cybergarage/http/chttp_val_list.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_val_list.c	2014-08-05 10:14:58.588930565 +0800
++++ clinkc/src/cybergarage/http/chttp_val_list.c	2014-08-05 10:14:58.636929962 +0800
+@@ -123,4 +123,18 @@
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
++
++/****************************************
++* cg_http_vallist_dump
++****************************************/
++char *cg_http_vallist_dump(CgHttpValList *valList)
++{
++	CgHttpVal *val;
++	char *name=NULL, *value=NULL;
++	for (val = cg_http_vallist_gets(valList); val != NULL; val = cg_http_val_next(val)) {
++		name = cg_http_val_getname(val);
++		value = cg_http_val_getvalue(val);
++		printf("CgHttpVal: %s = %s\n", name, value);
++	}
++}
+ #endif
+\ No newline at end of file

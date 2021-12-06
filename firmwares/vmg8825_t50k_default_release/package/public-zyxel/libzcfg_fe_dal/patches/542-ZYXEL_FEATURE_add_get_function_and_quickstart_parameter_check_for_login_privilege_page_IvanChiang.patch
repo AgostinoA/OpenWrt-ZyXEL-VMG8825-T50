@@ -1,0 +1,160 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2018-05-04 16:21:47.094135566 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2018-05-04 16:13:21.531975300 +0800
+@@ -126,6 +126,10 @@
+ CFLAGS += -DZYXEL_WEB_GUI_SHOW_QOS_CLS_TARGET_INTF
+ endif
+ 
++ifeq ($(CONFIG_PACKAGE_webgui_vue),y)
++CFLAGS += -DPACKAGE_WEB_GUI_VUE
++endif
++
+ #ZYXEL_REMOTE_ACCESS_PRIVILEGE
+ ifeq ($(CONFIG_ZYXEL_REMOTE_ACCESS_PRIVILEGE),y)
+ CFLAGS += -DZYXEL_REMOTE_ACCESS_PRIVILEGE
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_loginprivilege.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_loginprivilege.c	2018-05-04 16:21:46.938135565 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_loginprivilege.c	2018-05-04 16:12:01.817703000 +0800
+@@ -26,6 +26,7 @@
+ zcfgRet_t zcfgFeDal_LoginPrivilege_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *loginPrivilegeObj = NULL;
++	struct json_object *loginPrivilegeAccountObj = NULL;
+ 	struct json_object *reqObjectindex = NULL;
+ 	struct json_object *reqObject = NULL;
+ 	objIndex_t loginPrivilegeIid = {0};
+@@ -49,15 +50,16 @@
+ 		loginPrivilegeIid.level = 2;
+ 		ret = zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginPrivilegeIid, &loginPrivilegeObj);
+ 		if(ret == ZCFG_SUCCESS){
+-			reqObject = json_object_array_get_idx(Jobj,2);
++			reqObject = json_object_array_get_idx(Jobj,1);
+ 			enable = json_object_get_boolean(json_object_object_get(reqObject, "Enabled"));
+ 			username = json_object_get_string(json_object_object_get(reqObject, "Username"));
+ 			password = json_object_get_string(json_object_object_get(reqObject, "Password"));
+ #ifndef HAWAIIAN_TELCOM
+ 			oldPassword = json_object_get_string(json_object_object_get(reqObject, "oldPassword"));
+ #endif
+-			enablequickstart = json_object_get_boolean(json_object_object_get(reqObject, "EnableQuickStart"));
+-			
++			if((json_object_object_get(reqObject, "EnableQuickStart"))){
++				enablequickstart = json_object_get_boolean(json_object_object_get(reqObject, "EnableQuickStart"));
++			}
+ 			if(username && password && strlen(username) && strlen(password))
+ 			{
+ #ifndef HAWAIIAN_TELCOM
+@@ -79,11 +81,20 @@
+ 						ret = ZCFG_NOT_FOUND; //GUI use ZCFG_NOT_FOUND to detect oldPw error.
+ 					}
+ 				}
++#ifdef PACKAGE_WEB_GUI_VUE
++				if(ret != ZCFG_SUCCESS){
++					json_object_object_add(reqObject, "__multi_lang_replyMsg", json_object_new_string("zylang.Common.oldpassword_err2"));
++					json_object_array_add(Jobj, reqObject);
++					return ret;
++				}
++#endif
+ 				if(ret == ZCFG_SUCCESS) {
+ 					json_object_object_add(loginPrivilegeObj, "Enabled", json_object_new_boolean(enable));
+ 					json_object_object_add(loginPrivilegeObj, "Username", json_object_new_string(username));
+ 					json_object_object_add(loginPrivilegeObj, "Password", json_object_new_string(password));
+-					json_object_object_add(loginPrivilegeObj, "EnableQuickStart", json_object_new_boolean(enablequickstart));
++					if((json_object_object_get(reqObject, "EnableQuickStart"))){
++						json_object_object_add(loginPrivilegeObj, "EnableQuickStart", json_object_new_boolean(enablequickstart));
++					}
+ 					zcfgFeObjJsonSet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginPrivilegeIid, loginPrivilegeObj, NULL);
+ 				}
+ #else
+@@ -99,16 +110,27 @@
+ 	else if(index0 == 2 || index0 == 3){
+ 		loginPrivilegeIid.idx[0] = index0;
+ 		loginPrivilegeIid.level = 1;
++		reqObject = json_object_array_get_idx(Jobj,1);
++		page = json_object_get_string(json_object_object_get(reqObject, "Page"));
++		enablequickstart = json_object_get_boolean(json_object_object_get(reqObject, "EnableQuickStart"));
+ 		ret = zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP, &loginPrivilegeIid, &loginPrivilegeObj);
+ 		if(ret == ZCFG_SUCCESS){
+-			reqObject = json_object_array_get_idx(Jobj,1);
+-			page = json_object_get_string(json_object_object_get(reqObject, "Page"));
+ 
+ 			json_object_object_add(loginPrivilegeObj, "Page", json_object_new_string(page));
+ 			json_object_object_add(loginPrivilegeObj, "HiddenPage", json_object_new_string(""));
+ 			zcfgFeObjJsonSet(RDM_OID_ZY_LOG_CFG_GP, &loginPrivilegeIid, loginPrivilegeObj, NULL);
+ 		}
+ 
++		if(json_object_object_get(reqObject, "EnableQuickStart")){
++			IID_INIT(loginPrivilegeIid);
++			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginPrivilegeIid, &loginPrivilegeAccountObj)== ZCFG_SUCCESS){
++				if(loginPrivilegeIid.idx[0] == index0){
++					json_object_object_add(loginPrivilegeAccountObj, "EnableQuickStart", json_object_new_boolean(enablequickstart));
++					zcfgFeObjJsonSet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginPrivilegeIid, loginPrivilegeAccountObj, NULL);
++				}
++				zcfgFeJsonObjFree(loginPrivilegeAccountObj);
++			}
++		}
+ #ifdef HAWAIIAN_TELCOM
+ 		//__ZyXEL__, JackYu, modify account also, for HT requires enabling account password modification at login previlige page
+ 		loginPrivilegeIid.idx[0] = index0;
+@@ -142,11 +164,46 @@
+ 
+ }
+ 
++zcfgRet_t zcfgFeDal_LoginPrivilege_Get(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *loginPrivilegeObj = NULL;
++	objIndex_t loginPrivilegeIid = {0};
++	IID_INIT(loginPrivilegeIid);	
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginPrivilegeIid, &loginPrivilegeObj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index0", json_object_new_int(loginPrivilegeIid.idx[0]));
++		json_object_object_add(paramJobj, "Index1", json_object_new_int(loginPrivilegeIid.idx[1]));
++		json_object_object_add(paramJobj, "Enabled", JSON_OBJ_COPY(json_object_object_get(loginPrivilegeObj, "Enabled")));
++		json_object_object_add(paramJobj, "Username", JSON_OBJ_COPY(json_object_object_get(loginPrivilegeObj, "Username")));
++		json_object_object_add(paramJobj, "Password", JSON_OBJ_COPY(json_object_object_get(loginPrivilegeObj, "Password")));
++		json_object_object_add(paramJobj, "EnableQuickStart", JSON_OBJ_COPY(json_object_object_get(loginPrivilegeObj, "EnableQuickStart")));
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(loginPrivilegeObj);
++	}
++	
++	IID_INIT(loginPrivilegeIid);	
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP, &loginPrivilegeIid, &loginPrivilegeObj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index0", json_object_new_int(loginPrivilegeIid.idx[0]));
++		json_object_object_add(paramJobj, "Index1", json_object_new_int(loginPrivilegeIid.idx[1]));
++		json_object_object_add(paramJobj, "Page", JSON_OBJ_COPY(json_object_object_get(loginPrivilegeObj, "Page")));
++		json_object_object_add(paramJobj, "HiddenPage", JSON_OBJ_COPY(json_object_object_get(loginPrivilegeObj, "HiddenPage")));
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(loginPrivilegeObj);
++	}
++	
++	return ret;
++}
+ 
+ zcfgRet_t zcfgFeDalLoginPrivilege(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	if(!strcmp(method, "PUT"))
++	if(!strcmp(method, "PUT")){
+ 		ret = zcfgFeDal_LoginPrivilege_Edit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_LoginPrivilege_Get(Jobj, Jarray, NULL);
++	}
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-05-04 16:21:47.330135567 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-05-04 16:11:01.626449900 +0800
+@@ -346,7 +346,7 @@
+ {"one_connect", 	HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity
+ {"mgmt_srv", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			zcfgFeDalShowMgmtSrv,		"edit|get",			"Remote_MGMT"},
+ {"sp_mgmt_srv", 	SP_MGMT_SRV_param,	zcfgFeDalSPMgmtSrv,		zcfgFeDalShowSPMgmtSrv,		"edit|get",			"SP_Domain"},
+-{"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",				""},//root_only
++{"login_privilege", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit|get",				""},//root_only
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				""},//root_only
+ {"user_account",	USER_ACCOUNT_param, zcfgFeDalUserAccount,	zcfgFeDalShowUserAccount,	"get|add|edit|delete",	"User_Account"}, //temporarily root_only //User_Account
+ {"lanhosts",		NETWORK_MAP_param, zcfgFeDalNetworkMAP,	zcfgFeDalShowNetworkMAP,		"get",				"Status"},

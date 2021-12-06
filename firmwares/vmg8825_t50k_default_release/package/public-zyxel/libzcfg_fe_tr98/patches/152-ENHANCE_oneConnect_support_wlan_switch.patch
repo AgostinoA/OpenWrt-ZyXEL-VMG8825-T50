@@ -1,0 +1,201 @@
+Index: libzcfg_fe_tr98-1.0/oneConnect.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/oneConnect.c	2015-06-22 16:15:57.645678257 +0800
++++ libzcfg_fe_tr98-1.0/oneConnect.c	2015-06-22 16:17:30.996407119 +0800
+@@ -1,6 +1,6 @@
+ #include <json/json.h>
+ #include <sqlite3.h>
+-
++#include <time.h>
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_access.h"
+ #include "zcfg_fe_rdm_string.h"
+@@ -17,9 +17,11 @@
+ 
+ sqlite3 *db = NULL;
+ #define DATABASE_PATH    "/tmp/netprobe.db"
+-
++#define RET_CHECK_TIME	5
+ #define RET_FILE		"/tmp/1905ReturnValue"
+ #define RET_SUCCESS		"00"
++#define POWERON			0
++#define POWEROFF		2
+ 
+ #define FWCHECK			(1 << 0)
+ #define FW_UPGRADE		(1 << 1)
+@@ -98,15 +100,15 @@
+ 
+ zcfgRet_t oneConnectCommand(const char *cmd, const char * alMac){
+ 	FILE *fp = NULL;
+-	char result[16] = {0};
+-	char sql[256] = {0};;
+-	char *tmp = sql;
++	char result[16] = {0}, sql[256] = {0};
+ 	int index = 0;
++	time_t startTime, finTime;
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	char res[16] = {0};
+ 	
+ 	system(cmd);
+ 	
++	startTime = time((time_t *)0);
++	
+ 	while(1) {
+ 		if((fp = fopen(RET_FILE, "r")) != NULL) {
+ 			if(fgets(result, sizeof(result), fp) != NULL ){
+@@ -115,6 +117,13 @@
+ 			}
+ 			fclose(fp);
+ 		}
++		sleep(1);
++		finTime = time((time_t *)0);
++		// check result in five seconds
++		if(difftime(finTime, startTime) >= RET_CHECK_TIME){
++			printf("Can't get any response from network extender which ALMAC is %s\n", alMac);
++			return ZCFG_INTERNAL_ERROR;
++		}		
+ 	}
+ 	
+ 	// the content in RET_FILE is xx\n\0  but we don't need \n
+@@ -154,12 +163,10 @@
+ 	uint32_t hostNum = 0;
+ 	struct json_object *paramValue = NULL;
+ 	rdm_HostsHost_t *stHost = NULL;
+-	char macAddress[65] = {0}; 
+-	char cmd[256] = {0}; 
+-	char alMac[65] = {0}; 
++	char macAddress[65] = {0}, alMac[65] = {0}, cmd[256] = {0}, fwUrl[256] = {0}, media[9] = {0}, media_temp[9] = {0};
++	bool wlPwrOn = false, changePwr = false;
+ 	unsigned int actOption = 0;
+-	char fwUrl[256] = {0};
+-	int urlOption = 0;
++	int urlOption = 0, pwrStatus = 0, index = 0;
+ 	
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
+ 	
+@@ -253,12 +260,6 @@
+ 					}
+ 				}
+ 			}
+-			/*
+-			else if(strcmp(paramList->name, "L2DevCtrl_WiFiEnable") == 0){
+-				if(json_object_get_boolean(paramValue) == true) {
+-					// To Do
+-				}
+-			}*/
+ 			else if(strcmp(paramList->name, "L2DevCtrl_FWCheck") == 0){ 
+ 				if(json_object_get_boolean(paramValue) == true)
+ 					actOption |= FWCHECK;
+@@ -271,7 +272,7 @@
+ 				if(json_object_get_boolean(paramValue) == true)
+ 					actOption |= FW_UPGRADE;
+ 			}
+-			else if(strcmp(paramList->name, "FWUpgrade_URL") == 0){ 
++			else if(strcmp(paramList->name, "L2DevCtrl_FWURL") == 0){ 
+ 				strcpy(fwUrl, json_object_get_string(paramValue));
+ 				if(strcmp(fwUrl, "") == 0){
+ 					strcpy(fwUrl, "NULL");
+@@ -290,10 +291,61 @@
+ 					}
+ 				}
+ 			}
++			else if(strcmp(paramList->name, "L2DevCtrl_WiFiPwr") == 0){
++				if(json_object_get_boolean(paramValue))
++					pwrStatus = POWERON;
++				else
++					pwrStatus = POWEROFF;
++				changePwr = true;
++			}
++			else if(strcmp(paramList->name, "L2DevCtrl_MediaType") == 0){
++				strcpy(media, json_object_get_string(paramValue));
++				
++				if(strcmp(media, "") != 0){
++					for(; index < strlen(media); index++){
++						if(isalpha(media[index]))
++							media_temp[index] = toupper(media[index]);
++						else
++							media_temp[index] = media[index];
++					}
++					memset(media, 0, sizeof(media));
++				}
++			}
+ 		}
+ 		paramList++;
+ 	}
+ 
++// Set wlan power Start-------------------------
++	if(changePwr && (strcmp(media_temp, "") != 0)){
++		if(strncmp(media_temp, "ALL", strlen(media_temp)) == 0)
++			strncpy(media, "0x01ff", sizeof(media));
++		else if(strncmp(media_temp, "2.4G", strlen(media_temp)) == 0)
++			strncpy(media, "0x0103", sizeof(media));
++		else if(strncmp(media_temp, "5G", strlen(media_temp)) == 0)
++			strncpy(media, "0x0105", sizeof(media));
++		else{
++			printf("%s: Unknown mediatype\n", __FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++		
++		if(tr_db_is_subIntf(macAddress, alMac) != 0){
++			printf("can't find ALMac\n");
++			return ZCFG_INTERNAL_ERROR;
++		}
++		
++		if(strchr(alMac, ':') != 0){
++			sprintf(cmd, "/usr/sbin/zy1905App 3 %s 00:00:00:00:00:00 %s %d", alMac, media, pwrStatus);
++			ret = oneConnectCommand(cmd, alMac);
++			printf("%d:zy1905 cmd = %s\n", __LINE__, cmd);
++		}
++		else{
++			printf("%d: Wrong ALMac %s\n", __LINE__, alMac);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++// Set wlan power end-------------------------	
++	
+ // Firmware Control Start-------------------------	
+ 	if(actOption != 0) {	
+ 		if(tr_db_is_subIntf(macAddress, alMac) != 0){
+@@ -367,7 +419,17 @@
+ 			paramList++;
+ 			continue;
+ 		}
+-		else if(!strcmp(paramList->name, "FWUpgrade_URL")) {
++		else if(!strcmp(paramList->name, "L2DevCtrl_FWURL")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_WiFiPwr")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_MediaType")) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
+ 			paramList++;
+ 			continue;
+Index: libzcfg_fe_tr98-1.0/oneConnect_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/oneConnect_parameter.h	2015-06-22 16:15:57.645678257 +0800
++++ libzcfg_fe_tr98-1.0/oneConnect_parameter.h	2015-06-22 16:15:57.741726260 +0800
+@@ -1,13 +1,16 @@
+ #ifndef __ONECONNECT_PARAMETER_H__
+ #define __ONECONNECT_PARAMETER_H__
+ tr98Parameter_t para_OneConnectExt[] = {
++	{ "L2DevCtrl_Broadcast", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_WiFiEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_Reboot", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_Reset", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "L2DevCtrl_WiFiEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_FWCheck", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_FWDownload", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "L2DevCtrl_FWUpgrade", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "FWUpgrade_URL", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "L2DevCtrl_FWURL", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "L2DevCtrl_WiFiPwr", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_MediaType", PARAMETER_ATTR_WRITE, 8, json_type_string},
+ 	/*{ "ModelName", PARAMETER_ATTR_READONLY, 256, json_type_string},
+ 	{ "FWUpgradeState", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "NewFWUpgradeVersion", PARAMETER_ATTR_READONLY, 256, json_type_string},*/

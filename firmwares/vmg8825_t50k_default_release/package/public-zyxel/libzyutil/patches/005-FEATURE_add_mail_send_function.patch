@@ -1,0 +1,172 @@
+Index: libzyutil-1.0/common.c
+===================================================================
+--- libzyutil-1.0.orig/common.c	2014-12-25 11:47:48.861726438 +0800
++++ libzyutil-1.0/common.c	2014-12-25 11:47:48.873726438 +0800
+@@ -4,12 +4,18 @@
+ #include <sys/types.h>
+ #include <signal.h>
+ #include <fcntl.h>
++#include <json/json.h>
++#include <stdio.h>
++#include <time.h>
+ 
+ #include <ctype.h>
+ #include <unistd.h>
+ 
+ #include "zcfg_common.h"
+ #include "zcfg_debug.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_be_rdm_access.h"
+ 
+ #define MID_SIZE_MAX  32
+ 
+@@ -510,3 +516,103 @@
+ 	return ZCFG_SUCCESS;
+ }
+ #endif
++
++
++/**
++ * zyUtilMailSend function parse receive massage and send email
++ *
++ * const char *msg retable json format string
++ * json format string need "Event" key for event
++ * Event string format:
++ *             MAILSEND_EVENT_<your definition>
++ *
++ * MAILSEND_EVENT_3G_UP: 3G connection event
++ * MAILSEND_EVENT_WIFI_UP: Wifi connection event
++ * MAILSEND_EVENT_LOG_ALERT: Log alert event
++ *
++ ***/
++zcfgRet_t zyUtilMailSend(const char *msg) {
++	struct json_object *sendObj = NULL;
++	struct json_object *value = NULL;
++	const char sysCmd[2084] = {0};
++	const char *eventType;
++
++	time_t time_stamp = time(NULL);
++	struct tm *tPtr = localtime(&time_stamp);
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++
++	// Create a file and waiting for entering content, if file create fail
++	// the mail will send only subject without body.
++	FILE *mailbody = fopen("/var/tmp/mailbody", "w");
++	if(!mailbody)
++		printf("Cannot create file for mail body, mail will send without content!");
++
++	//printf("Got message: %s\n", msg);
++	sendObj = json_tokener_parse(msg);
++
++	printf("Sending Email...\n");
++	value = json_object_object_get(sendObj, "Event");
++	eventType = json_object_get_string(value);
++
++	printf("%s\n", asctime(tPtr));
++	if(strcmp(eventType, "MAILSEND_EVENT_3G_UP") == 0) {
++		// Fill in the mail content and replace words here.
++		fprintf(mailbody, "3G event\n\n");
++		fprintf(mailbody, "%s\n", json_object_get_string(json_object_object_get(sendObj, "body")));
++		fprintf(mailbody, "\nSend at\t%s", asctime(tPtr));
++		fclose(mailbody);
++
++		sprintf(sysCmd, "mailsend -f %s -smtp %s -domain %s -t %s -cs \"utf-8\" -starttls -auth -user %s -pass %s -sub \"%s\" "
++				"-mime-type \"text/plain\" -msg-body \"/var/tmp/mailbody\"",
++				json_object_get_string(json_object_object_get(sendObj, "mailfrom")),
++				json_object_get_string(json_object_object_get(sendObj, "SMTP")),
++				json_object_get_string(json_object_object_get(sendObj, "SMTP")),
++				json_object_get_string(json_object_object_get(sendObj, "mailto")),
++				json_object_get_string(json_object_object_get(sendObj, "user")),
++				json_object_get_string(json_object_object_get(sendObj, "pass")),
++				json_object_get_string(json_object_object_get(sendObj, "subject")));
++	} else if(strcmp(eventType, "MAILSEND_EVENT_WIFI_UP") == 0) {
++		// Fill in the mail content and replace words here.
++		fprintf(mailbody, "Wifi event\n\n");
++		fprintf(mailbody, "%s\n", json_object_get_string(json_object_object_get(sendObj, "body")));
++		fprintf(mailbody, "\nSend at\t%s", asctime(tPtr));
++		fclose(mailbody);
++		//system("sed -i \"s/<\\[wifi\\]>/%s/g\" /var/tmp/mailbody", );
++		//system("sed -i \"s/<\\[mac\\]>/%s/g\" /var/tmp/mailbody", );
++
++		sprintf(sysCmd, "mailsend -f %s -smtp %s -domain %s -t %s -cs \"utf-8\" -starttls -auth -user %s -pass %s -sub \"%s\" "
++				"-mime-type \"text/plain\" -msg-body \"/var/tmp/mailbody\"",
++				json_object_get_string(json_object_object_get(sendObj, "mailfrom")),
++				json_object_get_string(json_object_object_get(sendObj, "SMTP")),
++				json_object_get_string(json_object_object_get(sendObj, "SMTP")),
++				json_object_get_string(json_object_object_get(sendObj, "mailto")),
++				json_object_get_string(json_object_object_get(sendObj, "user")),
++				json_object_get_string(json_object_object_get(sendObj, "pass")),
++				json_object_get_string(json_object_object_get(sendObj, "subject")));
++	} else if(strcmp(eventType, "MAILSEND_EVENT_LOG_ALERT") == 0) {
++		// Fill in the mail content and replace words here.
++		fprintf(mailbody, "This mail was send by Log alert event\n\n");
++		fprintf(mailbody, "%s\n", json_object_get_string(json_object_object_get(sendObj, "body")));
++		fprintf(mailbody, "\nSend at\t%s", asctime(tPtr));
++		fclose(mailbody);
++
++		sprintf(sysCmd, "mailsend -f %s -smtp %s -domain %s -t %s -cs \"utf-8\" -starttls -auth -user %s -pass %s -sub \"%s\" "
++				"-mime-type \"text/plain\" -msg-body \"/var/tmp/mailbody\"",
++				json_object_get_string(json_object_object_get(sendObj, "mailfrom")),
++				json_object_get_string(json_object_object_get(sendObj, "SMTP")),
++				json_object_get_string(json_object_object_get(sendObj, "SMTP")),
++				json_object_get_string(json_object_object_get(sendObj, "mailto")),
++				json_object_get_string(json_object_object_get(sendObj, "user")),
++				json_object_get_string(json_object_object_get(sendObj, "pass")),
++				json_object_get_string(json_object_object_get(sendObj, "subject")));
++	}
++
++	json_object_put(sendObj);
++	json_object_put(value);
++	//printf("%s\n", sysCmd);
++	system(sysCmd);
++	system("rm -f /var/tmp/mailbody");
++
++	return 0;
++}
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2014-12-25 11:47:48.853726438 +0800
++++ libzyutil-1.0/zyutil.h	2014-12-25 11:47:48.873726438 +0800
+@@ -39,5 +39,6 @@
+ zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion);
+ zcfgRet_t zyUtilIGetSerialNumber(char *serianumber);
+ zcfgRet_t zyUtilIGetNumberOfMAC(int *num);
++zcfgRet_t zyUtilMailSend(const char *msg);
+ 
+ #endif
+Index: libzyutil-1.0/Makefile
+===================================================================
+--- libzyutil-1.0.orig/Makefile	2014-12-25 11:47:48.861726438 +0800
++++ libzyutil-1.0/Makefile	2014-12-25 11:50:40.701723773 +0800
+@@ -4,7 +4,7 @@
+ PLATFORM=broadcom
+ 
+ LIBS_PATH = -L.
+-LINK_LIBS =
++LINK_LIBS = -ljson
+ 
+ INC_PATH = -I$(TOOLCHAIN)/include -I. -I$(COMMON_ZCFG_INCLUDE_DIR)
+ 
+@@ -29,11 +29,11 @@
+ 
+ ### Implicit rules ###
+ .c.o:
+-	$(CC) -c $(CFLAGS) $(LIBS_PATH) $(INC_PATH) $(LINK_LIBS) $< -o $@
++	$(CC) -c $(CFLAGS) $(LIBS_PATH) $(INC_PATH) $< -o $@
+ 
+ libzyutil : $(LIB_OBJS)
+ 	@echo $(CFLAGS) 
+-	$(CC) -shared -o libzyutil.so $(LIB_OBJS)
++	$(CC) -shared -o libzyutil.so $(LIB_OBJS) $(LINK_LIBS)
+ 	$(STRIP) libzyutil.so
+ 
+ install:
+@@ -59,4 +59,4 @@
+ 
+ ifeq ($(strip $(CONFIG_ELISA_CUSTOMIZATION)), y)
+ 	CFLAGS += -DELISA_CUSTOMIZATION
+-endif
+\ No newline at end of file
++endif

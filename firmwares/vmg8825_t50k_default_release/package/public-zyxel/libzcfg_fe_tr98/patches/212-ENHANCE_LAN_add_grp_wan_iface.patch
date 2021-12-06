@@ -1,0 +1,126 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-09-01 21:50:02.613562074 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-09-01 21:49:11.393342000 +0800
+@@ -1428,6 +1428,60 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#define MAX_TR181_GRPWANIPIFACE_PARAM_LEN 1024
++#define MAX_TR98_GRPWANIPIFACE_PARAM_LEN 1500
++
++#define TRANS_WANIPIFACE_98TO181   1
++#define TRANS_WANIPIFACE_181TO98   2
++
++static char *translateWanIpIface(int dataTransType, const char *grpWanIpIfaces)
++{
++	char *grpWanIfacesTok = NULL, *transGrpWanIface = NULL;
++	char mappingPathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char *token, *tmp = NULL;
++	int grpWanIfacesTok_Len = 0, transGrpWanIface_Len = 0;
++
++	if(!grpWanIpIfaces || !strlen(grpWanIpIfaces) ||
++		 ((dataTransType != TRANS_WANIPIFACE_98TO181) && (dataTransType != TRANS_WANIPIFACE_181TO98)))
++		return NULL;
++
++	grpWanIfacesTok_Len = (dataTransType == TRANS_WANIPIFACE_181TO98) ? MAX_TR181_GRPWANIPIFACE_PARAM_LEN : MAX_TR98_GRPWANIPIFACE_PARAM_LEN;
++	grpWanIfacesTok = (char *)malloc(grpWanIfacesTok_Len);
++	memset(grpWanIfacesTok, 0, grpWanIfacesTok_Len);
++	strncpy(grpWanIfacesTok, grpWanIpIfaces, grpWanIfacesTok_Len);
++
++	transGrpWanIface_Len = (dataTransType == TRANS_WANIPIFACE_181TO98) ? MAX_TR98_GRPWANIPIFACE_PARAM_LEN : MAX_TR181_GRPWANIPIFACE_PARAM_LEN;
++	transGrpWanIface = (char *)malloc(transGrpWanIface_Len);
++	memset(transGrpWanIface, 0, transGrpWanIface_Len);
++
++	token = strtok_r(grpWanIfacesTok, ",", &tmp);
++	while(token) {
++		memset(mappingPathName, 0, sizeof(mappingPathName));
++		if( ((dataTransType == TRANS_WANIPIFACE_181TO98) && strstr(token, "IP.Interface") && 
++                                  (zcfgFe181To98MappingNameGet(token, mappingPathName) == ZCFG_SUCCESS)) ||
++			((dataTransType == TRANS_WANIPIFACE_98TO181) && strstr(token, "IPConnection") && 
++                                  (zcfgFe98To181MappingNameGet(token, mappingPathName) == ZCFG_SUCCESS)) ) {
++			if(strlen(transGrpWanIface)) {
++				strcat(transGrpWanIface, ",");
++				strcat(transGrpWanIface, mappingPathName);
++			}
++			else
++				strcpy(transGrpWanIface, mappingPathName);
++		}
++		token = strtok_r(NULL, ",", &tmp);
++	}
++
++	if(!strlen(transGrpWanIface)) {
++		free(grpWanIfacesTok);
++		free(transGrpWanIface);
++		return NULL;
++	}
++
++	free(grpWanIfacesTok);
++
++	return transGrpWanIface;
++}
++
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i
+ 
+     Related object in TR181:
+@@ -1505,6 +1559,18 @@
+ 	while(paramList->name != NULL) {
+ 		paramValue = json_object_object_get(ipIntfJobj, paramList->name);
+ 		if(paramValue != NULL) {
++			if(strstr(paramList->name, "X_ZYXEL_Group_WAN_IpIface") != NULL) {
++				char *tr98WanIpIface = translateWanIpIface(TRANS_WANIPIFACE_181TO98, json_object_get_string(paramValue));
++				if(tr98WanIpIface) {
++					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tr98WanIpIface));
++					free(tr98WanIpIface);
++				}
++				else
++					json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_string(""));
++				paramList++;
++				continue;
++			}
++
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 
+ 			paramValue = json_object_object_get(ipIntfv4AddrJobj, paramList->name);
+@@ -1664,7 +1730,12 @@
+ 
+ #define LAN_DEFAULT_SUBNET "192.168"
+ #define LAN_DEFAULT_NETMASK "255.255.255.0"
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i
+ 
++    Related object in TR181:
++    Device.IP.Interface.i
++    Device.IP.Interface.i.IPv4Address.i
++*/
+ zcfgRet_t lanIpIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+@@ -1898,7 +1969,15 @@
+ 				continue;
+ 			}
+ 			else if(strstr(paramList->name, "X_ZYXEL_Group_WAN_IpIface") != NULL) {
++				const char *wanIpIfaces = json_object_get_string(paramValue);
+ 
++				char *tr181WanIpIface = translateWanIpIface(TRANS_WANIPIFACE_98TO181, wanIpIfaces);
++				if(tr181WanIpIface) {
++					json_object_object_add(ipIntfJobj, paramList->name, json_object_new_string(tr181WanIpIface));
++					free(tr181WanIpIface);
++				}
++				paramList++;
++				continue;
+ 			}
+ 
+ 			/*Write value from Config to Device.DHCPv4.Server.Pool.i*/
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2015-09-01 21:50:02.445562071 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2015-09-01 21:50:02.629562074 +0800
+@@ -46,7 +46,7 @@
+ 	{ "X_ZYXEL_IfName", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "X_ZYXEL_ConnectionId", PARAMETER_ATTR_WRITE, 17, json_type_int},
+ 	{ "X_ZYXEL_IPR2_MARKING", PARAMETER_ATTR_WRITE, 17, json_type_uint32},
+-	{ "X_ZYXEL_SnoopingMode", PARAMETER_ATTR_WRITE, 17, json_type_int},
++	{ "X_ZYXEL_Group_WAN_IpIface", PARAMETER_ATTR_WRITE, 1500, json_type_string},
+ #ifdef IPV6INTERFACE_PROFILE
+ 	{ "X_ZYXEL_IPv6Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPv6Status", PARAMETER_ATTR_READONLY, 10, json_type_string},

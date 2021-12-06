@@ -1,0 +1,594 @@
+Index: ez-ipupdate-3.0.11b8/Makefile.in
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/Makefile.in	2003-04-18 01:42:59.000000000 +0800
++++ ez-ipupdate-3.0.11b8/Makefile.in	2017-04-26 14:48:24.017052929 +0800
+@@ -89,7 +89,7 @@
+ pid_file.o
+ ez_ipupdate_DEPENDENCIES = 
+ ez_ipupdate_LDFLAGS = 
+-CFLAGS = @CFLAGS@
++CFLAGS = @CFLAGS@ -lssl -lcrypto
+ COMPILE = $(CC) $(DEFS) $(INCLUDES) $(CPPFLAGS) $(CFLAGS)
+ LINK = $(CC) $(CFLAGS) $(LDFLAGS) -o $@
+ DIST_COMMON =  README COPYING INSTALL Makefile.am Makefile.in acconfig.h \
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2017-04-26 14:37:17.881137125 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2017-04-26 15:05:24.333154933 +0800
+@@ -146,6 +146,9 @@
+ #define NOIP_DEFAULT_PORT "80"
+ #define NOIP_REQUEST "/update.php"
+ 
++//support User-defined
++#define DEFAULT_PORT "80"
++#define DEFAULT_HTTPS_PORT "443"
+ 
+ #define DEFAULT_TIMEOUT 120
+ #define DEFAULT_UPDATE_PERIOD 120
+@@ -228,6 +231,9 @@
+ #include <cache_file.h>
+ #include <pid_file.h>
+ 
++#include <openssl/ssl.h>
++#include <openssl/err.h>
++
+ #if !defined(__GNUC__) && !defined(HAVE_SNPRINTF)
+ #error "get gcc, fix this code, or find yourself a snprintf!"
+ #else
+@@ -419,6 +425,10 @@
+ int NOIP_check_info(void);
+ static char *NOIP_fields_used[] = { "server", "address", "user", "host", NULL};
+ 
++//support User-defined
++int UserDefined_update_entry(void);
++int UserDefined_HTTPS_update_entry(void);
++int UserDefined_check_info(void);
+ 
+ struct service_t services[] = {
+   { "NULL",
+@@ -656,6 +666,27 @@
+   	NOIP_DEFAULT_PORT,
+   	NOIP_REQUEST  
+   	},
++ 	//Support User-defined
++	{ "userdefined",
++  	{ "userdefined", "unknow", 0, },
++  	NULL,
++  	UserDefined_update_entry,
++  	UserDefined_check_info,
++  	NULL,
++  	"userdefined",
++  	DEFAULT_PORT,
++  	"userdefined"
++  	},
++    { "userdefined_HTTPS",
++  	{ "userdefined_HTTPS", "unknow", 0, },
++  	NULL,
++  	UserDefined_HTTPS_update_entry,
++  	UserDefined_check_info,
++  	NULL,
++  	"userdefined_HTTPS",
++  	DEFAULT_HTTPS_PORT,
++  	"userdefined_HTTPS"
++  	},
+ };
+ 
+ static struct service_t *service = NULL;
+@@ -1594,6 +1625,99 @@
+   return 0;
+ }
+ 
++//support User-defined
++/*
++ * do_connect_SSL
++ *
++ * connect a socket with SSL() and return the file descriptor
++ *
++ */
++int do_connect_SSL(int *sock, char *host, char *port, SSL_CTX **ctx, SSL **ssl)
++{
++  struct sockaddr_in address;
++  int len;
++  int result;
++  struct hostent *hostinfo;
++  struct servent *servinfo;
++
++  SSL_library_init();
++  OpenSSL_add_all_algorithms();
++  SSL_load_error_strings();
++
++  *ctx = SSL_CTX_new(SSLv23_client_method());
++  if (*ctx == NULL){
++	perror("SSL_CTX_new fail\n ");
++	return(-1);
++  }
++
++  // set up the socket
++  if((*sock=socket(AF_INET, SOCK_STREAM, 0)) == -1)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      perror("socket");
++    }
++    return(-1);
++  }
++  address.sin_family = AF_INET;
++
++  // get the host address
++  hostinfo = gethostbyname(host);
++  if(!hostinfo)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      herror("gethostbyname");
++    }
++    close(*sock);
++    return(-1);
++  }
++  address.sin_addr = *(struct in_addr *)*hostinfo -> h_addr_list;
++
++  // get the host port
++  servinfo = getservbyname(port, "tcp");
++  if(servinfo)
++  {
++    address.sin_port = servinfo -> s_port;
++  }
++  else
++  {
++    address.sin_port = htons(atoi(port));
++  }
++
++  // connect the socket
++  len = sizeof(address);
++  if((result=connect(*sock, (struct sockaddr *)&address, len)) == -1)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      perror("connect");
++    }
++    close(*sock);
++    return(-1);
++  }
++
++   *ssl = SSL_new(*ctx);
++   SSL_set_fd(*ssl, *sock);
++
++   if ((result = SSL_connect(*ssl) )== -1){
++     perror("SSL connect");
++     return(-1);
++   }
++
++     // print out some info
++  if(!(options & OPT_QUIET))
++  {
++    fprintf(stderr,
++        "connected to %s (%s) on port %d\n",
++        host,
++        inet_ntoa(address.sin_addr),
++        ntohs(address.sin_port));
++  }
++
++   return 0;
++}
++
+ static char table64[]=
+   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+ void base64Encode(char *intext, char *output)
+@@ -1657,6 +1781,48 @@
+ #endif
+ #endif
+ 
++//support User-defined
++void output_SSL(void *buf, SSL **ssl)
++{
++  fd_set writefds;
++  int max_fd;
++  struct timeval tv;
++  int ret;
++  dprintf((stderr, "I say: %s\n", (char *)buf));
++
++  // set up our fdset and timeout
++  FD_ZERO(&writefds);
++  FD_SET(client_sockfd, &writefds);
++  max_fd = client_sockfd;
++  memcpy(&tv, &timeout, sizeof(struct timeval));
++
++  ret = select(max_fd + 1, NULL, &writefds, NULL, &tv);
++  dprintf((stderr, "ret: %d\n", ret));
++
++  if(ret == -1)
++  {
++	dprintf((stderr, "select: %s\n", error_string));
++  }
++  else if(ret == 0)
++  {
++	fprintf(stderr, "timeout\n");
++  }
++  else
++  {
++	/* if we woke up on client_sockfd do the data passing */
++	if(FD_ISSET(client_sockfd, &writefds))
++	{
++	  if(SSL_write(*ssl, buf, strlen(buf)) == -1)
++	  {
++		fprintf(stderr, "error send()ing request: %s\n", error_string);
++	  }
++	}
++	else
++	{
++	  dprintf((stderr, "error: case not handled."));
++	}
++  }
++}
+ void output(void *buf)
+ {
+   fd_set writefds;
+@@ -1700,6 +1866,55 @@
+   }
+ }
+ 
++//support User-defined
++int read_input_SSL(char *buf, int len, SSL **ssl)
++{
++  fd_set readfds;
++  int max_fd;
++  struct timeval tv;
++  int ret;
++  int bread = -1;
++
++  // set up our fdset and timeout
++  FD_ZERO(&readfds);
++  FD_SET(client_sockfd, &readfds);
++  max_fd = client_sockfd;
++  memcpy(&tv, &timeout, sizeof(struct timeval));
++
++  ret = select(max_fd + 1, &readfds, NULL, NULL, &tv);
++  dprintf((stderr, "ret: %d\n", ret));
++
++  if(ret == -1)
++  {
++	dprintf((stderr, "select: %s\n", error_string));
++  }
++  else if(ret == 0)
++  {
++	fprintf(stderr, "timeout\n");
++  }
++  else
++  {
++	/* if we woke up on client_sockfd do the data passing */
++	if(FD_ISSET(client_sockfd, &readfds))
++	{
++	  bread = SSL_read(*ssl, buf, len-1);
++	  dprintf((stderr, "bread: %d\n", bread));
++	  buf[bread] = '\0';
++	  dprintf((stderr, "got: %s\n", buf));
++	  if(bread == -1)
++	  {
++		fprintf(stderr, "error recv()ing reply: %s\n", error_string);
++	  }
++	}
++	else
++	{
++	  dprintf((stderr, "error: case not handled."));
++	}
++  }
++
++  return(bread);
++}
++
+ int read_input(char *buf, int len)
+ {
+   fd_set readfds;
+@@ -5771,6 +5986,312 @@
+ }
+ //NOIP  end
+ 
++//support User-defined
++int UserDefined_update_entry(void){
++  char buf[BUFFER_SIZE+1]={0};
++  char *bp = buf;
++  int bytes;
++  int btot;
++  int ret;
++  char updateInfo[256] = {0};
++  char DNSserver[64] = {0};
++  buf[BUFFER_SIZE] = '\0';
++
++  sscanf(url,  "%[^/]%s", DNSserver, updateInfo);
++
++if(do_connect((int*)&client_sockfd, DNSserver, port) != 0)
++{
++  if(!(options & OPT_QUIET))
++  {
++	show_message("error connecting to %s:%s\n", DNSserver, port);
++  }
++  return(UPDATERES_ERROR);
++}
++
++if(strstr(updateInfo,"?")){
++  snprintf(buf, BUFFER_SIZE, "GET %s&", updateInfo);
++}else{
++ snprintf(buf, BUFFER_SIZE, "GET %s?", updateInfo);
++}
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, "hostname=%s&",host);
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, " HTTP/1.1\015\012");
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", DNSserver);
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, "Authorization: Basic %s\015\012", auth);
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, "User-Agent: %s-%s %s [%s] (%s)\015\012",
++      "ez-update", VERSION, OS, (options & OPT_DAEMON) ? "daemon" : "", "by Angus Mackay");
++  output(buf);
++
++  snprintf(buf, BUFFER_SIZE, "\015\012");
++  output(buf);
++
++  if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++      close(client_sockfd);
++      return(UPDATERES_ERROR);
++  }
++
++  close(client_sockfd);
++  buf[bytes] = '\0';
++
++  dprintf((stderr, "server output: %s\n", buf));
++
++  if(sscanf(buf, " HTTP/1.%*c %3d", &ret) != 1)
++  {
++    ret = -1;
++  }
++
++  switch(ret)
++  {
++    case -1:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("strange server response, are you connecting to the right server?\n");
++      }
++      break;
++
++    case 200:
++
++      if(strstr(buf, "status=3") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("Unable to locate this record");
++        }
++      }
++	  else if(strstr(buf, "status=2") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("status=2");
++        }
++      }
++
++      else
++      {
++        success[0]='0';
++
++        innerText(address_log, buf, "to ", NULL, "in");
++        address_log[16]='\0';
++
++        DDNS_StatusLog();
++//        show_message("Success!!\n");
++//        if(!(options & OPT_QUIET))
++//        {
++//          fprintf(stderr, "server output: %s\n", buf);
++//        }
++	return(UPDATERES_OK);
++      }
++      break;
++
++    case 401:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("authentication failure\n");
++      }
++      success[0] = '1';
++      DDNS_StatusLog();
++      return(UPDATERES_SHUTDOWN);
++      break;
++
++    default:
++      if(!(options & OPT_QUIET))
++      {
++        *auth = '\0';
++        sscanf(buf, " HTTP/1.%*c %*3d %255[^\r\n]", auth);
++        show_message("unknown return code: %d\n", ret);
++        show_message("server response: %s\n", auth);
++      }
++      break;
++  }
++  success[0] = '1';
++  DDNS_StatusLog();
++  return(UPDATERES_ERROR);
++}
++
++int UserDefined_HTTPS_update_entry(void){
++  char buf[BUFFER_SIZE+1]={0};
++  char buf_str[BUFFER_SIZE+1]={0};
++  char *bp = buf;
++  int bytes;
++  int btot;
++  int ret;
++  char updateInfo[256] = {0};
++  char DNSserver[64] = {0};
++  buf[BUFFER_SIZE] = '\0';
++  buf_str[BUFFER_SIZE] = '\0';
++  SSL_CTX *ctx;
++  SSL *ssl;
++  int len;
++
++  sscanf(url,  "%[^/]%s", DNSserver, updateInfo);
++
++  if(do_connect_SSL((int*)&client_sockfd, DNSserver, port, (SSL_CTX **)&ctx, (SSL **)&ssl) != 0)
++  {
++    if(!(options & OPT_QUIET))
++    {
++	show_message("error connecting to %s:%s\n", DNSserver, port);
++    }
++    return(UPDATERES_ERROR);
++  }
++
++  if(strstr(updateInfo,"?")){
++	snprintf(buf, BUFFER_SIZE, "GET %s&", updateInfo);
++  }else{
++   snprintf(buf, BUFFER_SIZE, "GET %s?", updateInfo);
++  }
++
++  snprintf(buf_str, BUFFER_SIZE, "hostname=%s&",host);
++  strcat(buf, buf_str);
++
++  snprintf(buf_str, BUFFER_SIZE, " HTTP/1.1\015\012");
++  strcat(buf, buf_str);
++
++  snprintf(buf_str, BUFFER_SIZE, "Host: %s\015\012", DNSserver);
++  strcat(buf, buf_str);
++
++  snprintf(buf_str, BUFFER_SIZE, "Authorization: Basic %s\015\012", auth);
++  strcat(buf, buf_str);
++
++  snprintf(buf_str, BUFFER_SIZE, "User-Agent: %s-%s %s [%s] (%s)\015\012",
++  	"ez-update", VERSION, OS, (options & OPT_DAEMON) ? "daemon" : "", "by Angus Mackay");
++  strcat(buf, buf_str);
++
++  snprintf(buf_str, BUFFER_SIZE, "\015\012");
++  strcat(buf, buf_str);
++
++   output_SSL(buf, (SSL **)&ssl) ;
++
++  memset(buf,0,sizeof(buf));
++  if((bytes=read_input_SSL(buf, BUFFER_SIZE, (SSL **)&ssl)) <= 0){
++	SSL_shutdown(ssl);
++	SSL_free(ssl);
++	SSL_CTX_free(ctx);
++	return(UPDATERES_ERROR);
++    }
++
++  SSL_shutdown(ssl);
++  SSL_free(ssl);
++  SSL_CTX_free(ctx);
++
++  buf[bytes] = '\0';
++  dprintf((stderr, "server output: %s\n", buf));
++
++  if(sscanf(buf, " HTTP/1.%*c %3d", &ret) != 1)
++  {
++    ret = -1;
++  }
++
++  switch(ret)
++  {
++    case -1:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("strange server response, are you connecting to the right server?\n");
++      }
++      break;
++
++    case 200:
++
++      if(strstr(buf, "status=3") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("Unable to locate this record");
++        }
++      }
++	  else if(strstr(buf, "status=2") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("status=2");
++        }
++      }
++
++      else
++      {
++        success[0]='0';
++
++        innerText(address_log, buf, "to ", NULL, "in");
++        address_log[16]='\0';
++
++        DDNS_StatusLog();
++//        show_message("Success!!\n");
++//        if(!(options & OPT_QUIET))
++//        {
++//          fprintf(stderr, "server output: %s\n", buf);
++//        }
++	return(UPDATERES_OK);
++      }
++      break;
++
++    case 401:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("authentication failure\n");
++      }
++      success[0] = '1';
++      DDNS_StatusLog();
++      return(UPDATERES_SHUTDOWN);
++      break;
++
++    default:
++      if(!(options & OPT_QUIET))
++      {
++        *auth = '\0';
++        sscanf(buf, " HTTP/1.%*c %*3d %255[^\r\n]", auth);
++        show_message("unknown return code: %d\n", ret);
++        show_message("server response: %s\n", auth);
++      }
++      break;
++  }
++  success[0] = '1';
++  DDNS_StatusLog();
++  return(UPDATERES_ERROR);
++}
++
++int UserDefined_check_info(void){
++  char buf[BUFFER_SIZE+1]={0};
++
++  if((host == NULL) || (*host == '\0'))
++  {
++    if(options & OPT_DAEMON)
++    {
++      return(-1);
++    }
++    if(host) { free(host); }
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    host = strdup(buf);
++    chomp(host);
++  }
++
++  if(interface == NULL && address == NULL)
++  {
++    if(options & OPT_DAEMON)
++    {
++      fprintf(stderr, "you must provide either an interface or an address\n");
++      return(-1);
++    }
++    if(interface) { free(interface); }
++    printf("interface: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    chomp(buf);
++    option_handler(CMD_interface, buf);
++  }
++
++  return 0;
++}
++
+ static int is_in_list(char *needle, char **haystack)
+ {
+   char **p;

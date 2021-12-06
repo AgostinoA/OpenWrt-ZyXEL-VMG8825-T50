@@ -1,0 +1,890 @@
+diff -Naur ppp-2.4.3/include/linux/if_ppp.h /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/include/linux/if_ppp.h
+--- ppp-2.4.3/include/linux/if_ppp.h	2002-12-06 17:49:15.000000000 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/include/linux/if_ppp.h	2014-01-09 18:48:43.000000000 +0800
+@@ -130,6 +130,10 @@
+ 	struct ppp_comp_stats stats;
+ };
+ 
++#if 1 /* PPP device name type, ZyXEL */
++typedef char    ppp_dev_name[IFNAMSIZ];
++#endif
++
+ #define ifr__name       b.ifr_ifrn.ifrn_name
+ #define stats_ptr       b.ifr_ifru.ifru_data
+ 
+@@ -166,6 +170,9 @@
+ #define PPPIOCDISCONN	_IO('t', 57)		/* disconnect channel */
+ #define PPPIOCATTCHAN	_IOW('t', 56, int)	/* attach to ppp channel */
+ #define PPPIOCGCHAN	_IOR('t', 55, int)	/* get ppp channel number */
++#if 1 /* ZyXEL */
++#define PPPIOCSREALDEV  _IOW('t', 53, ppp_dev_name) /* set real device name */
++#endif
+ 
+ #define SIOCGPPPSTATS   (SIOCDEVPRIVATE + 0)
+ #define SIOCGPPPVER     (SIOCDEVPRIVATE + 1)	/* NEVER change this!! */
+diff -Naur ppp-2.4.3/pppd/ipcp.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/ipcp.c
+--- ppp-2.4.3/pppd/ipcp.c	2014-01-10 14:03:53.359736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/ipcp.c	2014-01-09 18:48:43.000000000 +0800
+@@ -61,6 +61,14 @@
+ #include "ipcp.h"
+ #include "pathnames.h"
+ 
++#if 1 /* ZyXEL zcfg */
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++#include "zcfg_net.h"
++
++#include <json/json.h>
++#endif
+ static const char rcsid[] = RCSID;
+ 
+ /* global vars */
+@@ -300,6 +308,10 @@
+ } ipcp_script_state;
+ static pid_t ipcp_script_pid;
+ 
++
++#if 1 /* ZyXEL, ZCFG */
++extern zcfgRet_t pppdMsgSend(uint32_t, zcfgEid_t, int, const char *);
++#endif
+ /*
+  * Make a string representation of a network IP address.
+  */
+@@ -473,11 +485,16 @@
+ 	    option_error("bad remote IP address %s", ip_ntoa(remote));
+ 	    return 0;
+ 	}
++
+ 	if (remote != 0)
+ 	    wo->hisaddr = remote;
+ 	prio_remote = option_priority;
+     }
+ 
++#if 1 /* static ip address, ZyXEL */
++	ask_for_local = wo->ouraddr != 0 || !disable_defaultip;
++#endif
++
+     return 1;
+ }
+ 
+@@ -1650,7 +1667,11 @@
+     int u;
+ {
+     ipcp_options *wo = &ipcp_wantoptions[u];
+-
++#if 1 /* ZyXEL zcfg */
++    struct json_object *ppp_arg = NULL;
++    const char *payload = NULL;
++    int payloadLen = 0;	
++#endif
+     if (wo->hisaddr == 0) {
+ 	/* make up an arbitrary address for the peer */
+ 	wo->hisaddr = htonl(0x0a707070 + ifunit);
+@@ -1683,6 +1704,21 @@
+     notice("local  IP address %I", wo->ouraddr);
+     notice("remote IP address %I", wo->hisaddr);
+ 
++#if 1 /* ZyXEL, zcfg */	
++    ppp_arg = json_object_new_object();
++    json_object_object_add(ppp_arg, "ip", json_object_new_string(ip_ntoa(wo->ouraddr)));
++    json_object_object_add(ppp_arg, "remote", json_object_new_string(""));
++    json_object_object_add(ppp_arg, "dns", json_object_new_string(ip_ntoa(wo->hisaddr)));
++    json_object_object_add(ppp_arg, "linkname", json_object_new_string(linkname));
++    json_object_object_add(ppp_arg, "state", json_object_new_string("up"));
++
++    notice("Json PPP %s", json_object_to_json_string(ppp_arg));
++    payload = json_object_to_json_string(ppp_arg);
++    payloadLen = strlen(payload) + 1;
++    pppdMsgSend(ZCFG_MSG_PPPD_EVENT , ZCFG_EID_ESMD, payloadLen, payload);
++
++    json_object_put(ppp_arg);
++#endif
+     return 1;
+ }
+ 
+@@ -1700,7 +1736,12 @@
+     ipcp_options *ho = &ipcp_hisoptions[f->unit];
+     ipcp_options *go = &ipcp_gotoptions[f->unit];
+     ipcp_options *wo = &ipcp_wantoptions[f->unit];
+-
++#if 1 /* ZyXEL, zcfg */	
++    struct json_object *ppp_arg = NULL;
++    char dnsList[IPADDR_LENGTH*2 + 8] = {0};
++    const char *payload = NULL;
++    int payloadLen = 0;
++#endif
+     IPCPDEBUG(("ipcp: up"));
+ 
+     /*
+@@ -1794,7 +1835,18 @@
+ 	    if (ipcp_wantoptions[f->unit].proxy_arp)
+ 		if (sifproxyarp(f->unit, ho->hisaddr))
+ 		    proxy_arp_set[f->unit] = 1;
+-
++#if 1 /* ZyXEL */	
++	    if (go->dnsaddr[0]) {
++            	strcpy(dnsList, ip_ntoa(go->dnsaddr[0]));
++            	notice("primary   DNS address %I", go->dnsaddr[0]);
++        	}
++
++           if (go->dnsaddr[1]) {
++            	strcat(dnsList, ",");
++           	strcat(dnsList, ip_ntoa(go->dnsaddr[1]));
++            	notice("secondary DNS address %I", go->dnsaddr[1]);
++           }
++#endif
+ 	}
+ 	demand_rexmit(PPP_IP,go->ouraddr);
+ 	sifnpmode(f->unit, PPP_IP, NPMODE_PASS);
+@@ -1851,10 +1903,20 @@
+ 
+ 	notice("local  IP address %I", go->ouraddr);
+ 	notice("remote IP address %I", ho->hisaddr);
+-	if (go->dnsaddr[0])
++	if (go->dnsaddr[0]) {
++#if 1 /* ZyXEL */
++            strcpy(dnsList, ip_ntoa(go->dnsaddr[0]));
++#endif
+ 	    notice("primary   DNS address %I", go->dnsaddr[0]);
+-	if (go->dnsaddr[1])
++        }
++
++	if (go->dnsaddr[1]) {
++#if 1 /* ZyXEL */
++            strcat(dnsList, ",");
++            strcat(dnsList, ip_ntoa(go->dnsaddr[1]));
++#endif
+ 	    notice("secondary DNS address %I", go->dnsaddr[1]);
++        }
+     }
+ 
+     reset_link_stats(f->unit);
+@@ -1872,8 +1934,27 @@
+      */
+     if (ipcp_script_state == s_down && ipcp_script_pid == 0) {
+ 	ipcp_script_state = s_up;
++#if 1 /* ZyXEL, why removing ip-up script? */
++	//ipcp_script(path_ipup);
++#else
+ 	ipcp_script(path_ipup);
++#endif
+     }
++#if 1 /* ZyXEL, zcfg */
++    ppp_arg = json_object_new_object();
++    json_object_object_add(ppp_arg, "ip", json_object_new_string(ip_ntoa(go->ouraddr)));
++    json_object_object_add(ppp_arg, "remote", json_object_new_string(ip_ntoa(ho->hisaddr)));
++    json_object_object_add(ppp_arg, "dns", json_object_new_string(dnsList));
++    json_object_object_add(ppp_arg, "linkname", json_object_new_string(linkname));
++    json_object_object_add(ppp_arg, "state", json_object_new_string("up"));
++
++    notice("Json PPP %s", json_object_to_json_string(ppp_arg));
++    payload = json_object_to_json_string(ppp_arg);
++    payloadLen = strlen(payload) + 1;
++    pppdMsgSend(ZCFG_MSG_PPPD_EVENT , ZCFG_EID_ESMD, payloadLen, payload);
++
++    json_object_put(ppp_arg);
++#endif
+ }
+ 
+ 
+@@ -1908,8 +1989,25 @@
+ 
+     /*
+      * If we are doing dial-on-demand, set the interface
+-     * to queue up outgoing packets (for now).
++     * to queue up outgoing packets (for now).=
+      */
++#if 1   /* send ZCFG_MSG_WAN_CONNECTION_LOST to ESMD for notification, ZyXEL, John  */
++	struct json_object *ppp_arg = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0;
++
++	ppp_arg = json_object_new_object();
++    json_object_object_add(ppp_arg, "ip", json_object_new_string(ip_ntoa(ipcp_gotoptions[f->unit].ouraddr)));
++    json_object_object_add(ppp_arg, "linkname", json_object_new_string(linkname));
++    json_object_object_add(ppp_arg, "state", json_object_new_string("down"));
++
++    notice("Json PPP %s", json_object_to_json_string(ppp_arg));
++    payload = json_object_to_json_string(ppp_arg);
++    payloadLen = strlen(payload) + 1;
++    pppdMsgSend(ZCFG_MSG_PPPD_EVENT , ZCFG_EID_ESMD, payloadLen, payload);
++
++    json_object_put(ppp_arg);
++#endif
+     if (demand) {
+ 	sifnpmode(f->unit, PPP_IP, NPMODE_QUEUE);
+     } else {
+diff -Naur ppp-2.4.3/pppd/lcp.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/lcp.c
+--- ppp-2.4.3/pppd/lcp.c	2014-01-10 14:03:53.407736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/lcp.c	2014-01-09 18:48:43.000000000 +0800
+@@ -84,6 +84,10 @@
+ 			       void *));
+ #endif /* HAVE_MULTILINK */
+ 
++#if 1 /* tty device, ZyXEL */
++extern int tty_dev;		/* if it is a tty device, set tty_dev to be 1 */
++#endif
++
+ static option_t lcp_option_list[] = {
+     /* LCP options */
+     { "-all", o_special_noarg, (void *)noopt,
+@@ -1927,11 +1931,16 @@
+     lcp_echo_lowerdown(f->unit);
+ 
+     link_down(f->unit);
+-
+-    ppp_send_config(f->unit, PPP_MRU, 0xffffffff, 0, 0);
+-    ppp_recv_config(f->unit, PPP_MRU,
+-		    (go->neg_asyncmap? go->asyncmap: 0xffffffff),
+-		    go->neg_pcompression, go->neg_accompression);
++#if 1 /* tty device, ZyXEL */
++	if(!tty_dev){
++#endif
++		ppp_send_config(f->unit, PPP_MRU, 0xffffffff, 0, 0);
++		ppp_recv_config(f->unit, PPP_MRU,
++				(go->neg_asyncmap? go->asyncmap: 0xffffffff),
++				go->neg_pcompression, go->neg_accompression);
++#if 1 /* tty device, ZyXEL */
++	}
++#endif
+     peer_mru[f->unit] = PPP_MRU;
+ }
+ 
+diff -Naur ppp-2.4.3/pppd/main.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/main.c
+--- ppp-2.4.3/pppd/main.c	2014-01-10 14:03:53.403736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/main.c	2014-01-09 18:48:43.000000000 +0800
+@@ -97,6 +97,7 @@
+ #include "fsm.h"
+ #include "lcp.h"
+ #include "ipcp.h"
++
+ #ifdef INET6
+ #include "ipv6cp.h"
+ #endif
+@@ -212,6 +213,11 @@
+ bool bundle_eof;
+ bool bundle_terminating;
+ 
++#if 1 /* ZyXEL zcfg */
++#include "zcfg_common.h"
++#include "zcfg_msg.h"
++#include "zcfg_eid.h"
++#endif
+ /*
+  * We maintain a list of child process pids and
+  * functions to call when they exit.
+@@ -297,7 +303,9 @@
+     &eap_protent,
+     NULL
+ };
+-
++#if 1 /* ZyXEL */
++extern char    pppname[MAXPATHLEN];
++#endif
+ /*
+  * If PPP_DRV_NAME is not defined, use the default "ppp" as the device name.
+  */
+@@ -305,6 +313,41 @@
+ #define PPP_DRV_NAME	"ppp"
+ #endif /* !defined(PPP_DRV_NAME) */
+ 
++#if 1 /* ZyXEL zcfg */
++zcfgRet_t pppdMsgSend(uint32_t msgType, zcfgEid_t dstEid, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	printf("ppp payload length %d\n", payloadLen);
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++        sendMsgHdr->type = msgType;
++        sendMsgHdr->length = payloadLen;
++        sendMsgHdr->srcEid = ZCFG_EID_PPPD;
++        sendMsgHdr->dstEid = dstEid;
++
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		printf("Receive message : %s\n", recv_str);
++	}
++
++	return ret;
++}
++#endif
++
+ int
+ main(argc, argv)
+     int argc;
+@@ -315,7 +358,9 @@
+     struct passwd *pw;
+     struct protent *protp;
+     char numbuf[16];
+-
++#if 1 /* ZyXEL zcfg */
++    zcfgEidInit(ZCFG_EID_PPPD, NULL);
++#endif
+     strlcpy(path_ipup, _PATH_IPUP, sizeof(path_ipup));
+     strlcpy(path_ipdown, _PATH_IPDOWN, sizeof(path_ipdown));
+ 
+@@ -739,13 +784,25 @@
+ set_ifunit(iskey)
+     int iskey;
+ {
++#if 1 /* Modified by ZyXEL, Jerry Lin 20120829 */
++	
++	if(strcmp(pppname, "") == 0) {
++		slprintf(ifname, sizeof(ifname), "%s%d", PPP_DRV_NAME, ifunit);
++	}
++	else {
++		strcpy(ifname, pppname);
++	}
++
++	info("Using interface %s", ifname);
++#else
+     info("Using interface %s%d", PPP_DRV_NAME, ifunit);
+     slprintf(ifname, sizeof(ifname), "%s%d", PPP_DRV_NAME, ifunit);
+-    script_setenv("IFNAME", ifname, iskey);
+-    if (iskey) {
+-	create_pidfile(getpid());	/* write pid to file */
+-	create_linkpidfile(getpid());
+-    }
++#endif
++	script_setenv("IFNAME", ifname, iskey);
++	if (iskey) {
++		create_pidfile(getpid());	/* write pid to file */
++		create_linkpidfile(getpid());
++	}
+ }
+ 
+ /*
+@@ -831,8 +888,14 @@
+     if (linkname[0] == 0)
+ 	return;
+     script_setenv("LINKNAME", linkname, 1);
++#if 1 /* ZyXEL */
++    slprintf(linkpidfile, sizeof(linkpidfile), "%s%s.pid", _PATH_VARRUN, linkname);
++#else    
+     slprintf(linkpidfile, sizeof(linkpidfile), "%sppp-%s.pid",
+ 	     _PATH_VARRUN, linkname);
++#endif
++    
++
+     if ((pidfile = fopen(linkpidfile, "w")) != NULL) {
+ 	fprintf(pidfile, "%d\n", pid);
+ 	if (ifname[0])
+diff -Naur ppp-2.4.3/pppd/options.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/options.c
+--- ppp-2.4.3/pppd/options.c	2014-01-10 14:03:53.415736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/options.c	2014-01-09 18:48:43.000000000 +0800
+@@ -98,6 +98,10 @@
+ bool	log_default = 1;	/* log_to_fd is default (stdout) */
+ int	maxfail = 10;		/* max # of unsuccessful connection attempts */
+ char	linkname[MAXPATHLEN];	/* logical name for link */
++#if 1 /* ZyXEL */
++char    pppname[MAXPATHLEN] = {0};
++char    devname[MAXPATHLEN];
++#endif
+ bool	tune_kernel;		/* may alter kernel settings */
+ int	connect_delay = 1000;	/* wait this many ms after connect script */
+ int	req_unit = -1;		/* requested interface unit */
+@@ -109,6 +113,9 @@
+ bool	dryrun;			/* print out option values and exit */
+ char	*domain;		/* domain name set by domain option */
+ int	child_wait = 5;		/* # seconds to wait for children at exit */
++#if 1 /* tty device, ZyXEL */
++int tty_dev = 0;		/* if it is a tty device, set tty_dev to be 1 */
++#endif
+ 
+ #ifdef MAXOCTETS
+ unsigned int  maxoctets = 0;    /* default - no limit */
+@@ -251,7 +258,15 @@
+     { "linkname", o_string, linkname,
+       "Set logical name for link",
+       OPT_PRIO | OPT_PRIV | OPT_STATIC, NULL, MAXPATHLEN },
++#if 1 /* ZyXEL */
++    { "pppname", o_string, pppname,
++      "PPP dev name",
++      OPT_PRIO | OPT_PRIV | OPT_STATIC, NULL, MAXPATHLEN },
+ 
++    { "devname", o_string, devname,
++      "Dev name",
++      OPT_PRIO | OPT_PRIV | OPT_STATIC, NULL, MAXPATHLEN },
++#endif
+     { "maxfail", o_int, &maxfail,
+       "Maximum number of unsuccessful connection attempts to allow",
+       OPT_PRIO },
+diff -Naur ppp-2.4.3/pppd/plugins/pppoatm/pppoatm.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/plugins/pppoatm/pppoatm.c
+--- ppp-2.4.3/pppd/plugins/pppoatm/pppoatm.c	2014-01-10 14:03:53.375736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/plugins/pppoatm/pppoatm.c	2014-01-09 18:48:43.000000000 +0800
+@@ -21,7 +21,9 @@
+ #include "fsm.h" /* Needed for lcp.h to include cleanly */
+ #include "lcp.h"
+ #include <atm.h>
+-#include <linux/atmdev.h>
++#if 1 /* uses kernel include path, ZyXEL, John*/
++#include <include/linux/atmdev.h>
++#endif
+ #include <linux/atmppp.h>
+ #include <sys/stat.h>
+ #include <net/if.h>
+@@ -37,7 +39,9 @@
+ static int pppoatm_max_mtu, pppoatm_max_mru;
+ static int setdevname_pppoatm(const char *cp, const char **argv, int doit);
+ struct channel pppoa_channel;
+-static int pppoa_fd = -1;
++#if 1 /* pppoa brcm, ZyXEL, John */
++static int fd_pppoa=0;
++#endif
+ 
+ static option_t pppoa_options[] = {
+ 	{ "device name", o_wild, (void *) &setdevname_pppoatm,
+@@ -70,10 +74,25 @@
+ {
+ 	struct sockaddr_atmpvc addr;
+ 	extern struct stat devstat;
++#if 1 /* for saving device name, ZyXEL, John*/
++	char *pvc = NULL;
++#endif
+ 
+ 	if (device_got_set)
+ 		return 0;
+-
++#if 1 /* for saving device name, ZyXEL, John*/
++	if((pvc = strstr(cp, ".")) == NULL){
++		fatal("device name is needed");
++	}
++	
++	memset(&addr, 0, sizeof addr);
++        if (text2atm(pvc + 1, (struct sockaddr *) &addr, sizeof(addr),
++            T2A_PVC | T2A_NAME) < 0) {
++                if (doit)
++                        info("cannot parse the ATM address: %s", cp);
++                return 0;
++	}
++#else
+ 	memset(&addr, 0, sizeof addr);
+ 	if (text2atm(cp, (struct sockaddr *) &addr, sizeof(addr),
+ 	    T2A_PVC | T2A_NAME) < 0) {
+@@ -81,11 +100,17 @@
+ 			info("cannot parse the ATM address: %s", cp);
+ 		return 0;
+ 	}
++#endif
+ 	if (!doit)
+ 		return 1;
+ 
+ 	memcpy(&pvcaddr, &addr, sizeof pvcaddr);
++#if 1 /* for saving device name, ZyXEL, John*/
++	strncpy(devnam, cp, pvc - cp);
++	devnam[pvc-cp] = '\0';
++#else
+ 	strlcpy(devnam, cp, sizeof devnam);
++#endif
+ 	devstat.st_mode = S_IFSOCK;
+ 	if (the_channel != &pppoa_channel) {
+ 		the_channel = &pppoa_channel;
+@@ -101,6 +126,31 @@
+ 
+ #define pppoatm_overhead() (llc_encaps ? 6 : 2)
+ 
++#if 1 /* pppoa brcm, ZyXEL, John */
++static void disconnect_pppoatm(int fd)
++{
++#if 1
++   /* For 4.x xtm driver */
++   struct atm_backend_ppp be;
++
++   be.backend_num = ATM_BACKEND_PPP_BCM_DISCONN;
++   if (ioctl(fd, ATM_SETBACKEND, &be) < 0)
++      fatal("ioctl(ATM_SETBACKEND): %m");
++#else
++   /* For 3.x atm driver */
++	unsigned char ppp_disconn[64];
++        unsigned char * outp;
++
++	outp = ppp_disconn;
++	MAKEHEADER(outp, PPP_LCP);	// 2 bytes
++	PUTCHAR(5, outp);		// TERMREQ==5 			// 1 byte
++	PUTCHAR(2, outp);  		// id=02			// 1 byte
++    PUTSHORT(4, outp);		// HEADERLEN==4 in fsm.h	// 2 byte
++	
++	write(fd, ppp_disconn+2, 6);
++#endif
++}
++#endif
+ static void no_device_given_pppoatm(void)
+ {
+ 	fatal("No vpi.vci specified");
+@@ -109,15 +159,17 @@
+ static void set_line_discipline_pppoatm(int fd)
+ {
+ 	struct atm_backend_ppp be;
+-
++#if 1 /* pppoa brcm, ZyXEL, John */
++	be.backend_num = ATM_BACKEND_PPP_BCM;
++#else
+ 	be.backend_num = ATM_BACKEND_PPP;
++#endif
+ 	if (!llc_encaps)
+ 		be.encaps = PPPOATM_ENCAPS_VC;
+ 	else if (!vc_encaps)
+ 		be.encaps = PPPOATM_ENCAPS_LLC;
+ 	else
+ 		be.encaps = PPPOATM_ENCAPS_AUTODETECT;
+-
+ 	if (ioctl(fd, ATM_SETBACKEND, &be) < 0)
+ 		fatal("ioctl(ATM_SETBACKEND): %m");
+ }
+@@ -131,6 +183,68 @@
+ }
+ #endif
+ 
++#if 1	/* pppoa brcm, ZyXEL, John */
++static int open_device_pppoatm(void)
++{
++	int fd;
++	struct atm_qos qos;
++	int i = 0;
++
++	if (!device_got_set)
++		no_device_given_pppoatm();
++	fd = socket(AF_ATMPVC, SOCK_DGRAM, 0);
++	if (fd < 0)
++		fatal("failed to create socket: %m");
++
++	fd_pppoa = fd;
++
++	memset(&qos, 0, sizeof qos);
++	qos.txtp.traffic_class = qos.rxtp.traffic_class = ATM_UBR;
++	/* TODO: support simplified QoS setting */
++	if (qosstr != NULL)
++		if (text2qos(qosstr, &qos, 0))
++			fatal("Can't parse QoS: \"%s\"");
++	qos.txtp.max_sdu = lcp_allowoptions[0].mru + pppoatm_overhead();
++	qos.rxtp.max_sdu = lcp_wantoptions[0].mru + pppoatm_overhead();
++	qos.aal = ATM_AAL5;
++	if (setsockopt(fd, SOL_ATM, SO_ATMQOS, &qos, sizeof(qos)) < 0)
++		fatal("setsockopt(SO_ATMQOS): %m");
++	/* TODO: accept on SVCs... */
++	if (connect(fd, (struct sockaddr *) &pvcaddr,
++	    sizeof(struct sockaddr_atmpvc)))
++		fatal("connect(%s): %m", devnam);
++	pppoatm_max_mtu = lcp_allowoptions[0].mru;
++	pppoatm_max_mru = lcp_wantoptions[0].mru;
++	set_line_discipline_pppoatm(fd);
++#if 0
++#if 1
++        if (redisconn) {
++    	    while (i++ < 5) {
++    		usleep(300000);
++    		disconnect_pppoatm(fd);
++	    }
++	    usleep(100000);
++	}
++#else
++	strlcpy(ppp_devnam, devnam, sizeof(ppp_devnam));
++	pppoa_fd = fd;
++#endif
++#endif
++	return fd;
++}
++
++static void close_device_pppoatm(void)
++{
++   if (fd_pppoa > 0) {
++      struct atm_backend_ppp be;
++      be.backend_num = ATM_BACKEND_PPP_BCM_CLOSE_DEV;
++      if (ioctl(fd_pppoa, ATM_SETBACKEND, &be) < 0)
++         fatal("ioctl(ATM_SETBACKEND): %m");
++      close(fd_pppoa);
++      fd_pppoa= -1;
++   }
++}
++#else
+ static int connect_pppoatm(void)
+ {
+ 	int fd;
+@@ -168,6 +282,7 @@
+ {
+ 	close(pppoa_fd);
+ }
++#endif
+ 
+ static void send_config_pppoa(int mtu,
+ 			      u_int32_t asyncmap,
+@@ -223,8 +338,13 @@
+     options: pppoa_options,
+     process_extra_options: NULL,
+     check_options: NULL,
++#if 1	/* pppoa brcm, ZyXEL, John */
++    connect: &open_device_pppoatm,
++    disconnect: &close_device_pppoatm,
++#else
+     connect: &connect_pppoatm,
+     disconnect: &disconnect_pppoatm,
++#endif
+     establish_ppp: &generic_establish_ppp,
+     disestablish_ppp: &generic_disestablish_ppp,
+     send_config: &send_config_pppoa,
+diff -Naur ppp-2.4.3/pppd/plugins/rp-pppoe/discovery.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/plugins/rp-pppoe/discovery.c
+--- ppp-2.4.3/pppd/plugins/rp-pppoe/discovery.c	2014-01-10 14:03:53.399736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/plugins/rp-pppoe/discovery.c	2014-01-09 18:48:43.000000000 +0800
+@@ -7,7 +7,6 @@
+ * Copyright (C) 1999 by Roaring Penguin Software Inc.
+ *
+ ***********************************************************************/
+-
+ static char const RCSID[] =
+ "$Id: discovery.c,v 1.3 2004/11/04 10:07:37 paulus Exp $";
+ 
+@@ -17,6 +16,12 @@
+ #include <stdlib.h>
+ #include <errno.h>
+ 
++#if 1 /* ZyXEL, zcfg */
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++#endif
++
+ #ifdef HAVE_SYS_TIME_H
+ #include <sys/time.h>
+ #endif
+@@ -36,6 +41,43 @@
+ 
+ #include <signal.h>
+ 
++#if 1 /* vlanautohunt, ZyXEL, John*/
++int vid = -1;
++
++zcfgRet_t pppoeMsgSend(uint32_t msgType, zcfgEid_t dstEid, int payloadLen, const char *payload)
++{
++        zcfgRet_t ret;
++        void *sendBuf = NULL;
++        void *recvBuf = NULL;
++        zcfgMsg_t *sendMsgHdr = NULL;
++        char *recv_str = NULL;
++        int buf_size = 0;
++
++        printf("ppp payload length %d\n", payloadLen);
++
++        buf_size = sizeof(zcfgMsg_t)+payloadLen;
++        sendBuf = malloc(buf_size);
++        sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++        sendMsgHdr->type = msgType;
++        sendMsgHdr->length = payloadLen;
++        sendMsgHdr->srcEid = ZCFG_EID_PPPD;
++        sendMsgHdr->dstEid = dstEid;
++
++        if(payload != NULL)
++                memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++        ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++        if(ret == ZCFG_SUCCESS) {
++                recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++                printf("Receive message : %s\n", recv_str);
++        }
++
++        return ret;
++}
++#endif
++
+ /**********************************************************************
+ *%FUNCTION: parseForHostUniq
+ *%ARGUMENTS:
+@@ -325,7 +367,16 @@
+ 	    if (r < 0) {
+ 		fatal("waitForPADO: select: %m");
+ 	    }
++#if 1 /* vlanautohunt, ZyXEL, John */
++	    if(r == 0){
++		if(vid != -1){
++			kill(getpid(), SIGTERM);
++		}
++		return;
++	    }
++#else
+ 	    if (r == 0) return;        /* Timed out */
++#endif
+ 	}
+ 	
+ 	/* Get the packet */
+@@ -364,6 +415,12 @@
+ 		error("Ignoring PADO packet with no Service-Name tag");
+ 		continue;
+ 	    }
++#if 1 /* vlanautohunt, ZyXEL, John*/
++	    if(vid != -1){
++	    	pppoeMsgSend(ZCFG_MSG_VLAN_HUNT_SUCCESS, ZCFG_EID_VLAN_AUTOHUNT, 0, NULL);
++		kill(getpid(), SIGTERM);
++	    }
++#endif
+ 	    conn->numPADOs++;
+ 	    if (conn->printACNames) {
+ 		printf("--------------------------------------------------\n");
+diff -Naur ppp-2.4.3/pppd/plugins/rp-pppoe/plugin.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/plugins/rp-pppoe/plugin.c
+--- ppp-2.4.3/pppd/plugins/rp-pppoe/plugin.c	2014-01-10 14:03:53.387736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/plugins/rp-pppoe/plugin.c	2014-01-09 18:48:43.000000000 +0800
+@@ -62,6 +62,9 @@
+ static char *acName = NULL;
+ static char *existingSession = NULL;
+ static int printACNames = 0;
++#if 1 /* vlanautohunt, ZyXEL, John */
++extern int vid;
++#endif
+ 
+ static int PPPoEDevnameHook(char *cmd, char **argv, int doit);
+ static option_t Options[] = {
+@@ -77,6 +80,9 @@
+       "Attach to existing session (sessid:macaddr)" },
+     { "rp_pppoe_verbose", o_int, &printACNames,
+       "Be verbose about discovered access concentrators"},
++#if 1 /* vlanautohunt, ZyXEL, John */
++     { "vid", o_int, &vid, "vlanautohunt vid"},	
++#endif
+     { NULL }
+ };
+ 
+diff -Naur ppp-2.4.3/pppd/pppd.h /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/pppd.h
+--- ppp-2.4.3/pppd/pppd.h	2014-01-10 14:03:53.395736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/pppd.h	2014-01-09 18:48:43.000000000 +0800
+@@ -267,6 +267,12 @@
+ #define CALLBACK_DIALIN		1	/* we are expecting the call back */
+ #define CALLBACK_DIALOUT	2	/* we are dialling out to call back */
+ 
++#if 1 /* brcm patch, ZyXEL */
++#define FIELD0    4        /* ppp device number ppp0, ppp1, the third digit (max 16) */
++#define FIELD1    8        /* if 0, default mode, 1 vlan mux, 2 msc */
++#define FIELD2    19       /* if FILED1 is 0, add no extension, 1 add vlan id, 2 add conId for msc */
++#endif
++
+ /*
+  * Variables set by command-line options.
+  */
+diff -Naur ppp-2.4.3/pppd/sys-linux.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/sys-linux.c
+--- ppp-2.4.3/pppd/sys-linux.c	2014-01-10 14:03:53.351736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/sys-linux.c	2014-01-09 18:48:43.000000000 +0800
+@@ -259,6 +259,15 @@
+ 
+ extern int hungup;
+ 
++#if 1 /*Add by ZyXEL, Jerry Lin*/
++extern char    devname[MAXPATHLEN];
++extern char    pppname[MAXPATHLEN];
++#endif
++
++#if 1 /* tty device, ZyXEL */
++extern int tty_dev;		/* if it is a tty device, set tty_dev to be 1 */
++#endif
++
+ /* new_fd is the fd of a tty */
+ static void set_ppp_fd (int new_fd)
+ {
+@@ -623,7 +632,43 @@
+ static int make_ppp_unit()
+ {
+ 	int x, flags;
++#if 1 /* ZyXEL */
++	unsigned num[3]={0, 0, 0};
++	char *p;
++	char req_name[MAXPATHLEN] = "";
++
++	if(strcmp(pppname, "") != 0) {
++		strcpy(req_name, pppname);
++
++		if ((p = strchr(req_name, '.')) != NULL) {
++			/* vlan mux mode */
++			sscanf(&(req_name[3]), "%d.%d", num, num+2);
++			num[1] = 1;
++		}
++		else if ((p = strchr(req_name, '_')) != NULL) {
++			/* msc mode */
++			sscanf(&(req_name[3]), "%d_%d", num, num+2);
++			num[1] = 2;
++		}
++		else if ((p = strstr(req_name, "pppoa")) != NULL) {
++			/* pppoa */
++			num[0] = atoi(&req_name[5]);
++			num[1] = 3;
++		}
++#if 1 /* support pppoWWAN, ZyXEL */
++		else if ((p = strstr(req_name, "pppoWWAN")) != NULL){
++			num[0] = atoi(&req_name[8]);
++			num[1] = 4;
++		}
++#endif
++		else {
++			/* default mode */
++			num[0] = atoi(&req_name[3]);
++		}
+ 
++		req_unit =  num[0]<<(FIELD1+FIELD2) | num[1]<<FIELD2 | num[2];
++	}
++#endif
+ 	if (ppp_dev_fd >= 0) {
+ 		dbglog("in make_ppp_unit, already had /dev/ppp open?");
+ 		close(ppp_dev_fd);
+@@ -643,8 +688,24 @@
+ 		ifunit = -1;
+ 		x = ioctl(ppp_dev_fd, PPPIOCNEWUNIT, &ifunit);
+ 	}
+-	if (x < 0)
++	if (x < 0) {
+ 		error("Couldn't create new ppp unit: %m");
++	}
++#if 1 /* ZyXEL */
++	else {
++#if 1 /* tty device, ZyXEL */
++		if(!tty_dev){
++#endif
++			//x = ioctl(ppp_dev_fd, PPPIOCSREALDEV, devnam);
++			x = ioctl(ppp_dev_fd, PPPIOCSREALDEV, devname);
++			if (x < 0) {
++				error("Couldn't set ppp real device (%s): %m", devname);
++			}
++#if 1 /* tty device, ZyXEL */
++		}
++#endif
++	}
++#endif
+ 	return x;
+ }
+ 
+diff -Naur ppp-2.4.3/pppd/tty.c /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/tty.c
+--- ppp-2.4.3/pppd/tty.c	2014-01-10 14:03:53.395736450 +0800
++++ /home/john/ppp-2.4.3-src-zyxel-patch/ppp_5313/ppp_5313/pppd/tty.c	2014-01-09 18:48:43.000000000 +0800
+@@ -154,6 +154,9 @@
+ extern int kill_link;
+ extern int asked_to_quit;
+ extern int got_sigterm;
++#if 1 /* tty device, ZyXEL */
++extern int tty_dev;		/* if it is a tty device, set tty_dev to be 1 */
++#endif
+ 
+ /* XXX */
+ extern int privopen;		/* don't lock, open device as root */
+@@ -324,6 +327,11 @@
+ 		default_device = 0;
+ 	}
+   
++#if 1 /* tty device, check it is a tty device, or not, ZyXEL */
++	if(strstr(cp, "tty")){
++		tty_dev = 1;
++	}
++#endif
+ 	return 1;
+ }
+ 

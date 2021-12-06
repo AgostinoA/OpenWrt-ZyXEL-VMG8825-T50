@@ -1,0 +1,918 @@
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosGeneral.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosGeneral.c	2017-07-11 14:09:26.716641272 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosGeneral.c	2017-07-11 14:27:46.112982300 +0800
+@@ -22,26 +22,62 @@
+ 	uint32_t X_ZYXEL_DownRate;
+ }s_QoS;
+ 
+-time_t t1, t2;
+-
+ dal_param_t QosGeneral_param[] = {
+-	{"X_ZYXEL_Enabled",				dalType_boolean, 0, 0, NULL},
+-	{"X_ZYXEL_AutoMapType",			dalType_string, 0, 0, NULL},
+-	{"X_ZYXEL_UpRate",				dalType_int, 0, 0, NULL},
+-	{"X_ZYXEL_DownRate",			dalType_int, 0, 0, NULL},
+-	{NULL,		0,	0,	0,	NULL}
++	{"Enable",						dalType_boolean, 	0, 0, 			NULL,		NULL,												NULL},
++	{"AutoMapType",					dalType_string, 	0, 0, 			NULL,		"None|EthernetPriority|IPPrecedence|PacketLength",	NULL},
++	{"UpRate",						dalType_int, 		1, 1024000, 	NULL,		NULL,												NULL},
++	{"DownRate",					dalType_int, 		1, 1024000, 	NULL,		NULL,												NULL},
++	{NULL,							0,					0, 0,			NULL,		NULL,												NULL},
+ };
+ 
+ void getQosGeneralBasicInfo(struct json_object *Jobj, s_QoS *QoS_Info) {
+-	QoS_Info->X_ZYXEL_Enabled = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_Enabled"));
+-	QoS_Info->X_ZYXEL_AutoMapType = (char*)json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_AutoMapType"));
+-	QoS_Info->X_ZYXEL_UpRate = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_UpRate"));
+-	QoS_Info->X_ZYXEL_DownRate = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_DownRate"));
++	QoS_Info->X_ZYXEL_Enabled = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	QoS_Info->X_ZYXEL_AutoMapType = (char*)json_object_get_string(json_object_object_get(Jobj, "AutoMapType"));
++	QoS_Info->X_ZYXEL_UpRate = json_object_get_int(json_object_object_get(Jobj, "UpRate"));
++	QoS_Info->X_ZYXEL_DownRate = json_object_get_int(json_object_object_get(Jobj, "DownRate"));
+ 	return;
+ }
+ 
+-zcfgRet_t zcfgFeDalQosGeneralAdd(struct json_object *Jobj, char *replyMsg) {
++
++void zcfgFeDalShowQosGeneral(struct json_object *Jarray){
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray, 0);
++		printf("Qos General Configuration\n");
++		printf("%-50s %d \n","Qos :", json_object_get_boolean(json_object_object_get(obj, "Enable")));
++		printf("%-50s %s \n","WAN Managed Upstream Bandwidth :", json_object_get_string(json_object_object_get(obj, "UpRate")));
++		printf("%-50s %s \n","LAN Managed Downstream Bandwidth :", json_object_get_string(json_object_object_get(obj, "DownRate")));
++		printf("%-50s %s \n","Upstream Traffic Priority Assigned by :", json_object_get_string(json_object_object_get(obj, "AutoMapType")));
++	}
++
++zcfgRet_t zcfgFeDalQosGeneralGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++	const char* AutoMapType;
++
++	IID_INIT(iid);
++	if(zcfgFeObjJsonGet(RDM_OID_QOS, &iid, &obj) == ZCFG_SUCCESS) {
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_Enabled")));
++		AutoMapType = json_object_get_string(json_object_object_get(obj, "X_ZYXEL_AutoMapType"));
++		if(!strcmp(AutoMapType,"802.1P"))
++			json_object_object_add(pramJobj, "AutoMapType", json_object_new_string("Ethernet Priority"));
++		else if(!strcmp(AutoMapType,"DSCP"))
++			json_object_object_add(pramJobj, "AutoMapType", json_object_new_string("IP Precedence"));
++		else		
++			json_object_object_add(pramJobj, "AutoMapType", json_object_new_string(AutoMapType));
++		json_object_object_add(pramJobj, "UpRate", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_UpRate")));
++		json_object_object_add(pramJobj, "DownRate", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_DownRate")));
++		json_object_array_add(Jarray, pramJobj);
++		zcfgFeJsonObjFree(obj);
++	}
++	
+ 	return ret;
+ }
+ 
+@@ -54,44 +90,46 @@
+ 
+ 	memset(&QoS_Info, 0, sizeof(s_QoS));
+ 	getQosGeneralBasicInfo(Jobj, &QoS_Info);
+-
+-	while(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS, &qosIid, &qosObj) == ZCFG_SUCCESS) {
+-		json_object_object_add(qosObj, "X_ZYXEL_Enabled", json_object_new_boolean(QoS_Info.X_ZYXEL_Enabled));
+-		json_object_object_add(qosObj, "X_ZYXEL_AutoMapType", json_object_new_string(QoS_Info.X_ZYXEL_AutoMapType));
+-		json_object_object_add(qosObj, "X_ZYXEL_UpRate", json_object_new_int(QoS_Info.X_ZYXEL_UpRate));
+-		json_object_object_add(qosObj, "X_ZYXEL_DownRate", json_object_new_int(QoS_Info.X_ZYXEL_DownRate));
++	ret = zcfgFeObjJsonGet(RDM_OID_QOS, &qosIid, &qosObj);	
++	if(ret == ZCFG_SUCCESS) {
++		if(json_object_object_get(Jobj, "Enable")!= NULL)
++			json_object_object_add(qosObj, "X_ZYXEL_Enabled", json_object_new_boolean(QoS_Info.X_ZYXEL_Enabled));
++		if(json_object_object_get(Jobj, "AutoMapType")!= NULL){
++			if(!strcmp(QoS_Info.X_ZYXEL_AutoMapType,"EthernetPriority"))
++				json_object_object_add(qosObj, "X_ZYXEL_AutoMapType", json_object_new_string("802.1P"));
++			else if(!strcmp(QoS_Info.X_ZYXEL_AutoMapType,"IPPrecedence"))
++				json_object_object_add(qosObj, "X_ZYXEL_AutoMapType", json_object_new_string("DSCP"));
++			else if(!strcmp(QoS_Info.X_ZYXEL_AutoMapType,"PacketLength"))
++				json_object_object_add(qosObj, "X_ZYXEL_AutoMapType", json_object_new_string("Packet_Length"));
++			else
++				json_object_object_add(qosObj, "X_ZYXEL_AutoMapType", json_object_new_string(QoS_Info.X_ZYXEL_AutoMapType));
++		}
++		if(json_object_object_get(Jobj, "UpRate")!= NULL)
++			json_object_object_add(qosObj, "X_ZYXEL_UpRate", json_object_new_int(QoS_Info.X_ZYXEL_UpRate));
++		if(json_object_object_get(Jobj, "DownRate")!= NULL)
++			json_object_object_add(qosObj, "X_ZYXEL_DownRate", json_object_new_int(QoS_Info.X_ZYXEL_DownRate));
+ 		zcfgFeObjJsonBlockedSet(RDM_OID_QOS, &qosIid, qosObj, NULL);
+ 		zcfgFeJsonObjFree(qosObj);
+-		break;
+ 	}
+ 
+-	return ret;
+-}
++	else{
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
+ 
+-zcfgRet_t zcfgFeDalQosGeneralDelete(struct json_object *Jobj, char *replyMsg) {
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	return ret;
+ }
+-zcfgRet_t zcfgFeDalQosGeneral(const char *method, struct json_object *Jobj, json_object *Jarray, char *replyMsg) {
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+-	t1 = time(NULL);
++zcfgRet_t zcfgFeDalQosGeneral(const char *method, struct json_object *Jobj, struct json_object *Jarray,char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+-	if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalQosGeneralAdd(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalQosGeneralEdit(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "DELETE")) {
+-		ret = zcfgFeDalQosGeneralDelete(Jobj, NULL);
+-	}
+-	else {
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDalQosGeneralEdit(Jobj, replyMsg);
++	else if(!strcmp(method, "GET")) 
++		ret = zcfgFeDalQosGeneralGet(Jobj, Jarray, NULL);
++	else 
+ 		printf("Unknown method:%s\n", method);
+-	}
+ 
+-	t2 = time(NULL);
+-    printf("zcfgFeDalQosGeneral() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
+ 
+ 	return ret;
+ }
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosQueue.c	2017-07-11 14:09:26.716641272 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c	2017-07-11 14:22:58.821256000 +0800
+@@ -16,21 +16,19 @@
+ #include "zcfg_fe_Qos.h"
+ 
+ typedef struct s_QosQueue {
+-	int idx;
++	int Index;
+ 	bool Enable;
+-	char *X_ZYXEL_Name;
++	char *Name;
+ 	char *Interface;
+ 	char *SchedulerAlgorithm;
+-	int Precedence;
++	int Priority;
+ 	int Weight;
+ 	char *DropAlgorithm;
+-	int X_ZYXEL_PtmPriority;
+-	int X_ZYXEL_DslLatency;
+ 	int ShapingRate;
+ }s_QosQueue;
+ 
+ typedef struct s_QosQueueDel {
+-	int idx;
++	int Index;
+ }s_QosQueueDel;
+ 
+ typedef struct s_QosQueueIidMapping{
+@@ -39,64 +37,94 @@
+ }s_QosQueueIidMapping;
+ 
+ s_QosQueueIidMapping QosQueueIidMappingTable = {0};
+-time_t t1, t2;
+ 
+ dal_param_t QosQueue_param[] = {
+-	{"idx",					dalType_int, 0, 0, NULL},
+-	{"Enable",				dalType_boolean, 0, 0, NULL},
+-	{"X_ZYXEL_Name",		dalType_string, 0, 0, NULL},
+-	{"Interface",			dalType_string, 0, 0, NULL},
+-	{"SchedulerAlgorithm",	dalType_string, 0, 0, NULL},
+-	{"Precedence",			dalType_int, 0, 0, NULL},
+-	{"Weight",				dalType_int, 0, 0, NULL},
+-	{"DropAlgorithm",		dalType_string, 0, 0, NULL},
+-	{"X_ZYXEL_PtmPriority",	dalType_int, 0, 0, NULL},
+-	{"X_ZYXEL_DslLatency",	dalType_int, 0, 0, NULL},
+-	{"ShapingRate",			dalType_int, 0, 0, NULL},
+-	{NULL,		0,	0,	0,	NULL}
++	{"Index",				dalType_int, 		0,	0,			NULL,	NULL,	dal_Edit|dal_Delete},
++	{"Enable",				dalType_boolean, 	0,	0,			NULL,	NULL,	dal_Add},
++	{"Name",				dalType_string, 	0,	0,			NULL,	NULL,	dal_Add},
++	{"Interface",			dalType_string, 	0,	0,			NULL,	NULL,	dal_Add},
++	{"SchedulerAlgorithm",	dalType_string, 	0,	0,			NULL,	NULL,	dalcmd_Forbid},
++	{"Priority",			dalType_int, 		1,	8,			NULL,	NULL,	dal_Add},
++	{"Weight",				dalType_int, 		1,	8,			NULL,	NULL,	dal_Add},
++	{"DropAlgorithm",		dalType_string, 	0,	0,			NULL,	NULL,	dal_Add},
++	{"ShapingRate",			dalType_int, 		-1,	1024000,	NULL,	NULL,	NULL},
++	{NULL,					0,					0,	0,			NULL,	NULL,	NULL},	
+ };
+ 
++void QueueInfoInit(s_QosQueue *QosQueue_Info)
++{
++    QosQueue_Info->Index = 0;
++    QosQueue_Info->Enable = NULL;
++    QosQueue_Info->Name = NULL;
++    QosQueue_Info->Interface = NULL;
++	QosQueue_Info->SchedulerAlgorithm = NULL;
++	QosQueue_Info->Priority = 0;
++	QosQueue_Info->Weight = 0;
++	QosQueue_Info->DropAlgorithm = NULL; 
++	QosQueue_Info->ShapingRate = 0;
++}
++
++void QueueDelInfoInit(s_QosQueue *QosQueueDel_Info)
++{
++    QosQueueDel_Info->Index = 0;
++}
++
++
+ void getQosQueueBasicInfo(struct json_object *Jobj, s_QosQueue *QosQueue_Info) {
+ 	
+ #if(QOS_DAL_DEBUG == 1)			
+ 	printf("getQosQueueBasicInfo\n");
+ #endif	
+ 	
+-	QosQueue_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
+-	QosQueue_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-	QosQueue_Info->X_ZYXEL_Name = (char*)json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Name"));
+-	QosQueue_Info->Interface = (char*)json_object_get_string(json_object_object_get(Jobj, "Interface"));
+-	QosQueue_Info->SchedulerAlgorithm = (char*)json_object_get_string(json_object_object_get(Jobj, "SchedulerAlgorithm"));
+-	QosQueue_Info->Precedence = json_object_get_int(json_object_object_get(Jobj, "Precedence"));
+-	QosQueue_Info->Weight = json_object_get_int(json_object_object_get(Jobj, "Weight"));
+-	QosQueue_Info->DropAlgorithm = (char*)json_object_get_string(json_object_object_get(Jobj, "DropAlgorithm"));
+-	QosQueue_Info->X_ZYXEL_PtmPriority = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_PtmPriority"));
+-	QosQueue_Info->X_ZYXEL_DslLatency = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_DslLatency"));
+-	QosQueue_Info->ShapingRate = json_object_get_int(json_object_object_get(Jobj, "ShapingRate"));
++	//decrease default queue column
++	QosQueue_Info->Index = (json_object_get_int(json_object_object_get(Jobj, "Index")))-1;
++	if(json_object_object_get(Jobj, "Enable")!= NULL)
++		QosQueue_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	if(json_object_object_get(Jobj, "Name") != NULL)
++		QosQueue_Info->Name = (char*)json_object_get_string(json_object_object_get(Jobj, "Name"));
++	if(json_object_object_get(Jobj, "Interface") != NULL)
++		QosQueue_Info->Interface = (char*)json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	if(json_object_object_get(Jobj, "SchedulerAlgorithm") != NULL)
++		QosQueue_Info->SchedulerAlgorithm = (char*)json_object_get_string(json_object_object_get(Jobj, "SchedulerAlgorithm"));
++	if(json_object_object_get(Jobj, "Priority") != NULL)
++		QosQueue_Info->Priority = json_object_get_int(json_object_object_get(Jobj, "Priority"));
++	if(json_object_object_get(Jobj, "Weight") != NULL)
++		QosQueue_Info->Weight = json_object_get_int(json_object_object_get(Jobj, "Weight"));
++	if(json_object_object_get(Jobj, "DropAlgorithm") != NULL)
++		QosQueue_Info->DropAlgorithm = (char*)json_object_get_string(json_object_object_get(Jobj, "DropAlgorithm"));
++	if(json_object_object_get(Jobj, "ShapingRate")!= NULL)
++		QosQueue_Info->ShapingRate = json_object_get_int(json_object_object_get(Jobj, "ShapingRate"));
+ 
+ 	return;
+ }
+ 
+-void prepare_QosQueue_Info(json_object *queueObj, s_QosQueue* QosQueue_Info) {
+-	json_object_object_add(queueObj, "Enable", json_object_new_boolean(QosQueue_Info->Enable));
+-	json_object_object_add(queueObj, "X_ZYXEL_Name", json_object_new_string(QosQueue_Info->X_ZYXEL_Name));
+-	json_object_object_add(queueObj, "Interface", json_object_new_string(QosQueue_Info->Interface));
+-	json_object_object_add(queueObj, "SchedulerAlgorithm", json_object_new_string(QosQueue_Info->SchedulerAlgorithm));
+-	json_object_object_add(queueObj, "Precedence", json_object_new_int(QosQueue_Info->Precedence));
+-	json_object_object_add(queueObj, "Weight", json_object_new_int(QosQueue_Info->Weight));
+-	json_object_object_add(queueObj, "DropAlgorithm", json_object_new_string(QosQueue_Info->DropAlgorithm));
+-	json_object_object_add(queueObj, "X_ZYXEL_PtmPriority", json_object_new_int(QosQueue_Info->X_ZYXEL_PtmPriority));
+-	json_object_object_add(queueObj, "X_ZYXEL_DslLatency", json_object_new_int(QosQueue_Info->X_ZYXEL_DslLatency));
+-	json_object_object_add(queueObj, "ShapingRate", json_object_new_int(QosQueue_Info->ShapingRate));
++void prepare_QosQueue_Info(struct json_object *Jobj, json_object *queueObj, s_QosQueue* QosQueue_Info) {
++	if(json_object_object_get(Jobj, "Enable") != NULL)
++		json_object_object_add(queueObj, "Enable", json_object_new_boolean(QosQueue_Info->Enable));
++	if(json_object_object_get(Jobj, "Name") != NULL)
++		json_object_object_add(queueObj, "X_ZYXEL_Name", json_object_new_string(QosQueue_Info->Name));
++	if(json_object_object_get(Jobj, "Interface") != NULL)
++		json_object_object_add(queueObj, "Interface", json_object_new_string(QosQueue_Info->Interface));
++	if(json_object_object_get(Jobj, "SchedulerAlgorithm") != NULL)
++		json_object_object_add(queueObj, "SchedulerAlgorithm", json_object_new_string(QosQueue_Info->SchedulerAlgorithm));
++	if(json_object_object_get(Jobj, "Priority") != NULL)
++		json_object_object_add(queueObj, "Precedence", json_object_new_int(QosQueue_Info->Priority));
++	if(json_object_object_get(Jobj, "Weight") != NULL)
++		json_object_object_add(queueObj, "Weight", json_object_new_int(QosQueue_Info->Weight));
++	if(json_object_object_get(Jobj, "DropAlgorithm") != NULL)
++		json_object_object_add(queueObj, "DropAlgorithm", json_object_new_string(QosQueue_Info->DropAlgorithm));
++	json_object_object_add(queueObj, "X_ZYXEL_PtmPriority", json_object_new_int(0));
++	json_object_object_add(queueObj, "X_ZYXEL_DslLatency", json_object_new_int(0));
++	
+ 	return;
+ }
+ 
+ 
+ void getQosQueueDelKey(struct json_object *Jobj, s_QosQueueDel *QosQueueDel_Info) {
+-
+-	QosQueueDel_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	//decrease default queue column
++	QosQueueDel_Info->Index = (json_object_get_int(json_object_object_get(Jobj, "Index")))-1;
+ #if(QOS_DAL_DEBUG == 1)			
+-	printf("getQosQueueDelKey key: %d\n", QosQueueDel_Info->idx);
++	printf("getQosQueueDelKey key: %d\n", QosQueueDel_Info->Index);
+ #endif
+ 	return;
+ }
+@@ -150,65 +178,181 @@
+ 	return;
+ }
+ 
++void zcfgFeDalShowQosQueue(struct json_object *Jarray){	
++	int i, len = 0;	
++	struct json_object *obj;	
++	if(json_object_get_type(Jarray) != json_type_array){		
++		printf("wrong Jobj format!\n");		
++		return;	
++	}	
++	printf("%-7s %-12s %-20s %-12s %-12s %-12s %-20s %-12s \n",		    
++		"Index", "Enable", "Name", "Interface", "Priority", "Weight", "Buffer Management", "Rate Limit");
++	//default queue
++	printf("%-7s %-12s %-20s %-12s %-12s %-12s %-20s %-12s \n",		    
++		"1", "1", "default queue", "WAN", "8", "1", "DT", "-1");
++	len = json_object_array_length(Jarray);	
++	for(i=0;i<len;i++){		
++		obj = json_object_array_get_idx(Jarray, i);		
++		if(obj != NULL){			
++			printf("%-7s %-12d %-20s %-12s %-12s %-12s %-20s %-12s \n",			
++				json_object_get_string(json_object_object_get(obj, "Index")),			
++				json_object_get_boolean(json_object_object_get(obj, "Enable")),			
++				json_object_get_string(json_object_object_get(obj, "Name")),			
++				json_object_get_string(json_object_object_get(obj, "Interface")),
++				json_object_get_string(json_object_object_get(obj, "Priority")),			
++				json_object_get_string(json_object_object_get(obj, "Weight")),		
++				json_object_get_string(json_object_object_get(obj, "BufferManagement")),			
++				json_object_get_string(json_object_object_get(obj, "RateLimit")));		
++		}	
++	}
++}
++
++
++zcfgRet_t zcfgFeDalQosQueueGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *pramJobj = NULL;
++	struct json_object *queueObj = NULL;
++	objIndex_t queueIid = {0};
++	int count = 2;
++	
++	IID_INIT(queueIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid , &queueObj) == ZCFG_SUCCESS){
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Index", json_object_new_int(count));
++		json_object_object_add(pramJobj, "Name",  JSON_OBJ_COPY(json_object_object_get(queueObj, "X_ZYXEL_Name")));
++		json_object_object_add(pramJobj, "RateLimit",JSON_OBJ_COPY(json_object_object_get(queueObj, "ShapingRate")));
++		json_object_object_add(pramJobj, "BufferManagement",JSON_OBJ_COPY(json_object_object_get(queueObj, "DropAlgorithm")));
++		json_object_object_add(pramJobj, "Interface",JSON_OBJ_COPY(json_object_object_get(queueObj, "Interface")));
++		json_object_object_add(pramJobj, "Priority",JSON_OBJ_COPY(json_object_object_get(queueObj, "Precedence")));
++		json_object_object_add(pramJobj, "Weight",JSON_OBJ_COPY(json_object_object_get(queueObj, "Weight")));
++		json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(queueObj, "Enable")));
++		json_object_array_add(Jarray, pramJobj);
++		count++;		
++		zcfgFeJsonObjFree(queueObj);
++	}	
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalQosQueueAdd(struct json_object *Jobj, char *replyMsg) {
+ 	
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	int len = 0;
+ 	s_QosQueue QosQueue_Info;
+ 	json_object *queueObj = NULL;
+ 	objIndex_t queueIid = {0};
+ 	IID_INIT(queueIid);
++	struct json_object *Jarray = NULL;
+ 
++	Jarray = json_object_new_array();	
++	zcfgFeDalQosQueueGet(NULL, Jarray, NULL);
++	len = json_object_array_length(Jarray);	
++	if(len == 7){
++		printf("Maximum Qos Queue rule entries for WAN port has been reached. Unable to create more Qos Queue entries.\n");
++		return ZCFG_INVALID_PARAM_VALUE;;
++	}
+ 	
++	QueueInfoInit(&QosQueue_Info);
+ 	getQosQueueBasicInfo(Jobj, &QosQueue_Info);
+ 
+-	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_QUE, &queueIid, NULL)) != ZCFG_SUCCESS) {
++	zcfg_offset_t oid;	
++	oid = RDM_OID_QOS_QUE;
++	if(QosQueue_Info.Name != NULL){
++		ret = dalcmdParamCheck(NULL, QosQueue_Info.Name , oid, "X_ZYXEL_Name", "Name",  replyMsg);
++		if(ret != ZCFG_SUCCESS)			
+ 		return ret;
+ 	}
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj)) != ZCFG_SUCCESS) {
++
++	ret = zcfgFeObjJsonAdd(RDM_OID_QOS_QUE, &queueIid, NULL);
++	if(ret == ZCFG_SUCCESS) {
++		ret = zcfgFeObjJsonGet(RDM_OID_QOS_QUE, &queueIid, &queueObj);
++	}
++
++	if(ret == ZCFG_SUCCESS) {
++		prepare_QosQueue_Info(Jobj, queueObj, &QosQueue_Info);
++		//Shaping rate range is between 0 and 1024000, -1 and 0 imply no limit
++		if(json_object_object_get(Jobj, "ShapingRate")!= NULL)
++			json_object_object_add(queueObj, "ShapingRate", json_object_new_int(QosQueue_Info.ShapingRate));
++		//If shaping rate is not set, set default value to -1
++		else{
++			json_object_object_add(queueObj, "ShapingRate", json_object_new_int(-1));
++		}
++		zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
++		updateQosQueueInfo(e_ActionType_ADD, queueIid.idx[0]);
+ 		return ret;
+ 	}
+-	prepare_QosQueue_Info(queueObj, &QosQueue_Info);
+-	zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
+-	updateQosQueueInfo(e_ActionType_ADD, queueIid.idx[0]);
+-	return ret;
++
++	else{
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
++	
+ }
+ 
+ zcfgRet_t zcfgFeDalQosQueueEdit(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	int i = 0;
+ 	s_QosQueue QosQueue_Info;
+ 	json_object *queueObj = NULL;
+ 	objIndex_t queueIid = {0};
+ 	IID_INIT(queueIid);
+ 
++	QueueInfoInit(&QosQueue_Info);
+ 	getQosQueueBasicInfo(Jobj, &QosQueue_Info);
+ 
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
+-		if(i == QosQueue_Info.idx) {
+-			prepare_QosQueue_Info(queueObj, &QosQueue_Info);
+-			zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
+-			zcfgFeJsonObjFree(queueObj);
+-			break;
+-		}
+-		i++;
+-		zcfgFeJsonObjFree(queueObj);
++	if(QosQueue_Info.Index == 0){
++		printf("Default queue data can not be modified.\n");
++		return ZCFG_INVALID_PARAM_VALUE;;
++	}
++	
++	zcfg_offset_t oid;	
++	oid = RDM_OID_QOS_QUE;	
++	ret = convertIndextoIid(QosQueue_Info.Index, &queueIid, oid, NULL, NULL, replyMsg);	
++	if(ret != ZCFG_SUCCESS)		
++		return ret;
++	if(QosQueue_Info.Name != NULL){
++		ret = dalcmdParamCheck(&queueIid, QosQueue_Info.Name , oid, "X_ZYXEL_Name", "Name",  replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
+ 	}
+ 
+-	return ret;
++	// PUT RDM_OID_QOS_QUE	
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
++		prepare_QosQueue_Info(Jobj, queueObj, &QosQueue_Info);
++		//Shaping rate range is between 0 and 1024000, -1 and 0 imply no limit
++		if(json_object_object_get(Jobj, "ShapingRate") != NULL)
++			json_object_object_add(queueObj, "ShapingRate", json_object_new_int(QosQueue_Info.ShapingRate));
++		zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
++		zcfgFeJsonObjFree(queueObj);		
++		return ret;
++	}
++
++	else{		
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Qos Queue fail oid(%d)\n ",__FUNCTION__,RDM_OID_QOS_QUE);		
++		return ZCFG_INTERNAL_ERROR;	
++	}
+ }
+ 
+ zcfgRet_t zcfgFeDalQosQueueDelete(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	int i = 0;
+ 	s_QosQueueDel QosQueueDel_Info;
+ 	char *TrafficClasses = NULL;
+ 	json_object *queueObj = NULL;
+ 	objIndex_t queueIid = {0};
+ 	IID_INIT(queueIid);
+ 
++	QueueDelInfoInit(&QosQueueDel_Info);
+ 	getQosQueueDelKey(Jobj, &QosQueueDel_Info);
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
+-		if(i == QosQueueDel_Info.idx) {
++
++	if(QosQueueDel_Info.Index == 0){
++		printf("Default queue data can not be deleted.\n");
++		return ZCFG_INVALID_PARAM_VALUE;;
++	}	
++	
++	zcfg_offset_t oid;	
++	oid = RDM_OID_QOS_QUE;	
++	ret = convertIndextoIid(QosQueueDel_Info.Index, &queueIid, oid, NULL, NULL, replyMsg);	
++	if(ret != ZCFG_SUCCESS)		
++		return ret;
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {			
+ 			TrafficClasses = json_object_get_string(json_object_object_get(queueObj, "TrafficClasses"));
+ #if(QOS_DAL_DEBUG == 1)			
+ 			printf("remove que iid %d TrafficClasses %d %s\n", queueIid.idx[0], TrafficClasses, TrafficClasses);
+@@ -219,12 +363,14 @@
+ 				remove_related_qosClass(TrafficClasses);		
+ 			}
+ 			zcfgFeJsonObjFree(queueObj);
+-			break;
+ 		}
+-		i++;
+-		zcfgFeJsonObjFree(queueObj);
++	
++	else{			
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Qos Queue fail oid(%d)\n ",__FUNCTION__,RDM_OID_QOS_QUE);			
++		return ZCFG_INTERNAL_ERROR;		
+ 	}
+-	updateQosQueueInfo(e_ActionType_DELETE, QosQueueDel_Info.idx);
++	
++	updateQosQueueInfo(e_ActionType_DELETE, QosQueueDel_Info.Index);
+ 	
+ 	return ret;
+ }
+@@ -232,23 +378,21 @@
+ zcfgRet_t zcfgFeDalQosQueue(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+-	t1 = time(NULL);
+-	
+ 	if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalQosQueueAdd(Jobj, NULL);
++		ret = zcfgFeDalQosQueueAdd(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalQosQueueEdit(Jobj, NULL);
++		ret = zcfgFeDalQosQueueEdit(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDalQosQueueDelete(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalQosQueueGet(Jobj, Jarray, NULL);
++	}
+ 	else {
+ 		printf("Unknown method:%s\n", method);
+ 	}
+ 
+-	t2 = time(NULL);
+-    printf("zcfgFeDalQosQueue() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
+-
+ 	return ret;
+ }
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosShaper.c	2017-07-11 14:09:26.716641272 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c	2017-07-11 14:25:58.231195200 +0800
+@@ -16,46 +16,73 @@
+ #include "zcfg_fe_Qos.h"
+ 
+ typedef struct s_QosShaper {
+-	int idx;
++	int Index;
+ 	bool Enable;
+ 	char *Interface;
+ 	int ShapingRate;
+ }s_QosShaper;
+ 
+ typedef struct s_QosShaperDel {
+-	int idx;
++	int Index;
+ 	int UpdateOrDel; //Update: 0, Del: 1
+ }s_QosShaperDel;
+ 
+-time_t t1, t2;
+-
+ dal_param_t QosShaper_param[] = {
+-	{"idx",			dalType_int, 0, 0, NULL},
+-	{"Enable",		dalType_boolean, 0, 0, NULL},
+-	{"Interface",	dalType_string, 0, 0, NULL},
+-	{"ShapingRate",	dalType_int, 0, 0, NULL},
+-	{NULL,		0,	0,	0,	NULL}
++	{"Index",						dalType_int, 			0, 0, 		  NULL,		NULL,	dal_Edit|dal_Delete},
++	{"Enable",						dalType_boolean,		0, 0, 		  NULL,		NULL,	dal_Add},
++	{"Interface",					dalType_MultiRtWanWWan, 0, 0,         NULL,		NULL,	dal_Add},
++	{"ShapingRate",					dalType_int, 			0, 1024000,   NULL,  	NULL,	dal_Add},
++	{NULL,							0,						0, 0,	      NULL,		NULL,	NULL},
+ };
+ extern uint32_t StrToIntConv(char *str);
+ 
++void ShaperInfoInit(s_QosShaper *QosShaper_Info)
++{
++    QosShaper_Info->Index = 0;
++    QosShaper_Info->Enable = 0;
++    QosShaper_Info->Interface = NULL;
++    QosShaper_Info->ShapingRate = 0;
++}
++
++void ShaperDelInfoInit(s_QosShaperDel *QosShaperDel_Info)
++{
++    QosShaperDel_Info->Index = 0;
++    QosShaperDel_Info->UpdateOrDel = 0;
++}
++
++
+ void getQosShaperBasicInfo(struct json_object *Jobj, s_QosShaper *QosShaper_Info) {
+-	QosShaper_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
+-	QosShaper_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-	QosShaper_Info->Interface = (char*)json_object_get_string(json_object_object_get(Jobj, "Interface"));
+-	QosShaper_Info->ShapingRate = json_object_get_int(json_object_object_get(Jobj, "ShapingRate"));
++	char *rest_str = NULL;
++	QosShaper_Info->Index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	if(json_object_object_get(Jobj, "Enable")!= NULL)
++		QosShaper_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	if(json_object_object_get(Jobj, "Interface")!= NULL)
++		QosShaper_Info->Interface = strtok_r(json_object_get_string(json_object_object_get(Jobj, "Interface")),",", &rest_str);
++	if(json_object_object_get(Jobj, "ShapingRate")!= NULL)
++		QosShaper_Info->ShapingRate = json_object_get_int(json_object_object_get(Jobj, "ShapingRate"));
+ 	return;
+ }
+ 
+ void getQosShaperDelInfo(struct json_object *Jobj, s_QosShaperDel *QosShaperDel_Info) {
+-	QosShaperDel_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
++	if(json_object_object_get(Jobj, "Index")!= NULL)
++		QosShaperDel_Info->Index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	else
++		QosShaperDel_Info->Index = 0;
+ 	QosShaperDel_Info->UpdateOrDel = json_object_get_int(json_object_object_get(Jobj, "UpdateOrDel"));
+ 	return;
+ }
+ 
+-void prepareQosShaperObj(s_QosShaper *QosShaper_Info, json_object *shaperObj) {
+-	json_object_object_add(shaperObj, "Enable", json_object_new_boolean(QosShaper_Info->Enable));
+-	json_object_object_add(shaperObj, "Interface", json_object_new_string(QosShaper_Info->Interface));
+-	json_object_object_add(shaperObj, "ShapingRate", json_object_new_int(QosShaper_Info->ShapingRate));
++void prepareQosShaperObj(struct json_object *Jobj, s_QosShaper *QosShaper_Info, json_object *shaperObj) {	
++	if(json_object_object_get(Jobj, "Enable")!= NULL){
++		json_object_object_add(shaperObj, "Enable", json_object_new_boolean(QosShaper_Info->Enable));
++	}
++	if(json_object_object_get(Jobj, "Interface")!= NULL){
++		json_object_object_add(shaperObj, "Interface", json_object_new_string(QosShaper_Info->Interface));
++	}
++	//Shaping rate range is between 0 and 1024000 
++	if(json_object_object_get(Jobj, "ShapingRate")!= NULL){
++		json_object_object_add(shaperObj, "ShapingRate", json_object_new_int(QosShaper_Info->ShapingRate));
++	}
+ 	return;
+ }
+ 
+@@ -190,6 +217,67 @@
+ 	return ret;
+ }
+ 
++void zcfgFeDalShowQosShaper(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-7s %-12s %-20s %-12s\n",
++		    "Index", "Enable", "Interface", "Rate Limit");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj != NULL){
++			printf("%-7s %-12d %-20s %-12s\n",
++			json_object_get_string(json_object_object_get(obj, "Index")),
++			json_object_get_boolean(json_object_object_get(obj, "Enable")),
++			json_object_get_string(json_object_object_get(obj, "WanInterface")),
++			json_object_get_string(json_object_object_get(obj, "RateLimit")));
++		}
++	}
++}
++
++zcfgRet_t zcfgFeDalQosShaperGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *pramJobj = NULL;
++	struct json_object *shaperObj = NULL;
++	struct json_object *wanobj = NULL;
++	objIndex_t shaperIid = {0};
++	objIndex_t wanIid = {0};
++	const char *Interface;
++	const char *newInt;
++	int count = 1;
++	IID_INIT(shaperIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS){
++		pramJobj = json_object_new_object();
++		IID_INIT(wanIid);
++		wanIid.level = 1;
++		if(json_object_object_get(shaperObj, "Interface") != NULL){
++			Interface = json_object_get_string(json_object_object_get(shaperObj,"Interface"));
++			sscanf(Interface, "IP.Interface.%hhu", &wanIid.idx[0]);
++			if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &wanIid, &wanobj) == ZCFG_SUCCESS){
++				if(json_object_object_get(wanobj, "X_ZYXEL_SrvName") != NULL){
++					newInt = json_object_get_string(json_object_object_get(wanobj, "X_ZYXEL_SrvName"));
++					json_object_object_add(pramJobj, "WanInterface",json_object_new_string(newInt));
++					json_object_object_add(pramJobj, "Index", json_object_new_int(count));
++					json_object_object_add(pramJobj, "RateLimit", JSON_OBJ_COPY(json_object_object_get(shaperObj, "ShapingRate")));
++					json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(shaperObj, "Enable")));
++					json_object_array_add(Jarray, pramJobj);
++					count++;
++				}
++				zcfgFeJsonObjFree(wanobj);
++			}
++ 		}
++		zcfgFeJsonObjFree(shaperObj);
++	}	
++	return ret;
++}
++
++
+ zcfgRet_t zcfgFeDalQosShaperAdd(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	s_QosShaper QosShaper_Info;
+@@ -197,72 +285,99 @@
+ 	objIndex_t shaperIid = {0};
+ 	IID_INIT(shaperIid);
+ 
++	ShaperInfoInit(&QosShaper_Info);
+ 	getQosShaperBasicInfo(Jobj, &QosShaper_Info);
+ 
+-	// POST RDM_OID_QOS_SHAPER
+-	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_SHAPER, &shaperIid, NULL)) != ZCFG_SUCCESS) {
+-		return ret;
++	zcfg_offset_t oid;
++	oid = RDM_OID_QOS_SHAPER;
++	if(QosShaper_Info.Interface != NULL){
++		ret = dalcmdParamCheck(NULL, QosShaper_Info.Interface , oid, "Interface", "Interface",  replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++	}
++
++	ret = zcfgFeObjJsonAdd(RDM_OID_QOS_SHAPER, &shaperIid, NULL);
++	if(ret == ZCFG_SUCCESS) {
++		ret = zcfgFeObjJsonGet(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj);
++	}
++
++	if(ret == ZCFG_SUCCESS) {
++		prepareQosShaperObj(Jobj,&QosShaper_Info, shaperObj);
++		zcfgFeObjJsonSet(RDM_OID_QOS_SHAPER, &shaperIid, shaperObj, NULL);
++		zcfgFeJsonObjFree(shaperObj);
+ 	}
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj)) != ZCFG_SUCCESS) {
++	
++	else{
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
+ 		return ret;
+ 	}
+-	prepareQosShaperObj(&QosShaper_Info, shaperObj);
+-	zcfgFeObjJsonSet(RDM_OID_QOS_SHAPER, &shaperIid, shaperObj, NULL);
+ 
+ 	return ret;
+ }
+ 
+ zcfgRet_t zcfgFeDalQosShaperEdit(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	int i = 0;
+ 	s_QosShaper QosShaper_Info;
+ 	json_object *shaperObj = NULL;
+ 	objIndex_t shaperIid = {0};
+ 	IID_INIT(shaperIid);
+ 
++	ShaperInfoInit(&QosShaper_Info);
+ 	getQosShaperBasicInfo(Jobj, &QosShaper_Info);
++	zcfg_offset_t oid;
++	oid = RDM_OID_QOS_SHAPER;
++	ret = convertIndextoIid(QosShaper_Info.Index, &shaperIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++
++	if(QosShaper_Info.Interface != NULL){
++		ret = dalcmdParamCheck(&shaperIid, QosShaper_Info.Interface , oid, "Interface", "Interface",  replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++	}
+ 
+ 	// PUT RDM_OID_QOS_SHAPER
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
+-		if(i == QosShaper_Info.idx) {
+-			prepareQosShaperObj(&QosShaper_Info, shaperObj);
+-			zcfgFeObjJsonSet(RDM_OID_QOS_SHAPER, &shaperIid, shaperObj, NULL);
+-			zcfgFeJsonObjFree(shaperObj);
+-			break;
+-		}
+-		i++;
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
++		prepareQosShaperObj(Jobj,&QosShaper_Info, shaperObj);
++		zcfgFeObjJsonSet(RDM_OID_QOS_SHAPER, &shaperIid, shaperObj, NULL);
+ 		zcfgFeJsonObjFree(shaperObj);
++		return ret;
++	}
++	else{
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Qos Shaper fail oid(%d)\n ",__FUNCTION__,RDM_OID_QOS_SHAPER);
++		return ZCFG_INTERNAL_ERROR;
+ 	}
+-
+-	return ret;
+ }
+ 
+ zcfgRet_t zcfgFeDalQosShaperDelete(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	int i = 0;
+ 	s_QosShaperDel QosShaperDel_Info;
+ 	json_object *shaperObj = NULL;
+ 	objIndex_t shaperIid = {0};
+ 	IID_INIT(shaperIid);
+ 
++	ShaperDelInfoInit(&QosShaperDel_Info);
+ 	getQosShaperDelInfo(Jobj, &QosShaperDel_Info);
+-
+-	if(QosShaperDel_Info.UpdateOrDel == 0) {
++	zcfg_offset_t oid;
++	oid = RDM_OID_QOS_SHAPER;
++	ret = convertIndextoIid(QosShaperDel_Info.Index, &shaperIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	if(QosShaperDel_Info.UpdateOrDel == 0 && QosShaperDel_Info.Index == 0) {
+ 		// update Shaper
+ 		checkQosShaperInterface();
+ 	}
+ 	else {
+-		// delete case
+-		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
+-			if(i == QosShaperDel_Info.idx) {
++		// delete case;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS) {
+ 				zcfgFeObjJsonDel(RDM_OID_QOS_SHAPER, &shaperIid, NULL);
+ 				zcfgFeJsonObjFree(shaperObj);
+-				break;
+-			}
+-			i++;
+-			zcfgFeJsonObjFree(shaperObj);
+ 		}
+ 
++		else{
++			printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Qos Shaper fail oid(%d)\n ",__FUNCTION__,RDM_OID_QOS_SHAPER);
++			return ZCFG_INTERNAL_ERROR;
++		}
+ 	}
+ 	
+ 	return ret;
+@@ -271,23 +386,21 @@
+ zcfgRet_t zcfgFeDalQosShaper(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+-	t1 = time(NULL);
+-	
+ 	if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalQosShaperAdd(Jobj, NULL);
++		ret = zcfgFeDalQosShaperAdd(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalQosShaperEdit(Jobj, NULL);
++		ret = zcfgFeDalQosShaperEdit(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDalQosShaperDelete(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalQosShaperGet(Jobj, Jarray, NULL);
++	}
+ 	else {
+ 		printf("Unknown method:%s\n", method);
+ 	}
+ 
+-	t2 = time(NULL);
+-    printf("zcfgFeDalQosShaper() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
+-
+ 	return ret;
+ }
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-11 14:09:26.896641269 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-11 14:16:47.612698000 +0800
+@@ -208,7 +208,9 @@
+ extern void zcfgFeDalShowUserAccount(struct json_object *Jarray);
+ extern void zcfgFeDalShowTrustDomain(struct json_object *Jarray);
+ extern void zcfgFeDalShowSpTrustDomain(struct json_object *Jarray);
+-
++extern void zcfgFeDalShowQosGeneral(struct json_object *Jarray);
++extern void zcfgFeDalShowQosShaper(struct json_object *Jarray);
++extern void zcfgFeDalShowQosQueue(struct json_object *Jarray);
+ dal_handler_t dalHandler[] = {
+ {"wan",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get|add|edit|delete",	"Broadband"},
+ {"tr69",			MGMT_param,			zcfgFeDalMgmt,			zcfgFeDalShowMgmt,			"get|edit",			"TR-069_Client"},
+@@ -240,10 +242,10 @@
+ {"firewall_acl", 	FIREWALL_ACL_param, zcfgFeDalFirewallACL,	zcfgFeDalShowFirewallACL,	"add|edit|delete|get",	"Firewall"},
+ {"wlan",			WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,   zcfgFeDalShowWifiGeneral,	"edit|get",			"Wireless"},
+ {"macfilter",		MAC_Filter_param,	zcfgFeDalMACFilter,		zcfgFeDalShowMACFilter,		"get|add|edit|delete",	"MAC Filter"},//MAC_Filter
+-{"QOS_GENERAL",		QosGeneral_param,	zcfgFeDalQosGeneral,	NULL,						"add|edit|delete",	""},//QoS
+-{"QOS_QUEUE",		QosQueue_param,		zcfgFeDalQosQueue,		NULL,						"add|edit|delete",	""},//QoS
++{"qos",				QosGeneral_param,	zcfgFeDalQosGeneral,	zcfgFeDalShowQosGeneral,	"get|edit",	"Qos"},//QoS
++{"qos_queue",		QosQueue_param,		zcfgFeDalQosQueue,		zcfgFeDalShowQosQueue,		"get|add|edit|delete",	"Qos"},//QoS
+ {"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass,		NULL,						"add|edit|delete",	""},//QoS
+-{"QOS_SHAPER",		QosShaper_param,	zcfgFeDalQosShaper,		NULL,						"add|edit|delete",	""},//QoS
++{"qos_shaper",		QosShaper_param,	zcfgFeDalQosShaper,		zcfgFeDalShowQosShaper,		"get|add|edit|delete",	"Qos"},//QoS
+ {"QOS_POLICER",		QosPolicer_param,	zcfgFeDalQosPolicer,	NULL,						"add|edit|delete",	""},//QoS
+ {"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,NULL,					"edit",       		""},//Wireless
+ {"wps",				WIFI_WPS_param,		zcfgFeDalWifiWps,		zcfgFeDalShowWifiWps,		"edit|get",			"Wireless"},

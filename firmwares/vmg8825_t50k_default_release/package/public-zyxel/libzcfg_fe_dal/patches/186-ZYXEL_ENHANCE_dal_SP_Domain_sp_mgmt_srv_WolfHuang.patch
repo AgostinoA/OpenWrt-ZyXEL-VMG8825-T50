@@ -1,0 +1,133 @@
+Index: libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_SPmgmt_srv.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_SPmgmt_srv.c	2017-05-18 22:34:33.687676404 +0800
+@@ -0,0 +1,100 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t SP_MGMT_SRV_param[]={		//RDM_OID_SP_REMO_SRV
++	{"Name", 					dalType_string,	0,	0,		NULL},
++	{"Enable",					dalType_boolean,	0,	0,		NULL},
++	{"Port", 	 				dalType_int,	1,	65535,	NULL},
++	{"Index", 	 				dalType_int,	0,	0,		NULL},
++	{"RestartDeamon", 		 	dalType_boolean,0,	0,		NULL},
++	{NULL,						0,				0,	0,		NULL},
++};
++
++zcfgRet_t zcfgFeDal_SPmgmtSrv_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *SPmgmtSrvObj = NULL;
++	struct json_object *reqObject = NULL;
++	objIndex_t SPmgmtSrvIid = {0};
++
++	const char *ServiceName = NULL;
++	int port = 0;
++	bool restartdeamon = false, RestartHttpDeamon = false, EnableService =false, EnableHttpService = false;
++	int index = 0, HttpIndex = 1;
++	int NewHttpPort = 0;
++	int OriginalHttpPort = 0;
++	int len = 0;
++	len = json_object_array_length(Jobj);
++			
++	for(int reqObjIdx = 0;reqObjIdx<len;reqObjIdx++){
++		reqObject = json_object_array_get_idx(Jobj, reqObjIdx);
++
++			IID_INIT(SPmgmtSrvIid);
++			index = json_object_get_int(json_object_object_get(reqObject, "Index"));
++			SPmgmtSrvIid.idx[0] = index;
++			SPmgmtSrvIid.level = 1;
++			ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, &SPmgmtSrvObj);
++			if(ret == ZCFG_SUCCESS){
++				EnableService = json_object_get_boolean(json_object_object_get(reqObject, "Enable"));
++				port = json_object_get_int(json_object_object_get(reqObject, "Port"));
++				ServiceName = json_object_get_string(json_object_object_get(SPmgmtSrvObj, "Name"));
++				OriginalHttpPort = json_object_get_int(json_object_object_get(SPmgmtSrvObj, "Port"));
++				/*if port of http or https have be modified, let it be PUT at last*/
++				if( !strcmp(ServiceName, "HTTP") ){
++					if(port != OriginalHttpPort){
++						EnableHttpService = EnableService;
++						RestartHttpDeamon = true;
++						HttpIndex = index;
++						NewHttpPort = port;
++						continue;
++					}else{
++						json_object_object_add(SPmgmtSrvObj, "Port", json_object_new_int(port));
++					}
++				}
++				json_object_object_add(SPmgmtSrvObj, "Enable", json_object_new_int(EnableService));
++				
++				zcfgFeObjJsonBlockedSet(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, SPmgmtSrvObj, NULL);
++				zcfgFeJsonObjFree(SPmgmtSrvObj);
++			}
++
++		zcfgFeJsonObjFree(reqObject);
++	}
++	
++	if(RestartHttpDeamon){		
++		IID_INIT(SPmgmtSrvIid);
++		SPmgmtSrvIid.idx[0] = HttpIndex;
++		SPmgmtSrvIid.level = 1;
++		ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, &SPmgmtSrvObj);
++		if(ret == ZCFG_SUCCESS){
++			json_object_object_add(SPmgmtSrvObj, "Enable", json_object_new_int(EnableHttpService));
++			json_object_object_add(SPmgmtSrvObj, "Port", json_object_new_int(NewHttpPort));
++			json_object_object_add(SPmgmtSrvObj, "RestartDeamon", json_object_new_int(RestartHttpDeamon));
++			zcfgFeObjJsonBlockedSet(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, SPmgmtSrvObj, NULL);
++		}
++	}
++
++	zcfgFeJsonObjFree(SPmgmtSrvObj);
++
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalSPMgmtSrv(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_SPmgmtSrv_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-18 22:31:32.298571017 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-18 22:31:32.314571017 +0800
+@@ -76,6 +76,7 @@
+ extern dal_param_t DEV_SEC_CERT_param[];
+ extern dal_param_t HOME_CONNECTIVYITY_param[];
+ extern dal_param_t MGMT_SRV_param[];
++extern dal_param_t SP_MGMT_SRV_param[];
+ extern dal_param_t LOGIN_PRIVILEGE_param[];
+ extern dal_param_t QUICK_START_param[];
+ extern dal_param_t USER_ACCOUNT_param[];
+@@ -149,6 +150,7 @@
+ extern zcfgRet_t zcfgFeDalDevSecCert(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalHomeConnectivity(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmtSrv(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalSPMgmtSrv(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalLoginPrivilege(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalQuickStart(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -251,6 +253,7 @@
+ {"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	""},//Certificates
+ {"HOME_CONNECTIVYITY", HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity
+ {"MGMT_SRV", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			zcfgFeDalShowMgmtSrv,		"edit|get",			"Remote_MGMT"},
++{"SP_MGMT_SRV", 		SP_MGMT_SRV_param,	zcfgFeDalSPMgmtSrv,			NULL,		"edit",			""},
+ {"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",				""},//root_only
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				""},//root_only
+ {"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount,	NULL,						"add|edit|delete",	""}, //temporarily root_only //User_Account

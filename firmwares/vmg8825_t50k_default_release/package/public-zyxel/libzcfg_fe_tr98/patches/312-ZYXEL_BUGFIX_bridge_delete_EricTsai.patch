@@ -1,0 +1,72 @@
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2016-04-14 15:48:16.319552414 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2016-04-14 15:51:21.059555958 +0800
+@@ -572,16 +572,17 @@
+ {
+ 	zcfgRet_t ret;
+ 	char tr181Obj[128] = {0};
+-	char mappingPathName[32] = {0};
++	char mappingPathName[MAX_TR181_PATHNAME] = {0};
+ 	uint32_t  oid = 0;
+ 	objIndex_t objIid;
+-	struct json_object *brPortJobj = NULL;
++	//struct json_object *brPortJobj = NULL;
++	struct json_object *brJobj = NULL;
+ 
+ 	ztrdbg(ZTR_DL_INFO, "Enter %s\n", __FUNCTION__);
+ 
+         if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS)
+ 		return ret;
+-		
++
+ 	IID_INIT(objIid);
+ 	printf("mappingPathName %s\n", mappingPathName);
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+@@ -589,24 +590,36 @@
+ 	if(oid != RDM_OID_BRIDGING_BR)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+-	objIid.idx[1] = 1;
+-	objIid.level++;
+-	ret = zcfgFeObjJsonGet(RDM_OID_BRIDGING_BR_PORT, &objIid, &brPortJobj);
+-	if(ret == ZCFG_SUCCESS) {
+-		ztrdbg(ZTR_DL_INFO, "%s: Should clear bridge object prior to delete\n", __FUNCTION__);
+-		json_object_put(brPortJobj);
++	if(zcfgFeObjJsonGet(RDM_OID_BRIDGING_BR, &objIid, &brJobj) != ZCFG_SUCCESS){
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+-	else {
+-		objIid.idx[1] = 0;
+-		objIid.level--;
+-		ret = zcfgFeObjJsonDel(RDM_OID_BRIDGING_BR, &objIid, NULL);
++
++	int portNumEntry = json_object_get_int(json_object_object_get(brJobj, "PortNumberOfEntries"));
++	if(portNumEntry > 1) {
++		ztrdbg(ZTR_DL_INFO, "%s: Should clear bridge object prior to delete\n", __FUNCTION__);
++		json_object_put(brJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}else if(portNumEntry == 1){
++		objIid.idx[1] = 1;
++		objIid.level++;
++		ret = zcfgFeObjJsonDel(RDM_OID_BRIDGING_BR_PORT, &objIid, NULL);
+ 		if((ret != ZCFG_DELAY_APPLY) && (ret != ZCFG_SUCCESS)) {
+ 			ztrdbg(ZTR_DL_ERR, "%s: Delete bridge Object Fail\n", __FUNCTION__);
++			json_object_put(brJobj);
+ 			return ret;
+ 		}
+ 	}
+ 
++	objIid.idx[1] = 0;
++	objIid.level = 1;
++	ret = zcfgFeObjJsonDel(RDM_OID_BRIDGING_BR, &objIid, NULL);
++	if((ret != ZCFG_DELAY_APPLY) && (ret != ZCFG_SUCCESS)) {
++		ztrdbg(ZTR_DL_ERR, "%s: Delete bridge Object Fail\n", __FUNCTION__);
++		json_object_put(brJobj);
++		return ret;
++	}
++	json_object_put(brJobj);
++
+ 	return ZCFG_SUCCESS;
+ }
+ 

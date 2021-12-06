@@ -1,0 +1,231 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2017-01-16 10:05:07.329162247 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2017-01-16 10:10:52.407205640 +0800
+@@ -493,7 +493,11 @@
+ {TR98_SNMP, 	                0,              para_Snmp,	            zyExtSnmpObjGet, 	     zyExtSnmpObjSet,     NULL,             NULL,            zyExtSnmpObjNotify, zyExtSnmpObjAttrGet, zyExtSnmpObjAttrSet},
+ {TR98_SNMP_TRAP,                ATTR_INDEX_CREA,para_SnmpTrap,          zyExtSnmpTrapObjGet,     zyExtSnmpTrapObjSet,    zyExtSnmpTrapObjAdd,	zyExtSnmpTrapObjDel,	zyExtSnmpTrapObjNotify, zyExtSnmpTrapObjAttrGet, zyExtSnmpTrapObjAttrSet},
+ {TR98_SCHEDULE,                 ATTR_INDEX_CREA,para_Schedule,          scheduleObjGet,          scheduleObjSet,         scheduleObjAdd,   scheduleObjDel,  scheduleObjNotify, scheduleObjAttrGet, scheduleObjAttrSet},
++#ifdef ISKON_CUSTOMIZATION
++{TR98_REMO_MGMT,		0,				para_RemoMgmt,			zyExtRemoteMgmtObjGet,			 zyExtRemoteMgmtObjSet,					 NULL,				NULL,			NULL,		NULL,		NULL},
++#else
+ {TR98_REMO_MGMT,				0,				NULL,					NULL,					 NULL,					 NULL,				NULL,			NULL},
++#endif
+ {TR98_REMO_SRV, 			    ATTR_INDEX_CREA,para_RemoSrv,		    zyExtRemoteMgmtSrvObjGet,		 zyExtRemoteMgmtSrvObjSet,		 zyExtRemoteMgmtSrvObjAdd, zyExtRemoteMgmtSrvObjDel, zyExtRemoteMgmtSrvObjNotify, zyExtRemoteMgmtSrvObjAttrGet, zyExtRemoteMgmtSrvObjAttrSet},
+ {TR98_SP_REMO_SRV, 			    ATTR_INDEX_CREA,para_SpRemoSrv,		    zyExtSpRemoteMgmtSrvObjGet,		 zyExtSpRemoteMgmtSrvObjSet,		 NULL, NULL, NULL, NULL, NULL},
+ {TR98_IEEE8021AG,               0,              para_8021ag,	        zyExt8021agObjGet, 	     zyExt8021agObjSet,		NULL,             NULL,            zyExt8021agObjNotify, zyExt8021agObjAttrGet, zyExt8021agObjAttrSet},
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2017-01-16 10:05:07.261162249 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2017-01-16 10:12:06.123994531 +0800
+@@ -2640,6 +2640,166 @@
+ 	return ret;
+ }
+ 
++#ifdef ISKON_CUSTOMIZATION
++zcfgRet_t zyExtRemoteMgmtObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	rdm_RemoSrv_t *remoSrv = NULL;
++	rdm_IpIface_t *ipIface = NULL;
++	tr98Parameter_t *paramList = NULL;
++	char boundWanInterface[256] = {0};
++	char boundWanInterfaceName[256] = {0};
++	char *pc1, *pc2;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	objIid.level = 1;
++	objIid.idx[0] = 1;
++
++	if ((ret = feObjStructGet(RDM_OID_REMO_SRV, &objIid,  (void **)&remoSrv, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++	strcpy(boundWanInterface, remoSrv->BoundInterfaceList);
++	zcfgFeObjStructFree(remoSrv);
++
++	if (strlen(boundWanInterface)) {
++		pc2 = &boundWanInterface[0];
++		do {
++			pc1 = pc2;
++			pc2 = strstr(pc1, ",");
++			if (pc2 != NULL) {
++				*pc2 = 0;
++				++pc2;
++			}
++			IID_INIT(objIid);
++			objIid.level = 1;
++			sscanf(pc1, "IP.Interface.%hhu", &objIid.idx[0]);
++			if  ((ret = feObjStructGet(RDM_OID_IP_IFACE, &objIid,  (void **)&ipIface, updateFlag)) == ZCFG_SUCCESS) {
++				strcat(boundWanInterfaceName, ipIface->X_ZYXEL_SrvName);
++				strcat(boundWanInterfaceName, ",");
++				zcfgFeObjStructFree(ipIface);
++			}
++			if (pc2 == NULL || pc2[0] == 0)
++				break;
++		} while (1);
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if (strcmp("BoundWANInterfaceList", paramList->name) == 0) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(boundWanInterfaceName));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtRemoteMgmtObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *RemoteMgmtJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	char boundWanInterface[256] = {0};
++	char boundWanInterfaceName[256] = {0};
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_REMO_MGMT, &objIid, &RemoteMgmtJobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = RemoteMgmtJobj;
++		RemoteMgmtJobj = NULL;
++		RemoteMgmtJobj = zcfgFeJsonMultiObjAppend(RDM_OID_REMO_MGMT, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if (strcmp("BoundWANInterfaceList", paramList->name) == 0) {
++				rdm_IpIface_t *ipIface = NULL;
++				char *pc1 = NULL, *pc2 = NULL;
++				strcpy(boundWanInterfaceName, json_object_to_json_string(paramValue));
++				pc2 = boundWanInterfaceName;
++				if (*pc2 == '"') ++pc2;
++				do {
++					pc1 = pc2;
++					// skip space char
++					while (*pc1 == ' ')
++						++pc1;
++					// skip ,
++					pc2 = strstr(pc1, ",");
++					if (pc2 != NULL) {
++						*pc2 = 0;
++						++pc2;
++						if (*pc2 == '"') *pc2 = 0;
++					} else {
++						// string end with "
++						pc2 = strstr(pc1, "\"");
++						if (pc2 != NULL) *pc2 = 0;
++					}
++					if (strlen(pc1) != 0) {
++						IID_INIT(objIid);
++						objIid.level = 1;
++						while ((ret = feObjStructGetNext(RDM_OID_IP_IFACE, &objIid,  (void **)&ipIface, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) {
++							if (strcmp(pc1, ipIface->X_ZYXEL_SrvName) == 0) {
++								sprintf(boundWanInterface, "%sIP.Interface.%d,", boundWanInterface, objIid.idx[0]);
++								zcfgFeObjStructFree(ipIface);
++								break;
++							}
++							zcfgFeObjStructFree(ipIface);
++						}
++						if (ret != ZCFG_SUCCESS) {
++							printf("can not find interface %s\n", pc1);
++							json_object_put(RemoteMgmtJobj);
++							return ret;
++						}
++					}
++					if (pc2 == NULL || pc2[0] == 0)
++						break;
++				} while (1);
++				json_object_object_add(RemoteMgmtJobj, paramList->name, json_object_new_string(boundWanInterface));
++			}
++			paramList++;
++			continue;
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else {
++		if((ret = zcfgFeObjJsonSet(RDM_OID_REMO_MGMT, &objIid, RemoteMgmtJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(RemoteMgmtJobj);
++			return ret;
++		}
++		json_object_put(RemoteMgmtJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++#endif
++
+ int getCurrentUptime(void){
+ 	FILE * uptimefile = NULL;
+ 	char uptime_chr[32] = {};
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2017-01-16 10:05:07.169162251 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2017-01-16 10:13:13.543397086 +0800
+@@ -9,6 +9,9 @@
+ extern tr98Parameter_t para_SysInfo[];
+ extern tr98Parameter_t para_Snmp[];
+ extern tr98Parameter_t para_SnmpTrap[];
++#ifdef ISKON_CUSTOMIZATION
++extern tr98Parameter_t para_RemoMgmt[];
++#endif
+ extern tr98Parameter_t para_RemoSrv[];
+ extern tr98Parameter_t para_SpRemoSrv[];
+ extern tr98Parameter_t para_8021ag[];
+@@ -130,7 +133,11 @@
+ extern zcfgRet_t zyExtSnmpTrapObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int zyExtSnmpTrapObjAttrGet(char *, int, char *);
+ extern zcfgRet_t zyExtSnmpTrapObjAttrSet(char *, int, char *, int , struct json_object *);
+-
++#ifdef ISKON_CUSTOMIZATION
++/*InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.*/
++extern zcfgRet_t zyExtRemoteMgmtObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtRemoteMgmtObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++#endif
+ /*InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.Service.i*/
+ extern zcfgRet_t zyExtRemoteMgmtSrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtRemoteMgmtSrvObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2017-01-16 10:05:07.253162249 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2017-01-16 10:13:43.099025353 +0800
+@@ -30,6 +30,12 @@
+ 	{ "DynamicIP", PARAMETER_ATTR_WRITE, 129, json_type_string},
+ 	{ NULL, 0, 0}
+ };
++#ifdef ISKON_CUSTOMIZATION
++tr98Parameter_t para_RemoMgmt[] = {
++	{ "BoundWANInterfaceList", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ NULL, 0, 0}
++};
++#endif
+ tr98Parameter_t para_RemoSrv[] = {
+ 	{ "Name", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},

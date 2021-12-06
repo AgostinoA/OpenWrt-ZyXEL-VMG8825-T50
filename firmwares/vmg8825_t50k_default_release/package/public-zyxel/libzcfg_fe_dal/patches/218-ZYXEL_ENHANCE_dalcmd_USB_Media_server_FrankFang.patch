@@ -1,0 +1,189 @@
+Index: libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_mediaserver.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/usbService/zcfg_fe_dal_usb_mediaserver.c	2017-06-13 16:38:14.870799468 +0800
++++ libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_mediaserver.c	2017-06-13 16:42:16.593420387 +0800
+@@ -13,50 +13,120 @@
+ dal_param_t USB_MEDIASERVER_param[] =
+ {
+ 	//Media server
+-	{"X_ZYXEL_Enable",		dalType_boolean,	0,	0,	NULL},
+-	{"X_ZYXEL_MediaRelativePath",		dalType_string,	0,	0,	NULL},
+-	{"X_ZYXEL_Interface",		dalType_string,	0,	0,	NULL},	
++	{"Enable",				dalType_boolean,	0,	0,	NULL},
++	{"MediaRelativePath",	dalType_string,		0,	0,	NULL},
++	{"Interface",			dalType_Lan,	 	0,	0,	NULL},	
+ 	{NULL,		0,	0,	0,	NULL}
+ };
+-zcfgRet_t zcfgFeDalUsbMediaserverEdit(struct json_object *Jobj, char *replyMsg)
+-{
+ 
++void zcfgFeDalShowUsbMediaserver(struct json_object *Jarray){
++	int i, len;
++	struct json_object *obj;
++	const char *enable = NULL;
++	const char *path = NULL;
++	const char *intf = NULL;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	dbg_printf("%s : Jarray = %s",__FUNCTION__,json_object_to_json_string(Jarray));
++	printf("%-15s %-15s %-20s\n","Enable/Disable","Interface7","Media Server Path");
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray,i);
++
++		if(json_object_get_boolean(json_object_object_get(obj, "Enable")))
++			enable = "Enabled";
++		else
++			enable = "Disabled";
++
++		path = json_object_get_string(json_object_object_get(obj, "MediaRelativePath"));
++		intf = json_object_get_string(json_object_object_get(obj, "Interface"));
++		printf("%-15s %-15s %s\n",enable,intf,path);
++	}
++}
++
++zcfgRet_t zcfgFeDalUsbMediaserverGet(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *MediaserverJobj = NULL;
++	struct json_object *dlnaObj = NULL;
++	bool enable = false;
++	const char *path = NULL;
++	const char *intf = NULL;
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DLNA, &objIid, &dlnaObj)) != ZCFG_SUCCESS)
++		return ret;
++
++	enable = json_object_get_boolean(json_object_object_get(dlnaObj, "X_ZYXEL_Enable"));
++	path = json_object_get_string(json_object_object_get(dlnaObj, "X_ZYXEL_MediaRelativePath"));
++	intf = json_object_get_string(json_object_object_get(dlnaObj, "X_ZYXEL_Interface"));
++	MediaserverJobj = json_object_new_object();
++	json_object_object_add(MediaserverJobj, "Enable", json_object_new_boolean(enable));
++	json_object_object_add(MediaserverJobj, "MediaRelativePath", json_object_new_string(path));
++	json_object_object_add(MediaserverJobj, "Interface", json_object_new_string(intf));
++	json_object_array_add(Jarray, MediaserverJobj);
++	dbg_printf("%s : Jarray = %s\n",__FUNCTION__,json_object_to_json_string(Jarray));
++	
++	zcfgFeJsonObjFree(dlnaObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalUsbMediaserverEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+ 	objIndex_t objIid;
+ 	struct json_object *MediaserverJobj = NULL;
+-	int paramModified = 0, n = 0;
+-	//struct json_object *iidArray = NULL;
+-	uint8_t iidIdx =0;
+-	paraName = (const char *)USB_MEDIASERVER_param[n++].paraName;
++	bool paramModified = false;
++	bool enable, oldEnable;
++	const char *path = NULL;
++	const char *oldPath = NULL;
++	const char *intf = NULL;
++	const char *oldIntf = NULL;
+ 	
+ 	IID_INIT(objIid);
+-	/*iidArray = json_object_object_get(Jobj, "iid");
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		objIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(objIid.idx[iidIdx] != 0)
+-			objIid.level = iidIdx+1;
+-	}*/
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_DLNA, &objIid, &MediaserverJobj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			paraName = (const char *)USB_MEDIASERVER_param[n++].paraName;
+-			continue;
++
++	if(json_object_object_get(Jobj, "Enable")){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++		oldEnable = json_object_get_boolean(json_object_object_get(MediaserverJobj, "X_ZYXEL_Enable"));
++		if(enable != oldEnable){
++			json_object_object_add(MediaserverJobj, "X_ZYXEL_Enable", json_object_new_boolean(enable));
++			paramModified = true;
+ 		}
+-		json_object_object_add(MediaserverJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paramModified = 1;				
+-		paraName = (const char *)USB_MEDIASERVER_param[n++].paraName;
+ 	}
+ 
+-	if(paramModified) {
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_DLNA, &objIid, MediaserverJobj, NULL)) != ZCFG_SUCCESS);
++	if(json_object_object_get(Jobj, "MediaRelativePath")){
++		path = json_object_get_string(json_object_object_get(Jobj, "MediaRelativePath"));
++		oldPath = json_object_get_string(json_object_object_get(MediaserverJobj, "X_ZYXEL_MediaRelativePath"));
++		if(strcmp(path,oldPath)){
++			json_object_object_add(MediaserverJobj, "X_ZYXEL_MediaRelativePath", json_object_new_string(path));
++			paramModified = true;
++		}
++	}
++
++	if(json_object_object_get(Jobj, "Interface")){
++		intf = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++		oldIntf = json_object_get_string(json_object_object_get(MediaserverJobj, "X_ZYXEL_Interface"));
++		if(strcmp(intf,oldIntf)){
++			json_object_object_add(MediaserverJobj, "X_ZYXEL_Interface", json_object_new_string(intf));
++			paramModified = true;
++		}
++	}
++	
++	if(paramModified){
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DLNA, &objIid, MediaserverJobj, NULL)) != ZCFG_SUCCESS){
++			printf("Setting object failed..\n");
++		}
+ 	}
+ 	json_object_put(MediaserverJobj);
+ 	return ret;
+ }
++
+ zcfgRet_t zcfgFeDalUsbMediaserver(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -67,8 +137,13 @@
+ 	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalUsbMediaserverEdit(Jobj, NULL);
+ 	}
+-	else 
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalUsbMediaserverGet(Jobj, NULL);
++	}
++	else{
+ 		printf("Unknown method:%s\n", method);
+-
++	}
++	
+ 	return ret;
+ }
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-13 16:38:16.578799480 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-13 16:40:23.722488978 +0800
+@@ -200,7 +200,7 @@
+ extern void zcfgFeDalShowVoipProfile(struct json_object *Jarray);
+ extern void zcfgFeDalShowSchedule(struct json_object *Jarray);
+ extern void zcfgFeDalShowMgmt(struct json_object *Jarray);
+-
++extern void zcfgFeDalShowUsbMediaserver(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"wan",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -269,7 +269,7 @@
+ {"OAMPING", 		OAMPING_param,		zcfgFeOamPing,			NULL,						"edit",				""},//Diagnostic_Result
+ {"USB_FILESHARING", USB_FILESHARING_param,	zcfgFeDalUsbFilesharing,zcfgFeDalShowUsbFilesharing,	"get|edit", 	"USB_Service"},//USB_Service
+ {"USB_SAMBA",		USB_SAMBA_param,	zcfgFeDalUsbSamba,		zcfgFeDalShowUsbSamba,		"get|add|edit|delete",	"USB_Service"},//USB_Service
+-{"USB_MEDIASERVER", USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver,NULL, 					"edit",				""},//USB_Service
++{"USB_MEDIASERVER", USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver,	zcfgFeDalShowUsbMediaserver,"edit|get", 	"USB_Service"},
+ {"PAREN_CTL", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		NULL,						"add|edit|delete",	""},//Parental_Control
+ {"SCHEDULE",		SCHEDULE_param, 	zcfgFeDalSchedule,		zcfgFeDalShowSchedule,		"get|add|edit|delete",	"Scheduler_Rule"},
+ {"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	""},//Certificates

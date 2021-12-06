@@ -1,0 +1,79 @@
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2016-10-21 09:59:17.464867006 +0800
++++ udhcp-0.9.8/Makefile	2016-10-21 10:15:48.946249517 +0800
+@@ -67,6 +67,15 @@
+ STRIP=$(CROSS_COMPILE)strip
+ endif
+ 
++ifeq ("$(strip ${ZCFG_PLATFORM})","BROADCOM")
++CFLAGS += -DBROADCOM_PLATFORM 
++else ifeq ("$(strip ${ZCFG_PLATFORM})","ECONET")
++CFLAGS += -DECONET_PLATFORM 
++endif
++ifeq ($(strip $(CONFIG_XPON_SUPPORT)),)
++CFLAGS += -DSUPPORT_XPON
++endif
++
+ #Sunrise customization
+ ifneq ($(strip $(SUNRISE_DHCP_FORCE_RENEW)),)
+ CFLAGS += -DSUNRISE_DHCP_FORCE_RENEW
+Index: udhcp-0.9.8/script.c
+===================================================================
+--- udhcp-0.9.8.orig/script.c	2016-10-21 09:59:17.604937006 +0800
++++ udhcp-0.9.8/script.c	2016-10-21 10:01:16.489460625 +0800
+@@ -61,13 +61,14 @@
+ 
+ zcfgRet_t dhcpMsgSend(int msg_type, zcfgEid_t dstEid, int payloadLen, const char *payload)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS - 1;
+ 	void *sendBuf = NULL;
+ 	void *recvBuf = NULL;
+ 	zcfgMsg_t *sendMsgHdr = NULL;
+ 	char *recv_str = NULL;
+ 	int buf_size = 0;
+-
++	int retryCnt = 0;
++	
+ 	buf_size = sizeof(zcfgMsg_t)+payloadLen;
+ 	sendBuf = malloc(buf_size);
+ 	sendMsgHdr = (zcfgMsg_t*)sendBuf;
+@@ -77,18 +78,34 @@
+ 	sendMsgHdr->srcEid = ZCFG_EID_UDHCPC;
+ 	sendMsgHdr->dstEid = dstEid;
+ 
+-	LOG(LOG_INFO, "%s: msgType[%d]\n", __FUNCTION__, msg_type);
+-	
+ 	if(payload != NULL)
+ 		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
+ 
++#if defined(ECONET_PLATFORM) && defined(SUPPORT_XPON)
++	while ((ret < ZCFG_SUCCESS) && (retryCnt <= 3)) {
++		LOG(LOG_INFO, "udhcp send message to ESMD: msgType[%d] (retry=%d)",  msg_type^ZCFG_NO_WAIT_REPLY, retryCnt);
++		ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++		if (ret >= ZCFG_SUCCESS) {
++			if (recvBuf) {
++			recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++			printf("Receive message : %s\n", recv_str);
++			free(recvBuf);
++			}	
++			break;
++		} else {
++			retryCnt++;
++			usleep(100);
++		}		
++	}
++#else
++	LOG(LOG_INFO, "%s: msgType[%d]", __FUNCTION__, msg_type);
+ 	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
+-
+ 	if(ret == ZCFG_SUCCESS) {
+ 		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
+ 		printf("Receive message : %s\n", recv_str);
+ 		free(recvBuf);
+ 	}
++#endif
+ 
+ 	return ret;
+ }

@@ -1,0 +1,134 @@
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_account.c	2018-03-15 20:21:06.581903379 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2018-03-15 20:21:06.869904807 +0800
+@@ -429,15 +429,48 @@
+ void zcfgFeDalLineObjEditIidGet(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	const char* path = NULL;
++	char tmpStr[64] = {0};
+ 	int profileNum, lineNum, index = 0;
+ 	zcfg_offset_t oid;
+ 	IID_INIT(lineIid);
+ 	oid = RDM_OID_VOICE_LINE;
+ 
+-	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+-	ret = convertIndextoIid(index, &lineIid, oid, NULL, NULL, replyMsg, json_object_get_string(json_object_object_get(Jobj, "cmdtype")) );
+-	if(ret != ZCFG_SUCCESS)
+-		return ret;
++	/* Current convertIndextoIid will convert error after 52c781e33,
++	 * because it use index to match rdm idx, but the index GUI using hase same schema with CLI
++	 * The voice GUI will send full path, so only do index convert when config not have full path. 2018-03-15 Steve
++	 */
++	path = json_object_get_string(json_object_object_get(Jobj, "EditPath"));
++
++	if(path != NULL){
++		//Init lineIid
++		lineIid.level = 3;
++		lineIid.idx[0] = 1;
++
++		//Parse full path
++		sscanf(path,"VoiceProfile.%hhu.Line.%hhu",&lineIid.idx[1], &lineIid.idx[2]);
++		sprintf(tmpStr,"MAILSEND_EVENT_VOICE_MISSED_CALL_%d_%d",lineIid.idx[1],lineIid.idx[2]);
++		json_object_object_add(Jobj, "MissedCallEmailEvent", json_object_new_string(tmpStr));
++		X_ZYXEL_MissedCallEmailEvent = json_object_get_string(json_object_object_get(Jobj, "MissedCallEmailEvent"));
++
++	}else{
++		index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++
++		ret = convertIndextoIid(index, &lineIid, oid, NULL, NULL, replyMsg, json_object_get_string(json_object_object_get(Jobj, "cmdtype")) );
++		if(ret != ZCFG_SUCCESS){
++			return;
++		}
++
++		if(json_object_get_string(json_object_object_get(Jobj, "Index"))){				// for CLI edit
++			sprintf(tmpStr,"VoiceProfile.%d.Line.%d",lineIid.idx[1],lineIid.idx[2]);
++			json_object_object_add(Jobj, "EditPath", json_object_new_string(tmpStr));
++			sprintf(tmpStr,"MAILSEND_EVENT_VOICE_MISSED_CALL_%d_%d",lineIid.idx[1],lineIid.idx[2]);
++			json_object_object_add(Jobj, "MissedCallEmailEvent", json_object_new_string(tmpStr));
++			X_ZYXEL_MissedCallEmailEvent = json_object_get_string(json_object_object_get(Jobj, "MissedCallEmailEvent"));
++		}
++
++	}
++
++
+ 	return;
+ }
+ 
+@@ -849,6 +882,7 @@
+ 	//enable = json_object_get_string(json_object_object_get(Jobj, "Enable"));
+ 	DirectoryNumber = json_object_get_string(json_object_object_get(Jobj, "SIP_Account_Number"));
+ 	if(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST&flag1){
++
+ 		PhyReferenceList = json_object_get_string(json_object_object_get(Jobj, "PhyReferenceList"));
+ 	}
+ 	AuthUserName = json_object_get_string(json_object_object_get(Jobj, "AuthUserName"));
+@@ -1098,9 +1132,14 @@
+ 		if(json_object_object_get(Jobj, "SIP_Account_Number"))
+ 		json_object_object_add(lineObj, "DirectoryNumber", json_object_new_string(DirectoryNumber));
+ 		if(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST&flag1){
+-			json_object_object_add(lineObj, "PhyReferenceList", json_object_new_string(PhyReferenceList));
++
++			if(PhyReferenceList){ //PhyReferenceList configured
++				json_object_object_add(lineObj, "PhyReferenceList", json_object_new_string(PhyReferenceList));
++			}
++
+ 		}
+ 
++
+ 		//printf("%s(): lineObj :%s \n ",__FUNCTION__,json_object_to_json_string(lineObj));
+ 		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE, &lineIid, multiJobj, lineObj)) == NULL){
+ 			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE);
+@@ -1549,24 +1588,18 @@
+ 
+ zcfgRet_t zcfgFeDalVoipLineEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	char tmppath[32] = {0}, tmp[64] = {0};
+ 	zcfgFeDalCustomizationflagGet();
+ 	initLineGlobalObjects();
+ 	ret = getLineBasicInfo(Jobj, replyMsg);
+ 
++
+ 	if(ret != ZCFG_SUCCESS){
+ 		goto exit;
+ 	}
+ 	
+ 	multiJobj = zcfgFeJsonObjNew();
++
+ 	zcfgFeDalLineObjEditIidGet(Jobj, replyMsg);
+-	if(json_object_get_string(json_object_object_get(Jobj, "Index"))){				// for CLI edit
+-		sprintf(tmppath,"VoiceProfile.%d.Line.%d",lineIid.idx[1],lineIid.idx[2]);
+-		json_object_object_add(Jobj, "EditPath", json_object_new_string(tmppath));
+-		sprintf(tmp,"MAILSEND_EVENT_VOICE_MISSED_CALL_%d_%d",lineIid.idx[1],lineIid.idx[2]);
+-		json_object_object_add(Jobj, "MissedCallEmailEvent", json_object_new_string(tmp));
+-		X_ZYXEL_MissedCallEmailEvent = json_object_get_string(json_object_object_get(Jobj, "MissedCallEmailEvent"));
+-	}
+ 
+ 	if((ret = zcfgFeDalLineObjEdit(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) fail to edit line obj \n", __FUNCTION__);
+@@ -1651,9 +1684,22 @@
+ 	oid = RDM_OID_VOICE_LINE;
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	path = json_object_get_string(json_object_object_get(Jobj, "DelPath"));
+-	ret = convertIndextoIid(index, &lineIid, oid, NULL, NULL, replyMsg, json_object_get_string(json_object_object_get(Jobj, "cmdtype")) );
+-	if(ret != ZCFG_SUCCESS)
+-		return ret;
++
++
++	if(path != NULL){
++		//Init lineIid
++		lineIid.level = 3;
++		lineIid.idx[0] = 1;
++
++		//Parse full path
++		sscanf(path,"VoiceProfile.%hhu.Line.%hhu",&lineIid.idx[1], &lineIid.idx[2]);
++
++	}else{
++		ret = convertIndextoIid(index, &lineIid, oid, NULL, NULL, replyMsg, json_object_get_string(json_object_object_get(Jobj, "cmdtype")) );
++		if(ret != ZCFG_SUCCESS){
++			return ret;
++		}
++	}
+ 	//printf("%s(): Delete Line path : %s \n ",__FUNCTION__, path);
+ 	//sscanf(path,"VoiceProfile.%d.Line.%d",&profileNum,&lineNum);
+ 	//printf("Delete Line- profile: %d, line: %d \n ", profileNum, lineNum);

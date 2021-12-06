@@ -1,0 +1,161 @@
+Index: libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_sys_log.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_sys_log.c	2017-08-01 13:45:53.919869043 +0800
+@@ -0,0 +1,128 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++#define CMD_SIZE 256
++#define LINE_SIZE 2048
++#define LOG_MAX_LINES 8000
++#define SEC_LOG_PATH "/var/log/security.log"
++#define SYS_LOG_PATH "/var/log/syslog.log"
++
++dal_param_t SYS_LOG_param[]={
++	{"category",		dalType_string,	0,	0,	NULL,	"system|security",	dal_Delete},
++	{NULL,				dalType_int,	0,	0,	NULL,	NULL,	0},
++};
++
++void zcfgFeDalShowSysLog(struct json_object *Jarray){
++	int i, len = 0;
++	int j, logSize = 0;
++	struct json_object *logObj;
++	struct json_object *contentObj;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		logObj = json_object_array_get_idx(Jarray, i);
++		if(logObj!=NULL){
++			printf("%s \n",json_object_get_string(json_object_object_get(logObj,"category")));
++			printf("-------------------------\n");
++			contentObj = json_object_object_get(logObj,"content");
++			logSize = json_object_array_length(contentObj);
++			for(j=0;j<logSize;j++){
++				obj = json_object_array_get_idx(contentObj, j);
++				if(obj!=NULL){
++					printf("%-5d %s\n",j,json_object_get_string(obj));
++				}
++			}			
++		}
++	}
++}
++
++zcfgRet_t zcfgFeDalSysLogGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	FILE *fd;
++	struct json_object *paramObj = NULL;
++	struct json_object *contentObj = NULL;
++	char cmd[CMD_SIZE]={0};
++	char line[LINE_SIZE]={0};
++	char tmp_str[LINE_SIZE]={0};
++	char *cat = NULL;
++	int len = 0;
++	
++	contentObj = json_object_new_array();
++	paramObj = json_object_new_object();
++
++	cat = json_object_get_string(json_object_object_get(Jobj,"category"));
++	if(!strcmp(cat,"system"))
++		sprintf(line, "tail -n %d %s", LOG_MAX_LINES, SYS_LOG_PATH);
++	else
++		sprintf(line, "tail -n %d %s", LOG_MAX_LINES, SEC_LOG_PATH);
++
++	fd = popen(line, "r");
++	if(fd){
++		while(fgets(line, LINE_SIZE, fd) != NULL) {
++			len = strlen(line);
++			line[len-1] = '\0';
++			strcpy(tmp_str,line);
++			json_object_array_add(contentObj, json_object_new_string(tmp_str));
++		}
++	}
++	pclose(fd);
++
++	json_object_object_add(paramObj, "category", json_object_new_string(cat));
++	json_object_object_add(paramObj, "content", JSON_OBJ_COPY(contentObj));
++	json_object_array_add(Jarray,paramObj); 
++
++	json_object_put(contentObj);
++	json_object_put(paramObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalSysLogDelete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char *cat = NULL;
++	char filePath[256]={0};
++
++	cat = json_object_get_string(json_object_object_get(Jobj,"category"));
++	if(!strcmp(cat,"system"))
++		strcpy(filePath,"/var/log/syslog.log");
++	else
++		strcpy(filePath,"/var/log/security.log");
++
++	if((ret = unlink(filePath)) != 0){
++		printf("Cannot delete file (%s).  ret=%d\n", filePath, ret); 
++		ret = ZCFG_INTERNAL_ERROR;
++	}							  
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalSysLog(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalSysLogDelete(Jobj, NULL);
++	}else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalSysLogGet(Jobj, Jarray, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-01 13:22:46.056198976 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-01 13:40:16.702054271 +0800
+@@ -88,6 +88,7 @@
+ extern dal_param_t QUICK_START_param[];
+ extern dal_param_t USER_ACCOUNT_param[];
+ extern dal_param_t NETWORK_MAP_param[];
++extern dal_param_t SYS_LOG_param[];
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsEntry(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -217,6 +218,7 @@
+ extern void zcfgFeDalShowLanSetup(struct json_object *Jarray);
+ extern void zcfgFeDalShowParentCtl(struct json_object *Jarray);
+ extern void zcfgFeDalShowTime(struct json_object *Jarray);
++extern void zcfgFeDalShowSysLog(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -276,6 +278,7 @@
+ #endif
+ {"email_ntfy",		MAIL_NOTIFICATION_param,zcfgFeDalMailNotification,zcfgFeDalShowMailNotification,	"add|delete|get", 		"Email_Notify"},//Email_Notify
+ {"logset",			LOG_SETTING_param,	zcfgFeDalLogSetting,	zcfgFeDalShowLogSetting,	"get|edit", 		"Log"}, //Log
++{"sys_log", 		SYS_LOG_param, 		zcfgFeDalSysLog,		zcfgFeDalShowSysLog,		"get|delete", 		"Log"},
+ {"PINGTEST",		PING_TEST_param,	zcfgFeDalPingTest,		NULL,						"edit",				""},//
+ {"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag,			NULL,						"edit",				""},//Diagnostic_Result
+ {"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah,			NULL,						"edit",				""},//Diagnostic_Result

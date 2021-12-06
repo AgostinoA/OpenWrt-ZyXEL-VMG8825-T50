@@ -1,0 +1,189 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2018-08-29 15:30:58.563741117 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2018-08-29 15:31:34.046881900 +0800
+@@ -411,6 +411,16 @@
+ 
+ static struct json_object *tr181SpvHandleRoutObj = NULL;
+ 
++//-------------------------------------------------------------------------------------------------------------------
++static zcfgRet_t queryDhcpv4SrvOptRout(uint32_t , objIndex_t *, struct json_object *, void *);
++
++static tr181QueryHandleRout_t queryHandleRoutList[] = {
++{RDM_OID_DHCPV4_SRV_POOL_OPT, queryDhcpv4SrvOptRout},
++{0, NULL}
++};
++
++static struct json_object *tr181QueryHandleRoutObj = NULL;
++
+ #endif
+ 
+ #ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+@@ -1658,6 +1668,10 @@
+ 
+ 
+ #ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++//--------------------------------------------------------------------------------------------------
++// Tr181SpvHandleRout
++//--------------------------------------------------------------------------------------------------
++
+ void zcfgFeTr181SpvHandleRoutInit()
+ {
+ 	bool running;
+@@ -1756,6 +1770,80 @@
+ 
+ 	return rst;
+ }
++
++//--------------------------------------------------------------------------------------------------
++// Tr181QueryHandleRout
++//--------------------------------------------------------------------------------------------------
++
++void zcfgFeTr181QueryHandleRoutInit()
++{
++	bool running;
++	int n = 0;
++	uint32_t oid;
++	char oidStr[30] = {0};
++
++	printf("%s\n", __FUNCTION__);
++
++	if(tr181QueryHandleRoutObj)
++		return;
++
++	tr181QueryHandleRoutObj = json_object_new_object();
++	running = queryHandleRoutList[n].rout ? true : false;
++
++	while(running){
++		oid = spvHandleRoutList[n].oid;
++		sprintf(oidStr, "%u", oid);
++
++		json_object_object_add(tr181QueryHandleRoutObj, oidStr, json_object_new_int((int)(queryHandleRoutList[n].rout)));
++		n++;
++		running = queryHandleRoutList[n].rout ? true : false;
++	}
++
++}
++
++zcfgRet_t zcfgFeTr181QueryHandleRout(uint32_t oid, objIndex_t *objIid, struct json_object *qryObj, void *data)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	qryHandleRout handleRout;
++	char oidStr[30] = {0};
++
++	sprintf(oidStr, "%u", oid);
++	struct json_object *qryHdlRoutObj = json_object_object_get(tr181QueryHandleRoutObj, oidStr);
++
++	if(qryHdlRoutObj){
++		handleRout = (qryHandleRout )json_object_get_int(qryHdlRoutObj);
++		rst = handleRout(oid, objIid, qryObj, data);
++	}
++
++	return rst;
++}
++
++static zcfgRet_t queryDhcpv4SrvOptRout(uint32_t oid, objIndex_t *objIid, struct json_object *queryObj, void *data)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	struct json_object *paramObj = NULL;
++	const char *paramValueStr;
++
++
++	//printf("%s\n", __FUNCTION__);
++
++	paramObj = json_object_object_get(queryObj, "Value");
++	if(paramObj && (paramValueStr = json_object_get_string(paramObj))){
++		char hexStr[256*2+1] = {0};
++
++		printf("%s: param value: %s\n", __FUNCTION__, paramValueStr);
++		if(ascStr2HexStr(paramValueStr, hexStr) >= 0){
++			json_object_object_add(queryObj, "Value", json_object_new_string(hexStr));
++			rst = ZCFG_OBJECT_UPDATED;
++			printf("%s: hex str: %s\n", __FUNCTION__, hexStr);
++		}else{
++			rst = ZCFG_REQUEST_REJECT;
++		}
++	}
++
++	return rst;
++}
++
+ #endif
+ 
+ #ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+@@ -2367,6 +2455,32 @@
+ 	return outputStrLen = (nothex) ? -1 : ((outputStrLen*2 == len) ? outputStrLen : 0);
+ }
+ 
++int ascStr2HexStr(const char *ascStr, char *hexStr)
++{
++	int outputStrLen = 0;
++	int digit1, digit2;
++	int n = 0, len = 0;
++	int running, nothex;
++
++
++	if(!ascStr || !(len = strlen(ascStr)) || !hexStr)
++		return 0;
++
++	running = (len > n) ? 1 : 0;
++
++	while (running) {
++
++		sprintf(hexStr+outputStrLen, "%02x", *(ascStr+n));
++
++		outputStrLen += 2;
++		n++;
++
++		running = (len > n) ? 1 : 0;
++	}
++
++	return outputStrLen;
++}
++
+ char *base64_encode(unsigned char *input, int length)
+ {
+ 	BIO *bmem, *b64;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2018-08-29 15:30:58.563741117 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2018-08-29 15:30:58.567741117 +0800
+@@ -216,6 +216,13 @@
+ 	uint32_t oid;
+ 	spvHandleRout rout;
+ }tr181SpvHandleRout_t;
++
++typedef zcfgRet_t (*qryHandleRout)(uint32_t , objIndex_t *, struct json_object *, void *data);
++typedef struct tr181QueryHandleRout_s {
++	uint32_t oid;
++	qryHandleRout rout;
++}tr181QueryHandleRout_t;
++
+ #endif
+ 
+ #define TR98_MAX_OBJ_NAME_LENGTH 257
+@@ -251,14 +258,20 @@
+ zcfgRet_t zcfgTr98MappingConvert(struct json_object *, struct json_object *);
+ zcfgRet_t zcfgTr181MappingConvert(struct json_object *, struct json_object *);
+ #endif
+-int charHex2Int(char );
+-int hexStr2AscStr(const char *, char *);
++
++int charHex2Int(char );
++int hexStr2AscStr(const char *, char *);
++int ascStr2HexStr(const char *, char *);
+ #ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
+ void zcfgFeTr181SpvHandleRoutInit();
+ zcfgRet_t zcfgFeMultiObjJsonSpvHandleRout(struct json_object *multiJobj, char *faultString);
+-#else
+-#define zcfgFeTr181SpvHandleRoutInit() { }
++void zcfgFeTr181QueryHandleRoutInit();
++zcfgRet_t zcfgFeTr181QueryHandleRout(uint32_t oid, objIndex_t *objIid, struct json_object *qryObj, void *data);
++#else
++#define zcfgFeTr181SpvHandleRoutInit() { }
+ #define zcfgFeMultiObjJsonSpvHandleRout(multiJobj, faultString) ZCFG_SUCCESS
++#define zcfgFeTr181QueryHandleRoutInit() { }
++#define zcfgFeTr181QueryHandleRout(oid, objIid, qryObj, data) ZCFG_SUCCESS
+ #endif
+ char *csvStringStripTerm(const char *csv, const char *term);
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );

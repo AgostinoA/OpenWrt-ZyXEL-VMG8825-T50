@@ -1,0 +1,264 @@
+diff -Naur ppp-2.4.3.orig/pppd/auth.c ppp-2.4.3/pppd/auth.c
+--- ppp-2.4.3.orig/pppd/auth.c	2016-08-10 17:58:16.191686000 +0800
++++ ppp-2.4.3/pppd/auth.c	2016-08-11 16:30:30.261488399 +0800
+@@ -240,6 +240,10 @@
+ 
+ static char *uafname;		/* name of most recent +ua file */
+ 
++#if 1 // ZYXEL_RECEIVE_PADT
++int discovery_sock = -1;
++#endif
++
+ extern char *crypt __P((const char *, const char *));
+ 
+ /* Prototypes for procedures local to this file. */
+@@ -570,6 +574,11 @@
+     else
+ 	notice("Starting negotiation on %s", ppp_devnam);
+     add_fd(fd_ppp);
++#if 1 // ZYXEL_RECEIVE_PADT
++	if(the_channel->get_discovery_sock && ((discovery_sock = the_channel->get_discovery_sock()) != -1)){
++		add_fd(discovery_sock);
++	}
++#endif
+ 
+     status = EXIT_NEGOTIATION_FAILED;
+     new_phase(PHASE_ESTABLISH);
+@@ -637,6 +646,12 @@
+      */
+     if (fd_ppp >= 0) {
+ 	remove_fd(fd_ppp);
++#if 1 // ZYXEL_RECEIVE_PADT
++	if(discovery_sock != -1){
++		remove_fd(discovery_sock);
++		discovery_sock = -1;
++	}
++#endif
+ 	clean_check();
+ 	the_channel->disestablish_ppp(devfd);
+ 	if (doing_multilink)
+diff -Naur ppp-2.4.3.orig/pppd/fsm.c ppp-2.4.3/pppd/fsm.c
+--- ppp-2.4.3.orig/pppd/fsm.c	2004-11-13 10:28:15.000000000 +0800
++++ ppp-2.4.3/pppd/fsm.c	2016-08-11 11:32:16.862469704 +0800
+@@ -70,6 +70,9 @@
+ 
+ int peer_mru[NUM_PPP];
+ 
++#if 1 // ZYXEL_RECEIVE_PADT
++int receive_padt_packet = 0;
++#endif
+ 
+ /*
+  * fsm_init - Initialize fsm.
+@@ -217,10 +220,20 @@
+     else if( f->callbacks->down )
+ 	(*f->callbacks->down)(f);	/* Inform upper layers we're down */
+ 
++#if 1 // ZYXEL_RECEIVE_PADT
++	if(receive_padt_packet){
++		receive_padt_packet = 0;
++		f->retransmits = 0;
++	}
++	else{
++#endif
+     /* Init restart counter and send Terminate-Request */
+     f->retransmits = f->maxtermtransmits;
+     fsm_sdata(f, TERMREQ, f->reqid = ++f->id,
+ 	      (u_char *) f->term_reason, f->term_reason_len);
++#if 1 // ZYXEL_RECEIVE_PADT
++	}
++#endif
+ 
+     if (f->retransmits == 0) {
+ 	/*
+diff -Naur ppp-2.4.3.orig/pppd/main.c ppp-2.4.3/pppd/main.c
+--- ppp-2.4.3.orig/pppd/main.c	2016-08-10 17:58:16.219685700 +0800
++++ ppp-2.4.3/pppd/main.c	2016-08-11 11:31:15.495017423 +0800
+@@ -213,6 +213,12 @@
+ bool bundle_eof;
+ bool bundle_terminating;
+ 
++#if 1 // ZYXEL_RECEIVE_PADT
++extern int discovery_sock;
++extern fd_set in_fds_export;
++extern int receive_padt_packet;
++#endif
++
+ #if 1 /* ZyXEL zcfg */
+ #include "zcfg_common.h"
+ #include "zcfg_msg.h"
+@@ -623,6 +629,14 @@
+ 	start_link(0);
+ 	while (phase != PHASE_DEAD) {
+ 	    handle_events();
++#if 1 // ZYXEL_RECEIVE_PADT
++		if(the_channel->receive_padt && !kill_link && (status != EXIT_PEER_DEAD) && (discovery_sock != -1) 
++			&& FD_ISSET(discovery_sock, &in_fds_export) && the_channel->receive_padt()){
++			receive_padt_packet = 1;
++			kill_link = 1;
++			status = EXIT_PEER_DEAD;
++		}
++#endif
+ 	    get_input();
+ 	    if (kill_link)
+ 		lcp_close(0, "User request");
+diff -Naur ppp-2.4.3.orig/pppd/plugins/rp-pppoe/plugin.c ppp-2.4.3/pppd/plugins/rp-pppoe/plugin.c
+--- ppp-2.4.3.orig/pppd/plugins/rp-pppoe/plugin.c	2016-08-10 17:58:16.223685600 +0800
++++ ppp-2.4.3/pppd/plugins/rp-pppoe/plugin.c	2016-08-11 16:26:02.163899490 +0800
+@@ -499,6 +499,71 @@
+ }
+ #endif
+ 
++#if 1 // ZYXEL_RECEIVE_PADT
++/**********************************************************************
++*%FUNCTION: PPPOEGetDiscoverySock
++*%ARGUMENTS:
++* None
++*%RETURNS:
++* conn->discoverySocket fd
++*%DESCRIPTION:
++* return conn discoverySocket fd
++***********************************************************************/
++static int
++PPPOEGetDiscoverySock(void)
++{
++	return conn->discoverySocket;
++}
++
++/**********************************************************************
++*%FUNCTION: PPPOERecvPadt
++*%ARGUMENTS:
++* None
++*%RETURNS:
++* 1: this is a PADT packet
++* 0: this is NOT a PADT packet
++*%DESCRIPTION:
++* check packet is a Padt packet or not
++***********************************************************************/
++static int
++PPPOERecvPadt(void)
++{
++	PPPoEPacket packet;
++    int len;
++	
++	if(conn->discoverySocket < 0){
++		return 0;
++	}
++
++	/* Get the packet */
++	receivePacket(conn->discoverySocket, &packet, &len);
++
++	/* Check length */
++	if(ntohs(packet.length) + HDR_SIZE > len){
++	    error("Bogus PPPoE length field (%u)", ntohs(packet.length));
++	    return 0;
++	}
++
++#ifdef USE_BPF
++	/* If it's not a Discovery packet, return */
++	if(etherType(&packet) != Eth_PPPOE_Discovery){
++		return 0;
++	}
++#endif
++
++	/* If it's not from the AC, it's not for me */
++	if(memcmp(packet.ethHdr.h_source, conn->peerEth, ETH_ALEN)){
++		return 0;
++	}
++
++	/* Is it PADT?  */
++	if((packet.code == CODE_PADT) && (conn->session == packet.session)){
++	    return 1;
++	}
++
++	return 0;
++}
++#endif
+ 
+ struct channel pppoe_channel = {
+     options: Options,
+@@ -512,4 +577,8 @@
+     recv_config: &PPPOERecvConfig,
+     close: NULL,
+     cleanup: NULL
++#if 1 // ZYXEL_RECEIVE_PADT
++	, get_discovery_sock: &PPPOEGetDiscoverySock,
++	receive_padt: &PPPOERecvPadt
++#endif
+ };
+diff -Naur ppp-2.4.3.orig/pppd/pppd.h ppp-2.4.3/pppd/pppd.h
+--- ppp-2.4.3.orig/pppd/pppd.h	2016-08-10 17:58:16.167686300 +0800
++++ ppp-2.4.3/pppd/pppd.h	2016-08-11 11:31:45.106124697 +0800
+@@ -463,6 +463,12 @@
+ 	void (*cleanup) __P((void));
+ 	/* close the device, called in children after fork */
+ 	void (*close) __P((void));
++#if 1 // ZYXEL_RECEIVE_PADT
++	/* get discovery sock fd */
++	int (*get_discovery_sock) __P((void));
++	/* check discovery sock receives PADT packet or not */
++	int (*receive_padt) __P((void));
++#endif
+ };
+ 
+ extern struct channel *the_channel;
+diff -Naur ppp-2.4.3.orig/pppd/plugins/pppoatm/pppoatm.c ppp-2.4.3/pppd/plugins/pppoatm/pppoatm.c
+--- ppp-2.4.3.orig/pppd/plugins/pppoatm/pppoatm.c	2016-08-10 17:58:16.175686200 +0800
++++ ppp-2.4.3/pppd/plugins/pppoatm/pppoatm.c	2016-08-11 11:32:36.088891495 +0800
+@@ -352,4 +352,8 @@
+     recv_config: &recv_config_pppoa,
+     close: NULL,
+     cleanup: NULL
++#if 1 // ZYXEL_RECEIVE_PADT
++	, get_discovery_sock: NULL,
++	receive_padt: NULL
++#endif
+ };
+diff -Naur ppp-2.4.3.orig/pppd/sys-linux.c ppp-2.4.3/pppd/sys-linux.c
+--- ppp-2.4.3.orig/pppd/sys-linux.c	2016-08-10 17:58:16.211685800 +0800
++++ ppp-2.4.3/pppd/sys-linux.c	2016-08-11 11:32:09.253095888 +0800
+@@ -190,6 +190,9 @@
+ 
+ static fd_set in_fds;		/* set of fds that wait_input waits for */
+ static int max_in_fd;		/* highest fd set in in_fds */
++#if 1 // ZYXEL_RECEIVE_PADT
++fd_set in_fds_export;
++#endif
+ 
+ static int has_proxy_arp       = 0;
+ static int driver_version      = 0;
+@@ -330,6 +333,9 @@
+ #endif
+ 
+     FD_ZERO(&in_fds);
++#if 1 // ZYXEL_RECEIVE_PADT
++	FD_ZERO(&in_fds_export);
++#endif
+     max_in_fd = 0;
+ }
+ 
+@@ -1113,12 +1119,24 @@
+ 
+ void wait_input(struct timeval *timo)
+ {
++#if 1 // ZYXEL_RECEIVE_PADT
++	fd_set exc;
++#else
+     fd_set ready, exc;
++#endif
+     int n;
+ 
++#if 1 // ZYXEL_RECEIVE_PADT
++	in_fds_export = in_fds;
++#else
+     ready = in_fds;
++#endif
+     exc = in_fds;
++#if 1 // ZYXEL_RECEIVE_PADT
++	n = select(max_in_fd + 1, &in_fds_export, NULL, &exc, timo);
++#else
+     n = select(max_in_fd + 1, &ready, NULL, &exc, timo);
++#endif
+     if (n < 0 && errno != EINTR)
+ 	fatal("select: %m");
+ }

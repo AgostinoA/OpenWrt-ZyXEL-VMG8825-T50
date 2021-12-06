@@ -1,0 +1,190 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2018-04-11 15:45:26.128573884 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2018-04-11 16:36:15.718223374 +0800
+@@ -3333,14 +3333,12 @@
+ *    currObj.Type : ATM|PTM|ETH (WAN type be checked)
+ *    isAdd : 0 for edit WAN, 1 for add new WAN
+ */
+-bool checkWanInterfaceLimit(struct json_object * currObj, int isAdd)
++bool checkWanInterfaceLimit(struct json_object * currObj, struct json_object *wanLanList, int isAdd)
+ {
+-    struct json_object *wanLanList = NULL;
+     struct json_object *listObj = NULL;
+     int i, wanIntfCount = 0, len = 0;
+     int MaxSameWANInterface = 8;
+ 
+-    getWanLanList(&wanLanList);
+     len = json_object_array_length(wanLanList);
+ 	if(json_object_object_get(currObj, "Type")){
+ 	    for(i=0; i<len; i++){
+@@ -3365,10 +3363,73 @@
+     return true;
+ }
+ 
++bool isVlanRepeat(struct json_object *Jobj, struct json_object *wanLanList, int isAdd)
++{
++    struct json_object *wanLanObj = NULL;
++	struct json_object *curWanObj = NULL;
++    int i, len = 0;
++	const char *LinkType, *VpiVci, *Name;
++	int VLANID;
++
++	Name = Jgets(Jobj, "Name");
++	if(Name == NULL)
++		return false;
++	
++	if(isAdd){
++		if((LinkType = Jgets(Jobj, "Type")) == NULL)
++			LinkType = "";
++		if((VpiVci = Jgets(Jobj, "vpivci")) == NULL)
++			VpiVci = "";
++		if(Jget(Jobj, "VLANID"))
++			VLANID = Jgeti(Jobj, "VLANID");
++		else
++			VLANID = -1;
++	}
++	else{
++		len = json_object_array_length(wanLanList);
++		for(i=0; i<len; i++){
++			wanLanObj = json_object_array_get_idx(wanLanList, i);
++			if(!strcmp(Name, Jgets(wanLanObj, "Name")) && !strcmp("WAN", Jgets(wanLanObj, "Type"))){
++				curWanObj = wanLanObj;
++				break;
++			}
++		}
++		if(curWanObj == NULL)
++			return false;
++
++		if((LinkType = Jgets(Jobj, "Type")) == NULL)
++			LinkType = Jgets(curWanObj, "LinkType");
++		if((VpiVci = Jgets(Jobj, "vpivci")) == NULL)
++			VpiVci = Jgets(curWanObj, "VpiVci");
++		if(Jget(Jobj, "VLANID"))
++			VLANID = Jgeti(Jobj, "VLANID");
++		else
++			VLANID = Jgeti(curWanObj, "VLANID");
++	}
++
++	len = json_object_array_length(wanLanList);
++	for(i=0; i<len; i++){
++		wanLanObj = json_object_array_get_idx(wanLanList, i);
++		if(strcmp("WAN", Jgets(wanLanObj, "Type")) || !strcmp(Name, Jgets(wanLanObj, "Name"))){
++			continue;
++		}
++		
++		if(!strcmp(LinkType, Jgets(wanLanObj, "LinkType")) && (VLANID == Jgeti(wanLanObj, "VLANID"))){
++			if(strcmp(LinkType, "ATM"))
++				return true;
++			else if(!strcmp(VpiVci, Jgets(wanLanObj, "VpiVci")))
++				return true;
++		}
++	}
++
++	return false;
++}
+ 
+ zcfgRet_t zcfgFeDalWanAdd(struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *wanLanList = NULL, *wanLanObj = NULL;
++	int i, len;
+ 
+ 	isAdd = true;
+ 	isDelete = false;
+@@ -3386,17 +3447,41 @@
+     }
+ #endif
+ 
++	getWanLanList(&wanLanList);
++
+ 	//check if duplicate Name exist
+-	if(getSpecificObj(RDM_OID_IP_IFACE, "X_ZYXEL_SrvName", json_type_string, Name, NULL, NULL)){
+-		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Common.duplicate_name"));
++	len = json_object_array_length(wanLanList);
++	for(i=0; i<len; i++){
++		wanLanObj = json_object_array_get_idx(wanLanList, i);
++		if(!strcmp(Name, Jgets(wanLanObj, "Name")) && !strcmp("WAN", Jgets(wanLanObj, "Type"))){
++			json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Common.duplicate_name"));
++			if(replyMsg)
++				strcpy(replyMsg,"Name is duplicate.");
++
++			json_object_put(wanLanList);
++			return ZCFG_REQUEST_REJECT;
++		}
++	}
++
++	if(checkWanInterfaceLimit(Jobj, wanLanList, 1) == false){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Broadband.Broadband.warning.exceed_wan_limit"));
+ 		if(replyMsg)
+-			strcpy(replyMsg,"Name is duplicate.");
++			strcpy(replyMsg,"The number of WAN interfaces exceeds the limit.");
++
++		json_object_put(wanLanList);
+ 		return ZCFG_REQUEST_REJECT;
+ 	}
+ 
+-	if(checkWanInterfaceLimit(Jobj, 1) == false){
++	if(isVlanRepeat(Jobj, wanLanList, 1)){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Broadband.Broadband.warning.vlan_repeat"));
++		if(replyMsg)
++			strcpy(replyMsg,"The Vlan is repeat.");
++
++		json_object_put(wanLanList);
+ 		return ZCFG_REQUEST_REJECT;
+ 	}
++	json_object_put(wanLanList);
++	
+ 	ret = zcfgFeCheckIPDNS(Jobj, replyMsg);
+ 	if((ret = addDefaultParam(Jobj, replyMsg)) != ZCFG_SUCCESS)//for CLI
+ 		return ret;
+@@ -3535,7 +3620,8 @@
+ 
+ zcfgRet_t zcfgFeDalWanEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-
++	struct json_object *wanLanList = NULL;
++	
+ 	isAdd = false;
+ 	isDelete = false;
+ 	initGlobalObjects();
+@@ -3553,10 +3639,25 @@
+ 	*/
+ 		ret = zcfgFeCheckIPDNS(Jobj, replyMsg);
+ 
+-	if(checkWanInterfaceLimit(Jobj, 0) == false){
++	
++	getWanLanList(&wanLanList);
++	if(checkWanInterfaceLimit(Jobj, wanLanList, 0) == false){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Broadband.Broadband.warning.exceed_wan_limit"));
++		if(replyMsg)
++			strcpy(replyMsg,"The number of WAN interfaces exceeds the limit.");
++		json_object_put(wanLanList);
++		ret = ZCFG_REQUEST_REJECT;
++		goto dalwan_edit_fail;
++	}
++	if(isVlanRepeat(Jobj, wanLanList, 0)){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Broadband.Broadband.warning.vlan_repeat"));
++		if(replyMsg)
++			strcpy(replyMsg,"The Vlan is repeat.");
++		json_object_put(wanLanList);
+ 		ret = ZCFG_REQUEST_REJECT;
+ 		goto dalwan_edit_fail;
+ 	}
++	json_object_put(wanLanList);
+ 
+ 	if ((ret = getCurrentConfig(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-04-11 15:45:26.176573885 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-04-11 15:45:49.856057211 +0800
+@@ -879,7 +879,7 @@
+ 
+ /*
+  * return WAN and LAN list in Jason Array.
+- * Format:Jarray.i.NAME = Name
++ * Format:Jarray.i.Name = Name
+  *           Jarray.i.IpIfacePath = IP.Interface.i
+  *           Jarray.i.PppIfacePath = PPP.Interface.i  (For PPPoE, PPPoA only)
+  *           Jarray.i.Type : LAN|WAN

@@ -1,0 +1,210 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_others.c	2018-05-03 10:29:06.883900858 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c	2018-05-03 10:32:31.847900858 +0800
+@@ -195,7 +195,6 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+ 	if(wifiApWpsOthersObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_WPS, &wifiApWpsOthersIid, wifiApWpsOthersObj, NULL);
+-	if(wifiSecOthersObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiSecOthersIid, wifiSecOthersObj, NULL);
+ 	if(wifiRadioOthersObj) zcfgFeObjJsonBlockedSet(RDM_OID_WIFI_RADIO, &wifiRadioOthersIid, wifiRadioOthersObj, NULL);
+ 	
+ 	return ret;
+@@ -347,31 +346,58 @@
+ zcfgRet_t editWifiOthersSecObject(struct json_object *Jobj){
+ 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *iidArray = NULL;
+-	uint8_t iidIdx =0;
+-	
+-	IID_INIT(wifiSecOthersIid);
+-	wifiSecOthersIid.level = 1;
+-	wifiSecOthersIid.idx[0] = json_object_get_int(json_object_object_get(Jobj,"Index"));
+-	
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiSecOthersIid, &wifiSecOthersObj)) != ZCFG_SUCCESS) {
++	char lowerlayer[16] = {0}, main_radio[2] = {0}, cur_radio[2] = {0};
++	struct json_object *wifiSsidObj = NULL;
++	objIndex_t wifiSsidIid;
++
++	// Search Main interface radio
++	IID_INIT(wifiSsidIid);
++	wifiSsidIid.level = 1;
++	wifiSsidIid.idx[0] = json_object_get_int(json_object_object_get(Jobj,"Index"));
++	if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &wifiSsidIid, &wifiSsidObj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-	
+-	if(json_object_object_get(Jobj, "wlPmf"))
+-	{
+-		if (!strcmp(wlPmf, "disabled"))
+-		{
+-			json_object_object_add(wifiSecOthersObj, "EnableManagementFrameProtection", json_object_new_boolean(false));
+-		} else if(!strcmp(wlPmf, "capable"))
+-		{
+-			json_object_object_add(wifiSecOthersObj, "EnableManagementFrameProtection", json_object_new_boolean(true));
+-			json_object_object_add(wifiSecOthersObj, "X_ZYXEL_PmfMethod", json_object_new_int(0));
++	strcpy(lowerlayer, json_object_get_string(json_object_object_get(wifiSsidObj, "LowerLayers")));
++	sscanf(lowerlayer, "WiFi.Radio.%1s", main_radio);
++	zcfgFeJsonObjFree(wifiSsidObj);
++
++	IID_INIT(wifiSecOthersIid);
++	wifiSecOthersIid.level = 1;
++	wifiSecOthersIid.idx[0] = json_object_get_int(json_object_object_get(Jobj,"Index"))-1;
++	while (zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiSecOthersIid, &wifiSecOthersObj) == ZCFG_SUCCESS) {
++		// Search Current interface radio
++		IID_INIT(wifiSsidIid);
++		wifiSsidIid.level = 1;
++		wifiSsidIid.idx[0] = wifiSecOthersIid.idx[0];
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &wifiSsidIid, &wifiSsidObj)) != ZCFG_SUCCESS) {
++			zcfgFeJsonObjFree(wifiSecOthersObj);
++			return ret;
++		}
++		strcpy(lowerlayer, json_object_get_string(json_object_object_get(wifiSsidObj, "LowerLayers")));
++		sscanf(lowerlayer, "WiFi.Radio.%1s", cur_radio);
++		zcfgFeJsonObjFree(wifiSsidObj);
++
++		if (!strcmp(cur_radio, main_radio)) { //Current interface radio = Main interface radio, update PMF value according band
++			if (json_object_object_get(Jobj, "wlPmf")) {
++				if (!strcmp(wlPmf, "disabled")) {
++					json_object_object_add(wifiSecOthersObj, "EnableManagementFrameProtection", json_object_new_boolean(false));
++					json_object_object_add(wifiSecOthersObj, "X_ZYXEL_PmfMethod", json_object_new_int(0));
++				}
++				else if (!strcmp(wlPmf, "capable")) {
++					json_object_object_add(wifiSecOthersObj, "EnableManagementFrameProtection", json_object_new_boolean(true));
++					json_object_object_add(wifiSecOthersObj, "X_ZYXEL_PmfMethod", json_object_new_int(0));
++				}
++				else { //wlPmf = required
++					json_object_object_add(wifiSecOthersObj, "EnableManagementFrameProtection", json_object_new_boolean(true));
++					json_object_object_add(wifiSecOthersObj, "X_ZYXEL_PmfMethod", json_object_new_int(1));
++				}
++			}
++			zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiSecOthersIid, wifiSecOthersObj, NULL);
++			zcfgFeJsonObjFree(wifiSecOthersObj);
+ 		}
+-		else
+-		{
+-			json_object_object_add(wifiSecOthersObj, "EnableManagementFrameProtection", json_object_new_boolean(true));
+-			json_object_object_add(wifiSecOthersObj, "X_ZYXEL_PmfMethod", json_object_new_int(1));
++		else {
++			zcfgFeJsonObjFree(wifiSecOthersObj);
++			break;
+ 		}
+ 	}
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2018-05-03 10:29:07.535900858 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2018-05-03 10:31:04.119900858 +0800
+@@ -515,7 +515,7 @@
+     }    
+     else {
+         oneSsidEnable = json_object_get_boolean(json_object_object_get(wifiOneSsidObj, "oneSsidEnable"));
+-    }    
++    }
+ #endif
+ 
+ 	wlEnable = json_object_get_boolean(json_object_object_get(Jobj, "wlEnable"));
+@@ -602,7 +602,6 @@
+ 	
+ #ifdef ZYXEL_ONESSID
+ 	wifiOneSsidObj = NULL;
+-
+ 	IID_INIT(wifiOneSsidIid);
+ #endif
+ 
+@@ -733,6 +732,51 @@
+ }
+ #endif //WIFI_ONESSID_SECURITY_SYNC
+ 
++zcfgRet_t editWiFiPMFtoCapable(int wifiSec_idx) {
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *wifiOtherSsidObj = NULL;
++	struct json_object *wifiOtherSecObj = NULL;
++	objIndex_t wifiOtherSsidIid;
++	objIndex_t wifiOtherSecIid;
++	char lowerlayer[16] = {0}, cur_radio[2] = {0}, tmp_radio[2] = {0};
++
++	// Search current interface radio
++	IID_INIT(wifiOtherSsidIid);
++	wifiOtherSsidIid.level = 1;
++	wifiOtherSsidIid.idx[0] = wifiSecIid.idx[0];
++	if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &wifiOtherSsidIid, &wifiOtherSsidObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	strcpy(lowerlayer, json_object_get_string(json_object_object_get(wifiOtherSsidObj, "LowerLayers")));
++	sscanf(lowerlayer, "WiFi.Radio.%1s", cur_radio);
++	zcfgFeJsonObjFree(wifiOtherSsidObj);
++
++	IID_INIT(wifiOtherSecIid);
++	wifiOtherSecIid.level = 1;
++	while (zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiOtherSecIid, &wifiOtherSecObj) == ZCFG_SUCCESS) {
++		// Search other interface radio
++		IID_INIT(wifiOtherSsidIid);
++		wifiOtherSsidIid.level = 1;
++		wifiOtherSsidIid.idx[0] = wifiOtherSecIid.idx[0];
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &wifiOtherSsidIid, &wifiOtherSsidObj)) != ZCFG_SUCCESS) {
++			zcfgFeJsonObjFree(wifiOtherSecObj);
++			return ret;
++		}
++		strcpy(lowerlayer, json_object_get_string(json_object_object_get(wifiOtherSsidObj, "LowerLayers")));
++		sscanf(lowerlayer, "WiFi.Radio.%1s", tmp_radio);
++		zcfgFeJsonObjFree(wifiOtherSsidObj);
++
++		if (!strcmp(tmp_radio, cur_radio)) {
++			json_object_object_add(wifiOtherSecObj, "EnableManagementFrameProtection", json_object_new_boolean(true));
++			json_object_object_add(wifiOtherSecObj, "X_ZYXEL_PmfMethod", json_object_new_int(0));
++			zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiOtherSecIid, wifiOtherSecObj, NULL);
++		}
++		zcfgFeJsonObjFree(wifiOtherSecObj);
++	}
++	return ret;
++}
++
+ zcfgRet_t editWifiApObject(struct json_object *Jobj){
+ 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -779,7 +823,7 @@
+ 		if(wifiSecIid.idx[0] != 0)
+ 			wifiSecIid.level = 1;
+ 	}
+-	
++
+ 	if(secMode == SLIDER_POS_NONE)
+ 		json_object_object_add(wifiSecObj, "ModeEnabled", json_object_new_string("None"));
+ 	else if(secMode == SLIDER_POS_BASIC)
+@@ -858,6 +902,14 @@
+ 		{
+ 			if(!strcmp(wpaMode,"wpa2psk")){
+ 				json_object_object_add(wifiSecObj, "ModeEnabled", json_object_new_string("WPA2-Personal"));
++				if (wlEnable == true) { //interface enable
++					json_object_object_add(wifiSecObj, "EnableManagementFrameProtection", json_object_new_boolean(true));
++					json_object_object_add(wifiSecObj, "X_ZYXEL_PmfMethod", json_object_new_int(0));
++					/* Set PMF with capable when enable WPA2-PSK for other interfaces with the same band */
++					if ((ret = editWiFiPMFtoCapable(wifiSecIid.idx[0])) != ZCFG_SUCCESS) {
++						return ret;
++					}
++				}
+ 			}
+ 			else{
+ 				json_object_object_add(wifiSecObj, "ModeEnabled", json_object_new_string("WPA-WPA2-Personal"));
+@@ -892,7 +944,6 @@
+ 		}
+ 		else if(!strcmp(wpaMode,"wpa2"))
+ 		{
+-
+ 			json_object_object_add(wifiSecObj, "ModeEnabled", json_object_new_string("WPA2-Enterprise"));
+ 			json_object_object_add(wifiSecObj, "X_ZYXEL_Preauth", json_object_new_boolean(X_ZYXEL_Preauth));
+ 			json_object_object_add(wifiSecObj, "X_ZYXEL_ReauthInterval", json_object_new_int(X_ZYXEL_ReauthInterval));
+@@ -1044,11 +1095,7 @@
+ 				json_object_object_add(syncWifiSecObj, "X_ZYXEL_Encryption", json_object_new_string("tkipaes"));
+ 			}
+ 			json_object_object_add(syncWifiSecObj, "RekeyingInterval", json_object_new_int(RekeyingInterval));
+-					
+ 		}
+-
+-		
+-	   
+ 	}
+ #endif //WIFI_ONESSID_SECURITY_SYNC
+ 	return ret;

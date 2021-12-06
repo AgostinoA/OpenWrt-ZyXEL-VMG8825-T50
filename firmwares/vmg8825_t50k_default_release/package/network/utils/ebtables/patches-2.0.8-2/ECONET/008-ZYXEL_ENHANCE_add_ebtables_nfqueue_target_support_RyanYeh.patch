@@ -1,0 +1,149 @@
+Index: ebtables-v2.0.8-2/extensions/ebt_nfqueue.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.8-2/extensions/ebt_nfqueue.c	2019-05-29 14:10:48.468525633 +0800
+@@ -0,0 +1,130 @@
++/*
++ * Shared library add-on to ebtables for NFQ
++ *
++ * (C) 2012 by Ma Jie Yue <jieyue.majy@xxxxxxxxxxxxxx>
++ *
++ * This program is distributed under the terms of GNU GPLv2, 1991
++ */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++#include <errno.h>
++
++#include "../include/ebtables_u.h"
++#include <linux/netfilter/x_tables.h>
++
++#define NFQUEUE_QUEUENUM 0x1
++#define NFQUEUE_QUEUEBALANCE 0x2
++
++struct xt_NFQ_info {
++   __u16 queuenum;
++   int target;
++};
++
++static int string_to_number(const char *s, unsigned int min, unsigned int max, unsigned int *ret)
++{
++   long number;
++   char *end;
++   errno = 0;
++   number = strtol(s, &end, 0);
++
++   if (*end == '\0' && end != s) {
++       if (errno != ERANGE && min <= number && number <= max) {
++           *ret = number;
++           return 0;
++       }
++   }
++   return -1;
++}
++
++static void nfqueue_help(void)
++{
++   printf("NFQUEUE target options\n"
++           "  --queue-num value       Send packet to QUEUE number <value>.\n"
++           "                          Valid queue numbers are 0-65535\n");
++}
++
++static void nfqueue_init(struct ebt_entry_target* target) {
++   struct xt_NFQ_info* info = (struct xt_NFQ_info *)target->data;
++
++   info->queuenum = 0;
++}
++
++static const struct option nfqueue_opts[] = {
++   { "queue-num", 1, NULL, 'F' },
++   { "queue-balance", 1, NULL, 'B' },
++   { .name = NULL }
++};
++
++static void parse_num(const char *s, struct xt_NFQ_info *tinfo)
++{
++   unsigned int num = 0;
++   if (string_to_number(s, 0, 65535, &num) < 0) {
++       ebt_print_error("Invalid queue number %s\n", s);
++   }
++
++   tinfo->queuenum = num;
++}
++
++static int nfqueue_parse(int c, char **argv, int argc,
++       const struct ebt_u_entry *entry, unsigned int *flags,
++       struct ebt_entry_target **target)
++{
++   struct xt_NFQ_info *tinfo = (struct xt_NFQ_info *)(*target)->data;
++   tinfo->queuenum = 0;
++
++   switch (c) {
++       case 'F':
++           if (*flags)
++               ebt_print_error2("NFQUEUE target: "
++                               "Only use --queue-num ONCE!");
++           *flags |= NFQUEUE_QUEUENUM;
++           parse_num(optarg, tinfo);
++           break;
++
++       case 'B':
++           ebt_print_error2("NFQUEUE target: "
++                           "--queue-balance not supported (kernel too old?)");
++
++       default:
++           break;
++   }
++   return 1;
++}
++
++static void nfqueue_print(const struct ebt_u_entry* entry, const struct ebt_entry_target *target) {
++   struct xt_NFQ_info *tinfo = (struct xt_NFQ_info *)target->data;
++
++   printf("--queue-num %u ", tinfo->queuenum);
++}
++
++static void nfqueue_check(const struct ebt_u_entry *entry,
++               const struct ebt_entry_target *target, const char *name,
++               unsigned int hookmask, unsigned int time) {
++
++}
++
++static int nfqueue_compare(const struct ebt_entry_target *t1, const struct ebt_entry_target *t2) {
++   struct xt_NFQ_info *info1 = (struct xt_NFQ_info *)t1->data;
++   struct xt_NFQ_info *info2 = (struct xt_NFQ_info *)t2->data;
++
++   return (info1->queuenum == info2->queuenum);
++}
++
++static struct ebt_u_target nfqueue_target = {
++   .name       = "nfqueue",
++   .init       = nfqueue_init,
++   .size       = sizeof(struct xt_NFQ_info),
++   .help       = nfqueue_help,
++   .parse      = nfqueue_parse,
++   .print      = nfqueue_print,
++   .final_check    = nfqueue_check,
++   .compare    = nfqueue_compare,
++   .extra_ops  = nfqueue_opts,
++};
++
++void _init(void) {
++   ebt_register_target(&nfqueue_target);
++}
+Index: ebtables-v2.0.8-2/extensions/Makefile
+===================================================================
+--- ebtables-v2.0.8-2.orig/extensions/Makefile	2019-05-29 14:10:48.364525628 +0800
++++ ebtables-v2.0.8-2/extensions/Makefile	2019-05-29 14:11:59.850923838 +0800
+@@ -5,6 +5,9 @@
+ ifneq ($(strip $(TCSUPPORT_IPV6)),)
+ EXT_FUNC+=ip6 tc
+ endif
++ifneq ($(CONFIG_KERNEL_BRIDGE_EBT_NFQUEUE),)
++EXT_FUNC+=nfqueue
++endif
+ EXT_TABLES+=filter nat broute
+ EXT_OBJS+=$(foreach T,$(EXT_FUNC), extensions/ebt_$(T).o)
+ EXT_OBJS+=$(foreach T,$(EXT_TABLES), extensions/ebtable_$(T).o)

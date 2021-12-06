@@ -1,0 +1,256 @@
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2015-12-24 11:41:48.548771242 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2015-12-24 11:42:02.309209716 +0800
+@@ -131,6 +131,11 @@
+ #define DNSEXIT_DEFAULT_PORT "80"
+ #define DNSEXIT_REQUEST "/RemoteUpdate.sv"
+ 
++//support DtDNS 
++#define DTDNS_DEFAULT_SERVER "www.dtdns.com"
++#define DTDNS_DEFAULT_PORT "80"
++#define DTDNS_REQUEST "/api/autodns.cfm"
++
+ #define DEFAULT_TIMEOUT 120
+ #define DEFAULT_UPDATE_PERIOD 120
+ #define DEFAULT_RESOLV_PERIOD 30
+@@ -388,6 +393,11 @@
+ int DNSEXIT_check_info(void);
+ static char *DNSEXIT_fields_used[] = { "server", "user", "address", "wildcard", "mx", "host", NULL };
+ 
++//Support www.dtdns.com
++int DTDNS_update_entry(void);
++int DTDNS_check_info(void);
++static char *DTDNS_fields_used[] = { "server", "address", "user", "host", NULL};
++
+ 
+ struct service_t services[] = {
+   { "NULL",
+@@ -591,7 +601,18 @@
+ 	DNSEXIT_DEFAULT_SERVER,
+ 	DNSEXIT_DEFAULT_PORT,
+ 	DNSEXIT_REQUEST
+-  },	  
++  },
++  //Support www.dtdns.com  
++  { "dtdns",
++  	{ "dtdns", 0, 0, },
++  	NULL,
++  	DTDNS_update_entry,
++  	DTDNS_check_info,
++  	DTDNS_fields_used,
++  	DTDNS_DEFAULT_SERVER,
++  	DTDNS_DEFAULT_PORT,
++  	DTDNS_REQUEST  
++  	},
+ };
+ 
+ static struct service_t *service = NULL;
+@@ -5126,6 +5147,207 @@
+   return(UPDATERES_OK);
+ }
+ 
++//support DtDNS
++int DTDNS_update_entry(void)
++{
++  char buf[BUFFER_SIZE+1];
++  char *bp = buf;
++  int bytes;
++  int btot;
++  int ret;
++
++  buf[BUFFER_SIZE] = '\0';
++
++  if(do_connect((int*)&client_sockfd, server, port) != 0)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      show_message("error connecting to %s:%s\n", server, port);
++    }
++    return(UPDATERES_ERROR);
++  }
++
++  snprintf(buf, BUFFER_SIZE, "GET %s?", request);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "id=%s&", host);
++  output(buf);
++  if(address != NULL && *address != '\0'){
++	  snprintf(buf, BUFFER_SIZE, "%s=%s&", "ip", address);
++	  output(buf);
++  }
++  snprintf(buf, BUFFER_SIZE, "%s=%s&", "pw", password);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, " HTTP/1.1\015\012");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "User-Agent: %s-%s %s [%s] (%s)\015\012",
++      "ez-update", VERSION, OS, (options & OPT_DAEMON) ? "daemon" : "", "by Angus Mackay");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "\015\012");
++  output(buf);
++
++  if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++      close(client_sockfd);
++      return(UPDATERES_ERROR);
++  }
++  buf[bytes] = '\0';
++
++  dprintf((stderr, "server output: %s\n", buf));
++
++  if(sscanf(buf, " HTTP/1.%*c %3d", &ret) != 1)
++  {
++    ret = -1;
++  }
++
++  switch(ret)
++  {
++    case -1:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("strange server response, are you connecting to the right server?\n");
++      }
++      break;
++
++    case 200:
++
++      if(strstr(buf, "No hostname to update was supplied") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("No hostname to update was supplied.\n");
++        }
++      }
++      else if(strstr(buf, "No password was supplied") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("No password was supplied\n");
++        }
++      }
++      else if(strstr(buf, "The hostname you supplied is not valid") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("The hostname you supplied is not valid.\n");
++        }
++      }
++      else if(strstr(buf, "The password you supplied is not valid") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("The password you supplied is not valid.\n");
++        }
++      }
++      else if(strstr(buf, "This account has not yet been activated") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("This account has not yet been activated.\n");
++        }
++      }
++      else if(strstr(buf, "Administration has disabled this account") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("Administration has disabled this account.\n");
++        }
++      }
++      else if(strstr(buf, "Illegal character in IP") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("Illegal character in IP.\n");
++        }
++      }
++	  else if(strstr(buf, "Too many failed requests.") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("Too many failed requests.\n");
++        }
++      }
++      else
++      {
++        success[0]='0';
++
++        innerText(address_log, buf, "points to ", NULL, ".\n");
++        address_log[16]='\0';
++
++        DDNS_StatusLog();
++//        show_message("Success!!\n");
++//        if(!(options & OPT_QUIET))
++//        {
++//          fprintf(stderr, "server output: %s\n", buf);
++//        }
++		return(UPDATERES_OK);
++      }
++      break;
++
++    case 401:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("authentication failure\n");
++      }
++      success[0] = '1';
++      DDNS_StatusLog();
++      return(UPDATERES_SHUTDOWN);
++      break;
++
++    default:
++      if(!(options & OPT_QUIET))
++      {
++        *auth = '\0';
++        sscanf(buf, " HTTP/1.%*c %*3d %255[^\r\n]", auth);
++        show_message("unknown return code: %d\n", ret);
++        show_message("server response: %s\n", auth);
++      }
++      break;
++  }
++  success[0] = '1';
++  DDNS_StatusLog();
++  return(UPDATERES_ERROR);
++}
++
++int DTDNS_check_info(void)
++{
++  char buf[BUFSIZ+1];
++
++  if((host == NULL) || (*host == '\0'))
++  {
++    if(options & OPT_DAEMON)
++    {
++      return(-1);
++    }
++    if(host) { free(host); }
++    printf("host: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    host = strdup(buf);
++    chomp(host);
++  }
++
++  if(interface == NULL && address == NULL)
++  {
++    if(options & OPT_DAEMON)
++    {
++      fprintf(stderr, "you must provide either an interface or an address\n");
++      return(-1);
++    }
++    if(interface) { free(interface); }
++    printf("interface: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    chomp(buf);
++    option_handler(CMD_interface, buf);
++  }
++
++  warn_fields(service->fields_used);
++
++  return 0;
++}
++//dtdns  end
++
+ static int is_in_list(char *needle, char **haystack)
+ {
+   char **p;

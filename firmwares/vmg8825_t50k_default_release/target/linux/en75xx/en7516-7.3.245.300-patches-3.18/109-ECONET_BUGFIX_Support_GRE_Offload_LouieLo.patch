@@ -1,0 +1,337 @@
+Index: linux-3.18.21/arch/mips/econet/libcompileoption.c
+===================================================================
+--- linux-3.18.21.orig/arch/mips/econet/libcompileoption.c	2019-08-28 10:50:21.557274157 +0800
++++ linux-3.18.21/arch/mips/econet/libcompileoption.c	2019-08-28 16:56:07.285806148 +0800
+@@ -1188,6 +1188,11 @@
+ EXPORT_SYMBOL(TCSUPPORT_FWC_QOS_VAL);
+ #endif
+ 
++CompileOption_Val TCSUPPORT_GRE_TUNNEL_HWNAT_VAL = 0;
++#ifdef __KERNEL__
++EXPORT_SYMBOL(TCSUPPORT_GRE_TUNNEL_HWNAT_VAL);
++#endif
++
+ 
+ CompileOption_Val TCSUPPORT_FWC_FDB_VLAN_VAL = 0;
+ #ifdef __KERNEL__
+@@ -2661,6 +2666,12 @@
+ 	TCSUPPORT_FWC_QOS_VAL = 0;
+ #endif
+ 
++#ifdef TCSUPPORT_GRE_TUNNEL_HWNAT
++	TCSUPPORT_GRE_TUNNEL_HWNAT_VAL = 1;
++#else
++	TCSUPPORT_GRE_TUNNEL_HWNAT_VAL = 0;
++#endif
++
+ #ifdef TCSUPPORT_FWC_FDB_VLAN
+ 	TCSUPPORT_FWC_FDB_VLAN_VAL = 1;
+ #else
+Index: linux-3.18.21/include/ecnt_hook/ecnt_hook.h
+===================================================================
+--- linux-3.18.21.orig/include/ecnt_hook/ecnt_hook.h	2019-08-28 10:50:21.633274160 +0800
++++ linux-3.18.21/include/ecnt_hook/ecnt_hook.h	2019-08-28 16:57:27.726439576 +0800
+@@ -126,6 +126,7 @@
+ 	ECNT_SPI_NAND,
+ 	ECNT_AUTOBENCH_USB,
+ 	ECNT_AUTOBENCH_DMT,
++    ECNT_NET_GRE,
+ 	ECNT_NUM_MAINTYPE
+ };
+ 
+Index: linux-3.18.21/include/ecnt_hook/ecnt_hook_net.h
+===================================================================
+--- linux-3.18.21.orig/include/ecnt_hook/ecnt_hook_net.h	2019-08-28 10:50:21.637274160 +0800
++++ linux-3.18.21/include/ecnt_hook/ecnt_hook_net.h	2019-08-28 16:57:53.254297656 +0800
+@@ -124,6 +124,19 @@
+ 	ECNT_NET_IGMP_GROUP_DROPPED = 1,
+ };
+ 
++enum ecnt_net_gre_subtype
++{	
++	ECNT_NET_GRE_XMIT,
++	ECNT_NET_GRE_RECV,
++	ECNT_NET_GRE_TUNNEL_RECV,
++	ECNT_NET_GRETAG_XMIT,
++	ECNT_NET_GRE_FAST_XMIT,
++	ECNT_NET_GRE_NEWLINK,
++	ECNT_NET_GRE_DELLINK,
++	ECNT_NET_GRE_CHANGELINK,
++};
++
++
+ struct ecnt_vlan_skb_rcv_s{
+ 	struct net_device *vlan_dev;
+ 	struct net_device *orig_dev;
+@@ -147,6 +160,8 @@
+ 		struct ecnt_foe_copy_s foe_copy_data;
+ 	};
+  	struct net_bridge_port *source;
++	unsigned int remote_addr;
++    void * device;
+ };
+ 
+ struct ecnt_net_af_bind_s{
+@@ -337,6 +352,20 @@
+ 	}
+ 
+ 	return ret;
++}
++
++
++static inline int ECNT_GRE_GENERIC_HOOK(int subtype, struct net_data_s *data)
++{	
++	int ret = ECNT_CONTINUE;
++	
++	if (!list_empty(&ecnt_hooks[ECNT_NET_GRE][subtype]))
++	{
++
++		ret = __ECNT_HOOK(ECNT_NET_GRE, subtype, (struct ecnt_data *)data);
++	}
++
++	return ret;
+ }
+ 
+ static inline int ECNT_IGMP_HOOK(int subtype, struct net_data_s *data)
+Index: linux-3.18.21/include/linux/foe_hook.h
+===================================================================
+--- linux-3.18.21.orig/include/linux/foe_hook.h	2019-08-28 10:50:23.509274230 +0800
++++ linux-3.18.21/include/linux/foe_hook.h	2019-08-28 16:58:48.868322056 +0800
+@@ -27,6 +27,12 @@
+ 
+ #define FOE_MAGIC_LOCAL				0x7283
+ 
++#define	FOE_MAGIC_GRE_UP_1	    0x7284
++#define	FOE_MAGIC_GRE_UP_2	    0x7285
++#define	FOE_MAGIC_GRE_DOWN_1	0x7286
++#define	FOE_MAGIC_GRE_DOWN_2	0x7287
++
++
+ #define	L2TP_VPN_PPP_NAME	"ppp100"
+ #define	HWNAT_PKT_ERROR		0
+ #define	HWNAT_PKT_UPSTREAM	1
+@@ -199,6 +205,10 @@
+ extern int (*ra_sw_nat_hook_update_vlan)(int index,int outer_vlan,int inner_vlan);
+ extern int (*ra_sw_nat_local_in_tx) (struct sk_buff * skb,unsigned short port);
+ 
++extern int (*ra_sw_nat_hook_save_gre_txinfo)(struct sk_buff *skb);
++extern int (*ra_sw_nat_hook_restore_gre_txinfo)(struct sk_buff *skb);
++extern int (*ra_sw_nat_hook_is_gre_offload_pkt)(struct sk_buff *skb);
++
+ extern int (*ra_sw_nat_hook_save_rxinfo)(struct sk_buff *skb);
+ extern int (*ra_sw_nat_hook_restore_rxinfo)(struct sk_buff *skb);
+ extern int (*ra_sw_nat_hook_save_txinfo)(struct sk_buff *skb);
+Index: linux-3.18.21/include/linux/libcompileoption.h
+===================================================================
+--- linux-3.18.21.orig/include/linux/libcompileoption.h	2019-08-28 10:50:21.641274160 +0800
++++ linux-3.18.21/include/linux/libcompileoption.h	2019-08-28 16:59:20.702373850 +0800
+@@ -514,6 +514,8 @@
+ 
+ extern CompileOption_Val TCSUPPORT_MIPS_1004K_VAL;
+ 
++extern CompileOption_Val TCSUPPORT_GRE_TUNNEL_HWNAT_VAL;
++
+ void
+ init_compileoption_val(void);
+ 
+Index: linux-3.18.21/net/core/ecnt_net_utility.c
+===================================================================
+--- linux-3.18.21.orig/net/core/ecnt_net_utility.c	2019-08-28 10:50:22.717274200 +0800
++++ linux-3.18.21/net/core/ecnt_net_utility.c	2019-08-28 17:00:18.734711554 +0800
+@@ -123,6 +123,8 @@
+ int (*wifi_eth_fast_tx_hook)(struct sk_buff *skb);
+ EXPORT_SYMBOL(wifi_eth_fast_tx_hook);
+ 
++int (*offload_eth_fast_tx_hook)(struct sk_buff *skb);
++EXPORT_SYMBOL(offload_eth_fast_tx_hook);
+ 
+ 
+ /*-------------------sw_rps_for_wifi---------------------------*/
+Index: linux-3.18.21/net/ipv4/gre_demux.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/gre_demux.c	2015-09-01 06:19:23.000000000 +0800
++++ linux-3.18.21/net/ipv4/gre_demux.c	2019-08-28 17:00:49.997916703 +0800
+@@ -29,6 +29,8 @@
+ #include <net/icmp.h>
+ #include <net/route.h>
+ #include <net/xfrm.h>
++#include <ecnt_hook/ecnt_hook_net.h>
++
+ 
+ static const struct gre_protocol __rcu *gre_proto[GREPROTO_MAX] __read_mostly;
+ static struct gre_cisco_protocol __rcu *gre_cisco_proto_list[GRE_IP_PROTO_MAX];
+@@ -257,6 +259,14 @@
+ 	const struct gre_protocol *proto;
+ 	u8 ver;
+ 	int ret;
++    struct net_data_s net_data;
++
++    net_data.pskb = &skb;
++    ret =  ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRE_RECV, &net_data);
++    if (ECNT_RETURN_DROP == ret)
++    {
++    	goto drop;
++    }
+ 
+ 	if (!pskb_may_pull(skb, 12))
+ 		goto drop;
+Index: linux-3.18.21/net/ipv4/ip_gre.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/ip_gre.c	2019-08-28 10:50:24.129274253 +0800
++++ linux-3.18.21/net/ipv4/ip_gre.c	2019-08-28 17:03:04.967043336 +0800
+@@ -56,6 +56,8 @@
+ #include <net/ip6_route.h>
+ #endif
+ 
++#include <ecnt_hook/ecnt_hook_net.h>
++
+ /*
+    Problems & solutions
+    --------------------
+@@ -340,6 +342,15 @@
+ {
+ 	struct ip_tunnel *tunnel = netdev_priv(dev);
+ 	const struct iphdr *tnl_params;
++	struct net_data_s net_data;
++	int ret;
++
++	net_data.pskb = &skb;
++	ret =  ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRE_XMIT, &net_data);
++	if (ECNT_RETURN_DROP == ret)
++	{
++        goto free_skb;
++	}
+ 
+ 	if (dev->header_ops) {
+ 		/* Need space for new headers */
+@@ -380,6 +391,15 @@
+ 				struct net_device *dev)
+ {
+ 	struct ip_tunnel *tunnel = netdev_priv(dev);
++	struct net_data_s net_data;
++	int ret;
++
++	net_data.pskb = &skb;
++	ret =  ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRETAG_XMIT, &net_data);
++	if (ECNT_RETURN_DROP == ret)
++	{
++		goto free_skb;
++	}
+ 
+ 	skb = gre_handle_offloads(skb, !!(tunnel->parms.o_flags&TUNNEL_CSUM));
+ 	if (IS_ERR(skb))
+@@ -789,6 +809,7 @@
+ {
+ 	struct ip_tunnel_parm p;
+ 	struct ip_tunnel_encap ipencap;
++	struct net_data_s net_data;
+ 
+ 	if (ipgre_netlink_encap_parms(data, &ipencap)) {
+ 		struct ip_tunnel *t = netdev_priv(dev);
+@@ -799,6 +820,10 @@
+ 	}
+ 
+ 	ipgre_netlink_parms(data, tb, &p);
++		
++	net_data.device = dev;
++    net_data.remote_addr = p.iph.daddr;
++	ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRE_NEWLINK, &net_data);
+ 	return ip_tunnel_newlink(dev, tb, &p);
+ }
+ 
+@@ -807,6 +832,7 @@
+ {
+ 	struct ip_tunnel_parm p;
+ 	struct ip_tunnel_encap ipencap;
++	struct net_data_s net_data;
+ 
+ 	if (ipgre_netlink_encap_parms(data, &ipencap)) {
+ 		struct ip_tunnel *t = netdev_priv(dev);
+@@ -817,6 +843,9 @@
+ 	}
+ 
+ 	ipgre_netlink_parms(data, tb, &p);
++	net_data.device = dev;
++    net_data.remote_addr = p.iph.daddr;
++	ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRE_CHANGELINK, &net_data);
+ 	return ip_tunnel_changelink(dev, tb, &p);
+ }
+ 
+Index: linux-3.18.21/net/ipv4/ip_tunnel.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/ip_tunnel.c	2015-09-01 06:19:23.000000000 +0800
++++ linux-3.18.21/net/ipv4/ip_tunnel.c	2019-08-28 17:03:52.582152397 +0800
+@@ -64,6 +64,9 @@
+ #include <net/ip6_route.h>
+ #endif
+ 
++#include <ecnt_hook/ecnt_hook_net.h>
++
++
+ static unsigned int ip_tunnel_hash(__be32 key, __be32 remote)
+ {
+ 	return hash_32((__force u32)key ^ (__force u32)remote,
+@@ -426,6 +429,8 @@
+ 	struct pcpu_sw_netstats *tstats;
+ 	const struct iphdr *iph = ip_hdr(skb);
+ 	int err;
++	struct net_data_s net_data;
++	int ret = -1;
+ 
+ #ifdef CONFIG_NET_IPGRE_BROADCAST
+ 	if (ipv4_is_multicast(iph->daddr)) {
+@@ -480,6 +485,13 @@
+ 		skb->dev = tunnel->dev;
+ 	}
+ 
++	net_data.pskb = &skb;
++	ret = ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRE_TUNNEL_RECV, &net_data);
++	if (ECNT_RETURN == ret)
++	{
++        return 0;
++	}
++
+ 	gro_cells_receive(&tunnel->gro_cells, skb);
+ 	return 0;
+ 
+@@ -962,6 +974,7 @@
+ {
+ 	struct ip_tunnel *tunnel = netdev_priv(dev);
+ 	struct ip_tunnel_net *itn;
++	struct net_data_s net_data;
+ 
+ 	itn = net_generic(tunnel->net, tunnel->ip_tnl_net_id);
+ 
+@@ -969,6 +982,9 @@
+ 		ip_tunnel_del(netdev_priv(dev));
+ 		unregister_netdevice_queue(dev, head);
+ 	}
++
++	net_data.device = dev;
++	ECNT_GRE_GENERIC_HOOK(ECNT_NET_GRE_DELLINK, &net_data);
+ }
+ EXPORT_SYMBOL_GPL(ip_tunnel_dellink);
+ 
+Index: linux-3.18.21/net/nat/foe_hook/hook.c
+===================================================================
+--- linux-3.18.21.orig/net/nat/foe_hook/hook.c	2019-08-28 10:50:22.725274200 +0800
++++ linux-3.18.21/net/nat/foe_hook/hook.c	2019-08-28 17:04:23.703970336 +0800
+@@ -125,6 +125,18 @@
+ EXPORT_SYMBOL(restore_offload_info_hook);
+ #endif
+ 
++int (*hwnat_gre_fast_down_hook)(struct sk_buff* skb) = NULL; 
++int (*hwnat_gre_fast_up_hook)(struct sk_buff* skb) = NULL;
++int (*ra_sw_nat_hook_save_gre_txinfo)(struct sk_buff *skb) = NULL;
++int (*ra_sw_nat_hook_restore_gre_txinfo)(struct sk_buff *skb) = NULL;
++int (*ra_sw_nat_hook_is_gre_offload_pkt)(struct sk_buff *skb) = NULL;
++EXPORT_SYMBOL(hwnat_gre_fast_down_hook);
++EXPORT_SYMBOL(hwnat_gre_fast_up_hook);
++EXPORT_SYMBOL(ra_sw_nat_hook_save_gre_txinfo);
++EXPORT_SYMBOL(ra_sw_nat_hook_restore_gre_txinfo);
++EXPORT_SYMBOL(ra_sw_nat_hook_is_gre_offload_pkt);
++
++
+ EXPORT_SYMBOL(multicast_flood_is_bind_hook);
+ EXPORT_SYMBOL(multicast_flood_find_entry_hook);
+ EXPORT_SYMBOL(hwnat_set_multicast_speed_enable_hook);

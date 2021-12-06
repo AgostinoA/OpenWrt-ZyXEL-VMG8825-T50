@@ -1,0 +1,129 @@
+#!/bin/sh
+
+export PATH=/home/bin:/home/scripts:/opt/bin:/bin:/sbin:/usr/bin:/usr/sbin
+export LD_LIBRARY_PATH=/lib/public:/lib/private:/usr/lib:/lib:/usr/lib/ebtables:/usr/lib/iptables
+
+EXEC_NAME=dnsmasq
+EXEC_PATH=/usr/sbin
+EXEC_CONF=/etc/dnsmasq.conf
+USER=supervisor
+DNSMASQ_LOG_CONF=/var/dnsmasq/conf.d/logquit.conf
+DNSMASQ_LOG_CONF_BACK=/var/dnsmasq/conf.d/logquit.conf_back
+
+logchk()
+{
+	local re_start=0
+	if [ ! -f $DNSMASQ_LOG_CONF ]; then
+		echo "quiet-dhcp" > $DNSMASQ_LOG_CONF
+		echo "quiet-dhcp6" >> $DNSMASQ_LOG_CONF
+		echo "quiet-ra" >> $DNSMASQ_LOG_CONF
+		re_start=1
+	fi
+	
+	cp $DNSMASQ_LOG_CONF $DNSMASQ_LOG_CONF_BACK
+	local str=""
+	for i in $@
+	do
+		if [ -z ${i##*dhcp-log*} ]; then
+			str='quiet-dhcp'
+		elif [ -z ${i##*dhcp6-log*} ]; then
+			str='quiet-dhcp6'
+		elif [ -z ${i##*ra-log*} ]; then
+			str='quiet-ra'
+		else
+			str=''
+		fi
+	
+		if [ ! -z $str ]; then
+			local replace=$str
+			if [ -z ${i##enable*} ]; then
+				replace='#'$replace
+			fi
+			local chk=`cat $DNSMASQ_LOG_CONF | grep "^#*\s*$str\s*$"`
+			if [ ! -z $chk ]; then
+				sed -i "s/^#*[ tab]*$str[ tab]*$/$replace/g" $DNSMASQ_LOG_CONF
+			else
+				echo "$replace" >> $DNSMASQ_LOG_CONF
+			fi
+		fi
+	done
+	
+	local orig_size=`ls -al $DNSMASQ_LOG_CONF_BACK | awk '{print $5}'`
+	local res_size=`ls -al $DNSMASQ_LOG_CONF | awk '{print $5}'`
+	
+	if [ $orig_size -ne $res_size ]; then
+		re_start=1
+	fi
+	rm $DNSMASQ_LOG_CONF_BACK
+	
+	echo $re_start
+}
+
+reload()
+{
+	PID=$(pgrep dnsmasq)
+	if [ "$PID" == "" ] ; then
+	  echo 'dnsmasq not running'
+	else
+	  kill -HUP "$PID"
+	fi
+}
+
+start()
+{
+	/bin/mkdir -p /var/dnsmasq/
+	/bin/mkdir -p /var/dnsmasq/conf.d
+	ln -sf $EXEC_CONF /var/dnsmasq/dnsmasq.conf 
+
+	local re=$(logchk)
+	
+	$EXEC_PATH/$EXEC_NAME -u $USER -q --conf-file=$EXEC_CONF
+}
+
+stop()
+{
+	killall -9 $EXEC_NAME
+}
+
+
+case "$1" in
+	start)
+		PID=$(pgrep dnsmasq)
+		if [ "$PID" == "" ] ; then
+		  start
+		else
+		  echo 'dnsmasq is already running !!!'
+		fi
+		exit 0
+		;;
+		
+	stop)
+		stop
+		exit 0
+		;;
+	
+	restart)
+		stop
+		start
+		exit 0
+		;;
+		
+	reload)
+		reload
+		exit 0
+		;;
+		
+	log)
+		re=$(logchk $@)
+		if [ $re -eq 1 ]; then
+			stop
+			start
+		fi
+		exit 0
+		;;
+	*)
+		echo "$0: unrecognized option $1"
+		exit 1
+		;;
+
+esac

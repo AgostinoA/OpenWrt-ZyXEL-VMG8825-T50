@@ -1,0 +1,310 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2014-06-12 00:59:25.385714426 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2014-06-12 01:02:23.745731667 +0800
+@@ -534,9 +534,10 @@
+ 	char mappingPathName[128] = {0};
+ 	char tr181Obj[128] = {0};
+ 	uint32_t  ipIntfOid = 0;
+-	objIndex_t ipIntfIid, ipIntfv4AddrIid;
++	objIndex_t ipIntfIid, ipIntfv4AddrIid, igmpIid;
+ 	struct json_object *ipIntfJobj = NULL;
+ 	struct json_object *ipIntfv4AddrJobj = NULL;
++	struct json_object *igmpJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	char paramName[64] = {0};
+@@ -546,6 +547,10 @@
+ #endif
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char typeBuf[20] = {0};
++	char ifName[16] = {0};
++	char snoopingBrIfName[128] = {0};
++	char *tmp_ptr = NULL, *tmp_ptr2 = NULL, *intf = NULL;
++	int SnoopingMode = 0; //0 : snooping disable, 1 : standard mode, 2 : blocking mode.
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+@@ -558,6 +563,7 @@
+ 
+ 	IID_INIT(ipIntfIid);
+ 	IID_INIT(ipIntfv4AddrIid);
++	IID_INIT(igmpIid);
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+ 	ipIntfOid = zcfgFeObjNameToObjId(tr181Obj, &ipIntfIid);
+ 	if((ret = feObjJsonGet(ipIntfOid, &ipIntfIid, &ipIntfJobj, updateFlag)) != ZCFG_SUCCESS)
+@@ -565,6 +571,13 @@
+ 
+ 	if((ret = feObjJsonSubNext(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfIid, &ipIntfv4AddrIid, &ipIntfv4AddrJobj, updateFlag)) != ZCFG_SUCCESS)
+ 		return ret;
++
++	if((ret = feObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++	else{
++		strcpy(ifBuf, json_object_get_string(json_object_object_get(igmpJobj, "Interface")));
++	}
+ #if 0
+ 	/*DNSServer*/
+ 	IID_INIT(dnsSrvIid);
+@@ -594,7 +607,7 @@
+ 				paramList++;
+ 				continue;
+ 			}
+-		
++
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -637,8 +650,29 @@
+ 			}
+ 		}
+ 
++		if(strstr(paramList->name, "X_ZYXEL_SnoopingMode") != NULL){
++			strcpy(ifName, json_object_get_string(json_object_object_get(ipIntfJobj, "X_ZYXEL_IfName")));
++			strcpy(snoopingBrIfName, json_object_get_string(json_object_object_get(igmpJobj, "SnoopingBridgeIfName")));
++			intf = strtok_r(snoopingBrIfName, ",", &tmp_ptr);
++			while(intf != NULL){
++				if(*intf != '\0' && strstr(intf, ifName)){
++					tmp_ptr2 = strchr(intf, '|');
++					if(tmp_ptr2 != NULL){
++						*tmp_ptr2 = '\0';
++						SnoopingMode = atoi(tmp_ptr2+1);
++						if(!(SnoopingMode >=0 && SnoopingMode <=2))
++							SnoopingMode = 0;
++					}
++				}
++				intf = strtok_r(tmp_ptr, ",", &tmp_ptr);
++			}
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(SnoopingMode));
++			paramList++;
++			continue;
++		}
++
+ #ifdef IPV6INTERFACE_PROFILE		
+-	if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
++		if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 			paramValue = json_object_object_get(ipIntfJobj, "IPv6Enable");
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 			paramList++;
+@@ -693,7 +727,6 @@
+ 
+ #endif
+ 
+-		
+ 		/*Not defined in tr181, give it a default value*/
+ #if TR98_MAPPING_DEBUG
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+@@ -717,9 +750,10 @@
+ 	char mappingPathName[128] = {0};
+ 	char tr181Obj[128] = {0};
+ 	uint32_t  ipIntfOid = 0;
+-	objIndex_t ipIntfIid, ipIntfv4AddrIid;
++	objIndex_t ipIntfIid, ipIntfv4AddrIid, igmpIid;
+ 	struct json_object *ipIntfJobj = NULL;
+ 	struct json_object *ipIntfv4AddrJobj = NULL;
++	struct json_object *igmpJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+@@ -730,6 +764,12 @@
+ #endif
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char typeBuf[20] = {0};
++	char tmpbuf[256] = {0};
++	char ifName[16] = {0};
++	char snoopingBrIfName[128] = {0};
++	char *tmp_ptr = NULL, *intf = NULL;
++	char snoopingMode[5] = {0};
++	bool firstMatch = true;
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+@@ -740,13 +780,22 @@
+ 		printf("TR181 object %s\n", mappingPathName);
+ 	}
+ 
++	IID_INIT(igmpIid);
+ 	IID_INIT(ipIntfIid);
+ 	IID_INIT(ipIntfv4AddrIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS)
++		return ret;
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+ 	ipIntfOid = zcfgFeObjNameToObjId(tr181Obj, &ipIntfIid);
+ 	if((ret = zcfgFeObjJsonGet(ipIntfOid, &ipIntfIid, &ipIntfJobj)) != ZCFG_SUCCESS)
+-		return ret; 
++		return ret;
+ 
++	if(multiJobj){
++		tmpObj = igmpJobj;
++		igmpJobj = NULL;
++		igmpJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_IGMP, &igmpIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
++	}
+ 	
+ 	if(multiJobj){
+ 		tmpObj = ipIntfJobj;
+@@ -827,12 +876,40 @@
+ 				paramList++;
+ 				continue;
+ 			}
+-			
++
+ 			if(strstr(paramList->name, "AddressingType") != NULL){
+ 				json_object_object_add(ipIntfv4AddrJobj, "AddressingType", JSON_OBJ_COPY(paramValue));
+ 				paramList++;
+ 				continue;
+-			}			
++			}
++
++			if(strstr(paramList->name, "X_ZYXEL_SnoopingMode") != NULL){
++				strcpy(snoopingMode, json_object_get_string(paramValue));
++				strcpy(ifName, json_object_get_string(json_object_object_get(ipIntfJobj, "X_ZYXEL_IfName")));
++				strcpy(snoopingBrIfName, json_object_get_string(json_object_object_get(igmpJobj, "SnoopingBridgeIfName")));
++				intf = strtok_r(snoopingBrIfName, ",", &tmp_ptr);
++				while(intf != NULL){
++					if(*intf != '\0' && strstr(intf, ifName)){
++						if(!firstMatch)
++							strcat(tmpbuf, ",");
++						strcat(tmpbuf, ifName);
++						strcat(tmpbuf, "|");
++						if(!(atoi(snoopingMode) >=0 && atoi(snoopingMode) <=2))
++							strcpy(snoopingMode, "0");
++						strcat(tmpbuf, snoopingMode);
++					}
++					else if(*intf != '\0' && !strstr(intf, ifName)){
++						if(!firstMatch)
++							strcat(tmpbuf, ",");
++						strcat(tmpbuf, intf);
++					}
++					firstMatch = false;
++					intf = strtok_r(tmp_ptr, ",", &tmp_ptr);
++				}
++				json_object_object_add(igmpJobj, "SnoopingBridgeIfName", json_object_new_string(tmpbuf));
++				paramList++;
++				continue;
++			}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 			if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 				json_object_object_add(ipIntfJobj, "IPv6Enable", JSON_OBJ_COPY(paramValue));
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2014-06-12 00:59:25.321714426 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2014-06-12 01:01:02.153589009 +0800
+@@ -46,6 +46,7 @@
+ 	{ "X_ZYXEL_IfName", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "X_ZYXEL_ConnectionId", PARAMETER_ATTR_WRITE, 17, json_type_int},
+ 	{ "X_ZYXEL_IPR2_MARKING", PARAMETER_ATTR_WRITE, 17, json_type_uint32},
++	{ "X_ZYXEL_SnoopingMode", PARAMETER_ATTR_WRITE, 17, json_type_int},
+ #ifdef IPV6INTERFACE_PROFILE
+ 	{ "X_ZYXEL_IPv6Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPv6Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2014-06-12 00:59:25.409714426 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2014-06-12 01:01:19.913960812 +0800
+@@ -3256,17 +3256,19 @@
+ 	zcfgRet_t ret;
+ 	char pppIface[32] = {0}, ipIface[32] = {0};
+ 	objIndex_t pppIfaceIid, ipIfaceIid;
+-	objIndex_t dnsSrvIid, dnsSrvV6Iid, dnsIid;
++	objIndex_t dnsSrvIid, dnsSrvV6Iid, dnsIid, igmpIid;
+ 	struct json_object *pppIfaceJobj = NULL, *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *paramValue2 = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+-	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL;
++	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL, *igmpJobj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char typeBuf[20] = {0};
+-	bool isDnsObjExist = false;
++	char tmpbuf[256] = {0};
++	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
++	bool isDnsObjExist = false, firstEnter = true;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO,"%s : Enter\n", __FUNCTION__);
+ 
+@@ -3313,6 +3315,10 @@
+ 		zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
+ 	}
+ 
++	IID_INIT(igmpIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS)
++		return ret;
++
+ 	if(multiJobj){
+ 		if(dnsSrvJobj){
+ 			tmpObj = dnsSrvJobj;
+@@ -3335,6 +3341,12 @@
+ 			dnsJobj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS, &dnsIid, multiJobj, tmpObj);			
+ 			json_object_put(tmpObj);
+ 		}
++		if(igmpJobj){
++			tmpObj = igmpJobj;
++			igmpJobj = NULL;
++			igmpJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_IGMP, &igmpIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 		if(pppIfaceJobj){
+ 			tmpObj = pppIfaceJobj;
+ 			pppIfaceJobj = NULL;
+@@ -3401,6 +3413,45 @@
+ 					continue;
+ 				}
+ 			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")) {
++				igmpInterface = strdup(json_object_get_string(json_object_object_get(igmpJobj, "Interface")));
++				if(json_object_get_boolean(paramValue)){
++					if(!strcmp(igmpInterface, "")){
++						strcpy(tmpbuf, ipIface);
++					}
++					else{
++						strcpy(tmpbuf, igmpInterface);
++						if(!strstr(igmpInterface, ipIface)){
++							strcat(tmpbuf, ",");
++							strcat(tmpbuf, ipIface);
++						}
++					}
++				}
++				else{
++					if(strstr(igmpInterface, ipIface) != NULL){
++						intf = strtok_r(igmpInterface, ",", &tmp_ptr);
++						while(intf != NULL){
++							if(*intf != '\0' && !strstr(intf, ipIface)){
++								if(!firstEnter && intf != NULL){
++									strcat(tmpbuf, ",");
++								}
++								strcat(tmpbuf, intf);
++								firstEnter = false;
++							}
++							intf = strtok_r(NULL, ",", &tmp_ptr);
++						}
++					}
++					else
++						strcpy(tmpbuf, igmpInterface);
++				}
++				json_object_object_add(igmpJobj, "Interface", json_object_new_string(tmpbuf));
++
++				if(igmpInterface)
++					free(igmpInterface);
++
++				paramList++;
++				continue;
++			}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 			else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 				json_object_object_add(ipIfaceJobj, "IPv6Enable", JSON_OBJ_COPY(paramValue));
+@@ -3832,7 +3883,10 @@
+ 		}
+ 		else if(!strcmp(paramList->name, "DNSServers") || !strcmp( paramList->name, "X_ZYXEL_IPv6DNSServers")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_DNS_CLIENT_SRV, "DNSServer");
+-		}	
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ZY_IGMP, "Enable");
++		}
+ 		else if(!strcmp(paramList->name, "DefaultGateway")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, "GatewayIPAddress");
+ 		}

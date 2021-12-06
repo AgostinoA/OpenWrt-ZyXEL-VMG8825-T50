@@ -1,0 +1,226 @@
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2017-07-19 11:13:22.838603254 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2017-07-19 11:18:06.700003374 +0800
+@@ -146,6 +146,11 @@
+ #define NOIP_DEFAULT_PORT "80"
+ #define NOIP_REQUEST "/update.php"
+ 
++//support MINTDNS
++#define MINTDNS_DEFAULT_SERVER "access.camera"
++#define MINTDNS_DEFAULT_PORT "80"
++#define MINTDNS_REQUEST "/nic/update/default.aspx"
++
+ //support User-defined
+ #define DEFAULT_PORT "80"
+ #define DEFAULT_HTTPS_PORT "443"
+@@ -425,6 +430,11 @@
+ int NOIP_check_info(void);
+ static char *NOIP_fields_used[] = { "server", "address", "user", "host", NULL};
+ 
++//Support MINTDNS
++int MINTDNS_update_entry(void);
++int MINTDNS_check_info(void);
++static char *MINTDNS_fields_used[] = { "server", "address", "user", "host", NULL};
++
+ //support User-defined
+ int UserDefined_update_entry(void);
+ int UserDefined_HTTPS_update_entry(void);
+@@ -666,6 +676,17 @@
+   	NOIP_DEFAULT_PORT,
+   	NOIP_REQUEST  
+   	},
++	//Support MINTDNS 
++  { "mintdns",
++  	{ "mintdns", "access.camera", 0, },
++  	NULL,
++  	MINTDNS_update_entry,
++  	MINTDNS_check_info,
++  	MINTDNS_fields_used,
++  	MINTDNS_DEFAULT_SERVER,
++  	MINTDNS_DEFAULT_PORT,
++  	MINTDNS_REQUEST  
++  	},
+  	//Support User-defined
+ 	{ "userdefined",
+   	{ "userdefined", "unknow", 0, },
+@@ -5986,6 +6007,179 @@
+ }
+ //NOIP  end
+ 
++//support MINTDNS
++int MINTDNS_update_entry(void)
++{
++  char buf[BUFFER_SIZE+1];
++  char *bp = buf;
++  int bytes;
++  int btot;
++  int ret;
++
++  buf[BUFFER_SIZE] = '\0';
++
++  if(do_connect((int*)&client_sockfd, server, port) != 0)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      show_message("error connecting to %s:%s\n", server, port);
++    }
++    return(UPDATERES_ERROR);
++  }
++
++  snprintf(buf, BUFFER_SIZE, "GET %s?", request);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "hostname=%s&",host);
++  output(buf); 
++//  if(address != NULL && *address != '\0')
++//  {
++//    snprintf(buf, BUFFER_SIZE, "myip=%s&", address);
++//    output(buf);
++//  }
++  snprintf(buf, BUFFER_SIZE, " HTTP/1.0\015\012");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "Authorization: Basic %s\015\012", auth);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "User-Agent: %s-%s %s [%s] (%s)\015\012",
++      "ez-update", VERSION, OS, (options & OPT_DAEMON) ? "daemon" : "", "by Angus Mackay");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "\015\012");
++  output(buf);
++
++  if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++      close(client_sockfd);
++      return(UPDATERES_ERROR);
++  }
++  buf[bytes] = '\0';
++
++  dprintf((stderr, "server output: %s\n", buf));
++
++  if(sscanf(buf, " HTTP/1.%*c %3d", &ret) != 1)
++  {
++    ret = -1;
++  }
++
++  switch(ret)
++  {
++    case -1:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("strange server response, are you connecting to the right server?\n");
++      }
++      break;
++
++    case 200:
++
++      if(strstr(buf, "Invalid update URL") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("ERROR : Invalid update URL.\n");
++        }
++      }
++	  else if(strstr(buf, "Unable to locate this record") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("ERROR : Unable to locate this record (changed password recently? deleted and re-created this dns entry?) (double check username/password are correct)\n");
++        }
++      }
++	  else if(strstr(buf, "Address") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          success[0]='0';
++          printf("ERROR : Address %s has not changed.\n",address);
++		  innerText(address_log, buf, "Address", NULL, "has not changed.");
++		  address_log[16]='\0';
++		  DDNS_StatusLog();
++		  return(UPDATERES_OK);
++        }
++      }	  
++      else
++      {
++        success[0]='0';
++
++        innerText(address_log, buf, "to ", NULL, "in");
++        address_log[16]='\0';
++
++        DDNS_StatusLog();
++//        show_message("Success!!\n");
++//        if(!(options & OPT_QUIET))
++//        {
++//          fprintf(stderr, "server output: %s\n", buf);
++//        }
++		return(UPDATERES_OK);
++      }
++      break;
++
++    case 401:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("authentication failure\n");
++      }
++      success[0] = '1';
++      DDNS_StatusLog();
++      return(UPDATERES_SHUTDOWN);
++      break;
++
++    default:
++      if(!(options & OPT_QUIET))
++      {
++        *auth = '\0';
++        sscanf(buf, " HTTP/1.%*c %*3d %255[^\r\n]", auth);
++        show_message("unknown return code: %d\n", ret);
++        show_message("server response: %s\n", auth);
++      }
++      break;
++  }
++  success[0] = '1';
++  DDNS_StatusLog();
++  return(UPDATERES_ERROR);
++}
++
++int MINTDNS_check_info(void)
++{
++  char buf[BUFSIZ+1];
++
++  if((host == NULL) || (*host == '\0'))
++  {
++    if(options & OPT_DAEMON)
++    {
++      return(-1);
++    }
++    if(host) { free(host); }
++    printf("host: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    host = strdup(buf);
++    chomp(host);
++  }
++
++  if(interface == NULL && address == NULL)
++  {
++    if(options & OPT_DAEMON)
++    {
++      fprintf(stderr, "you must provide either an interface or an address\n");
++      return(-1);
++    }
++    if(interface) { free(interface); }
++    printf("interface: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    chomp(buf);
++    option_handler(CMD_interface, buf);
++  }
++
++  warn_fields(service->fields_used);
++
++  return 0;
++}
++//MINTDNS  end
++
++
+ //support User-defined
+ int UserDefined_update_entry(void){
+   char buf[BUFFER_SIZE+1]={0};

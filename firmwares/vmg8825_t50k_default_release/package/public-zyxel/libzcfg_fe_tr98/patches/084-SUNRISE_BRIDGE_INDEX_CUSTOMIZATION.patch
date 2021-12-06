@@ -1,0 +1,270 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2014-09-30 11:20:35.727323084 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2014-09-30 11:20:35.751323084 +0800
+@@ -97,3 +97,6 @@
+ ifeq ($(CONFIG_SUNRISE_RANDOM_PASSWORD),y)
+ CFLAGS += -DSUNRISE_RANDOM_PASSWORD
+ endif
++ifeq ($(CONFIG_SUNRISE_BRIDGE_INDEX_CUSTOMIZATION),y)
++CFLAGS += -DSUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++endif
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2014-09-30 11:20:35.579323085 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2014-09-30 11:24:24.187494067 +0800
+@@ -14,6 +14,70 @@
+ 
+ extern tr98Object_t tr98Obj[];
+ 
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++int getMappingVlanTermPathName(char ipConnIindex, char *tr98pathname)
++{
++	objIndex_t objIid;
++	rdm_MgmtSrv_t *MgmtSrvObj = NULL;
++	rdm_IpIface_t *IpIfaceObj = NULL;
++	rdm_PppIface_t *PppIfaceObj = NULL;
++	char *ptr;
++	char tr181PathName[128] = {0};
++	zcfgRet_t ret = ZCFG_INTERNAL_ERROR;
++
++	//get TR69 binding interface path name
++	if(zcfgFeObjStructGetWithoutUpdate(RDM_OID_MGMT_SRV, &objIid, (void **)&MgmtSrvObj) == ZCFG_SUCCESS) {
++		if (strlen(MgmtSrvObj->X_ZYXEL_ActiveBoundInterface) > 0){
++			if(zcfgFe181To98MappingNameGet(MgmtSrvObj->X_ZYXEL_ActiveBoundInterface, tr98pathname) == ZCFG_SUCCESS)
++				ret = ZCFG_SUCCESS;
++		}
++		zcfgFeObjStructFree(MgmtSrvObj);
++	}
++
++	//change the IPConn/PPPConn index to ipConnIindex, find IPConn/PPPConn then get lowerlayer(VLANTermination)
++	if (ret == ZCFG_SUCCESS){
++		ret = ZCFG_INTERNAL_ERROR;
++		if (ptr = strstr(tr98pathname, "WANIPConnection."))
++			ptr += 16;
++		else if (ptr = strstr(tr98pathname, "WANPPPConnection."))
++			ptr += 17;
++
++		*ptr = ipConnIindex; 
++		
++		if(zcfgFe98To181MappingNameGet(tr98pathname, tr181PathName) == ZCFG_SUCCESS){
++			IID_INIT(objIid);
++			objIid.level = 1;
++			if (strstr(tr181PathName, "IP") != NULL){
++				sscanf(tr181PathName, "IP.Interface.%hhu", &objIid.idx[0]);
++				if(zcfgFeObjStructGetWithoutUpdate(RDM_OID_IP_IFACE, &objIid, (void **)&IpIfaceObj) == ZCFG_SUCCESS) {
++					if (strstr(IpIfaceObj->LowerLayers, "VLANTermination")){
++						strcpy(tr181PathName, IpIfaceObj->LowerLayers);
++					}
++					zcfgFeObjStructFree(IpIfaceObj);
++				}
++			}
++			else if (strstr(tr181PathName, "PPP") != NULL){
++				sscanf(tr181PathName, "PPP.Interface.%hhu", &objIid.idx[0]);
++				if(zcfgFeObjStructGetWithoutUpdate(RDM_OID_PPP_IFACE, &objIid, (void **)&PppIfaceObj) == ZCFG_SUCCESS) {
++					if (strstr(PppIfaceObj->LowerLayers, "VLANTermination")){
++						strcpy(tr181PathName, PppIfaceObj->LowerLayers);
++					}
++					zcfgFeObjStructFree(PppIfaceObj);
++				}
++			}
++		}
++	}
++
++	if (ret == ZCFG_SUCCESS){
++		if(zcfgFe98To181MappingNameGet(tr181PathName, tr98pathname) == ZCFG_SUCCESS){
++			ret = ZCFG_SUCCESS;
++		}
++	}
++	
++	return ret;
++}
++#endif
++
+ /*  TR98 Object Name : InternetGatewayDevice.Layer2Bridging
+ 
+     Related object in TR181:
+@@ -258,14 +322,23 @@
+ 	uint8_t numOfInstance = 0;
+ 	char *ptr = NULL;
+ 	char zyxelPrefixParam[64] = {0};
++#ifdef SUNRISE_TR98_CUSTOMIZATION
++	char tr98vlanPathName[128];
++#endif
+ 
+ 	printf("Enter %s\n", __FUNCTION__);
+-	
++
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ #ifdef SUNRISE_TR98_CUSTOMIZATION
+-		//check if there are Ethernet.VLANTermination.i. 
+-		char tr98vlanPathName[128];
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++		ptr = strstr(tr98FullPathName, "Bridge.") + 7;
++		if (*ptr > 48 && *ptr < 52 ){ // Bridge.1 ~ Bridge.3
++			if (getMappingVlanTermPathName(*ptr ,tr98vlanPathName) != ZCFG_SUCCESS)
++				return ZCFG_NO_SUCH_OBJECT;
++		}
++#else
+ 		sprintf(tr98vlanPathName, "%s.%s", tr98FullPathName, "VLAN.1");
++#endif
+ 		printf("tr98vlanPathName=%s\n",tr98vlanPathName);
+ 		if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mappingPathName)) == ZCFG_SUCCESS){
+ 			printf("mappingPathName=%s\n",mappingPathName);
+@@ -371,10 +444,10 @@
+ 
+ 	printf("Enter %s\n", __FUNCTION__);
+ 	
+-       if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+-       }
++	}
+ 	else      /* mappingPathName will be Bridging */
+ 		printf("TR181 object %s\n", mappingPathName);
+ 
+@@ -1444,15 +1517,34 @@
+ 	uint8_t numOfInstance = 0;
+ 	char *ptr = NULL;
+ 	char zyxelPrefixParam[64] = {0};
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	char tr98vlanPathName[128];
++#endif
+ 
+ 	printf("Enter %s\n", __FUNCTION__);
+-	
+-    if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	ptr = strstr(tr98FullPathName, "Bridge.") + 7;
++	if (*ptr > 48 && *ptr < 52 ){ // Bridge.1 ~ Bridge.3
++		if (getMappingVlanTermPathName(*ptr ,tr98vlanPathName) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("tr98vlanPathName=%s\n",tr98vlanPathName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mappingPathName)) != ZCFG_SUCCESS){
++		printf("98 to 181 Mapping Fail!!\n");
++		return ret;
++	   }
++	else
++		printf("TR181 object %s\n", mappingPathName);
++#else
++  if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+     }
+ 	else
+ 		printf("TR181 object %s\n", mappingPathName);
++#endif
+ 	
+ 	ptr = strstr(mappingPathName, "VLANTermination.");
+ 	strcpy(tmpChar, ptr+16);
+@@ -1523,15 +1615,35 @@
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	char zyxelPrefixParam[64] = {0};
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	char tr98vlanPathName[128] = {0};
++	char *ptr = NULL;
++#endif
+ 
+ 	printf("Enter %s\n", __FUNCTION__);
++
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	ptr = strstr(tr98FullPathName, "Bridge.") + 7;
++	if (*ptr > 48 && *ptr < 52 ){ // Bridge.1 ~ Bridge.3
++		if (getMappingVlanTermPathName(*ptr ,tr98vlanPathName) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++	}
+ 	
+-       if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++	printf("tr98vlanPathName=%s\n",tr98vlanPathName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mappingPathName)) != ZCFG_SUCCESS){
++		printf("98 to 181 Mapping Fail!!\n");
++		return ret;
++	   }
++	else
++		printf("TR181 object %s\n", mappingPathName);
++#else
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+-       }
++	}
+ 	else
+ 		printf("TR181 object %s\n", mappingPathName);
++#endif
+ 
+ 	IID_INIT(vlanIid);
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+@@ -1650,13 +1762,33 @@
+ 	objIndex_t devInfoIid;
+ 	int attrValue = ZCFG_NO_SUCH_PARAMETER;
+ 	tr98Parameter_t *paramList = NULL;
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	char tr98vlanPathName[128] = {0};
++	char *ptr = NULL;
++	zcfgRet_t ret;
++#endif
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+ 
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	ptr = strstr(tr98FullPathName, "Bridge.") + 7;
++	if (*ptr > 48 && *ptr < 52 ){ // Bridge.1 ~ Bridge.3
++		if (getMappingVlanTermPathName(*ptr ,tr98vlanPathName) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("tr98vlanPathName=%s\n",tr98vlanPathName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mapObj)) != ZCFG_SUCCESS){
++		printf("98 to 181 Mapping Fail!!\n");
++		return ret;
++	}
++	else
++		printf("TR181 object %s\n", mapObj);
++#else
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+ 		return ZCFG_INVALID_OBJECT;
+ 	}
+-	
++#endif
+ 
+ 	IID_INIT(devInfoIid);
+ 	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
+@@ -1698,12 +1830,32 @@
+ 	objIndex_t devInfoIid;
+ 	int attrValue = 0;
+ 	tr98Parameter_t *paramList = NULL;
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	char tr98vlanPathName[128] = {0};
++	char *ptr = NULL;
++#endif
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	ptr = strstr(tr98FullPathName, "Bridge.") + 7;
++	if (*ptr > 48 && *ptr < 52 ){ // Bridge.1 ~ Bridge.3
++		if (getMappingVlanTermPathName(*ptr ,tr98vlanPathName) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++	}
++	
++	printf("tr98vlanPathName=%s\n",tr98vlanPathName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mapObj)) != ZCFG_SUCCESS){
++		printf("98 to 181 Mapping Fail!!\n");
++		return ret;
++	}
++	else
++		printf("TR181 object %s\n", mapObj);
++#else
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+ 		return ZCFG_INVALID_OBJECT;
+ 	}
+-	
++#endif
+ 
+ 	IID_INIT(devInfoIid);
+ 	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);

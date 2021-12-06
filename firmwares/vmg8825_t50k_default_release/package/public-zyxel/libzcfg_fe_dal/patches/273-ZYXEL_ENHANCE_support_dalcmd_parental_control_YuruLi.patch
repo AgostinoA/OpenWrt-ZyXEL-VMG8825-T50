@@ -1,0 +1,1175 @@
+Index: libzcfg_fe_dal-1.0/security/parentalControl/zcfg_fe_dal_parentalControl.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/parentalControl/zcfg_fe_dal_parentalControl.c	2017-07-28 18:18:25.885207705 +0800
++++ libzcfg_fe_dal-1.0/security/parentalControl/zcfg_fe_dal_parentalControl.c	2017-07-28 18:18:28.969207731 +0800
+@@ -16,27 +16,33 @@
+ //#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+ 
+ dal_param_t PAREN_CTL_param[]={
+-	//Parental Ctl Profile
+-	{"pcpEnable",		dalType_boolean,	0,	0,	NULL},
+-	{"pcpName",		dalType_string,	0,	0,	NULL},
+-	{"WebRedirect",		dalType_boolean,	0,	0,	NULL},
+-	{"ServicePolicy",		dalType_string,	0,	0,	NULL},
+-	{"Type",		dalType_int,	0,	0,	NULL},
+-	{"MACAddressList",		dalType_string,	0,	0,	NULL},
+-	{"ScheduleRuleList",		dalType_string,	0,	0,	NULL},
+-	{"URLFilter",		dalType_string,	0,	0,	NULL},
+-	{"NetworkServiceList",		dalType_string,	0,	0,	NULL},
+ 	//Parental Ctl
+-	{"PrentalCtlEnable",		dalType_boolean,	0,	0,	NULL},
++	{"PrentalCtlEnable",	dalType_boolean,	0,	0,	NULL, NULL, dal_Add_ignore},
++	//Parental Ctl Profile
++	{"Index",				dalType_int,	0,	0,	NULL, NULL, dal_Add_ignore|dal_Delete},
++	{"pcpEnable",			dalType_boolean,	0,	0,	NULL},
++	{"pcpName",				dalType_string,	1,	64,	NULL, NULL, dal_Add},
++	{"WebRedirect",			dalType_boolean,	0,	0,	NULL},
++	{"ServicePolicy",		dalType_string,	0,	0,	NULL, "Block|Allow"},
++	//{"Type",		dalType_int,	0,	0,	NULL},
++	{"UrlPolicy",			dalType_string,	0,	0,	NULL, "Block|Allow"},
++	{"MACAddressList",		dalType_MacAddrList,	1,	5,	NULL, "All", dal_Add},
++	{"ScheduleRuleList",	dalType_string,	0,	64,	NULL, NULL, dalcmd_Forbid},
++	{"Days",				dalType_DayofWeek,	1,	3,	NULL, NULL, dal_Add},
++	{"TimeRangeList",		dalType_TimeRangeList,	1,	3,	NULL, NULL, dal_Add},
++	{"URLFilter",			dalType_URLFilterList,	0,	580,	NULL, "Empty"},
++	{"NetworkServiceList",	dalType_ParenCtlServiceList,	1,	12,	NULL, "Empty"},
+ 	//Schedule
+-	{"Enable",		dalType_boolean,	0,	0,	NULL},
+-	{"Name",		dalType_string,	0,	0,	NULL},
+-	{"Description",		dalType_string,	0,	0,	NULL},
+-	{"Days",		dalType_int,	0,	0,	NULL},
++#if 0
++	{"Enable",				dalType_boolean,	0,	0,	NULL},
++	{"Name",				dalType_string,	0,	0,	NULL},
++	{"Description",			dalType_string,	0,	0,	NULL},
++	{"Days",				dalType_int,	0,	0,	NULL},
+ 	{"TimeStartHour",		dalType_int,	0,	0,	NULL},
+ 	{"TimeStartMin",		dalType_int,	0,	0,	NULL},
+ 	{"TimeStopHour",		dalType_int,	0,	0,	NULL},
+-	{"TimeStopMin",		dalType_int,	0,	0,	NULL},
++	{"TimeStopMin",			dalType_int,	0,	0,	NULL},
++#endif
+ 	{NULL,		0,	0,	0,	NULL},
+ };
+ 
+@@ -55,7 +61,7 @@
+ const char* ServicePolicy;
+ int Type;
+ const char* MACAddressList;
+-char ScheduleRuleList[64] = {0};
++char ScheduleRuleList[512] = {0};
+ const char* URLFilter;
+ const char* NetworkServiceList;
+ //Parental Ctl
+@@ -129,6 +135,85 @@
+ 		
+ }
+ 
++zcfgRet_t parsePcpObject(struct json_object *pramJobj, struct json_object *tr181Jobj){
++	const char *ServicePolicy;
++	int Type;
++	char buf[128] = {0};
++	char timeRange[16] = {0};
++	char timeRangeList[64] = {0};
++	char *Days = NULL;
++	char *ptr, *tmp;
++	objIndex_t iid;
++	struct json_object *schJarray;
++	struct json_object *schPramJobj;
++	int len, i, schIdx, schIndex, schFound;
++	int startHour = 0, startMin = 0, stopHour = 0, stopMin = 0;
++
++	ServicePolicy = Jgets(tr181Jobj, "ServicePolicy");
++	Type = Jgeti(tr181Jobj, "Type");
++
++	if(!strcmp(ServicePolicy, "Drop"))
++		json_object_object_add(pramJobj, "ServicePolicy", json_object_new_string("Block"));
++	else
++		json_object_object_add(pramJobj, "ServicePolicy", json_object_new_string("Allow"));
++
++	if(Type == 0)
++		json_object_object_add(pramJobj, "UrlPolicy", json_object_new_string("Block"));
++	else
++		json_object_object_add(pramJobj, "UrlPolicy", json_object_new_string("Allow"));
++
++	replaceParam(pramJobj, "pcpName", tr181Jobj, "Name");
++	replaceParam(pramJobj, "pcpEnable", tr181Jobj, "Enable");
++	replaceParam(pramJobj, "WebRedirect", tr181Jobj, "WebRedirect");
++	replaceParam(pramJobj, "UrlPolicy", tr181Jobj, "UrlPolicy");
++	replaceParam(pramJobj, "MACAddressList", tr181Jobj, "MACAddressList");
++	replaceParam(pramJobj, "ScheduleRuleList", tr181Jobj, "ScheduleRuleList");
++	replaceParam(pramJobj, "URLFilter", tr181Jobj, "URLFilter");
++	replaceParam(pramJobj, "NetworkServiceList", tr181Jobj, "NetworkServiceList");
++
++	schJarray = json_object_new_array();
++	zcfgFeDalScheduleGet(NULL, schJarray, NULL);
++	len = json_object_array_length(schJarray);
++	strcpy(buf, Jgets(tr181Jobj, "ScheduleRuleList"));
++	ptr = strtok_r(buf, ",", &tmp);
++	while(ptr != NULL){
++		sscanf(ptr, "X_ZYXEL_Schedule.%d", &schIndex);
++		schFound = 0;
++		for(i=0;i<len;i++){
++			schPramJobj = json_object_array_get_idx(schJarray, i);
++			schIdx = Jgeti(schPramJobj, "Index");
++			if(schIdx == schIndex){
++				schFound = 1;
++				break;
++			}
++		}
++		if(!schFound)
++			continue;
++		
++		if(Days == NULL)
++			Days = Jgets(schPramJobj, "Days");
++		
++		startHour = json_object_get_int(json_object_object_get(schPramJobj, "TimeStartHour"));
++		startMin = json_object_get_int(json_object_object_get(schPramJobj, "TimeStartMin"));
++		stopHour = json_object_get_int(json_object_object_get(schPramJobj, "TimeStopHour"));
++		stopMin = json_object_get_int(json_object_object_get(schPramJobj, "TimeStopMin"));
++		sprintf(timeRange, "%02d:%02d-%02d:%02d",startHour,startMin,stopHour,stopMin);
++		strcat(timeRangeList, timeRange);
++		strcat(timeRangeList, ",");
++		ptr = strtok_r(NULL, ",", &tmp);
++	}
++	
++	if(Days == NULL)
++		Days == "";
++	if(strlen(timeRangeList)>0)
++		timeRangeList[strlen(timeRangeList)-1]= '\0';
++	
++	json_object_object_add(pramJobj, "TimeRangeList", json_object_new_string(timeRangeList));
++	json_object_object_add(pramJobj, "Days", json_object_new_string(Days));
++	json_object_put(schJarray);
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t editPcObject(struct json_object *Jobj){
+ 	
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -153,58 +238,146 @@
+ 	struct json_object *reqSchRuleObjArray = NULL;
+ 	//struct json_object *reqSchRuleObj= NULL;
+ 	uint8_t iidIdx =0;
+-	ScheduleRuleList[0] = '\0';
++	char buf[128] = {0};
++	char *ptr, *tmp;
++	int count, startHour, startMin, stopHour, stopMin;
++	char schRuleName[64] = {0};
++	struct json_object *schRuleJobj = NULL;
++	struct json_object *schRuleRetJarray = NULL;
++	const char *schRulePath;
+ 	
++	ScheduleRuleList[0] = '\0';
+ 	reqSchRuleObjArray = json_object_object_get(Jobj, "reqSchRule");
+-	for(iidIdx = 0; iidIdx < json_object_array_length(reqSchRuleObjArray); iidIdx++)
+-	{
+-		Enable = json_object_get_boolean(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Enable"));
+-		Name = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Name"));
+-		Description = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Description"));
+-		Days = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Days"));
+-		TimeStartHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartHour"));
+-		TimeStartMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartMin"));
+-		TimeStopHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopHour"));
+-		TimeStopMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopMin"));
+-		IID_INIT(schTimeObjIid);
+-		zcfgFeObjJsonAdd(RDM_OID_SCHEDULE, &schTimeObjIid, NULL);
+-		if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SCHEDULE, &schTimeObjIid, &schTimeObj)) != ZCFG_SUCCESS) {
+-			return ret;
+-		}	
+-		json_object_object_add(schTimeObj, "Enable", json_object_new_boolean(Enable));
+-		json_object_object_add(schTimeObj, "Name", json_object_new_string(Name));
+-		json_object_object_add(schTimeObj, "Description", json_object_new_string(Description));
+-		json_object_object_add(schTimeObj, "Days", json_object_new_int(Days));
+-		json_object_object_add(schTimeObj, "TimeStartHour", json_object_new_int(TimeStartHour));
+-		json_object_object_add(schTimeObj, "TimeStartMin", json_object_new_int(TimeStartMin));		
+-		json_object_object_add(schTimeObj, "TimeStopHour", json_object_new_int(TimeStopHour));
+-		json_object_object_add(schTimeObj, "TimeStopMin", json_object_new_int(TimeStopMin));
++	if(reqSchRuleObjArray != NULL){//request form GUI
++		for(iidIdx = 0; iidIdx < json_object_array_length(reqSchRuleObjArray); iidIdx++){
++			Enable = json_object_get_boolean(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Enable"));
++			Name = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Name"));
++			Description = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Description"));
++			Days = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Days"));
++			TimeStartHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartHour"));
++			TimeStartMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartMin"));
++			TimeStopHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopHour"));
++			TimeStopMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopMin"));
++			IID_INIT(schTimeObjIid);
++			zcfgFeObjJsonAdd(RDM_OID_SCHEDULE, &schTimeObjIid, NULL);
++			if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SCHEDULE, &schTimeObjIid, &schTimeObj)) != ZCFG_SUCCESS) {
++				return ret;
++			}	
++			json_object_object_add(schTimeObj, "Enable", json_object_new_boolean(Enable));
++			json_object_object_add(schTimeObj, "Name", json_object_new_string(Name));
++			json_object_object_add(schTimeObj, "Description", json_object_new_string(Description));
++			json_object_object_add(schTimeObj, "Days", json_object_new_int(Days));
++			json_object_object_add(schTimeObj, "TimeStartHour", json_object_new_int(TimeStartHour));
++			json_object_object_add(schTimeObj, "TimeStartMin", json_object_new_int(TimeStartMin));		
++			json_object_object_add(schTimeObj, "TimeStopHour", json_object_new_int(TimeStopHour));
++			json_object_object_add(schTimeObj, "TimeStopMin", json_object_new_int(TimeStopMin));
++				
++			if((ret = zcfgFeObjJsonSet(RDM_OID_SCHEDULE, &schTimeObjIid, schTimeObj, NULL)) != ZCFG_SUCCESS)
++			{
++				return ret;
++			}
++				
++			char temp[20]  = {0};
+ 			
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_SCHEDULE, &schTimeObjIid, schTimeObj, NULL)) != ZCFG_SUCCESS)
+-		{
+-			return ret;
+-		}
++			if(ScheduleRuleList[0] == '\0'){
++				sprintf(temp, "X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++			}
++			else{
++				sprintf(temp, ",X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++			}
+ 			
+-		char temp[20]  = {0};
++			strcat(ScheduleRuleList, temp);
+ 		
+-		if(ScheduleRuleList[0] == '\0'){
+-			sprintf(temp, "X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
+ 		}
+-		else{
+-			sprintf(temp, ",X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++	}
++	else{//CLI
++		strcpy(buf, Jgets(Jobj, "TimeRangeList"));
++		count = 0;
++		ptr = strtok_r(buf, ",", &tmp);
++		while(ptr != NULL){
++			parseTimeRange(ptr, &startHour, &startMin, &stopHour, &stopMin);
++			count++;
++			schRuleJobj = json_object_new_object();
++			schRuleRetJarray = json_object_new_array();
++			
++			Jaddb(schRuleJobj, "Enable", true);
++			sprintf(schRuleName, "%s_%d", Jgets(Jobj, "pcpName"), count);
++			Jadds(schRuleJobj, "Name", schRuleName);
++			Jadds(schRuleJobj, "Description", "ParentalControl");
++			replaceParam(schRuleJobj, "Days", Jobj, "Days");
++			Jaddi(schRuleJobj, "TimeStartHour", startHour);
++			Jaddi(schRuleJobj, "TimeStartMin", startMin);
++			Jaddi(schRuleJobj, "TimeStopHour", stopHour);
++			Jaddi(schRuleJobj, "TimeStopMin", stopMin);
++			if((ret = zcfgFeDalScheduleAdd(schRuleJobj, schRuleRetJarray, NULL)) != ZCFG_SUCCESS){
++				json_object_put(schRuleJobj);
++				json_object_put(schRuleRetJarray);
++				return ret;
++			}
++			schRulePath = Jgets(json_object_array_get_idx(schRuleRetJarray, 0), "path");
++			strcat(ScheduleRuleList, schRulePath);
++			strcat(ScheduleRuleList, ",");
++			ptr = strtok_r(NULL, ",", &tmp);
++			json_object_put(schRuleJobj);
++			json_object_put(schRuleRetJarray);
++		}
++		if(strlen(ScheduleRuleList)>0){
++			ScheduleRuleList[strlen(ScheduleRuleList)-1]= '\0';
+ 		}
+-		
+-		strcat(ScheduleRuleList, temp);
+-		printf("line=%d seconds  string %s\n", __LINE__, ScheduleRuleList);	
+-	
+ 	}
+-	
++
+ 	IID_INIT(pcpObjIid);
+ 	zcfgFeObjJsonAdd(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, NULL);
+ 	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, &pcpObj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
++
++	//add default value for optional parameter
++	if(!ISSET("ServicePolicy"))
++		Jadds(Jobj, "ServicePolicy", "Block");
++	if(!ISSET("UrlPolicy"))
++		Jadds(Jobj, "UrlPolicy", "Block");
++	
++	replaceParam(pcpObj, "Enable", Jobj, "pcpEnable");
++	replaceParam(pcpObj, "Name", Jobj, "pcpName");
++	replaceParam(pcpObj, "WebRedirect", Jobj, "WebRedirect");
++	if(!strcmp(Jgets(Jobj, "ServicePolicy"), "Block"))
++		Jadds(pcpObj, "ServicePolicy", "Drop");
++	else if(!strcmp(Jgets(Jobj, "ServicePolicy"), "Allow"))
++		Jadds(pcpObj, "ServicePolicy", "Accept");
++	
++	if(!strcmp(Jgets(Jobj, "UrlPolicy"), "Block"))
++		Jaddi(pcpObj, "Type", 0);
++	else if(!strcmp(Jgets(Jobj, "UrlPolicy"), "Allow"))
++		Jaddi(pcpObj, "Type", 1);
++
++	if(!strcmp(Jgets(Jobj, "MACAddressList"), "All"))
++		Jadds(pcpObj, "MACAddressList", "00:00:00:00:00:00");
++	else
++		replaceParam(pcpObj, "MACAddressList", Jobj, "MACAddressList");
++	
++	//replaceParam(pcpObj, "URLFilter", Jobj, "URLFilter");
++	URLFilter = Jgets(Jobj,"URLFilter");
++	if(URLFilter && !strcmp(URLFilter, "Empty"))
++		Jadds(pcpObj, "URLFilter", "");
++	else
++		replaceParam(pcpObj, "URLFilter", Jobj, "URLFilter");
++
++	NetworkServiceList = Jgets(Jobj,"NetworkServiceList");
++	if(NetworkServiceList && !strcmp(NetworkServiceList, "Empty"))
++		Jadds(pcpObj, "NetworkServiceList", "");
++	else
++		replaceParam(pcpObj, "NetworkServiceList", Jobj, "NetworkServiceList");
++	
++	if(ScheduleRuleList != NULL)
++		json_object_object_add(pcpObj, "ScheduleRuleList", json_object_new_string(ScheduleRuleList));
++	else 
++		return ZCFG_INVALID_FORMAT;
+ 	
++	if((ret = zcfgFeObjJsonSet(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, pcpObj, NULL)) != ZCFG_SUCCESS){
++			return ret;
++	}
++#if 0
+ 	json_object_object_add(pcpObj, "Enable", json_object_new_boolean(pcpEnable));
+ 	json_object_object_add(pcpObj, "Name", json_object_new_string(pcpName));
+ 	json_object_object_add(pcpObj, "WebRedirect", json_object_new_boolean(WebRedirect));
+@@ -222,6 +395,7 @@
+ 	if((ret = zcfgFeObjJsonSet(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, pcpObj, NULL)) != ZCFG_SUCCESS){
+ 			return ret;
+ 	}
++#endif
+ 
+ 	return ret;
+ }
+@@ -233,7 +407,6 @@
+ 	
+ 	if ((buffer == NULL) && strstr(curScheduleRuleList, "X_ZYXEL_Schedule."))
+ 	{
+-		printf("line=%d string %s\n", __LINE__, buffer);
+ 		schTimeObjIid.level = 1;
+ 		sscanf(curScheduleRuleList, "X_ZYXEL_Schedule.%hhu", &schTimeObjIid.idx[0]);
+ 		
+@@ -242,7 +415,6 @@
+ 	}else
+ 	{
+ 		while (buffer) {
+-			printf("line=%d string %s\n", __LINE__, buffer);
+ 			schTimeObjIid.level = 1;
+ 			sscanf(buffer, "X_ZYXEL_Schedule.%hhu", &schTimeObjIid.idx[0]);
+ 			zcfgFeObjJsonDel(RDM_OID_SCHEDULE, &schTimeObjIid, NULL);			
+@@ -252,7 +424,7 @@
+ 	return ret;
+ 	
+ }
+-zcfgRet_t editPcpObject(struct json_object *Jobj){
++zcfgRet_t editPcpObject(struct json_object *Jobj, char *replyMsg){
+ 		
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *reqSchRuleObjArray = NULL;
+@@ -262,70 +434,203 @@
+ 	const char *delschRules;
+ 	char test[60] = {0};
+ 	uint8_t iidIdx =0;
+-				
+-	reqSchRuleObjArray = json_object_object_get(Jobj, "reqSchRule");
+-	reqSchRuleIidArray = json_object_object_get(Jobj, "reqSchRuleIid");
+-	
+-	for(iidIdx = 0; iidIdx < json_object_array_length(reqSchRuleIidArray); iidIdx++){
+-		
+-		Enable = json_object_get_boolean(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Enable"));
+-		Name = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Name"));
+-		Description = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Description"));
+-		Days = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Days"));
+-		TimeStartHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartHour"));
+-		TimeStartMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartMin"));
+-		TimeStopHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopHour"));
+-		TimeStopMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopMin"));
+-		
+-		schTimeObjIid.idx[0] = json_object_get_int( json_object_array_get_idx(reqSchRuleIidArray, iidIdx));
+-		schTimeObjIid.level = 1;
+-		if(schTimeObjIid.idx[0] == 0)
+-		{
+-			IID_INIT(schTimeObjIid);
+-			zcfgFeObjJsonAdd(RDM_OID_SCHEDULE, &schTimeObjIid, NULL);
++	char buf[128] = {0};
++	char *ptr, *tmp;
++	int count, startHour, startMin, stopHour, stopMin;
++	char schRuleName[64] = {0};
++	struct json_object *schRuleJobj = NULL;
++	struct json_object *schRuleRetJarray = NULL;
++	const char *schRulePath, *curDays;
++	struct json_object *inputJobj = NULL;
++	struct json_object *curJobj = NULL;
++	struct json_object *curJarray = NULL;
++
++	pcpIidArray = json_object_object_get(Jobj, "iid");
++
++	if(pcpIidArray != NULL){ //request form GUI
++		for(iidIdx = 0; iidIdx < json_object_array_length(pcpIidArray); iidIdx++){
++			pcpObjIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(pcpIidArray, iidIdx));
++			if(pcpObjIid.idx[iidIdx] != 0)
++				pcpObjIid.level = iidIdx+1;
+ 		}
+-		
+-		if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SCHEDULE, &schTimeObjIid, &schTimeObj)) != ZCFG_SUCCESS) {
+-			return ret;
++	}
++	else{ //request form CLI
++		if(!ISSET("Index")){
++			if(replyMsg)
++				strcpy(replyMsg, "Need specify --Index");
++			return ZCFG_INVALID_ARGUMENTS;
+ 		}
+-			
+-		json_object_object_add(schTimeObj, "Enable", json_object_new_boolean(Enable));
+-		json_object_object_add(schTimeObj, "Name", json_object_new_string(Name));
+-		json_object_object_add(schTimeObj, "Description", json_object_new_string(Description));
+-		json_object_object_add(schTimeObj, "Days", json_object_new_int(Days));
+-		json_object_object_add(schTimeObj, "TimeStartHour", json_object_new_int(TimeStartHour));
+-		json_object_object_add(schTimeObj, "TimeStartMin", json_object_new_int(TimeStartMin));		
+-		json_object_object_add(schTimeObj, "TimeStopHour", json_object_new_int(TimeStopHour));
+-		json_object_object_add(schTimeObj, "TimeStopMin", json_object_new_int(TimeStopMin));
+-			
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_SCHEDULE, &schTimeObjIid, schTimeObj, NULL)) != ZCFG_SUCCESS)
+-		{
++		IID_INIT(pcpObjIid);
++		pcpObjIid.level = 1;
++		pcpObjIid.idx[0] = Jgeti(Jobj, "Index");
++		
++		inputJobj = json_object_new_object();
++		curJarray = json_object_new_array();
++		Jaddi(inputJobj, "Index", pcpObjIid.idx[0]);
++		if((ret = zcfgFeDalParentCtlGet(inputJobj, curJarray, NULL)) != ZCFG_SUCCESS){
++			if(replyMsg)
++				sprintf(replyMsg, "Can't find --Index %d", pcpObjIid.idx[0]);
++			json_object_put(inputJobj);
+ 			return ret;
+ 		}
++		json_object_put(inputJobj);
++		curJobj = json_object_array_get_idx(curJarray, 0);
++	}
++	
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, &pcpObj)) != ZCFG_SUCCESS) {
++		json_object_put(curJarray);
++		if(replyMsg)
++			sprintf(replyMsg, "Can't find --Index %d", pcpObjIid.idx[0]);
++		return ret;
++	}
++				
++	reqSchRuleObjArray = json_object_object_get(Jobj, "reqSchRule");
++	reqSchRuleIidArray = json_object_object_get(Jobj, "reqSchRuleIid");
++	if(reqSchRuleObjArray != NULL){//request form GUI
++		for(iidIdx = 0; iidIdx < json_object_array_length(reqSchRuleIidArray); iidIdx++){
++			Enable = json_object_get_boolean(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Enable"));
++			Name = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Name"));
++			Description = json_object_get_string(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Description"));
++			Days = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "Days"));
++			TimeStartHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartHour"));
++			TimeStartMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStartMin"));
++			TimeStopHour = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopHour"));
++			TimeStopMin = json_object_get_int(json_object_object_get(json_object_array_get_idx(reqSchRuleObjArray, iidIdx), "TimeStopMin"));
+ 			
+-		char temp[20]  = {0};
+-		if(ScheduleRuleList[0] == '\0'){
+-			snprintf(temp, sizeof(temp), "X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++			schTimeObjIid.idx[0] = json_object_get_int( json_object_array_get_idx(reqSchRuleIidArray, iidIdx));
++			schTimeObjIid.level = 1;
++			if(schTimeObjIid.idx[0] == 0)
++			{
++				IID_INIT(schTimeObjIid);
++				zcfgFeObjJsonAdd(RDM_OID_SCHEDULE, &schTimeObjIid, NULL);
++			}
++			
++			if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SCHEDULE, &schTimeObjIid, &schTimeObj)) != ZCFG_SUCCESS) {
++				return ret;
++			}
++				
++			json_object_object_add(schTimeObj, "Enable", json_object_new_boolean(Enable));
++			json_object_object_add(schTimeObj, "Name", json_object_new_string(Name));
++			json_object_object_add(schTimeObj, "Description", json_object_new_string(Description));
++			json_object_object_add(schTimeObj, "Days", json_object_new_int(Days));
++			json_object_object_add(schTimeObj, "TimeStartHour", json_object_new_int(TimeStartHour));
++			json_object_object_add(schTimeObj, "TimeStartMin", json_object_new_int(TimeStartMin));		
++			json_object_object_add(schTimeObj, "TimeStopHour", json_object_new_int(TimeStopHour));
++			json_object_object_add(schTimeObj, "TimeStopMin", json_object_new_int(TimeStopMin));
++				
++			if((ret = zcfgFeObjJsonSet(RDM_OID_SCHEDULE, &schTimeObjIid, schTimeObj, NULL)) != ZCFG_SUCCESS)
++			{
++				return ret;
++			}
++				
++			char temp[20]  = {0};
++			if(ScheduleRuleList[0] == '\0'){
++				snprintf(temp, sizeof(temp), "X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++			}
++			else{
++				snprintf(temp, sizeof(temp), ",X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++			}
++				
++	        strcat(ScheduleRuleList, temp);
++				
+ 		}
++	}
++	else if(ISSET("TimeRangeList") || ISSET("Days")){//request form CLI
++
++		memset(ScheduleRuleList, 0,sizeof(ScheduleRuleList));
++		if(ISSET("TimeRangeList"))
++			strcpy(buf, Jgets(Jobj, "TimeRangeList"));
+ 		else{
+-			snprintf(temp, sizeof(temp), ",X_ZYXEL_Schedule.%d", schTimeObjIid.idx[0]);
++			strcpy(buf, Jgets(curJobj, "TimeRangeList"));
++		}
++
++		count = 0;
++		ptr = strtok_r(buf, ",", &tmp);
++		while(ptr != NULL){
++			parseTimeRange(ptr, &startHour, &startMin, &stopHour, &stopMin);
++			count++;
++			schRuleJobj = json_object_new_object();
++			schRuleRetJarray = json_object_new_array();
++			
++			Jaddb(schRuleJobj, "Enable", true);
++			if(ISSET("pcpName"))
++				sprintf(schRuleName, "%s_%d", Jgets(Jobj, "pcpName"), count);
++			else
++				sprintf(schRuleName, "%s_%d", Jgets(curJobj, "pcpName"), count);
++
++			Jadds(schRuleJobj, "Name", schRuleName);
++			Jadds(schRuleJobj, "Description", "ParentalControl");
++			if(ISSET("Days"))
++				replaceParam(schRuleJobj, "Days", Jobj, "Days");
++			else
++				replaceParam(schRuleJobj, "Days", curJobj, "Days");
++			Jaddi(schRuleJobj, "TimeStartHour", startHour);
++			Jaddi(schRuleJobj, "TimeStartMin", startMin);
++			Jaddi(schRuleJobj, "TimeStopHour", stopHour);
++			Jaddi(schRuleJobj, "TimeStopMin", stopMin);
++			Jaddb(schRuleJobj, "DontCheckDupName", true);
++			if((ret = zcfgFeDalScheduleAdd(schRuleJobj, schRuleRetJarray, NULL)) != ZCFG_SUCCESS){
++				json_object_put(schRuleJobj);
++				json_object_put(schRuleRetJarray);
++				return ret;
++			}
++			schRulePath = Jgets(json_object_array_get_idx(schRuleRetJarray, 0), "path");
++			strcat(ScheduleRuleList, schRulePath);
++			strcat(ScheduleRuleList, ",");
++			ptr = strtok_r(NULL, ",", &tmp);
++			json_object_put(schRuleJobj);
++			json_object_put(schRuleRetJarray);
++		}
++		if(strlen(ScheduleRuleList)>0){
++			ScheduleRuleList[strlen(ScheduleRuleList)-1]= '\0';
+ 		}
+-			
+-        strcat(ScheduleRuleList, temp);
+-			
+ 	}
+ 	
+-	pcpIidArray = json_object_object_get(Jobj, "iid");
+-	for(iidIdx = 0; iidIdx < json_object_array_length(pcpIidArray); iidIdx++){
+-		pcpObjIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(pcpIidArray, iidIdx));
+-		if(pcpObjIid.idx[iidIdx] != 0)
+-			pcpObjIid.level = iidIdx+1;
++	strcpy(curScheduleRuleList, json_object_get_string(json_object_object_get(pcpObj, "ScheduleRuleList")));
++
++	replaceParam(pcpObj, "Enable", Jobj, "pcpEnable");
++	replaceParam(pcpObj, "Name", Jobj, "pcpName");
++	replaceParam(pcpObj, "WebRedirect", Jobj, "WebRedirect");
++	if(ISSET("ServicePolicy")){
++		if(!strcmp(Jgets(Jobj, "ServicePolicy"), "Block"))
++			Jadds(pcpObj, "ServicePolicy", "Drop");
++		else if(!strcmp(Jgets(Jobj, "ServicePolicy"), "Allow"))
++			Jadds(pcpObj, "ServicePolicy", "Accept");
++	}
++	if(ISSET("UrlPolicy")){
++		if(!strcmp(Jgets(Jobj, "UrlPolicy"), "Block"))
++			Jaddi(pcpObj, "Type", 0);
++		else if(!strcmp(Jgets(Jobj, "UrlPolicy"), "Allow"))
++			Jaddi(pcpObj, "Type", 1);
+ 	}
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, &pcpObj)) != ZCFG_SUCCESS) {
++
++	if(ISSET("MACAddressList") && !strcmp(Jgets(Jobj, "MACAddressList"), "All"))
++		Jadds(pcpObj, "MACAddressList", "00:00:00:00:00:00");
++	else
++		replaceParam(pcpObj, "MACAddressList", Jobj, "MACAddressList");
++	//replaceParam(pcpObj, "URLFilter", Jobj, "URLFilter");
++	//replaceParam(pcpObj, "NetworkServiceList", Jobj, "NetworkServiceList");
++	URLFilter = Jgets(Jobj,"URLFilter");
++	if(URLFilter && !strcmp(URLFilter, "Empty"))
++		Jadds(pcpObj, "URLFilter", "");
++	else
++		replaceParam(pcpObj, "URLFilter", Jobj, "URLFilter");
++
++	NetworkServiceList = Jgets(Jobj,"NetworkServiceList");
++	if(NetworkServiceList && !strcmp(NetworkServiceList, "Empty"))
++		Jadds(pcpObj, "NetworkServiceList", "");
++	else
++		replaceParam(pcpObj, "NetworkServiceList", Jobj, "NetworkServiceList");
++	
++	if(strlen(ScheduleRuleList)>0)
++		json_object_object_add(pcpObj, "ScheduleRuleList", json_object_new_string(ScheduleRuleList));
++	
++	if((ret = zcfgFeObjJsonSet(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, pcpObj, NULL)) != ZCFG_SUCCESS){
++		printf("ret=%d\n", ret);
+ 		return ret;
+ 	}
+-	
+-	strcpy(curScheduleRuleList, json_object_get_string(json_object_object_get(pcpObj, "ScheduleRuleList")));		
++
++#if 0
+ 	json_object_object_add(pcpObj, "Enable", json_object_new_boolean(pcpEnable));
+ 	json_object_object_add(pcpObj, "Name", json_object_new_string(pcpName));
+ 	json_object_object_add(pcpObj, "WebRedirect", json_object_new_boolean(WebRedirect));
+@@ -339,13 +644,198 @@
+ 	else 
+ 		return ret = ZCFG_INVALID_FORMAT;
+ 	json_object_object_add(pcpObj, "NetworkServiceList", json_object_new_string(NetworkServiceList));
+-	
++
+ 	zcfgFeObjJsonSet(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, pcpObj, NULL);
+ 	
+-	curPcpSchRuleDel();
+-	
++#endif
++	if(reqSchRuleObjArray != NULL){//request form GUI
++		curPcpSchRuleDel();
++	}
++	else if(ISSET("TimeRangeList") || ISSET("Days")){//request form CLI
++		curPcpSchRuleDel();
++	}
++
++	if(curJarray != NULL)
++		json_object_put(curJarray);
++		
++	return ret;
++}
++
++void zcfgFeDalShowParentCtl(struct json_object *Jarray){
++
++	int i, j, firstTime, len = 0;
++	char *dayString = NULL;
++	int index = 0, startHour = 0, startMin = 0, stopHour = 0, stopMin = 0, startPort, endPort;
++	char buf[1024] = {0};
++	char *ptr, *tmp;
++	struct json_object *Jobj;
++	char serviceDesc[32], protocol[1024], tmpProtocol[1024];
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	if((Jobj = json_object_array_get_idx(Jarray, 0)) == NULL)
++		return;
++	
++	if(Jget(Jobj, "PrentalCtlEnable") != NULL){//get all case
++		printf("Parental Control             %s\n", Jgetb(Jobj, "PrentalCtlEnable")?"Enabled":"Disabled");
++		printf("\n");
++		printf("%-6s %-12s %-30s %-20s\n", "Index", "Status", "PCP Name", "Home Network User MAC");
++		printf("------------------------------------------------------------------------\n");
++
++		len = json_object_array_length(Jarray);
++		for(i=1;i<len;i++){
++			Jobj = json_object_array_get_idx(Jarray, i);
++			if(Jobj!=NULL){
++				printf("%-6lld ", Jgeti(Jobj, "Index"));
++				printf("%-12s ", Jgetb(Jobj, "pcpEnable")?"Enabled":"Disabled");
++				printf("%-30s ", Jgets(Jobj, "pcpName"));
++				strcpy(buf, Jgets(Jobj, "MACAddressList"));
++				ptr = strtok_r(buf, ",", &tmp);
++				firstTime = 1;
++			  while(ptr != NULL){
++			  if(firstTime){
++				printf("%-20s\n", ptr);
++				firstTime=0;
++			  }
++			  else{
++			  	printf("%-50s %-20s\n", "", ptr);
++			  }
++				ptr = strtok_r(NULL, ",", &tmp);
++			  }
++				printf("\n");
++			}
++		}
++	}
++	else{//get the specified index
++		printf("%-35s %s\n", "Active", Jgetb(Jobj, "pcpEnable")?"Enabled":"Disabled");
++		printf("%-35s %s\n", "Parental Control Profile Name", Jgets(Jobj, "pcpName"));
++		printf("User MAC Address\n");
++		strcpy(buf, Jgets(Jobj, "MACAddressList"));
++		ptr = strtok_r(buf, ",", &tmp);
++	  while(ptr != NULL){
++		printf("%-35s %s\n", "", ptr);
++		ptr = strtok_r(NULL, ",", &tmp);
++	  }
++	  	printf("\n");
++	  	printf("%-35s %s\n", "Day", Jgets(Jobj, "Days"));
++		printf("Time (Start - End)\n");
++		strcpy(buf, Jgets(Jobj, "TimeRangeList"));
++		ptr = strtok_r(buf, ",", &tmp);
++	  while(ptr != NULL){
++		printf("%-35s %s\n", "", ptr);
++		ptr = strtok_r(NULL, ",", &tmp);
++	  }
++		printf("\n");
++		printf("%-35s %s\n", "Network Service Setting", Jgets(Jobj, "ServicePolicy"));
++#if 1
++		strcpy(buf, Jgets(Jobj, "NetworkServiceList"));
++		ptr = strtok_r(buf, "/", &tmp);
++		printf("%-35s %-15s %s\n", "", "Service Name", "Protocol:Port");
++	  while(ptr != NULL){
++	  	if(sscanf(ptr, "%*[^[][%[^@]@%s", serviceDesc, tmpProtocol) !=2)
++			continue;
++		i=0;
++		j=0;
++		firstTime =1;
++		memset(protocol,0,sizeof(protocol));
++		if(!strncmp(&(tmpProtocol[i]), "BOTH", 3)){
++			strcpy(protocol, "TCP&UDP");
++			i=i+4;
++			j=j+7;
++		}
++		while(tmpProtocol[i] != '\0'){
++			if(firstTime && tmpProtocol[i]=='#'){
++				protocol[j] = ':';
++				i++;
++				j++;
++			}
++			else if(!strncmp(&(tmpProtocol[i]), ":-1", 3)){
++				i=i+3;
++			}
++			else if(!strncmp(&(tmpProtocol[i]), "@TCP#", 5) || !strncmp(&(tmpProtocol[i]), "@UDP#", 5)){
++				i=i+5;
++				protocol[j] = ',';
++				j++;
++			}
++			else if(!strncmp(&(tmpProtocol[i]), "@BOTH#", 6)){
++				i=i+6;
++				protocol[j] = ',';
++				j++;
++			}
++			else{
++				protocol[j] = tmpProtocol[i];
++				i++;
++				j++;
++			}
++		}
++		printf("%-35s %-15s %s\n", "", serviceDesc, protocol);
++		ptr = strtok_r(NULL, "/", &tmp);
++	  }
++#endif
++		printf("\n");
++		
++		printf("%-35s %s\n", "Block or Allow the Web Site", Jgets(Jobj, "UrlPolicy"));
++		printf("%-35s %s\n", "", "webSite");
++		strcpy(buf, Jgets(Jobj, "URLFilter"));
++		ptr = strtok_r(buf, ",", &tmp);
++	  while(ptr != NULL){
++		printf("%-35s %s\n", "", ptr);
++		ptr = strtok_r(NULL, ",", &tmp);
++	  }
++	}
++
++
++}
++
++zcfgRet_t zcfgFeDalParentCtlGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	if((Jobj != NULL) && (Jget(Jobj, "Index")!=NULL)){
++		IID_INIT(objIid);
++		objIid.level = 1;
++		objIid.idx[0] = Jgeti(Jobj, "Index");
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL_PROF, &objIid, &obj) == ZCFG_SUCCESS){
++			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Index", json_object_new_int(objIid.idx[0]));
++			
++			parsePcpObject(pramJobj, obj);
++			
++			json_object_array_add(Jarray, pramJobj);
++		
++			zcfgFeJsonObjFree(obj);	
++		}
++	}
++	else{
++		IID_INIT(objIid);
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL, &objIid, &obj) == ZCFG_SUCCESS){
++			pramJobj = json_object_new_object();
++			replaceParam(pramJobj, "PrentalCtlEnable", obj, "Enable");
++			json_object_array_add(Jarray, pramJobj);
++			zcfgFeJsonObjFree(obj);
++		}
++		IID_INIT(objIid);
++		while(zcfgFeObjJsonGetNext(RDM_OID_PAREN_CTL_PROF, &objIid, &obj) == ZCFG_SUCCESS){
++
++			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Index", json_object_new_int(objIid.idx[0]));
++			
++			parsePcpObject(pramJobj, obj);
++			
++			json_object_array_add(Jarray, pramJobj);
++		
++			zcfgFeJsonObjFree(obj);	
++		}
++	}
+ 	return ret;
+ }
++
+ zcfgRet_t zcfgFeDalParentCtlEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 		
+@@ -354,9 +844,9 @@
+ 			
+ 	t2 = time(NULL);
+ 	
+-	if(pcpName != NULL)
++	if(!ISSET("PrentalCtlEnable"))
+ 	{
+-		if((ret = editPcpObject(Jobj)) != ZCFG_SUCCESS)
++		if((ret = editPcpObject(Jobj, replyMsg)) != ZCFG_SUCCESS)
+ 			goto dalPcp_edit_fail;
+ 	}
+ 	else 
+@@ -379,12 +869,10 @@
+ 		
+ 	initGlobalPcpObjects();
+ 	getBasicPcpInfo(Jobj);
+-	
+-	t2 = time(NULL);
++
+ 	
+ 	if((ret = addPcpObject(Jobj)) != ZCFG_SUCCESS)
+-			goto dalPcp_add_fail;
+-	t2 = time(NULL);
++		goto dalPcp_add_fail;
+ 	
+ 	
+ dalPcp_add_fail:
+@@ -401,14 +889,25 @@
+ 	char* buffer = NULL;
+ 	
+ 	pctlObjIidArray = json_object_object_get(Jobj, "PctlObjIid");
+-	for(iidIdx=0; iidIdx < json_object_array_length(pctlObjIidArray); iidIdx++){
+-		pcpObjIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(pctlObjIidArray, iidIdx));
+-		if(pcpObjIid.idx[iidIdx] != 0)
+-			pcpObjIid.level = iidIdx+1;
++	if(pctlObjIidArray != NULL){//request form GUI
++		for(iidIdx=0; iidIdx < json_object_array_length(pctlObjIidArray); iidIdx++){
++			pcpObjIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(pctlObjIidArray, iidIdx));
++			if(pcpObjIid.idx[iidIdx] != 0)
++				pcpObjIid.level = iidIdx+1;
++		}
++	}
++	else{//request form CLI
++		IID_INIT(pcpObjIid);
++		pcpObjIid.level = 1;
++		pcpObjIid.idx[0] = Jgeti(Jobj, "Index");
+ 	}
+ 	
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, &pcpObj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, &pcpObj)) != ZCFG_SUCCESS){
++		if(replyMsg)
++			sprintf(replyMsg, "Can't find --Index %d", pcpObjIid.idx[0]);
+ 		return ret;
++	}
++	
+ 	scheduleRules = json_object_get_string(json_object_object_get(pcpObj, "ScheduleRuleList"));
+ 	
+ 	if((ret = zcfgFeObjJsonDel(RDM_OID_PAREN_CTL_PROF, &pcpObjIid, NULL)) != ZCFG_SUCCESS)
+@@ -424,7 +923,6 @@
+ 	}else
+ 	{
+ 		while (buffer) {
+-			printf ("%s\n", buffer);
+ 			schTimeObjIid.level = 1;
+ 			sscanf(buffer, "X_ZYXEL_Schedule.%hhu", &schTimeObjIid.idx[0]);
+ 			if((ret = zcfgFeObjJsonDel(RDM_OID_SCHEDULE, &schTimeObjIid, NULL)) != ZCFG_SUCCESS)
+@@ -438,18 +936,16 @@
+ zcfgRet_t zcfgFeDalParentCtl(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+-	t1 = time(NULL);
+-		
+ 	if(!strcmp(method, "POST"))
+-		ret = zcfgFeDalParentCtlAdd(Jobj, NULL);
++		ret = zcfgFeDalParentCtlAdd(Jobj, replyMsg);
+ 	else if(!strcmp(method, "DELETE"))
+-	   ret = zcfgFeDalParentCtlDelete(Jobj, NULL);
++	   ret = zcfgFeDalParentCtlDelete(Jobj, replyMsg);
+ 	else if(!strcmp(method, "PUT"))
+-		ret = zcfgFeDalParentCtlEdit(Jobj, NULL);
++		ret = zcfgFeDalParentCtlEdit(Jobj, replyMsg);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDalParentCtlGet(Jobj, Jarray, NULL);
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 		
+-	t2 = time(NULL);
+-		
+ 	return ret;
+-}
+\ No newline at end of file
++}
+Index: libzcfg_fe_dal-1.0/security/schedulerRule/zcfg_fe_dal_schedulerRule.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/schedulerRule/zcfg_fe_dal_schedulerRule.c	2017-07-28 18:18:25.000000000 +0800
++++ libzcfg_fe_dal-1.0/security/schedulerRule/zcfg_fe_dal_schedulerRule.c	2017-07-28 18:18:28.969207731 +0800
+@@ -177,7 +177,7 @@
+ 	return ret;
+ }
+ 
+-zcfgRet_t zcfgFeDalScheduleAdd(struct json_object *Jobj, char *replyMsg)
++zcfgRet_t zcfgFeDalScheduleAdd(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+@@ -185,9 +185,11 @@
+ 	struct json_object *pramJobj = NULL;
+ 	char *name = NULL;
+ 	char msg[30]={0};
++	char path[32] = {0};
++	struct json_object *retJobj = NULL;
+ 
+ 	// Name validation
+-	if(json_object_object_get(Jobj, "Name")){
++	if(!ISSET("DontCheckDupName") && json_object_object_get(Jobj, "Name")){
+ 		name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+ 		ret = dalcmdParamCheck(NULL,name, RDM_OID_SCHEDULE, "Name", "Name", msg);
+ 		if(ret != ZCFG_SUCCESS){
+@@ -260,6 +262,14 @@
+ 		return ret;
+ 	}
+ 	json_object_put(ScheduleJobj);
++
++	if(Jarray != NULL){
++		sprintf(path, "X_ZYXEL_Schedule.%d",objIid.idx[0]);
++		retJobj = json_object_new_object();
++		Jadds(retJobj, "path", path);
++		json_object_array_add(Jarray, retJobj);
++	}
++	
+ 	return ret;
+ }
+ 
+@@ -360,7 +370,7 @@
+ 		ret = zcfgFeDalScheduleEdit(Jobj, NULL);
+ 	}
+ 	else if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalScheduleAdd(Jobj, NULL);
++		ret = zcfgFeDalScheduleAdd(Jobj, Jarray, NULL);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDalScheduleDelete(Jobj, NULL);
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-28 18:18:26.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-28 18:19:27.245876084 +0800
+@@ -215,6 +215,7 @@
+ extern void zcfgFeDalShowLogSetting(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiWmm(struct json_object *Jarray);
+ extern void zcfgFeDalShowLanSetup(struct json_object *Jarray);
++extern void zcfgFeDalShowParentCtl(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -281,7 +282,7 @@
+ {"USB_FILESHARING", USB_FILESHARING_param,	zcfgFeDalUsbFilesharing,zcfgFeDalShowUsbFilesharing,	"get|edit", 	"USB_Service"},//USB_Service
+ {"USB_SAMBA",		USB_SAMBA_param,	zcfgFeDalUsbSamba,		zcfgFeDalShowUsbSamba,		"get|add|edit|delete",	"USB_Service"},//USB_Service
+ {"media_server", 	USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver,	zcfgFeDalShowUsbMediaserver,"edit|get", 	"USB_Service"},
+-{"PAREN_CTL", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		NULL,						"add|edit|delete",	""},//Parental_Control
++{"paren_ctl", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		zcfgFeDalShowParentCtl,						"get|add|edit|delete",	"Parental_Control"},//Parental_Control
+ {"scheduler",		SCHEDULE_param, 	zcfgFeDalSchedule,		zcfgFeDalShowSchedule,		"get|add|edit|delete",	"Scheduler_Rule"},
+ {"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	""},//Certificates
+ {"HOME_CONNECTIVYITY", 	HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity
+@@ -387,6 +388,108 @@
+ 	return found;
+ }
+ 
++/*
++ * parse time range format: "hh:mm-hh:mm"
++*/
++bool parseTimeRange(const char *timeRange, int *startHour, int *startMin, int *stopHour, int *stopMin){
++	int count = 0;
++
++	count = sscanf(timeRange, "%d:%d-%d:%d", startHour, startMin, stopHour, stopMin);
++	if(count!=4){
++		return false;
++	}
++
++	if(*startHour<0 || *startHour>23 || *stopHour<0 || *stopHour>23 || *startMin<0 || *startMin>59 || *stopMin<0 || *stopMin>59){
++		return false;
++	}
++
++	if((*startHour*60+*startMin)>=(*stopHour*60+*stopMin)){
++		return false;
++	}
++	
++	return true;
++}
++
++/*
++ * Format: "serviceName@Protocol:startPort:endPort,startPort:endPort,..."
++ * e.g. http@TCP:80
++ *       xboxlive@UDP:88
++ *       vnc@TCP:5500,5800,5900:5910
++ *       userdifine1@UDP1510,1511,1550:1580
++ *       userdifine2@BOTH3330,3355,3340:3356
++*/
++bool parseParenService(const char *service, char *parenCtlService){
++	int count = 0;
++	int startPort, endPort;
++	char *buf, *ptr, *tmp, *serviceName, *protocol, *portList;
++	char partRange[16];
++
++	buf = strdup(service);
++
++	if((ptr = strchr(buf, '@'))==NULL)
++		goto ParenServiceError;
++	*ptr = '\0';
++	serviceName = buf;
++	protocol = ptr+1;
++
++	if((ptr = strchr(protocol, ':'))==NULL)
++		goto ParenServiceError;
++	*ptr = '\0';
++	portList = ptr+1;
++
++	if(strlen(serviceName)>17)
++		goto ParenServiceError;
++
++	if(strcmp(protocol, "TCP") && strcmp(protocol, "UDP") && strcmp(protocol, "BOTH"))
++		goto ParenServiceError;
++
++
++	if(parenCtlService) sprintf(parenCtlService, "1[%s", serviceName);
++	
++	count = 0;
++	ptr = strtok_r(portList, ",", &tmp);
++	while(ptr != NULL){
++		count++;
++		if(count>6)
++			goto ParenServiceError;
++		
++		if(sscanf(ptr, "%d:%d", &startPort, &endPort)==2){
++			if(startPort < 1 || startPort > 65535 || endPort < 1 || endPort > 65535)
++				goto ParenServiceError;
++			else if(startPort >= endPort)
++				goto ParenServiceError;
++
++			if(parenCtlService){
++				sprintf(partRange, "@%s#%d:%d", protocol, startPort, endPort);
++				strcat(parenCtlService, partRange);
++			}
++			
++		}
++		else if(sscanf(ptr, "%d", &startPort)==1){
++			if(startPort < 1 || startPort > 65535 )
++				goto ParenServiceError;
++			if(parenCtlService){
++				sprintf(partRange, "@%s#%d:-1", protocol, startPort);
++				strcat(parenCtlService, partRange);
++			}
++		}
++		else{
++			goto ParenServiceError;
++		}
++		ptr = strtok_r(NULL, ",", &tmp);
++	}
++
++	free(buf);
++	return true;
++
++ParenServiceError:
++	free(buf);
++	return false;
++}
++
++
++
++
+ zcfgRet_t getCertList(struct json_object **Jarray){
+ 	struct json_object *obj = NULL;
+ 	objIndex_t iid;
+@@ -998,6 +1101,52 @@
+     return true;
+ }
+ 
++#if 1
++bool validateMacAddr1(const char *macAddr, const char *delim){
++	char buff[32];
++    char *p, *tmp;
++	int count = 0;
++
++#if 0
++	if(strchr(macAddr, '-')){
++		delim = "-";
++	}
++	else if(strchr(macAddr, ':')){
++		delim = ":";
++	}
++	else{
++		return false;
++	}
++#endif
++	
++	strcpy(buff, macAddr);
++	p = strtok_r(buff, delim, &tmp);
++	while(p != NULL){
++		if(strlen(p) == 2){
++			count++;
++			if(count>6){
++				return false;
++			}
++			if((*p<'0' || *p>'9') && (*p<'a' || *p>'f') && (*p<'A' || *p>'F')){
++				return false;
++			}
++			if((*(p+1)<'0' || *(p+1)>'9') && (*(p+1)<'a' || *(p+1)>'f') && (*(p+1)<'A' || *(p+1)>'F')){
++				return false;
++			}
++		}
++		else{
++			return false;
++		}
++
++		p = strtok_r(NULL, delim, &tmp);
++	}
++	if(count!=6)
++		return false;
++	
++	return true;
++}
++#endif
++
+ bool validateIPv6(const char *ipStr){
+ 
+ 	struct in6_addr ip6addr;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-07-28 18:18:26.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-07-28 18:18:28.969207731 +0800
+@@ -101,11 +101,20 @@
+ 	dalType_LocalCert,
+ 	dalType_emailAddr,					//call validateEmailAddr to check email is correct or not
+ 	dalType_emailList,					//list Email account and check email validation
+-	dalType_ClassList
++	dalType_ClassList,
++	dalType_MacAddr,
++	dalType_MacAddrList,
++	dalType_DayofWeek,
++	dalType_TimeRangeList,
++	dalType_ParenCtlServiceList,
++	dalType_URLFilterList
+ };
+ 
+ bool getSpecificObj(zcfg_offset_t oid, char *key, json_type type, void *value, objIndex_t *outIid, struct json_object **outJobj);
+ int replaceParam(struct json_object *Jobj1, char *key1, struct json_object *Jobj2, char *key2);
+ int isDigitString(char *getString);
++bool parseTimeRange(const char *timeRange, int *startHour, int *startMin, int *stopHour, int *stopMin);
++bool validateMacAddr1(const char *macAddr, const char *delim);
++bool parseParenService(const char *service, char *parenCtlService);
+ 
+ 

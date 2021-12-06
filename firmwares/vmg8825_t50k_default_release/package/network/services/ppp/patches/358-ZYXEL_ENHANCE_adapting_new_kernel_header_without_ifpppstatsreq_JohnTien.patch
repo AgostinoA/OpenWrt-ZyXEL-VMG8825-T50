@@ -1,0 +1,151 @@
+Index: ppp-2.4.3/pppd/sys-linux.c
+===================================================================
+--- ppp-2.4.3.orig/pppd/sys-linux.c	2018-06-06 22:40:29.722855443 +0800
++++ ppp-2.4.3/pppd/sys-linux.c	2018-06-06 22:40:29.762855641 +0800
+@@ -120,6 +120,7 @@
+ 
+ #include <linux/ppp_defs.h>
+ #include <linux/if_ppp.h>
++#include <linux/version.h>
+ 
+ #include "pppd.h"
+ #include "fsm.h"
+@@ -1425,6 +1426,7 @@
+     int u;
+     struct pppd_stats *stats;
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(3,18,21)
+     struct ifpppstatsreq req;
+ 
+     memset (&req, 0, sizeof (req));
+@@ -1440,6 +1442,26 @@
+     stats->pkts_in = req.stats.p.ppp_ipackets;
+     stats->pkts_out = req.stats.p.ppp_opackets;
+     return 1;
++#else
++    struct ifreq req;
++    struct ppp_stats ppp_stats;
++
++    memset (&req, 0, sizeof (req));
++    memset (&ppp_stats, 0, sizeof (ppp_stats));
++    req.ifr_data = (caddr_t) &ppp_stats;
++
++    strlcpy(req.ifr_name, ifname, sizeof(req.ifr_name));
++
++    if (ioctl(sock_fd, SIOCGPPPSTATS, &req) < 0) {
++        error("Couldn't get PPP statistics: %m");
++        return 0;
++    }
++    stats->bytes_in = ppp_stats.p.ppp_ibytes;
++    stats->bytes_out = ppp_stats.p.ppp_obytes;
++    stats->pkts_in = ppp_stats.p.ppp_ipackets;
++    stats->pkts_out = ppp_stats.p.ppp_opackets;
++    return 1;
++#endif //LINUX_VERSION_CODE
+ }
+ 
+ /********************************************************************
+Index: ppp-2.4.3/pppstats/pppstats.c
+===================================================================
+--- ppp-2.4.3.orig/pppstats/pppstats.c	2002-11-09 19:24:43.000000000 +0800
++++ ppp-2.4.3/pppstats/pppstats.c	2018-06-06 22:40:53.166971696 +0800
+@@ -74,6 +74,7 @@
+ #endif
+ #include <linux/ppp_defs.h>
+ #include <linux/if_ppp.h>
++#include <linux/version.h>
+ #endif /* __linux__ */
+ 
+ #else	/* STREAMS */
+@@ -140,6 +141,7 @@
+ get_ppp_stats(curp)
+     struct ppp_stats *curp;
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(3,18,21)
+     struct ifpppstatsreq req;
+ 
+     memset (&req, 0, sizeof (req));
+@@ -160,12 +162,32 @@
+ 	exit(1);
+     }
+     *curp = req.stats;
++#else
++    struct ifreq req;
++    struct ppp_stats ppp_stats;
++
++    memset (&req, 0, sizeof (req));
++    memset (&ppp_stats, 0, sizeof (ppp_stats));
++    req.ifr_data = (caddr_t) &ppp_stats;
++
++    strncpy(req.ifr_name, interface, sizeof(req.ifr_name));
++    if (ioctl(s, SIOCGPPPSTATS, &req) < 0) {
++        fprintf(stderr, "%s: ", progname);
++        if (errno == ENOTTY)
++            fprintf(stderr, "kernel support missing\n");
++        else
++            perror("couldn't get PPP statistics");
++        exit(1);
++    }
++    *curp = ppp_stats;
++#endif //LINUX_VERSION_CODE
+ }
+ 
+ static void
+ get_ppp_cstats(csp)
+     struct ppp_comp_stats *csp;
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(3,18,21)
+     struct ifpppcstatsreq creq;
+ 
+     memset (&creq, 0, sizeof (creq));
+@@ -213,6 +235,50 @@
+ #endif
+ 
+     *csp = creq.stats;
++#else
++    struct ifreq creq;
++    struct ppp_comp_stats ppp_stats;
++
++    memset (&creq, 0, sizeof (creq));
++    memset (&ppp_stats, 0, sizeof (ppp_stats));
++    creq.ifr_data = (caddr_t) &ppp_stats;
++
++    strncpy(creq.ifr_name, interface, sizeof(creq.ifr_name));
++    if (ioctl(s, SIOCGPPPCSTATS, &creq) < 0) {
++    fprintf(stderr, "%s: ", progname);
++        if (errno == ENOTTY) {
++            fprintf(stderr, "no kernel compression support\n");
++            if (zflag)
++            exit(1);
++            rflag = 0;
++        } else {
++            perror("couldn't get PPP compression stats");
++            exit(1);
++        }
++    }
++
++    if (ppp_stats.c.bytes_out == 0) {
++    ppp_stats.c.bytes_out = ppp_stats.c.comp_bytes + ppp_stats.c.inc_bytes;
++    ppp_stats.c.in_count = ppp_stats.c.unc_bytes;
++    }
++    if (ppp_stats.c.bytes_out == 0)
++    ppp_stats.c.ratio = 0.0;
++    else
++    ppp_stats.c.ratio = 256.0 * ppp_stats.c.in_count /
++                 ppp_stats.c.bytes_out;
++
++    if (ppp_stats.d.bytes_out == 0) {
++    ppp_stats.d.bytes_out = ppp_stats.d.comp_bytes + ppp_stats.d.inc_bytes;
++    ppp_stats.d.in_count = ppp_stats.d.unc_bytes;
++    }
++    if (ppp_stats.d.bytes_out == 0)
++    ppp_stats.d.ratio = 0.0;
++    else
++    ppp_stats.d.ratio = 256.0 * ppp_stats.d.in_count /
++                 ppp_stats.d.bytes_out;
++
++    *csp = ppp_stats;
++#endif //LINUX_VERSION_CODE
+ }
+ 
+ #else	/* STREAMS */

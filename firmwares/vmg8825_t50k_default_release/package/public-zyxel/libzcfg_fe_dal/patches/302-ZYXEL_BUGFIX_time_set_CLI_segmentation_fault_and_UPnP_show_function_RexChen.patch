@@ -1,0 +1,116 @@
+Index: libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_time.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/zcfg_fe_dal_time.c	2017-08-15 15:34:35.802178609 +0800
++++ libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_time.c	2017-08-15 15:34:36.054178610 +0800
+@@ -97,7 +97,7 @@
+ 			for(j=i+1;j<5;j++){
+ 				if(strcmp(NTPtmp[j],"None")){
+ 					if(!strcmp(NTPtmp[i], NTPtmp[j])){
+-						strcat(replyMsg, " is duplicate.");			
++						strcat(replyMsg, "NTP Server is duplicate.");			
+ 						return ZCFG_INVALID_PARAM_VALUE;	
+ 					}
+ 				}				
+@@ -144,7 +144,9 @@
+ 	char buf_start[8] = {0}, buf_end[8] = {0};
+ 	IID_INIT(timeObj);
+ 	//Start for CLI//
+-	NTPcheck(Jobj, replyMsg);
++	ret = NTPcheck(Jobj, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 	if(json_object_object_get(Jobj, "Start_Time")){
+ 		 starttime = json_object_get_string(json_object_object_get(Jobj, "Start_Time"));
+ 		 sscanf(starttime, "%d-%d-%d:%d", &StartMonth, &StartDay, &StartHour, &StartMin);
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_lanadv.c	2017-08-15 15:34:35.242178606 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c	2017-08-15 15:35:21.434942000 +0800
+@@ -9,7 +9,7 @@
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+-//#include "zcfg_eid.h"
++#include "zcfg_eid.h"
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ 
+@@ -27,8 +27,8 @@
+ };
+ 
+ void zcfgFeDalShowLanAdv(struct json_object *Jarray){
+-	int i, len = 0;
+-	struct json_object *obj;
++	int i, len = 0, count = 1;
++	struct json_object *obj = NULL, *upnpArray = NULL, *upnpObj = NULL;
+ 
+ 	if(json_object_get_type(Jarray) != json_type_array){
+ 		printf("wrong Jobj format!\n");
+@@ -46,15 +46,39 @@
+ 	printf("\nUPnP State: \n");
+ 	printf("UPnP: %s \n",json_object_get_string(json_object_object_get(obj, "UPNPEnable")));
+ 	printf("UPnP NAT-T: %s \n",json_object_get_string(json_object_object_get(obj, "NATTEnable")));
++	if(json_object_get_boolean(json_object_object_get(obj, "UPNPEnable")) && json_object_get_boolean(json_object_object_get(obj, "NATTEnable"))){
++		upnpArray = json_object_array_get_idx(Jarray, 1);
++		if(upnpArray){
++			printf("%-6s %-60s %-25s %15s %-15s %-10s \n", "Index", "Description", "Destination IP Address", "External Port", "Internal Port", "Protocol");	
++			len = json_object_array_length(upnpArray);
++			for(i=0;i<len;i++){
++				upnpObj = json_object_array_get_idx(upnpArray, i);
++				printf("%-6d %-60s %-25s %15s %-15s %-10s \n", 
++					count, 
++					json_object_get_string(json_object_object_get(upnpObj, "Description")), 
++					json_object_get_string(json_object_object_get(upnpObj, "Destination")), 
++					json_object_get_string(json_object_object_get(upnpObj, "ExternalPort")), 
++					json_object_get_string(json_object_object_get(upnpObj, "InternalPort")), 
++					json_object_get_string(json_object_object_get(upnpObj, "Protocol")));
++				count++;
++			}
++		}
++	}
+ 
+ }
+ 
+ zcfgRet_t zcfgFeDal_LanAdv_GET(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t iid = {0};
+-	struct json_object *obj = NULL;
++	struct json_object *obj = NULL, *obj1 = NULL;
+ 	struct json_object *upnpObj = NULL, *stbObj = NULL, *tftpObj = NULL;
+ 
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;
++	char *recv_str = NULL;
++	int payloadLen = 0;
++
+ 	IID_INIT(iid);
+ 	obj = json_object_new_object();
+ 	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &iid, &stbObj);
+@@ -75,9 +99,26 @@
+ 	if(ret == ZCFG_SUCCESS){
+ 		json_object_object_add(obj, "UPNPEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "Enable")));
+ 		json_object_object_add(obj, "NATTEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable")));
++		if(json_object_get_boolean(json_object_object_get(upnpObj, "Enable")) && json_object_get_boolean(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable"))){
++			sendMsgHdr = (zcfgMsg_t *)malloc(sizeof(zcfgMsg_t));
++			sendMsgHdr->type = ZCFG_MSG_UPNP_PORTMAP_GET;
++			sendMsgHdr->length = 0;
++			sendMsgHdr->srcEid = ZCFG_EID_ZHTTPD;
++			sendMsgHdr->dstEid = ZCFG_EID_ZUPNP;
++			ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 2000);
++			if(ret == ZCFG_SUCCESS){
++				recvMsgHdr = (zcfgMsg_t*)recvBuf;
++				payloadLen = recvMsgHdr->length;
++				recv_str = (char *)malloc(payloadLen);
++				recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++				obj1 = json_tokener_parse(recv_str);
++			}
++			
++		}
+ 		zcfgFeJsonObjFree(upnpObj);
+ 	}
+ 	json_object_array_add(Jarray, obj);
++	json_object_array_add(Jarray, obj1);
+ 	
+ 	return ret;
+ }

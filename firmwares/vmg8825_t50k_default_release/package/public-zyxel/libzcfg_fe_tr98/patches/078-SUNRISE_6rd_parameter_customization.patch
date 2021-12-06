@@ -1,0 +1,276 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2014-07-09 10:00:02.499734080 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2014-07-09 10:07:01.025170660 +0800
+@@ -5494,6 +5494,60 @@
+  *   Device.IPv6rd.
+  *   Device.IPv6rd.InterfaceSetting.i.
+  */
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise
++zcfgRet_t WANIpv6RdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char ipIface[32] = {0};
++	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char addrsrcObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	objIndex_t ipv6RdIid;
++//	struct json_object *ipv6RdJobj = NULL;
++	struct json_object *ipIfaceJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	char *ptr = NULL;
++	int found = 0;
++	char tr98Prefix[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	uint8_t addrsrcInstance = 0;
++	
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++        printf("%s : Enter\n", __FUNCTION__);
++	printf("98 full path = %s \n", tr98FullPathName);
++
++	strcpy(tr98ConnObjName, tr98FullPathName);
++	ptr = strstr(tr98ConnObjName, ".X_ZYXEL_IPv6rd");
++	*ptr = '\0';
++
++	if(zcfgFe98To181MappingNameGet(tr98ConnObjName, ipIface) != ZCFG_SUCCESS) {
++		return ZCFG_NO_MORE_INSTANCE;
++	}
++
++	IID_INIT(ipv6RdIid);
++	sscanf(ipIface, "IP.Interface.%hhu", &ipv6RdIid.idx[0]);
++	ipv6RdIid.level = 1;
++
++	//get the 6rd related parameter in the IpIface, because the 6rd backend is triggered by these parameters
++	if((ret = feObjJsonGet(RDM_OID_IP_IFACE, &ipv6RdIid, &ipIfaceJobj, updateFlag)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get IP.Interface Fail\n", __FUNCTION__);
++		return ret;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(ipIfaceJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++	}
++	json_object_put(ipIfaceJobj);
++	return ZCFG_SUCCESS;	
++}
++#else
+ zcfgRet_t WANIpv6RdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+@@ -5570,6 +5624,7 @@
+ 	
+ 	return ZCFG_SUCCESS;	
+ }
++#endif
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_IPv6rd.
+  *
+@@ -5577,6 +5632,108 @@
+  *   Device.DHCPv6.Client.i.
+  */
+ 
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise
++zcfgRet_t WANIpv6RdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
++{
++	zcfgRet_t ret;
++	char ipIface[32] = {0};
++	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char addrsrcObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	objIndex_t ipv6RdIid;
++	struct json_object *ipv6RdJobj = NULL;
++	struct json_object *ipIfaceJobj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;	
++	tr98Parameter_t *paramList = NULL;
++	char *ptr = NULL;
++	int found = 0;
++	char tr98Prefix[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	uint8_t addrsrcInstance = 0;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++	
++	strcpy(tr98ConnObjName, tr98FullPathName);
++	ptr = strstr(tr98ConnObjName, ".X_ZYXEL_IPv6rd");
++	*ptr = '\0';
++
++	/*find tr181 mapping object*/
++	if((ret = zcfgFe98To181MappingNameGet(tr98ConnObjName, ipIface)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	printf("!!!ipiface = %s\n", ipIface);
++
++	IID_INIT(ipv6RdIid);
++	sscanf(ipIface, "IP.Interface.%hhu", &ipv6RdIid.idx[0]);
++	ipv6RdIid.level = 1;
++
++	//get the 6rd related parameter in the IpIface, because the 6rd backend is triggered by these parameters
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &ipv6RdIid, &ipIfaceJobj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get IP.Interface Fail\n", __FUNCTION__);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ipIfaceJobj;
++		ipIfaceJobj = NULL;
++		ipIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipv6RdIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/		
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			/*Write value from WANIPConnection to Device.IP.Interface.i*/
++			tr181ParamValue = json_object_object_get(ipIfaceJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				if(!strcmp(paramList->name, "X_ZYXEL_Enable_6RD")) {
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_Enable_6RD", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++				if(!strcmp(paramList->name, "X_ZYXEL_6RD_Type")) {
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_6RD_Type", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++				if(!strcmp(paramList->name, "X_ZYXEL_BorderRelayIPv4Addresses")) {
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_BorderRelayIPv4Addresses", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++				if(!strcmp(paramList->name, "X_ZYXEL_SPIPv6Prefix")) {
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_SPIPv6Prefix", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++				if(!strcmp(paramList->name, "X_ZYXEL_IPv4MaskLength")) {
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_IPv4MaskLength", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++		}
++		paramList++;	
++	}
++
++	/*Set Device.IP.Interface.i*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ipv6RdIid, ipIfaceJobj, NULL)) != ZCFG_SUCCESS ) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.IPv6rd.InterfaceSetting.%d Fail\n", __FUNCTION__, ipv6RdIid.idx[0]);
++		}
++		else {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.IPv6rd.InterfaceSetting.%d Fail\n", __FUNCTION__, ipv6RdIid.idx[0]);
++		}
++		json_object_put(ipIfaceJobj);
++	}
++
++	return ret;
++}
++#else
+ zcfgRet_t WANIpv6RdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
+ {
+ 	zcfgRet_t ret;
+@@ -5679,6 +5836,7 @@
+ 
+ 	return ret;
+ }
++#endif
+ 
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_IPv6Address.i.
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2014-07-09 10:00:02.543712079 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2014-07-09 10:08:19.017168532 +0800
+@@ -266,12 +266,14 @@
+ 	{ "X_ZYXEL_DNSType", PARAMETER_ATTR_WRITE, 19, json_type_string},
+ 	{ "X_ZYXEL_IGMPProxyEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6RD_PROFILE
++#ifndef SUNRISE_TR98_CUSTOMIZATION // Sunrise
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_6RD_Type", PARAMETER_ATTR_WRITE, 8, json_type_string},
+ 	{ "X_ZYXEL_BorderRelayIPv4Addresses", PARAMETER_ATTR_WRITE, 72, json_type_string},
+ 	{ "X_ZYXEL_SPIPv6Prefix", PARAMETER_ATTR_WRITE, 64, json_type_string},
+ 	{ "X_ZYXEL_IPv4MaskLength", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ #endif
++#endif
+ #ifdef IPV6INTERFACE_PROFILE
+ 	{ "X_ZYXEL_IPv6Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPv6Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+@@ -375,6 +377,17 @@
+ 
+ #endif
+ #ifdef IPV6RD_PROFILE
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise
++tr98Parameter_t para_WANIpv6Rd[] = {
++	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_6RD_Type", PARAMETER_ATTR_WRITE, 8, json_type_string},
++	{ "X_ZYXEL_BorderRelayIPv4Addresses", PARAMETER_ATTR_WRITE, 72, json_type_string},
++	{ "X_ZYXEL_SPIPv6Prefix", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "X_ZYXEL_IPv4MaskLength", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++#else
+ tr98Parameter_t para_WANIpv6Rd[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Status", PARAMETER_ATTR_READONLY, 8, json_type_string},
+@@ -385,7 +398,7 @@
+ 	{ "AddressSource", PARAMETER_ATTR_WRITE, 128, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+-
++#endif
+ #endif
+ 
+ tr98Parameter_t para_WANPppConn[] = {
+@@ -431,11 +444,13 @@
+ 	{ "X_ZYXEL_DNSType", PARAMETER_ATTR_WRITE, 19, json_type_string},
+ 	{ "X_ZYXEL_IGMPProxyEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6RD_PROFILE
++#ifndef SUNRISE_TR98_CUSTOMIZATION // Sunrise
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_BorderRelayIPv4Addresses", PARAMETER_ATTR_WRITE, 72, json_type_string},
+ 	{ "X_ZYXEL_SPIPv6Prefix", PARAMETER_ATTR_WRITE, 64, json_type_string},
+ 	{ "X_ZYXEL_IPv4MaskLength", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ #endif
++#endif
+ #ifdef IPV6INTERFACE_PROFILE
+ 	{ "X_ZYXEL_IPv6Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPv6Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+@@ -517,6 +532,16 @@
+ 
+ #endif
+ #ifdef IPV6RD_PROFILE
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise
++tr98Parameter_t para_WANPppv6Rd[] = {
++	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_BorderRelayIPv4Addresses", PARAMETER_ATTR_WRITE, 72, json_type_string},
++	{ "X_ZYXEL_SPIPv6Prefix", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "X_ZYXEL_IPv4MaskLength", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++#else
+ tr98Parameter_t para_WANPppv6Rd[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Status", PARAMETER_ATTR_READONLY, 8, json_type_string},
+@@ -527,7 +552,7 @@
+ 	{ "AddressSource", PARAMETER_ATTR_WRITE, 128, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+-
++#endif
+ #endif
+ 
+ tr98Parameter_t para_WanAtmF5LoDiag[] = {

@@ -1,0 +1,250 @@
+Index: dnsmasq-2.78/src/cache.c
+===================================================================
+--- dnsmasq-2.78.orig/src/cache.c	2018-10-31 11:59:54.897051182 +0800
++++ dnsmasq-2.78/src/cache.c	2018-10-31 11:59:55.149051188 +0800
+@@ -555,11 +555,80 @@
+   new_chain = new;
+ 
+   return new;
++
+ }
+ 
++#ifdef DNS_TRAFFIC_ROUTE
++void add_dns_traffic_route(uint32_t s_addr, const char *cname, int *flush)
++{
++  char sysCmd[128] = "";
++  struct in_addr srcIP;
++  srcIP.s_addr = s_addr;
++  struct server *serv = NULL;
++
++  if (s_addr == 0) {
++
++    return;
++  }
++
++  serv = daemon->servers;
++
++  while (serv) {
++    if (serv->domain && (strcmp(cname, serv->domain) == 0)) {
++      if (*flush) {
++        /* deledt */
++        sprintf(sysCmd,
++                "iptables -t mangle -D IP_ROUTE2_DNSRT -j DNSRT_RULE_%d",
++                serv->rule_no);
++        system(sysCmd);
++
++        sprintf(sysCmd, "iptables -t mangle -F DNSRT_RULE_%d", serv->rule_no);
++        system(sysCmd);
++
++        sprintf(sysCmd, "iptables -t mangle -X DNSRT_RULE_%d", serv->rule_no);
++        system(sysCmd);
++
++        /* create */
++        sprintf(sysCmd, "iptables -t mangle -N DNSRT_RULE_%d", serv->rule_no);
++        system(sysCmd);
++
++        sprintf(sysCmd,
++                "iptables -t mangle -A IP_ROUTE2_DNSRT -j DNSRT_RULE_%d",
++                serv->rule_no);
++        system(sysCmd);
++
++        *flush = 0;
++      }
++
++      /* add */
++      sprintf(sysCmd,
++              "iptables -t mangle -D DNSRT_RULE_%d -d %s/%d -j MARK --or-mark 0x%x 2> /dev/null",
++              serv->rule_no, inet_ntoa(srcIP), serv->subnet_mask,
++              serv->sock_mark);
++      system(sysCmd);
++
++      sprintf(sysCmd,
++              "iptables -t mangle -A DNSRT_RULE_%d -d %s/%d -j MARK --or-mark 0x%x",
++              serv->rule_no, inet_ntoa(srcIP), serv->subnet_mask,
++              serv->sock_mark);
++      system(sysCmd);
++
++      break;
++    }
++    serv = serv->next;
++  }
++
++}
++#endif
++
+ /* after end of insertion, commit the new entries */
+ void cache_end_insert(void)
+ {
++#ifdef DNS_TRAFFIC_ROUTE
++  struct in_addr *target = NULL;
++  int flush = 1;
++#endif
++
+   if (insert_error)
+     return;
+ 
+@@ -572,6 +641,16 @@
+       cache_hash(new_chain);
+       cache_link(new_chain);
+       cache_inserted++;
++#ifdef DNS_TRAFFIC_ROUTE
++      if ((new_chain->flags & (F_FORWARD | F_IPV4)) == (F_FORWARD | F_IPV4)) {
++        target = &new_chain->addr.addr.addr.addr4;
++      }
++
++      if (target) {
++        add_dns_traffic_route(target->s_addr, cache_get_name(new_chain),
++                              &flush);
++      }
++#endif
+     }
+     new_chain = tmp;
+   }
+Index: dnsmasq-2.78/src/dbus.c
+===================================================================
+--- dnsmasq-2.78.orig/src/dbus.c	2018-10-31 11:59:55.133051188 +0800
++++ dnsmasq-2.78/src/dbus.c	2018-10-31 11:59:55.149051188 +0800
+@@ -346,9 +346,15 @@
+ 
+     /* parse the IP address */
+ #ifdef ZYXEL_PATCH
++#ifdef DNS_TRAFFIC_ROUTE
++    if ((addr_err =
++         parse_server(str_addr, &addr, &source_addr, (char *) &interface,
++                      &flags, NULL, NULL, NULL))) {
++#else
+     if ((addr_err =
+          parse_server(str_addr, &addr, &source_addr, (char *) &interface,
+                       &flags, NULL))) {
++#endif
+ #else
+     if ((addr_err =
+          parse_server(str_addr, &addr, &source_addr, (char *) &interface,
+Index: dnsmasq-2.78/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.78.orig/src/dnsmasq.h	2018-10-31 11:59:55.129051188 +0800
++++ dnsmasq-2.78/src/dnsmasq.h	2018-10-31 11:59:55.149051188 +0800
+@@ -512,6 +512,10 @@
+   union mysockaddr addr, source_addr;
+ #ifdef ZYXEL_PATCH
+   unsigned long sock_mark;
++#ifdef DNS_TRAFFIC_ROUTE
++  int subnet_mask;
++  int rule_no;
++#endif
+ #endif
+   char interface[IF_NAMESIZE + 1];
+   struct serverfd *sfd;
+@@ -1258,9 +1262,16 @@
+ void reset_option_bool(unsigned int opt);
+ struct hostsfile *expand_filelist(struct hostsfile *list);
+ #ifdef ZYXEL_PATCH
++#ifdef DNS_TRAFFIC_ROUTE
++char *parse_server(char *arg, union mysockaddr *addr,
++                   union mysockaddr *source_addr, char *interface,
++                   int *flags, unsigned long *mark, int *subnet_mask,
++                   int *rule_no);
++#else
+ char *parse_server(char *arg, union mysockaddr *addr,
+                    union mysockaddr *source_addr, char *interface,
+                    int *flags, unsigned long *mark);
++#endif
+ #else
+ char *parse_server(char *arg, union mysockaddr *addr,
+                    union mysockaddr *source_addr, char *interface, int *flags);
+Index: dnsmasq-2.78/src/option.c
+===================================================================
+--- dnsmasq-2.78.orig/src/option.c	2018-10-31 11:59:55.133051188 +0800
++++ dnsmasq-2.78/src/option.c	2018-10-31 12:01:01.000485000 +0800
+@@ -1017,9 +1017,16 @@
+   return NULL;
+ }
+ #ifdef ZYXEL_PATCH
++#ifdef DNS_TRAFFIC_ROUTE
++char *parse_server(char *arg, union mysockaddr *addr,
++                   union mysockaddr *source_addr, char *interface,
++                   int *flags, unsigned long *mark, int *subnet_mask,
++                   int *rule_no)
++#else
+ char *parse_server(char *arg, union mysockaddr *addr,
+                    union mysockaddr *source_addr, char *interface,
+                    int *flags, unsigned long *mark)
++#endif
+ #else
+ char *parse_server(char *arg, union mysockaddr *addr,
+                    union mysockaddr *source_addr, char *interface, int *flags)
+@@ -1035,6 +1042,12 @@
+ #ifdef ZYXEL_PATCH
+   char *markPtr = NULL;
+   unsigned long sock_mark = 0;
++#ifdef DNS_TRAFFIC_ROUTE
++  char *maskPtr = NULL;
++  int mask = 32;
++  char *rulePtr = NULL;
++  int rule = 0;
++#endif
+ #endif
+   if (!arg || strlen(arg) == 0) {
+     *flags |= SERV_NO_ADDR;
+@@ -1046,6 +1059,14 @@
+       (portno = split_chr(source, '#')) && !atoi_check16(portno, &source_port))
+     return _("bad port");
+ #ifdef ZYXEL_PATCH
++#ifdef DNS_TRAFFIC_ROUTE
++  if (source &&                 /* is there a source. */
++      (rulePtr = split_chr(source, '|')) && !atoi_check(rulePtr, &rule))
++    return _("bad rule");
++  if (source &&                 /* is there a source. */
++      (maskPtr = split_chr(source, '&')) && !atoi_check(maskPtr, &mask))
++    return _("bad mask");
++#endif
+   if (source &&                 /* is there a source. */
+       (markPtr = split_chr(source, '$')) && !hextoul_check(markPtr, &sock_mark))
+     return _("bad mark");
+@@ -1084,6 +1105,14 @@
+       if (mark) {
+         *mark = sock_mark;
+       }
++#ifdef DNS_TRAFFIC_ROUTE
++      if (subnet_mask) {
++        *subnet_mask = mask;
++      }
++      if (rule_no) {
++        *rule_no = rule;
++      }
++#endif
+ #endif
+       if (flags)
+         *flags |= SERV_HAS_SOURCE;
+@@ -2534,9 +2563,15 @@
+           ret_err(gen_err);
+       } else {
+ #ifdef ZYXEL_PATCH
++#ifdef DNS_TRAFFIC_ROUTE
++        char *err =
++            parse_server(arg, &newlist->addr, &newlist->source_addr,
++              newlist->interface, &newlist->flags, &newlist->sock_mark, &newlist->subnet_mask, &newlist->rule_no);
++#else
+         char *err =
+             parse_server(arg, &newlist->addr, &newlist->source_addr,
+                          newlist->interface, &newlist->flags, &newlist->sock_mark);
++#endif
+ #else
+         char *err =
+             parse_server(arg, &newlist->addr, &newlist->source_addr,
+@@ -2587,9 +2622,15 @@
+         ret_err(gen_err);
+ 
+ #ifdef ZYXEL_PATCH
++#ifdef DNS_TRAFFIC_ROUTE
++      string =
++          parse_server(comma, &serv->addr, &serv->source_addr, serv->interface,
++                       &serv->flags, &serv->sock_mark, &serv->subnet_mask, &serv->rule_no);
++#else
+       string =
+           parse_server(comma, &serv->addr, &serv->source_addr, serv->interface,
+                        &serv->flags, &serv->sock_mark);
++#endif
+ #else
+       string =
+           parse_server(comma, &serv->addr, &serv->source_addr, serv->interface,

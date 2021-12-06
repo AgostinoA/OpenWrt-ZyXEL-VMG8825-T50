@@ -1,0 +1,632 @@
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosPolicer.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosPolicer.c	2017-07-21 14:24:18.029152715 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosPolicer.c	2017-07-21 14:36:13.281867600 +0800
+@@ -15,38 +15,35 @@
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_fe_Qos.h"
+ 
+-time_t t1, t2;
+-
+ dal_param_t QosPolicer_param[] = {
+-	{"idx",						dalType_int, 0, 0, NULL},
+-	{"Enable",					dalType_boolean, 0, 0, NULL},
+-	{"X_ZYXEL_Name",			dalType_string, 0, 0, NULL},
+-	{"MeterType",				dalType_string, 0, 0, NULL},
+-	{"CommittedRate",			dalType_int, 0, 0, NULL},
+-	{"CommittedBurstSize",		dalType_int, 0, 0, NULL},
+-	{"PartialConformingAction",	dalType_string, 0, 0, NULL},
+-	{"ExcessBurstSize",			dalType_int, 0, 0, NULL},
+-	{"PeakRate",				dalType_int, 0, 0, NULL},
+-	{"PeakBurstSize",			dalType_int, 0, 0, NULL},
+-	{"ConformingAction",		dalType_string, 0, 0, NULL},
+-	{"NonConformingAction",		dalType_string, 0, 0, NULL},
+-	{NULL,		0,	0,	0,	NULL}
++	{"Index",					dalType_int, 		0,	0,			NULL,	NULL,														dal_Edit|dal_Delete},
++	{"Enable",					dalType_boolean, 	0, 	0, 			NULL,	NULL,														dal_Add},
++	{"Name",					dalType_string, 	0, 	0, 			NULL,	NULL,														dal_Add},
++	{"MeterType",				dalType_string, 	0, 	0, 			NULL,	"SimpleTokenBucket|SingleRateThreeColor|TwoRateThreeColor",	dal_Add},
++	{"CommittedRate",			dalType_int, 		1, 	1000000, 	NULL,	NULL,														dal_Add},
++	{"CommittedBurstSize",		dalType_int, 		1, 	1000, 		NULL,	NULL,														dal_Add},
++	{"PartialConformingAction",	dalType_string, 	0, 	0, 			NULL,	"Pass|Drop|DSCPMark",										NULL},
++	{"Partial_value",			dalType_int, 		0, 	63, 		NULL,	NULL,														NULL},
++	{"ExcessBurstSize",			dalType_int, 		1, 	1000, 		NULL,	NULL,														NULL},
++	{"PeakRate",				dalType_int, 		1, 	1000000, 	NULL,	NULL,														NULL},
++	{"PeakBurstSize",			dalType_int, 		1, 	1000, 		NULL,	NULL,														NULL},
++	{"ConformingAction",		dalType_string, 	0, 	0, 			NULL,	"Pass|DSCPMark",											dal_Add},
++	{"Conform_value",			dalType_int, 		0, 	63, 		NULL,	NULL,														NULL},
++	{"NonConformingAction",		dalType_string, 	0, 	0, 			NULL,	"Drop|DSCPMark",											dal_Add},
++	{"NonConform_value",		dalType_int, 		0, 	63, 		NULL,	NULL,														NULL},
++	{"Class",					dalType_ClassList, 	0, 	0, 			NULL,	NULL,														dal_Add},
++	{NULL,						0,					0, 	0, 			NULL,	NULL,														NULL}
+ };
+ 
+-typedef struct s_ArrayInfo{
+-	int length;
+-	int *array;
+-}s_ArrayInfo;
+-
+ typedef struct s_QosPolicer{
+-	int idx;
++	int Index;
+ 	bool Enable;
+-	char *X_ZYXEL_Name;
++	char *Name;
+ 	char *MeterType;
+ 	int CommittedRate;
+ 	int CommittedBurstSize;
+ 	char *PartialConformingAction;
+-	
++	int Partial_value;
+ 	/*for MeterType = "SingleRateThreeColor*/
+ 	int ExcessBurstSize;
+ 	
+@@ -55,205 +52,376 @@
+ 	int PeakBurstSize;
+ 
+ 	char *ConformingAction;
++	int Conform_value;
+ 	char *NonConformingAction;
+-	s_ArrayInfo ChooseClassArray;
++	int NonConform_value;
++	char *Class;
+ }s_QosPolicer;
+ 
+ typedef struct s_QosPolicerDel{
+-	int idx;
+-	s_ArrayInfo ChooseClassArray;
++	int Index;
+ }s_QosPolicerDel;
+ 
+-typedef struct s_qosPolicerClassTable_info{
+-	int iid;
+-	char *ClassName;
+-	char *Policer;
+-	bool AvlDisplay;
+-}s_qosPolicerClassTable_info;
+-
+-typedef struct s_qosPolicerClassTable{
+-	int size;
+-	s_qosPolicerClassTable_info info[20];
+-}s_qosPolicerClassTable;
++int ClassArray[20]={0};
+ 
+-s_qosPolicerClassTable qosPolicerClassTable = {0};
+ extern uint32_t StrToIntConv(char *str);
+ 
++void PolicerInfoInit(s_QosPolicer *QosPolicer_Info){    
++	QosPolicer_Info->Index = 0;   
++	QosPolicer_Info->Enable = NULL;    
++	QosPolicer_Info->Name = NULL;    
++	QosPolicer_Info->MeterType = NULL;	
++	QosPolicer_Info->CommittedRate = 0;	
++	QosPolicer_Info->CommittedBurstSize = 0;	
++	QosPolicer_Info->ExcessBurstSize = 0;	
++	QosPolicer_Info->PeakRate = 0; 	
++	QosPolicer_Info->PeakBurstSize = 0;
++	QosPolicer_Info->PartialConformingAction = NULL;
++	QosPolicer_Info->Partial_value = 0;
++	QosPolicer_Info->ConformingAction = NULL;
++	QosPolicer_Info->Conform_value = 0;
++	QosPolicer_Info->NonConformingAction = NULL;
++	QosPolicer_Info->NonConform_value = 0;
++	QosPolicer_Info->Class = NULL;
++	
++}
++void PolicerDelInit(s_QosPolicerDel *QosPolicerDel_Info){    
++	QosPolicerDel_Info->Index = 0;   
++}
++
+ void getQosPolicerBasicInfo(struct json_object *Jobj, s_QosPolicer *QosPolicer_Info) {
+ 	int i = 0;
+ 	json_object *ArrayObj = NULL;
+-
+-	QosPolicer_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
+-	QosPolicer_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-	QosPolicer_Info->X_ZYXEL_Name = (char*) json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Name"));
+-	QosPolicer_Info->MeterType = (char*) json_object_get_string(json_object_object_get(Jobj, "MeterType"));
+-	QosPolicer_Info->CommittedRate = json_object_get_int(json_object_object_get(Jobj, "CommittedRate"));
+-	QosPolicer_Info->CommittedBurstSize = json_object_get_int(json_object_object_get(Jobj, "CommittedBurstSize"));
+-	QosPolicer_Info->PartialConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "PartialConformingAction"));
+-	QosPolicer_Info->ExcessBurstSize = json_object_get_int(json_object_object_get(Jobj, "ExcessBurstSize"));
+-	QosPolicer_Info->PeakRate = json_object_get_int(json_object_object_get(Jobj, "PeakRate"));
+-	QosPolicer_Info->PeakBurstSize = json_object_get_int(json_object_object_get(Jobj, "PeakBurstSize"));
+-	QosPolicer_Info->ConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "ConformingAction"));
+-	QosPolicer_Info->NonConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "NonConformingAction"));
+-
+-	/*find the choose qos classes*/
+-	ArrayObj = json_object_object_get(Jobj, "choose_class_array");
+-	memset(&(QosPolicer_Info->ChooseClassArray), 0, sizeof(s_ArrayInfo));
+-	if(ArrayObj) {
+-		QosPolicer_Info->ChooseClassArray.length = json_object_array_length(ArrayObj);
+-		QosPolicer_Info->ChooseClassArray.array = (int*)malloc((QosPolicer_Info->ChooseClassArray.length)*sizeof(int));
+-		for(i=0; i<(QosPolicer_Info->ChooseClassArray.length); i++) {
+-			QosPolicer_Info->ChooseClassArray.array[i] = json_object_get_int(json_object_array_get_idx(ArrayObj, i));
++	char *PartialConformingAction = NULL;
++	char *ConformingAction = NULL;
++	char *NonConformingAction = NULL;
++	int partialvalue = 0, conformvalue = 0, nonconformvalue = 0;
++	QosPolicer_Info->Index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	if(json_object_object_get(Jobj, "Enable")!= NULL)
++		QosPolicer_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	if(json_object_object_get(Jobj, "Name")!= NULL)
++		QosPolicer_Info->Name = (char*) json_object_get_string(json_object_object_get(Jobj, "Name"));
++	if(json_object_object_get(Jobj, "MeterType")!= NULL)
++		QosPolicer_Info->MeterType = (char*) json_object_get_string(json_object_object_get(Jobj, "MeterType"));
++	if(json_object_object_get(Jobj, "CommittedRate")!= NULL)
++		QosPolicer_Info->CommittedRate = (json_object_get_int(json_object_object_get(Jobj, "CommittedRate")))*1000;
++	if(json_object_object_get(Jobj, "CommittedBurstSize")!= NULL)
++		QosPolicer_Info->CommittedBurstSize = (json_object_get_int(json_object_object_get(Jobj, "CommittedBurstSize")))*1000;
++	if(json_object_object_get(Jobj, "ExcessBurstSize")!= NULL)
++		QosPolicer_Info->ExcessBurstSize = (json_object_get_int(json_object_object_get(Jobj, "ExcessBurstSize")))*1000;
++	if(json_object_object_get(Jobj, "PeakRate")!= NULL)
++		QosPolicer_Info->PeakRate = (json_object_get_int(json_object_object_get(Jobj, "PeakRate")))*1000;
++	if(json_object_object_get(Jobj, "PeakBurstSize")!= NULL)
++		QosPolicer_Info->PeakBurstSize = (json_object_get_int(json_object_object_get(Jobj, "PeakBurstSize")))*1000;
++	if(json_object_object_get(Jobj, "PartialConformingAction")!= NULL){
++		PartialConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "PartialConformingAction"));
++		if(!strcmp(PartialConformingAction,"DSCPMark")){
++			partialvalue = json_object_get_int(json_object_object_get(Jobj, "Partial_value"));
++			strcpy(PartialConformingAction, "");
++			sprintf(PartialConformingAction, "%d", partialvalue);
+ 		}
++		QosPolicer_Info->PartialConformingAction = PartialConformingAction;
+ 	}
+-
+-#if(QOS_DAL_DEBUG == 1)
+-	printf("============== dump QosPolicer_Info ===============\n");
+-	printf("QosPolicer_Info->idx %d\n", QosPolicer_Info->idx);
+-	printf("QosPolicer_Info->Enable %d\n", QosPolicer_Info->Enable);
+-	printf("QosPolicer_Info->X_ZYXEL_Name %s\n", QosPolicer_Info->X_ZYXEL_Name);
+-	printf("QosPolicer_Info->MeterType %s\n", QosPolicer_Info->MeterType);
+-	printf("QosPolicer_Info->CommittedRate %d\n", QosPolicer_Info->CommittedRate);
+-	printf("QosPolicer_Info->CommittedBurstSize %d\n", QosPolicer_Info->CommittedBurstSize);
+-	printf("QosPolicer_Info->PartialConformingAction %s\n", QosPolicer_Info->PartialConformingAction);
+-	printf("QosPolicer_Info->ExcessBurstSize %d\n", QosPolicer_Info->ExcessBurstSize);
+-	printf("QosPolicer_Info->PeakRate %d\n", QosPolicer_Info->PeakRate);
+-	printf("QosPolicer_Info->PeakBurstSize %d\n", QosPolicer_Info->PeakBurstSize);
+-	printf("QosPolicer_Info->ConformingAction %s\n", QosPolicer_Info->ConformingAction);
+-	printf("QosPolicer_Info->NonConformingAction %s\n", QosPolicer_Info->NonConformingAction);
+-	printf("QosPolicer_Info->ChooseClassArray length = %d, ", QosPolicer_Info->ChooseClassArray.length);
+-	for(i=0; i<(QosPolicer_Info->ChooseClassArray.length); i++) {
+-		printf("%d ", QosPolicer_Info->ChooseClassArray.array[i]);
+-	}
+-	printf("\n");
+-	printf("=====================================================\n");
+-#endif
+-	return;
+-}
+-
+-void freeQosPolicerBasicInfo(s_QosPolicer *QosPolicer_Info) {
+-	free(QosPolicer_Info->ChooseClassArray.array);
++	if(json_object_object_get(Jobj, "ConformingAction")!= NULL){
++		ConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "ConformingAction"));
++		if(!strcmp(ConformingAction,"DSCPMark")){
++			conformvalue = json_object_get_int(json_object_object_get(Jobj, "Conform_value"));
++			strcpy(ConformingAction, "");
++			sprintf(ConformingAction, "%d", conformvalue);
++		}
++		QosPolicer_Info->ConformingAction = ConformingAction;
++	}
++	
++	if(json_object_object_get(Jobj, "NonConformingAction")!= NULL){
++		NonConformingAction = (char*)json_object_get_string(json_object_object_get(Jobj, "NonConformingAction"));
++		if(!strcmp(NonConformingAction,"DSCPMark")){
++			nonconformvalue = json_object_get_int(json_object_object_get(Jobj, "NonConform_value"));
++			strcpy(NonConformingAction, "");
++			sprintf(NonConformingAction, "%d", nonconformvalue);
++		}
++		QosPolicer_Info->NonConformingAction = NonConformingAction;
++	}
++	if(json_object_object_get(Jobj, "Class")!= NULL)
++		QosPolicer_Info->Class = json_object_get_string(json_object_object_get(Jobj, "Class"));
+ 	return;
+ }
+ 
+ void getQosPolicerDelInfo(struct json_object *Jobj, s_QosPolicerDel *QosPolicerDel_Info) {
+-	int i = 0;
+ 	json_object *ArrayObj = NULL;
+-
+-	QosPolicerDel_Info->idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
+-
+-	/*find the choose qos classes*/
+-	ArrayObj = json_object_object_get(Jobj, "choose_class_array");
+-	memset(&(QosPolicerDel_Info->ChooseClassArray), 0, sizeof(s_ArrayInfo));
+-	if(ArrayObj) {
+-		QosPolicerDel_Info->ChooseClassArray.length = json_object_array_length(ArrayObj);
+-		QosPolicerDel_Info->ChooseClassArray.array = (int*)malloc((QosPolicerDel_Info->ChooseClassArray.length)*sizeof(int));
+-		for(i=0; i<(QosPolicerDel_Info->ChooseClassArray.length); i++) {
+-			QosPolicerDel_Info->ChooseClassArray.array[i] = json_object_get_int(json_object_array_get_idx(ArrayObj, i));
+-		}
+-	}
++	QosPolicerDel_Info->Index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	return;
+ }
+ 
+-void freeQosPolicerDelInfo(s_QosPolicerDel *QosPolicerDel_Info) {
+-	free(QosPolicerDel_Info->ChooseClassArray.array);
++void prepareQosPolicerObj(struct json_object *Jobj,s_QosPolicer *QosPolicer_Info, json_object *policerObj) {
++
++	if(json_object_object_get(Jobj, "Enable") != NULL)
++		json_object_object_add(policerObj, "Enable", json_object_new_boolean(QosPolicer_Info->Enable));
++	if(json_object_object_get(Jobj, "Name") != NULL)
++		json_object_object_add(policerObj, "X_ZYXEL_Name", json_object_new_string(QosPolicer_Info->Name));
++	if(json_object_object_get(Jobj, "MeterType") != NULL)
++		json_object_object_add(policerObj, "MeterType", json_object_new_string(QosPolicer_Info->MeterType));
++	if(json_object_object_get(Jobj, "CommittedRate") != NULL)
++		json_object_object_add(policerObj, "CommittedRate", json_object_new_int(QosPolicer_Info->CommittedRate));
++	if(json_object_object_get(Jobj, "CommittedBurstSize") != NULL)
++		json_object_object_add(policerObj, "CommittedBurstSize", json_object_new_int(QosPolicer_Info->CommittedBurstSize));
++	if(json_object_object_get(Jobj, "PartialConformingAction") != NULL)
++		json_object_object_add(policerObj, "PartialConformingAction", json_object_new_string(QosPolicer_Info->PartialConformingAction));
++	if(json_object_object_get(Jobj, "ExcessBurstSize") != NULL)
++		json_object_object_add(policerObj, "ExcessBurstSize", json_object_new_int(QosPolicer_Info->ExcessBurstSize));
++	if(json_object_object_get(Jobj, "PeakRate") != NULL)
++		json_object_object_add(policerObj, "PeakRate", json_object_new_int(QosPolicer_Info->PeakRate));
++	if(json_object_object_get(Jobj, "PeakBurstSize") != NULL)
++		json_object_object_add(policerObj, "PeakBurstSize", json_object_new_int(QosPolicer_Info->PeakBurstSize));
++	if(json_object_object_get(Jobj, "ConformingAction") != NULL)
++		json_object_object_add(policerObj, "ConformingAction", json_object_new_string(QosPolicer_Info->ConformingAction));
++	if(json_object_object_get(Jobj, "NonConformingAction") != NULL)
++		json_object_object_add(policerObj, "NonConformingAction", json_object_new_string(QosPolicer_Info->NonConformingAction));
+ 	return;
+ }
+ 
+-void prepareQosPolicerObj(s_QosPolicer *QosPolicer_Info, json_object *policerObj) {
+-	printf("prepareQosPolicerObj\n");
+-	json_object_object_add(policerObj, "Enable", json_object_new_boolean(QosPolicer_Info->Enable));
+-	json_object_object_add(policerObj, "X_ZYXEL_Name", json_object_new_string(QosPolicer_Info->X_ZYXEL_Name));
+-	json_object_object_add(policerObj, "MeterType", json_object_new_string(QosPolicer_Info->MeterType));
+-	json_object_object_add(policerObj, "CommittedRate", json_object_new_int(QosPolicer_Info->CommittedRate));
+-	json_object_object_add(policerObj, "CommittedBurstSize", json_object_new_int(QosPolicer_Info->CommittedBurstSize));
+-	if(QosPolicer_Info->PartialConformingAction) {
+-		json_object_object_add(policerObj, "PartialConformingAction", json_object_new_string(QosPolicer_Info->PartialConformingAction));
++void checkOriginClass(char *policer_name, char *target){
++	char *Class_Policer = NULL;
++	char * Class_Name = NULL;
++	int i = 1;
++	json_object *classObj = NULL;
++	objIndex_t classIid = {0};
++	IID_INIT(classIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
++		Class_Policer = (char*)json_object_get_string(json_object_object_get(classObj, "Policer"));
++		Class_Name = (char*)json_object_get_string(json_object_object_get(classObj, "X_ZYXEL_Name"));
++		if(!strcmp(Class_Name,target) && !strcmp(Class_Policer, policer_name)){
++			ClassArray[i] = 1;	
++		}
++
++		if(!strcmp(Class_Name,target) && !strcmp(Class_Policer, "")){
++			ClassArray[i] = 2;	
++		}
++		zcfgFeJsonObjFree(classObj);
++		i++;
+ 	}
+-	json_object_object_add(policerObj, "ExcessBurstSize", json_object_new_int(QosPolicer_Info->ExcessBurstSize));
+-	json_object_object_add(policerObj, "PeakRate", json_object_new_int(QosPolicer_Info->PeakRate));
+-	json_object_object_add(policerObj, "PeakBurstSize", json_object_new_int(QosPolicer_Info->PeakBurstSize));
+-	json_object_object_add(policerObj, "ConformingAction", json_object_new_string(QosPolicer_Info->ConformingAction));
+-	json_object_object_add(policerObj, "NonConformingAction", json_object_new_string(QosPolicer_Info->NonConformingAction));
+ 	return;
+ }
+ 
+-void updateQosClass(e_ActionType action, char *policer_name, s_ArrayInfo ChooseClassArray){
+-	int i = 0;
++void updateQosClass(e_ActionType action, char *policer_name, char *target){
++	int i = 1;
+ 	char *Class_Policer = NULL;
++	char * Class_Name = NULL;
+ 	json_object *classObj = NULL;
+ 	objIndex_t classIid = {0};
+ 	IID_INIT(classIid);
+ 
+-	i = 0;
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS) {
+ 		Class_Policer = (char*)json_object_get_string(json_object_object_get(classObj, "Policer"));
+-		if((action == e_ActionType_ADD) && (ChooseClassArray.array[i] == 1) && (strstr(Class_Policer, "Policer")== NULL)) {
++		Class_Name = (char*)json_object_get_string(json_object_object_get(classObj, "X_ZYXEL_Name"));
++		if((action == e_ActionType_ADD) && !strcmp(Class_Name,target) && (strstr(Class_Policer, "Policer")== NULL)) {
+ 			json_object_object_add(classObj, "Policer", json_object_new_string(policer_name));
+ 			zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
+ 			printf("set Policer %s\n", policer_name);
+ 		}
+ 		else if(action == e_ActionType_EDIT) {
+-			if((ChooseClassArray.array[i] == 0) && (!strcmp(Class_Policer, policer_name)))  {
+-				// old config => remove
+-				json_object_object_add(classObj, "Policer", json_object_new_string(""));
++			if(ClassArray[i] == 1 && !strcmp(Class_Policer, policer_name)){
++				//not to change
++				json_object_object_add(classObj, "Policer", json_object_new_string(policer_name));
++				zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
+ 			}
+-			else if((ChooseClassArray.array[i] == 1) && (strstr(Class_Policer, "Policer")== NULL)) {
++			if(ClassArray[i] == 2 && !strcmp(Class_Policer, ""))  {
++				//new class
+ 				json_object_object_add(classObj, "Policer", json_object_new_string(policer_name));
++				zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
+ 			}
++			if(ClassArray[i] == 0 && !strcmp(Class_Policer, policer_name)){
++				//old class => remove
++				json_object_object_add(classObj, "Policer", json_object_new_string(""));
+ 			zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
+ 		}
+-		else if((action == e_ActionType_DELETE) && (ChooseClassArray.array[i] == 1) && (!strcmp(Class_Policer, policer_name))) {
++		}
++		else if(action == e_ActionType_DELETE && !strcmp(Class_Policer, policer_name)) {
+ 			json_object_object_add(classObj, "Policer", json_object_new_string(""));
+ 			zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &classIid, classObj, NULL);
+ 		}
+-		else {
+-#if(QOS_DAL_DEBUG == 1)			
+-			printf("updateQosClass: no update for qos class\n");
+-			printf("action %d, ChooseClass %d, Class_Policer %d %s\n", action, ChooseClassArray.array[i], Class_Policer, Class_Policer);
+-#endif			
+-		}
+ 		zcfgFeJsonObjFree(classObj);
+ 		i++;
+ 	}
++	return;
++}
+ 
++void zcfgFeDalShowQosPolicer(struct json_object *Jarray){	
++	int i, len = 0;	
++	const char *MeterType = NULL;
++	const char *conform = NULL;
++	const char *nonconform = NULL;
++	const char *partial = NULL;
++	bool showIndex = false;
++	struct json_object *obj, *obj_idx = NULL;		
++	if(json_object_get_type(Jarray) != json_type_array){				
++		printf("wrong Jobj format!\n");				
+ 	return;
+ }
+ 
++	len = json_object_array_length(Jarray);
++	obj_idx = json_object_array_get_idx(Jarray, 0);
++	showIndex = json_object_get_boolean(json_object_object_get(obj_idx, "ShowIndex"));
++
++	if(len == 1 && showIndex){
++		obj = json_object_array_get_idx(Jarray, 0);
++		MeterType = json_object_get_string(json_object_object_get(obj, "MeterType"));
++		conform = json_object_get_string(json_object_object_get(obj, "ConformingAction"));
++		nonconform = json_object_get_string(json_object_object_get(obj, "NonConformingAction"));
++		partial = json_object_get_string(json_object_object_get(obj, "PartialConformingAction"));
++		printf("Qos Policer Setup\n");
++		printf("%-50s %s \n","Index :", json_object_get_string(json_object_object_get(obj, "Index")));
++		printf("%-50s %d \n","Enable :", json_object_get_boolean(json_object_object_get(obj, "Enable")));
++		printf("%-50s %s \n","Name :", json_object_get_string(json_object_object_get(obj, "Name")));
++		printf("%-50s %s \n","Class :", json_object_get_string(json_object_object_get(obj, "Class")));
++		printf("%-50s %s \n","Meter Type :", json_object_get_string(json_object_object_get(obj, "MeterType")));
++		printf("%-50s %s Kbps \n","Committed Rate :", json_object_get_string(json_object_object_get(obj, "CommittedRate")));
++		printf("%-50s %s Kbytes \n","Committed Burst Size :", json_object_get_string(json_object_object_get(obj, "CommittedBurstSize")));
++		if(!strcmp(MeterType,"SingleRateThreeColor"))
++			printf("%-50s %s Kbytes \n","Excess Burst Size :",json_object_get_string(json_object_object_get(obj, "ExcessBurstSize")));
++		if(!strcmp(MeterType,"TwoRateThreeColor")){				
++			printf("%-50s %s Kbps \n","Peak Rate :",json_object_get_string(json_object_object_get(obj, "PeakRate")));				
++			printf("%-50s %s Kbytes \n","Peak Burst Size :",json_object_get_string(json_object_object_get(obj, "PeakBurstSize")));			
++		}
++		if(!strcmp(conform,"Pass"))				
++			printf("%-50s %s \n","Conforming Action :",json_object_get_string(json_object_object_get(obj, "ConformingAction")));			
++		else				
++			printf("%-50s DSCP Mark %s \n","Conforming Action :",json_object_get_string(json_object_object_get(obj, "ConformingAction")));
++		if(!strcmp(nonconform,"Drop"))				
++			printf("%-50s %s \n","Non-Conforming Action :",json_object_get_string(json_object_object_get(obj, "NonConformingAction")));	
++		else				
++			printf("%-50s DSCP Mark %s \n","Non-Conforming Action :",json_object_get_string(json_object_object_get(obj, "NonConformingAction")));
++		if(!strcmp(MeterType,"SingleRateThreeColor")||!strcmp(MeterType,"TwoRateThreeColor")){				
++			if(!strcmp(partial,"Pass")||!strcmp(partial,"Drop"))					
++				printf("%-50s %s \n","Partial Conforming Action :",json_object_get_string(json_object_object_get(obj, "PartialConformingAction")));				
++			else					
++				printf("%-50s DSCP Mark %s \n","Partial Conforming Action :",json_object_get_string(json_object_object_get(obj, "PartialConformingAction")));			
++		}
++	}
++
++	else{
++		printf("%-6s %-7s %-15s %-30s %-5s \n","Index", "Enable", "Name", "Classes", "Meter Type");	
++		for(i=0;i<len;i++){	
++			obj = json_object_array_get_idx(Jarray, i);				
++			printf("%-6s %-7s %-15s %-30s %-5s \n",
++			json_object_get_string(json_object_object_get(obj, "Index")),
++			json_object_get_string(json_object_object_get(obj, "Enable")),
++			json_object_get_string(json_object_object_get(obj, "Name")),
++			json_object_get_string(json_object_object_get(obj, "Class")),
++			json_object_get_string(json_object_object_get(obj, "MeterType")));
++		}
++	}
++
++}
++
++zcfgRet_t zcfgFeDalQosPolicerGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){	
++	zcfgRet_t ret = ZCFG_SUCCESS;	
++	struct json_object *pramJobj = NULL;	
++	struct json_object *policerObj = NULL;
++	struct json_object *classObj = NULL;
++	objIndex_t policerIid = {0};
++	objIndex_t classIid = {0};
++	char number[30] = {0};
++	int count = 1,index = 0,commitrate,commitburst,peakrate,peakburst,excess;
++	
++	IID_INIT(policerIid);
++	if(json_object_object_get(Jobj, "Index")){
++		index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		ret = convertIndextoIid(index, &policerIid, RDM_OID_QOS_POLICER, NULL, NULL, replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_POLICER, &policerIid , &policerObj) == ZCFG_SUCCESS){
++			sprintf(number, "%d", policerIid.idx[0]);
++			pramJobj = json_object_new_object();
++			commitrate = (json_object_get_int(json_object_object_get(policerObj, "CommittedRate")))/1000;
++			commitburst = (json_object_get_int(json_object_object_get(policerObj, "CommittedBurstSize")))/1000;
++			peakrate = (json_object_get_int(json_object_object_get(policerObj, "PeakRate")))/1000;
++			peakburst = (json_object_get_int(json_object_object_get(policerObj, "PeakBurstSize")))/1000;
++			excess = (json_object_get_int(json_object_object_get(policerObj, "ExcessBurstSize")))/1000;
++			json_object_object_add(pramJobj, "ShowIndex", json_object_new_boolean(true));
++			json_object_object_add(pramJobj, "Index", json_object_new_string(number));	
++			json_object_object_add(pramJobj, "Enable",  JSON_OBJ_COPY(json_object_object_get(policerObj, "Enable")));
++			json_object_object_add(pramJobj, "Name",  JSON_OBJ_COPY(json_object_object_get(policerObj, "X_ZYXEL_Name")));
++			json_object_object_add(pramJobj, "Class", json_object_new_string(number));			
++			json_object_object_add(pramJobj, "MeterType",JSON_OBJ_COPY(json_object_object_get(policerObj, "MeterType")));	
++			json_object_object_add(pramJobj, "CommittedRate",  json_object_new_int(commitrate));
++			json_object_object_add(pramJobj, "CommittedBurstSize",  json_object_new_int(commitburst));	
++			json_object_object_add(pramJobj, "ExcessBurstSize",  json_object_new_int(excess));	
++			json_object_object_add(pramJobj, "PeakRate",  json_object_new_int(peakrate));	
++			json_object_object_add(pramJobj, "PeakBurstSize",  json_object_new_int(peakburst));	
++			json_object_object_add(pramJobj, "ConformingAction", JSON_OBJ_COPY(json_object_object_get(policerObj, "ConformingAction")));	
++			json_object_object_add(pramJobj, "NonConformingAction",  JSON_OBJ_COPY(json_object_object_get(policerObj, "NonConformingAction")));	
++			json_object_object_add(pramJobj, "PartialConformingAction",  JSON_OBJ_COPY(json_object_object_get(policerObj, "PartialConformingAction")));	
++			json_object_array_add(Jarray, pramJobj);						
++			zcfgFeJsonObjFree(policerObj);	
++		}
++	}
++	else{
++		while(zcfgFeObjJsonGetNext(RDM_OID_QOS_POLICER, &policerIid , &policerObj) == ZCFG_SUCCESS){
++			sprintf(number, "%d", policerIid.idx[0]);
++			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Index", json_object_new_int(count));	
++			json_object_object_add(pramJobj, "Enable",  JSON_OBJ_COPY(json_object_object_get(policerObj, "Enable")));
++			json_object_object_add(pramJobj, "Name",  JSON_OBJ_COPY(json_object_object_get(policerObj, "X_ZYXEL_Name")));
++			json_object_object_add(pramJobj, "Class", json_object_new_string(number));			
++			json_object_object_add(pramJobj, "MeterType",JSON_OBJ_COPY(json_object_object_get(policerObj, "MeterType")));	
++			json_object_array_add(Jarray, pramJobj);		
++			count++;				
++			zcfgFeJsonObjFree(policerObj);	
++		}
++	}
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalQosPolicerAdd(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	s_QosPolicer QosPolicer_Info;
++	char *token = NULL;
+ 	char policer_name[30] = {0};
+ 	json_object *policerObj = NULL;
+ 	objIndex_t policerIid = {0};
+ 	IID_INIT(policerIid);
+-
+-#if(QOS_DAL_DEBUG == 1)			
+-	printf("zcfgFeDalQosPolicerAdd\n");
+-#endif	
++	PolicerInfoInit(&QosPolicer_Info);
+ 	getQosPolicerBasicInfo(Jobj, &QosPolicer_Info);
+-
+-	// POST RDM_OID_QOS_SHAPER
+-	if((ret = zcfgFeObjJsonAdd(RDM_OID_QOS_POLICER, &policerIid, NULL)) != ZCFG_SUCCESS) {
+-		return ret;
++	zcfg_offset_t oid;	
++	oid = RDM_OID_QOS_POLICER;	
++	if(QosPolicer_Info.Name != NULL){
++		ret = dalcmdParamCheck(NULL, QosPolicer_Info.Name , oid, "X_ZYXEL_Name", "Name",  replyMsg);		
++		if(ret != ZCFG_SUCCESS)			
++			return ret;
+ 	}
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_POLICER, &policerIid, &policerObj)) != ZCFG_SUCCESS) {
++	if(!strcmp(QosPolicer_Info.MeterType,"TwoRateThreeColor")){
++		if(QosPolicer_Info.PeakRate < QosPolicer_Info.CommittedRate){
++			printf("PeakRate need to equal or greater than CommittedRate.\n");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++	}
++	ret = zcfgFeObjJsonAdd(RDM_OID_QOS_POLICER, &policerIid, NULL);	
++	if(ret == ZCFG_SUCCESS) {
++		ret = zcfgFeObjJsonGet(RDM_OID_QOS_POLICER, &policerIid, &policerObj);	
++	}
++	if(ret == ZCFG_SUCCESS) {
++		prepareQosPolicerObj(Jobj,&QosPolicer_Info, policerObj);
++		zcfgFeObjJsonSet(RDM_OID_QOS_POLICER, &policerIid, policerObj, NULL);
++
++		sprintf(policer_name, "Policer.%d", policerIid.idx[0]);
++		token = strtok_r(QosPolicer_Info.Class, ",", &QosPolicer_Info.Class);
++		while(token != NULL){
++			checkOriginClass(policer_name, token);
++			updateQosClass(e_ActionType_ADD, policer_name, token); //PUT QOS CLASS
++			token = strtok_r(QosPolicer_Info.Class, ",", &QosPolicer_Info.Class);
++		}
++		//updatePolicerClassInfo(); // update qosPolicerClassTable
++		zcfgFeJsonObjFree(policerObj);	
++		return ret;
++	}		
++	else{		
++		printf("%s: Object retrieve fail\n", __FUNCTION__);		
+ 		return ret;
+ 	}
+-	prepareQosPolicerObj(&QosPolicer_Info, policerObj);
+-	zcfgFeObjJsonSet(RDM_OID_QOS_POLICER, &policerIid, policerObj, NULL);
+-
+-	sprintf(policer_name, "Policer.%d", policerIid.idx[0]);
+-	updateQosClass(e_ActionType_ADD, policer_name, QosPolicer_Info.ChooseClassArray); //PUT QOS CLASS
+-	//updatePolicerClassInfo(); // update qosPolicerClassTable
+-	freeQosPolicerBasicInfo(&QosPolicer_Info);
+-
+-	return ret;
+ }
+ 
+ zcfgRet_t zcfgFeDalQosPolicerEdit(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	int i = 0;
+ 	char policer_name[30] = {0};
+ 	s_QosPolicer QosPolicer_Info;
+ 	json_object *policerObj = NULL;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-21 14:24:18.469152707 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-21 14:29:34.145038300 +0800
+@@ -209,6 +209,7 @@
+ extern void zcfgFeDalShowQosGeneral(struct json_object *Jarray);
+ extern void zcfgFeDalShowQosShaper(struct json_object *Jarray);
+ extern void zcfgFeDalShowQosQueue(struct json_object *Jarray);
++extern void zcfgFeDalShowQosPolicer(struct json_object *Jarray);
+ extern void zcfgFeDalShowWwanBackup(struct json_object *Jarray);
+ extern void zcfgFeDalShowMailNotification(struct json_object *Jarray);
+ 
+@@ -247,7 +248,7 @@
+ {"qos_queue",		QosQueue_param,		zcfgFeDalQosQueue,		zcfgFeDalShowQosQueue,		"get|add|edit|delete",	"Qos"},//QoS
+ {"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass,		NULL,						"add|edit|delete",	""},//QoS
+ {"qos_shaper",		QosShaper_param,	zcfgFeDalQosShaper,		zcfgFeDalShowQosShaper,		"get|add|edit|delete",	"Qos"},//QoS
+-{"QOS_POLICER",		QosPolicer_param,	zcfgFeDalQosPolicer,	NULL,						"add|edit|delete",	""},//QoS
++{"qos_policer",		QosPolicer_param,	zcfgFeDalQosPolicer,	zcfgFeDalShowQosPolicer,	"get|add|edit|delete",	"Qos"},//QoS
+ {"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,NULL,					"edit",       		""},//Wireless
+ {"wps",				WIFI_WPS_param,		zcfgFeDalWifiWps,		zcfgFeDalShowWifiWps,		"edit|get",			"Wireless"},
+ {"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm,		NULL,						"edit",				""},//Wireless
+@@ -817,6 +818,28 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t getClassList(struct json_object **Jarray){
++	objIndex_t classIid;	
++	struct json_object *obj = NULL;
++	struct json_object *classObj = NULL;
++	const char *policer = NULL;
++	const char *name = NULL;
++	*Jarray = json_object_new_array();
++	IID_INIT(classIid);	
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_CLS, &classIid, &classObj) == ZCFG_SUCCESS){		
++		obj = json_object_new_object();
++		policer = json_object_get_string(json_object_object_get(classObj, "Policer"));
++		name = json_object_get_string(json_object_object_get(classObj, "X_ZYXEL_Name"));
++		json_object_object_add(obj, "Name", json_object_new_string(name));
++		json_object_object_add(obj, "Policer", json_object_new_string(policer));
++		json_object_array_add(*Jarray, obj);
++		
++		json_object_put(classObj);			
++	}	
++	return ZCFG_SUCCESS;
++}
++
++
+ zcfgRet_t getVoipMultiObj(struct json_object **VoipMultiObj){
+ 	objIndex_t voipIid;
+ 	struct json_object *voipObj = NULL, *obj = NULL;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-07-21 14:24:18.457152708 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-07-21 14:28:34.462624600 +0800
+@@ -100,7 +100,8 @@
+ 	dalType_ICMPv6,						//Firewall ICMPv6 list 
+ 	dalType_LocalCert,
+ 	dalType_emailAddr,					//call validateEmailAddr to check email is correct or not
+-	dalType_emailList					//list Email account and check email validation
++	dalType_emailList,					//list Email account and check email validation
++	dalType_ClassList
+ };
+ 
+ bool getSpecificObj(zcfg_offset_t oid, char *key, json_type type, void *value, objIndex_t *outIid, struct json_object **outJobj);

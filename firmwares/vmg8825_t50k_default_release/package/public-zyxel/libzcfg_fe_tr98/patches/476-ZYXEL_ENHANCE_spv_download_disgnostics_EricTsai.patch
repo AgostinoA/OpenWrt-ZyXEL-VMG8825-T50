@@ -1,0 +1,122 @@
+Index: libzcfg_fe_tr98-1.0/diag.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag.c	2017-06-23 17:31:26.660160679 +0800
++++ libzcfg_fe_tr98-1.0/diag.c	2017-06-23 17:30:48.498426600 +0800
+@@ -609,10 +609,10 @@
+ 	struct json_object *tmpObj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char iface[100] = {0};
++	//char iface[100] = {0};
+ 	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char tmpTr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char higherLayer[100] = {0};
++	//char higherLayer[100] = {0};
+ 	char devIpIface[100] = {0};
+ 	int nParm = 0;
+ 
+@@ -622,11 +622,15 @@
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_DIAG_DL_DIAG, &objIid, &dlDiagObj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++
+ 	if(multiJobj){
++		//zcfgFeSessMultiObjSetUtilize(multiJobj);
+ 		tmpObj = dlDiagObj;
+ 		dlDiagObj = NULL;
+ 		dlDiagObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_DIAG_DL_DIAG, &objIid, multiJobj, tmpObj);
+ 		json_object_put(tmpObj);
++		zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_IP_DIAG_DL_DIAG, &objIid, "partialset", json_object_new_boolean(true));
+ 	}
+ 
+ 	paramList = tr98Obj[handler].parameter;
+@@ -634,25 +638,51 @@
+ 	while((nParm < DOWNLOADDIAG_SET_PARM_NUM) && (paramList->name != NULL)) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(strstr(paramList->name, "Diagnost")) {
++			const char *tr181paramStr = json_object_get_string(json_object_object_get(dlDiagObj, "DiagnosticsState"));
++			const char *spvParamStr = json_object_get_string(paramValue);
++
++			if(spvParamStr && strcmp(spvParamStr, "Requested"))
++				return ZCFG_INVALID_PARAM_VALUE;
++
++			if(paramValue)
++				json_object_object_add(dlDiagObj, paramList->name, JSON_OBJ_COPY(paramValue));
++			else
++				json_object_object_del(dlDiagObj, paramList->name);
++
++			if(tr181paramStr && !strcmp(tr181paramStr, "Requested")){
++				// there's diagnostics on going
++			}else if(!tr181paramStr || strcmp(tr181paramStr, "Requested")){
++				if(!paramValue){
++
++				}
++			}
++			paramList++;
++			nParm++;
++			continue;
++		}
++
+ 		if(!paramValue) {
+ 			paramList++;
+ 			nParm++;
+ 			continue;
+ 		}
+ 
+-		if(strstr(paramList->name, "Diagnost")) {
+-			const char *paramStr = json_object_get_string(paramValue);
+-			//set empty to comply with std 'not configured'
+-		/*	if(strcmp(paramStr, "") && !strstr(paramStr, "Requested")) {
+-				json_object_put(dlDiagObj);
+-				return ZCFG_INVALID_PARAM_VALUE;
+-			}*/
+-			json_object_object_add(dlDiagObj, paramList->name, JSON_OBJ_COPY(paramValue));
+-		}else if(!strcmp(paramList->name, "Interface")) {
+-			sprintf(paramfault, "%s.%s", tr98FullPathName, paramList->name);
++		if(!strcmp(paramList->name, "Interface")) {
+ 			strcpy(tmpTr98ConnObjName, json_object_get_string(paramValue));
+ 			strcpy(tr98ConnObjName, tmpTr98ConnObjName);
+ 			ReplaceWANDeviceIndex(tmpTr98ConnObjName, tr98ConnObjName); //recover the active wan from WANDEV.1 back to it original WANDEV.
++			if(zcfgFe98To181IpIface(tr98ConnObjName, devIpIface) == ZCFG_SUCCESS){
++				json_object_object_add(dlDiagObj, paramList->name, json_object_new_string(devIpIface));
++			}else{
++				if(!multiJobj)
++					json_object_put(dlDiagObj);
++
++				sprintf(paramfault, "%s.%s", tr98FullPathName, paramList->name);
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++
++#if 0
+ 			if(zcfgFe98To181MappingNameGet(tr98ConnObjName, iface) != ZCFG_SUCCESS) {
+ 				json_object_object_add(dlDiagObj, paramList->name, json_object_new_string(""));
+ 			}else {
+@@ -669,6 +699,8 @@
+ 				json_object_object_add(dlDiagObj, paramList->name, json_object_new_string(devIpIface));
+ 			}			
+ 			strcpy(paramfault, "");
++#endif
++
+ 		}else {
+ 			json_object_object_add(dlDiagObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 		}
+@@ -676,14 +708,15 @@
+ 		paramList++;	
+ 	}
+ 
+-	json_object_object_add(dlDiagObj, "X_ZYXEL_Creator", json_object_new_string("ACS"));
++	//json_object_object_add(dlDiagObj, "X_ZYXEL_Creator", json_object_new_string("ACS"));
+ 
+ 	/*Set Device.Routing.Router.1.IPv4Forwarding.i*/
+ 	if(multiJobj){
+ 		//json_object_put(tmpObj);
+ 	}
+ 	else{
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_DIAG_DL_DIAG, &objIid, dlDiagObj, NULL)) != ZCFG_SUCCESS ) {
++		//if((ret = zcfgFeObjJsonSet(RDM_OID_IP_DIAG_DL_DIAG, &objIid, dlDiagObj, NULL)) != ZCFG_SUCCESS ) {
++		if((ret = zcfgFeObjWrite(RDM_OID_IP_DIAG_DL_DIAG, &objIid, dlDiagObj, REQUEST_SET_OBJ | ZCFG_PARTIAL_OBJECT_SET, NULL)) != ZCFG_SUCCESS ) {
+ 			json_object_put(dlDiagObj);
+ 			return ret;
+ 		}

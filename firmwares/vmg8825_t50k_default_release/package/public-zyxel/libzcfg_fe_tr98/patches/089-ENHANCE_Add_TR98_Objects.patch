@@ -1,0 +1,278 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2014-12-10 09:54:38.260826441 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2014-12-10 09:59:16.077341253 +0800
+@@ -2325,11 +2325,8 @@
+ 	struct json_object *ethIntfStatJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char *ptr = NULL;
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+-	ptr = strstr(tr98TmpName, ".Stats");
+-	*ptr = '\0';
+ 	
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+@@ -2611,6 +2608,57 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.Stats
++    Related object in TR181: Device.WiFi.SSID.i.Stats.
++*/
++zcfgRet_t lanDevWlanCfgStatObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181PathName[128] = {0};
++	char tr181Obj[128] = {0};
++	uint32_t  wlanCfgStatOid = 0;
++	objIndex_t wlanCfgStatIid;
++	struct json_object *wlanCfgStatJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++	
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, tr181PathName)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get TR181 mapping name fail.\n", __FUNCTION__);
++		return ret;
++	}
++	
++	IID_INIT(wlanCfgStatIid);
++	sprintf(tr181Obj, "Device.%s", tr181PathName);
++	wlanCfgStatOid = zcfgFeObjNameToObjId(tr181Obj, &wlanCfgStatIid);
++	if((ret = feObjJsonGet(wlanCfgStatOid, &wlanCfgStatIid, &wlanCfgStatJobj, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get wlanCfgStatJobj fail.\n", __FUNCTION__);
++		return ret;
++	}
++	
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(wlanCfgStatJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++
++	json_object_put(wlanCfgStatJobj);	
++	return ZCFG_SUCCESS;
++}
++
++
+ static void wifiSecuritySet(struct json_object *apSecJobj, struct json_object *tr98Jobj, struct json_object *beaconType, int wepKeyLen)
+ {
+ 	char type[12] = {0};
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2014-12-10 09:54:38.316826442 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2014-12-10 09:54:38.460826445 +0800
+@@ -276,6 +276,22 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_LanDevWlanCfgStat[] = {
++	{ "ErrorsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "ErrorsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "UnicastPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "UnicastPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "DiscardPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "DiscardPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "MulticastPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "MulticastPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "BroadcastPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "BroadcastPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ "UnknownProtoPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++	{ NULL, 0, 0, 0}
++
++};
++
+ tr98Parameter_t para_LanDevWlanCfgWps[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "DeviceName", PARAMETER_ATTR_READONLY, 33, json_type_string},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2014-12-10 09:54:38.404826444 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2014-12-10 09:54:38.460826445 +0800
+@@ -269,7 +269,7 @@
+ //{TR98_LAN_USB_INTF_CONF,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_USB_INTF_CONF_STAT,   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_LAN_DEV_WLAN_CFG,         ATTR_INDEXNODE,	para_LanDevWlanCfg,     lanDevWlanCfgObjGet,     lanDevWlanCfgObjSet,    NULL,             NULL,            NULL},
+-//{TR98_WLAN_CFG_STAT,            0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_WLAN_CFG_STAT,            0,              para_LanDevWlanCfgStat, lanDevWlanCfgStatObjGet,        NULL,                   NULL,             NULL,            NULL},
+ {TR98_WPS,                      0,              para_LanDevWlanCfgWps,  lanDevWlanCfgWpsObjGet,  lanDevWlanCfgWpsObjSet, NULL,             NULL,            NULL},
+ //{TR98_REG,                      ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_ASSOC_DEV,                ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+@@ -288,8 +288,8 @@
+ //{TR98_WAN_COMM_INTF_CONNECT,    ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_DSL_INTF_CONF,        0,              para_WANDslIfaceCfg,    WANDslIfaceCfgObjGet,    WANDslIfaceCfgObjSet,   NULL,             NULL,            NULL},
+ {TR98_WAN_DSL_INTF_TEST_PARAM,  0,              para_WANDslIfTestParam, WANDslIfTestParamObjGet,    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_WAN_DSL_INTF_CONF_STAT,   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_TTL,                      0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_WAN_DSL_INTF_CONF_STAT,   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_TTL,                      0,              para_WANDslIfaceCfgStatTotal,  WANDslIfaceCfgTtlObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_ST,                       0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LST_SHOWTIME,             0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_CURRENT_DAY,              0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2014-12-10 09:54:38.260826441 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2014-12-10 09:54:38.460826445 +0800
+@@ -20,6 +20,7 @@
+ extern tr98Parameter_t para_LanEthIntfConf[];
+ extern tr98Parameter_t para_LanEthIntfConfStat[];
+ extern tr98Parameter_t para_LanDevWlanCfg[];
++extern tr98Parameter_t para_LanDevWlanCfgStat[];
+ extern tr98Parameter_t para_LanDevWlanCfgWps[];
+ extern tr98Parameter_t para_WepKey[];
+ extern tr98Parameter_t para_Psk[];
+@@ -85,6 +86,9 @@
+ extern zcfgRet_t lanDevWlanCfgObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t lanDevWlanCfgObjSet(char *, int, struct json_object *, struct json_object *);
+ 
++/*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.Stats*/
++extern zcfgRet_t lanDevWlanCfgStatObjGet(char *, int, struct json_object **, bool);
++
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WPS*/
+ extern zcfgRet_t lanDevWlanCfgWpsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevWlanCfgWpsObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2014-12-10 09:54:38.432826444 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2014-12-10 09:58:46.204831197 +0800
+@@ -546,6 +546,70 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.Total
++
++    Related object in TR181:
++    Device.DSL.Line.i.Stats.Total.
++*/
++extern zcfgRet_t WANDslIfaceCfgTtlObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181PathName[128] = {0};
++	char tr181Obj[128] = {0};
++	tr98Parameter_t *paramList = NULL;
++	objIndex_t dslLineIid;
++	uint32_t  dslLineOid = 0;
++	struct json_object *dslStasTotal = NULL;
++	struct json_object *paramValue = NULL;
++	char vendorParamName[32] = {0};
++	struct json_object *vendorParamValue = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, tr181PathName)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get TR181 mapping name fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(dslLineIid);
++	sprintf(tr181Obj, "Device.%s", tr181PathName);
++	dslLineOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
++	if((ret = feObjJsonGet(dslLineOid, &dslLineIid, &dslStasTotal, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get dslStasTotal obj fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	/*fill up tr98 LANEthernetInterfaceConfig.i.Stats object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		sprintf(vendorParamName, "X_ZYXEL_%s", paramList->name);
++		paramValue = json_object_object_get(dslStasTotal, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		else if( (vendorParamValue = json_object_object_get(dslStasTotal, vendorParamName)) != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(vendorParamValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++
++	json_object_put(dslStasTotal);	
++	return ZCFG_SUCCESS;
++}
++
++
+ /*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANEthernetInterfaceConfig
+  *
+  *  Related object in TR181:
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2014-12-10 09:54:38.288826441 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2014-12-10 09:54:38.464826445 +0800
+@@ -159,6 +159,29 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_WANDslIfaceCfgStatTotal[] = {
++	{ "ReceiveBlocks", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "TransmitBlocks", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CellDelin", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LinkRetrain", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "InitErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LInit", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "InitTimeouts", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LossOfFraming", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LOF", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "ErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "SeverelyErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCSeverelyErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "FECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCFECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "HECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCHECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CRCErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCCRCErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WANEthIntfConf[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2014-12-10 09:54:37.908826434 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2014-12-10 09:54:38.464826445 +0800
+@@ -5,6 +5,7 @@
+ extern tr98Parameter_t para_WANCommIfaceCfg[];
+ extern tr98Parameter_t para_WANDslIfaceCfg[];
+ extern tr98Parameter_t para_WANDslIfTestParam[];
++extern tr98Parameter_t para_WANDslIfaceCfgStatTotal[];
+ extern tr98Parameter_t para_WANEthIntfConf[];
+ extern tr98Parameter_t para_WANEthIntfConfStat[];
+ extern tr98Parameter_t para_WANDslLinkConf[];
+@@ -56,6 +57,9 @@
+ /*InternetGatewayDevice.WANDevice.i.WANEthernetInterfaceConfig.TestParams*/
+ extern zcfgRet_t WANDslIfTestParamObjGet(char *, int, struct json_object **, bool);
+ 
++/*InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.Total*/
++extern zcfgRet_t WANDslIfaceCfgTtlObjGet(char *, int, struct json_object **, bool);
++
+ extern zcfgRet_t WANEthIfaceCfgObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t WANEthIfaceCfgObjSet(char *, int, struct json_object *, struct json_object *);
+ 

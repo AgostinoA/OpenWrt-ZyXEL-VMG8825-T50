@@ -1,0 +1,97 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2016-12-22 16:11:52.037824604 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2016-12-22 16:11:52.097824605 +0800
+@@ -23,6 +23,7 @@
+ CFLAGS += -DIPV6INTERFACE_PROFILE -DDHCPV6CLIENT_PROFILE -DIPV6RD_PROFILE -DROUTERADVERTISEMENT_PROFILE -DIPV6SERVER_PROFILE
+ CFLAGS += -DZCFG_DYNAMIC_NAMEMAPPING -DZCFG_PARM_NAMEMAPPING
+ CFLAGS += -DZYXEL_EXT=1
++CFLAGS += -DZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
+ 
+ #Generic
+ ifneq ($(strip $(CONFIG_PACKAGE_ZyIMS)),)
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-12-22 16:11:52.069824605 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-12-22 16:12:25.905873200 +0800
+@@ -37,6 +37,10 @@
+ #endif
+ 
+ static struct json_object *tr98StaticNameTable = NULL;
++
++#ifdef ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
++static struct json_object *sessMultiObjSet = NULL;
++#endif
+ int volatile wanDeviceInstanceNum = 0;
+ bool StaticWanDevOption = false;
+ 
+@@ -606,6 +610,40 @@
+ }
+ #endif
+ 
++#ifdef ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
++void zcfgFeSessMultiObjSetClear()
++{
++	if(sessMultiObjSet){
++		json_object_put(sessMultiObjSet);
++		sessMultiObjSet = NULL;
++	}
++}
++
++struct json_object *zcfgFeSessMultiObjSetRetrieve()
++{
++	return sessMultiObjSet;
++}
++
++void zcfgFeSessMultiObjSetSave(struct json_object *multiobj)
++{
++	sessMultiObjSet = multiobj;
++
++}
++
++// utilize session MultiObjSet, and it ought to apply multiobjset on session complete
++struct json_object *zcfgFeSessMultiObjSetUtilize(struct json_object *multiobj)
++{
++	struct json_object *multiObjSet = zcfgFeSessMultiObjSetRetrieve();
++	if(!multiObjSet){
++		multiObjSet = json_object_new_object();
++		sessMultiObjSet = multiObjSet;
++	}
++	json_object_object_add(sessMultiObjSet, "applyonsesscomp", json_object_new_boolean(true));
++	multiobj = NULL;
++	return sessMultiObjSet;
++}
++#endif //ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
++
+ #ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+ #if 0
+ zcfgRet_t ReplaceWANDeviceIndex(char* pathname)
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2016-12-22 16:11:51.745824598 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2016-12-22 16:11:32.432873200 +0800
+@@ -236,6 +236,7 @@
+ 
+ #define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+ 
++#define JSON_OBJ_EMPTY(obj) (!obj || (obj && (json_object_get_object(obj)->count == 0)))
+ 
+ zcfgRet_t feObjStructGet(zcfg_offset_t , objIndex_t *, void **, bool);
+ zcfgRet_t feObjStructGetNext(zcfg_offset_t , objIndex_t *, void **, bool);
+@@ -244,4 +245,16 @@
+ zcfgRet_t feObjJsonGetNext(zcfg_offset_t , objIndex_t *, struct json_object **, bool);
+ zcfgRet_t feObjJsonSubNext(zcfg_offset_t ,objIndex_t * ,objIndex_t * , struct json_object ** ,bool );
+ 
++#ifdef ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
++void zcfgFeSessMultiObjSetClear();
++struct json_object *zcfgFeSessMultiObjSetRetrieve();
++void zcfgFeSessMultiObjSetSave(struct json_object *multiobj);
++struct json_object *zcfgFeSessMultiObjSetUtilize(struct json_object *multiobj);
++#else
++#define zcfgFeSessMultiObjSetClear() { }
++#define zcfgFeSessMultiObjSetRetrieve() NULL
++#define zcfgFeSessMultiObjSetSave(obj) { }
++#define zcfgFeSessMultiObjSetUtilize(obj) obj
++#endif
++
+ #endif

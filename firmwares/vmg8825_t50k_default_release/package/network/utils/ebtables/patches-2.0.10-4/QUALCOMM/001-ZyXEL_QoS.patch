@@ -1,0 +1,1688 @@
+Index: ebtables-v2.0.10-4/extensions/Makefile
+===================================================================
+--- ebtables-v2.0.10-4.orig/extensions/Makefile	2014-01-20 19:32:29.845277204 +0800
++++ ebtables-v2.0.10-4/extensions/Makefile	2014-01-07 15:11:57.000000000 +0800
+@@ -3,7 +3,8 @@
+ #BRCM begin
+ #EXT_FUNC+=802_3 nat arp arpreply ip ip6 standard log redirect vlan mark_m mark \
+ #          pkttype stp among limit ulog nflog
+-EXT_FUNC+=ip ip6 standard vlan mark_m mark time ftos skiplog
++# ZyXEL QoS, John (porting from MSTC)
++EXT_FUNC+=ip ip6 standard vlan mark_m mark time ftos skiplog AUTOMAP policer
+ ifeq ($(strip $(WIRELESS)),1)
+ EXT_FUNC+=wmm_mark
+ endif
+Index: ebtables-v2.0.10-4/extensions/ebt_AUTOMAP.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.10-4/extensions/ebt_AUTOMAP.c	2014-01-07 20:53:01.000000000 +0800
+@@ -0,0 +1,137 @@
++/* 
++ * Description: EBTables auto priority mapping module for userspace.
++ *  Authors:  Jeff Liu <Jeff.Liu@mitrastar.com.tw>
++ *           The following is the original disclaimer.
++ *
++ * Shared library add-on to ebtables for AUTOMAP
++ *
++ * (C) 2011 by Jeff Liu <Jeff.Liu@mitrastar.com.tw>
++ *
++ * This program is distributed under the terms of GNU GPL v2, 1991
++ *
++ */
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_AUTOMAP.h"
++
++static int automapType_supplied;
++
++#define AUTOMAP_TYPE  '1'
++
++static struct option opts[] =
++{
++	{ "automap-type" , required_argument, 0, AUTOMAP_TYPE },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"AUTOMAP target options:\n"
++	" --automap-type :\n"
++	"			 Auto priority mapping by defined type(1:802.1P 2:DSCP 4:IP Length)\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_automap_t_info *automapinfo =
++	   (struct ebt_automap_t_info *)target->data;
++
++	automapinfo->type = AUTOMAP_TYPE_PKTLEN;
++	automapinfo->marktable[0]=0x0;   /* Queue priority 0*/
++	automapinfo->marktable[1]=0x1;   /* Queue priority 1*/
++	automapinfo->marktable[2]=0x2;   /* Queue priority 2*/
++	automapinfo->marktable[3]=0x3;   /* Queue priority 3*/
++	automapinfo->marktable[4]=0x4;   /* Queue priority 4*/
++	automapinfo->marktable[5]=0x5;   /* Queue priority 5*/
++	automapinfo->marktable[6]=0x6;   /* Queue priority 6*/
++	automapinfo->marktable[6]=0x7;   /* Queue priority 7*/
++	automapType_supplied = 0;
++}
++
++static int
++parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_automap_t_info *automapinfo =
++	   (struct ebt_automap_t_info *)(*target)->data;
++	int type;
++
++	switch (c) {
++	case AUTOMAP_TYPE:
++		ebt_check_option2(flags, AUTOMAP_TYPE);
++		type = strtol(argv[optind - 1], NULL, 0);
++		if((type!=AUTOMAP_TYPE_DSCP)&&
++				(type!=AUTOMAP_TYPE_8021P)&&
++				(type!=AUTOMAP_TYPE_PKTLEN)){
++			ebt_print_error("Invalid mapping type (1:802.1P 2:DSCP 4:IP Length)");
++		}
++		automapinfo->type = type;
++		automapType_supplied = 1;
++		break;
++	 default:
++		return 0;
++	}
++	return 1;
++}
++
++static void
++final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	if (time == 0 && automapType_supplied == 0)
++		ebt_print_error("No automap type supplied");
++}
++
++
++/* Prints out the targinfo. */
++static void 
++print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	const struct ebt_automap_t_info *automapinfo = (const struct ebt_automap_t_info*)target->data;
++	if(automapinfo->type == AUTOMAP_TYPE_DSCP)
++		printf("automap type is DSCP");
++	else if(automapinfo->type == AUTOMAP_TYPE_8021P)
++		printf("automap type is 8021P");
++	else if(automapinfo->type == AUTOMAP_TYPE_PKTLEN)
++		printf("automap type is PKTLEN");
++}
++
++static int 
++compare(const struct ebt_entry_target *t1,
++  	 const struct ebt_entry_target *t2)
++{
++	struct ebt_automap_t_info *automapinfo1 =
++	   (struct ebt_automap_t_info *)t1->data;
++	struct ebt_automap_t_info *automapinfo2 =
++	   (struct ebt_automap_t_info *)t2->data;
++
++	return automapinfo1->type == automapinfo2->type;
++}
++
++static
++struct  ebt_u_target automap_target = 
++{
++    EBT_AUTOMAP_TARGET,
++    sizeof(struct ebt_automap_t_info),
++    print_help,
++    init,
++    parse,
++    final_check,
++    print,
++    compare,
++    opts
++};
++
++static void _init(void) __attribute__ ((constructor));
++static void _init(void)
++{
++	ebt_register_target(&automap_target);
++}
+Index: ebtables-v2.0.10-4/extensions/ebt_ip.c
+===================================================================
+--- ebtables-v2.0.10-4.orig/extensions/ebt_ip.c	2014-01-20 19:32:29.841277205 +0800
++++ ebtables-v2.0.10-4/extensions/ebt_ip.c	2014-01-07 20:22:49.000000000 +0800
+@@ -15,9 +15,11 @@
+ #include <string.h>
+ #include <getopt.h>
+ #include <netdb.h>
++#include <ctype.h>
+ #include "../include/ebtables_u.h"
+ #include "../include/linux/netfilter_bridge/ebt_ip.h"
+ 
++
+ #define IP_SOURCE '1'
+ #define IP_DEST   '2'
+ #define IP_myTOS  '3' /* include/bits/in.h seems to already define IP_TOS */
+@@ -25,6 +27,15 @@
+ #define IP_SPORT  '5'
+ #define IP_DPORT  '6'
+ #define IP_myDSCP '7' /* brcm */
++#if 1 /* ZyXEL QoS, John */
++#define IP_LENGTH '8'
++#define IP_TCP_FLAGS '9'
++#define IP_DHCP_OPT60 'A'
++#define IP_DHCP_OPT61 'B'
++#define IP_DHCP_OPT77 'C'
++#define IP_DHCP_OPT125 'D'
++
++#endif
+ 
+ static struct option opts[] =
+ {
+@@ -40,6 +51,15 @@
+ 	{ "ip-destination-port" , required_argument, 0, IP_DPORT  },
+ 	{ "ip-dport"            , required_argument, 0, IP_DPORT  },
+ 	{ "ip-dscp"             , required_argument, 0, IP_myDSCP }, /* brcm */
++#if 1 /* ZyXEL QoS, John */
++	{ "ip-length"            , required_argument, 0, IP_LENGTH  },
++	{ "ip-len"            , required_argument, 0, IP_LENGTH  },
++    { "ip-tcp-flags"            , required_argument, 0, IP_TCP_FLAGS  },
++    { "ip-dhcp-opt60", required_argument, 0, IP_DHCP_OPT60 },
++    { "ip-dhcp-opt61", required_argument, 0, IP_DHCP_OPT61 },
++    { "ip-dhcp-opt77", required_argument, 0, IP_DHCP_OPT77 },
++    { "ip-dhcp-opt125", required_argument, 0, IP_DHCP_OPT125 },
++#endif
+ 	{ 0 }
+ };
+ 
+@@ -98,6 +118,335 @@
+ 		printf("%d:%d ", ports[0], ports[1]);
+ }
+ 
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++static uint16_t parse_length(const char *name)
++{
++	char *end;
++	int length;
++
++	length = strtol(name, &end, 10);
++
++	if (*end != '\0'){
++		ebt_print_error("Problem with specified length '%s'", name);
++		return 0; /* never reached */
++	}else if (length >= 0 || length <= 0xFFFF) {
++		return length;
++	}	
++}
++
++static void
++parse_length_range( const char *lengthstring, uint16_t *length)
++{
++	char *buffer;
++	char *cp;
++	
++	buffer = strdup(lengthstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		length[0] = length[1] = parse_length(buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		length[0] = buffer[0] ? parse_length( buffer) : 0;
++		length[1] = cp[0] ? parse_length( cp) : 0xFFFF;
++		
++		if (length[0] > length[1])
++			ebt_print_error("Invalid lengthrange (min > max)");
++	}
++	free(buffer);
++}
++
++static void print_length_range(uint16_t *length)
++{
++	if (length[0] == length[1])
++		printf("%d ", length[0]);
++	else
++		printf("%d:%d ", length[0], length[1]);
++}
++
++struct tcp_flag_names {
++	const char *name;
++	unsigned int flag;
++};
++
++static struct tcp_flag_names tcp_flag_table[]
++= { { "FIN", 0x01 },
++    { "SYN", 0x02 },
++    { "RST", 0x04 },
++    { "PSH", 0x08 },
++    { "ACK", 0x10 },
++    { "URG", 0x20 },
++    { "ALL", 0x3F },
++    { "NONE", 0 },
++};
++
++static unsigned int
++parse_tcp_flag(const char *flags)
++{
++	unsigned int ret = 0;
++	char *ptr;
++	char *buffer;
++
++	buffer = strdup(flags);
++
++	for (ptr = strtok(buffer, ","); ptr; ptr = strtok(NULL, ",")) {
++		unsigned int i;
++		for (i = 0;
++		     i < sizeof(tcp_flag_table)/sizeof(struct tcp_flag_names);
++		     i++) {
++			if (strcasecmp(tcp_flag_table[i].name, ptr) == 0) {
++				ret |= tcp_flag_table[i].flag;
++				break;
++			}
++		}
++		if (i == sizeof(tcp_flag_table)/sizeof(struct tcp_flag_names))
++			ebt_print_error("Unknown TCP flag `%s'", ptr);
++		}
++
++	free(buffer);
++	return ret;
++}
++
++static void
++parse_tcp_flags(struct ebt_ip_info *ipinfo,
++		const char *mask,
++		const char *cmp)
++{
++	ipinfo->tcp_flg_mask = parse_tcp_flag(mask);
++	ipinfo->tcp_flg_cmp = parse_tcp_flag(cmp);
++}
++
++static void
++print_tcpf(u_int8_t flags)
++{
++	int have_flag = 0;
++
++	while (flags) {
++		unsigned int i;
++
++		for (i = 0; (flags & tcp_flag_table[i].flag) == 0; i++);
++
++		if (have_flag)
++			printf(",");
++		printf("%s", tcp_flag_table[i].name);
++		have_flag = 1;
++
++		flags &= ~tcp_flag_table[i].flag;
++	}
++
++	if (!have_flag)
++		printf("NONE");
++}
++
++static void
++print_tcp_flags(u_int8_t mask, u_int8_t cmp)
++{
++	if (mask ) {
++		print_tcpf(mask);
++		printf(" ");
++		print_tcpf(cmp);
++		printf(" ");
++	}
++}
++
++static int
++dhcp_isxdigit(char *cfgstr){
++        int i =0;
++        printf("\n=========\n");
++        for(i=0; i<strlen(cfgstr); i++){
++                printf("%c",*(cfgstr+i));
++                if(!isxdigit(*(cfgstr+i))){
++                        return -1;
++                }
++        }
++        return 0;
++}
++
++static void
++parse_dhcp_opt60(struct cfgopt *cfg60, char *classidentifier, char *NextArg){
++
++        if(NextArg!=NULL && *NextArg != '-')
++                ebt_print_error("For DHCP Option 60 the class identifer string"
++                                        " must be speified by \"<Vendor Class Identifer>\"");
++
++        cfg60->len = strlen(classidentifier);
++
++        memset(cfg60->cfgdata, 0, sizeof(cfg60->cfgdata));
++        strcpy(cfg60->cfgdata, classidentifier);
++}
++
++static void
++parse_dhcp_opt61(struct cfgopt *cfg61, char *type, char *clientid, char *NextArg){
++
++        int i = 0, data_len = 0;
++        char data[8];
++
++        if(NextArg!=NULL && *NextArg != '-')
++                ebt_print_error("For DHCP Option 61, you must specify <Type> <Client ID>. ");
++
++        if(strlen(clientid)%2)
++                        ebt_print_error("For DHCP Option 61, you must specify client id with even digits. ");
++
++        if(dhcp_isxdigit(type) || dhcp_isxdigit(clientid))
++                ebt_print_error("For DHCP Option 61, you must specify value with hexadecimal. ");
++
++        memset(cfg61->cfgdata, 0, sizeof(cfg61->cfgdata));
++        memset(data, 0, sizeof(data));
++
++        data_len = strlen(clientid)/2;
++
++        cfg61->len = data_len + 1; /* Length is type + clientid */
++        cfg61->cfgdata[0] = strtol(type, NULL, 16);
++
++        for( i=0; i<data_len; i++){
++                strncpy(data, clientid+(i*2), 2);
++                data[2] = '\0';
++                cfg61->cfgdata[i+1] = strtol(data, NULL, 16);
++        }
++
++}
++
++static void
++parse_dhcp_opt77(struct cfgopt *cfg77, char *UserClassData, char *NextArg)
++{
++        int i=0, data_len=0;
++        char cfg[255],data[8];
++
++        if(NextArg!=NULL && *NextArg != '-')
++                ebt_print_error("For DHCP Option 77, you must specify <User Class Data>");
++
++        if(strlen(UserClassData)%2)
++                        ebt_print_error("For DHCP Option 77, you must specify user class data with even digits");
++
++        if(dhcp_isxdigit(UserClassData))
++                ebt_print_error("For DHCP Option 77, you must specify value with hexadecimal. ");
++
++        memset(cfg77->cfgdata, 0, sizeof(cfg77->cfgdata));
++        memset(cfg, 0, sizeof(cfg));
++        memset(data, 0, sizeof(data));
++
++        strcpy(cfg,UserClassData);
++
++        data_len = strlen(cfg)/2;/* length of user class data */
++
++        cfg77->len = data_len;
++
++        for( i=0; i<data_len; i++){
++                strncpy(data, cfg+(i*2), 2);
++                data[2] = '\0';
++                cfg77->cfgdata[i] = strtol(data, NULL, 16);
++        }
++
++
++}
++
++static void
++parse_dhcp_opt125(struct cfgopt *cfg125, char *EnterpriseNum, char *VendorClassData, char *NextArg)
++{
++        int i=0, data_len=0;
++        char cfg[255],data[8];
++
++        if(NextArg!=NULL && *NextArg != '-')
++                ebt_print_error("For DHCP Option 125, you must specify <Enterprise Number> <Vendor Class Data>");
++
++        if(strlen(EnterpriseNum)!=8)
++                ebt_print_error("For DHCP Option 125, Enterprise Number is 8 hexaecimal digits");
++
++        if(strlen(VendorClassData)%2)
++                        ebt_print_error("For DHCP Option 125, you must specify vendor class data with even digits");
++
++        if(dhcp_isxdigit(EnterpriseNum) || dhcp_isxdigit(VendorClassData))
++                        ebt_print_error("For DHCP Option 125, you must specify value with hexadecimal. ");
++
++        memset(cfg125->cfgdata, 0, sizeof(cfg125->cfgdata));
++        memset(cfg, 0, sizeof(cfg));
++        memset(data, 0, sizeof(data));
++
++        sprintf(cfg, "%s%02x%s", EnterpriseNum, strlen(VendorClassData)/2,VendorClassData);
++
++        data_len = strlen(cfg)/2; /* Length is enterprise number + data length + vendor class data */
++
++        cfg125->len = data_len;
++
++        for( i=0; i<data_len; i++){
++                strncpy(data, cfg+(i*2), 2);
++                data[2] = '\0';
++                cfg125->cfgdata[i] = strtol(data, NULL, 16);
++        }
++}
++
++static void print_dhcp_opt60(struct ebt_ip_info *info)
++{
++        if(info->invflags & EBT_IP_DHCP_OPT60)
++                printf("! ");
++
++        printf("\"%s\"", info->cfg60.cfgdata);
++        printf(" ");
++}
++
++
++static void print_dhcp_opt61(struct ebt_ip_info *info
++)
++{
++        int i=0;
++        uint8_t hv=0, bv=0;
++
++        if(info->invflags & EBT_IP_DHCP_OPT61)
++                printf("! ");
++
++        for(i=0; i<info->cfg61.len; i++){
++                hv = (*((info->cfg61.cfgdata)+i) >> 4) & 0x0f;
++                bv = (*((info->cfg61.cfgdata)+i)) & 0x0f;
++                printf("%1X",hv);
++                printf("%1X",bv);
++
++                if(i==0)
++                        printf(" ");
++        }
++        printf(" ");
++}
++
++static void print_dhcp_opt77(struct ebt_ip_info *info)
++{
++        int i=0;
++        uint8_t hv=0, bv=0;
++
++        if(info->invflags & EBT_IP_DHCP_OPT77)
++                printf("! ");
++
++        for(i=0; i<info->cfg77.len; i++){
++                hv = (*((info->cfg77.cfgdata)+i) >> 4) & 0x0f;
++                bv = (*((info->cfg77.cfgdata)+i)) & 0x0f;
++                printf("%1X",hv);
++                printf("%1X",bv);
++        }
++        printf(" ");
++}
++
++static void print_dhcp_opt125(struct ebt_ip_info *info)
++{
++        int i=0;
++        uint8_t hv=0, bv=0;
++
++        if(info->invflags & EBT_IP_DHCP_OPT125)
++                printf("! ");
++
++        for(i=0; i<info->cfg125.len; i++){
++                hv = (*((info->cfg125.cfgdata)+i) >> 4) & 0x0f;
++                bv = (*((info->cfg125.cfgdata)+i)) & 0x0f;
++                printf("%1X",hv);
++                printf("%1X",bv);
++
++                if(i==3){
++                        printf(" ");
++                        i++; /* skip length parameter*/
++                }
++        }
++        printf(" ");
++}
++
++
++#endif
++
+ static void print_help()
+ {
+ 	printf(
+@@ -108,7 +457,17 @@
+ "--ip-dscp   [!] dscp          : ip dscp specification\n"
+ "--ip-proto  [!] protocol      : ip protocol specification\n"
+ "--ip-sport  [!] port[:port]   : tcp/udp source port or port range\n"
+-"--ip-dport  [!] port[:port]   : tcp/udp destination port or port range\n");
++"--ip-dport  [!] port[:port]   : tcp/udp destination port or port range\n"
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++"--ip-len       [!] length[:length] : ip length or legth range\n"
++"--ip-tcp-flags [!] mask comp	   : when TCP flags & mask == comp\n"
++"				     (Flags: SYN ACK FIN RST URG PSH ALL NONE)\n"
++" --ip-dhcp-opt60  [!] <Class Id> : Match option 60 packet with class id (String)\n"
++" --ip-dhcp-opt61  [!] <Type> <Client Id> : Match option 61 packet with type and client id (Hexadecimal)\n"
++" --ip-dhcp-opt77  [!] <User Class Data>  : Match option 77 packet with user class data (Hexadecimal)\n"
++" --ip-dhcp-opt125 [!] <Enterprise Number> <Vendor Class Data> : Match option 125 packet with enterprise number and vendor class data (Hexadecimal)\n"
++#endif 
++);
+ }
+ 
+ static void init(struct ebt_entry_match *match)
+@@ -126,11 +485,21 @@
+ #define OPT_SPORT  0x10
+ #define OPT_DPORT  0x20
+ #define OPT_DSCP   0x40 /* brcm */
+-
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++#define OPT_LENGTH 0X80
++#define OPT_TCP_FLAGS 0X100
++#define OPT_DHCP_OPT60 0X200
++#define OPT_DHCP_OPT61 0X400
++#define OPT_DHCP_OPT77 0X800
++#define OPT_DHCP_OPT125 0X1000
++#endif
+ static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
+    unsigned int *flags, struct ebt_entry_match **match)
+ {
+ 	struct ebt_ip_info *ipinfo = (struct ebt_ip_info *)(*match)->data;
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++	struct cfgopt *cfgptr = NULL;
++#endif
+ 	char *end;
+ 	long int i;
+ 
+@@ -214,6 +583,73 @@
+ 		}
+ 		ipinfo->bitmask |= EBT_IP_PROTO;
+ 		break;
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++                case IP_LENGTH:
++		ebt_check_option2(flags, OPT_LENGTH);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP_LENGTH;
++		if (optind > argc)
++			ebt_print_error("Missing IP length argument");
++		parse_length_range(argv[optind - 1], ipinfo->length);
++		ipinfo->bitmask |= EBT_IP_LENGTH;
++		break;
++	case IP_TCP_FLAGS:
++		ebt_check_option2(flags, OPT_TCP_FLAGS);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP_TCP_FLAGS;
++		if (optind > argc)
++			ebt_print_error("Missing TCP flags argument");
++		parse_tcp_flags(ipinfo, argv[optind - 1], argv[optind]);
++		optind++;/* Because it has two argument */
++		ipinfo->bitmask |= EBT_IP_TCP_FLAGS;
++		break;
++	case IP_DHCP_OPT60:
++		ebt_check_option2(flags, OPT_DHCP_OPT60);
++		if (ebt_check_inverse2(optarg))
++		    ipinfo->invflags |= EBT_IP_DHCP_OPT60;
++		if (optind > argc)
++		    ebt_print_error("Missing DHCP Option 60 argument");
++		cfgptr = &(ipinfo->cfg60);
++		parse_dhcp_opt60(cfgptr, argv[optind - 1], argv[optind]);
++		ipinfo->bitmask |= EBT_IP_DHCP_OPT60;
++		memset(ipinfo->SrcMacArray, 0, sizeof(ipinfo->SrcMacArray));
++		break;
++	case IP_DHCP_OPT61:
++		ebt_check_option2(flags, OPT_DHCP_OPT61);
++		if (ebt_check_inverse2(optarg))
++		    ipinfo->invflags |= EBT_IP_DHCP_OPT61;
++		if (optind > argc)
++		    ebt_print_error("Missing DHCP Option 61 argument");
++		optind +=1;
++		cfgptr = &(ipinfo->cfg61);
++		parse_dhcp_opt61(cfgptr, argv[optind - 2], argv[optind - 1], argv[optind]);
++		ipinfo->bitmask |= EBT_IP_DHCP_OPT61;
++		memset(ipinfo->SrcMacArray, 0, sizeof(ipinfo->SrcMacArray));
++		break;
++	case IP_DHCP_OPT77:
++		ebt_check_option2(flags, OPT_DHCP_OPT77);
++		if (ebt_check_inverse2(optarg))
++		    ipinfo->invflags |= EBT_IP_DHCP_OPT77;
++		if (optind > argc)
++		    ebt_print_error("Missing DHCP Option 77 argument");
++		cfgptr = &(ipinfo->cfg77);
++		parse_dhcp_opt77(cfgptr, argv[optind - 1], argv[optind]);
++		ipinfo->bitmask |= EBT_IP_DHCP_OPT77;
++		memset(ipinfo->SrcMacArray, 0, sizeof(ipinfo->SrcMacArray));
++		break;
++	case IP_DHCP_OPT125:
++		ebt_check_option2(flags, OPT_DHCP_OPT125);
++		if (ebt_check_inverse2(optarg))
++		    ipinfo->invflags |= EBT_IP_DHCP_OPT125;
++		if (optind > argc)
++		    ebt_print_error("Missing DHCP Option 125 argument");
++		optind +=1;
++		cfgptr = &(ipinfo->cfg125);
++		parse_dhcp_opt125(cfgptr, argv[optind - 2], argv[optind - 1], argv[optind]);
++		ipinfo->bitmask |= EBT_IP_DHCP_OPT125;
++		memset(ipinfo->SrcMacArray, 0, sizeof(ipinfo->SrcMacArray));
++		break;
++#endif
+ 	default:
+ 		return 0;
+ 	}
+@@ -239,6 +675,13 @@
+ 		ebt_print_error("For port filtering the IP protocol must be "
+ 				"either 6 (tcp), 17 (udp), 33 (dccp) or "
+ 				"132 (sctp)");
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++        if (ipinfo->bitmask & EBT_IP_TCP_FLAGS &&
++		(!(ipinfo->bitmask & EBT_IP_PROTO) || 
++		ipinfo->invflags & EBT_IP_PROTO ||
++		ipinfo->protocol!=IPPROTO_TCP ))
++		ebt_print_error("For TCP flags filtering the IP protocol must be 6 (tcp)");
++#endif
+ }
+ 
+ static void print(const struct ebt_u_entry *entry,
+@@ -303,6 +746,39 @@
+ 			printf("! ");
+ 		printf("0x%02X ", ipinfo->dscp);
+ 	}
++
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++if (ipinfo->bitmask & EBT_IP_LENGTH) {
++		printf("--ip-len ");
++		if (ipinfo->invflags & EBT_IP_LENGTH) {
++			printf("! ");
++		}
++		print_length_range(ipinfo->length);
++	}
++	if (ipinfo->bitmask & EBT_IP_TCP_FLAGS) {
++		printf("--ip-tcp-flags ");
++		if (ipinfo->invflags & EBT_IP_TCP_FLAGS) {
++			printf("! ");
++		}
++		print_tcp_flags(ipinfo->tcp_flg_mask, ipinfo->tcp_flg_cmp);
++	}
++	 if(ipinfo->bitmask & EBT_IP_DHCP_OPT60){
++		printf("--ip-dhcp-opt60 ");
++		print_dhcp_opt60(ipinfo);
++	}
++	if(ipinfo->bitmask & EBT_IP_DHCP_OPT61){
++		printf("--ip-dhcp-opt61 ");
++		print_dhcp_opt61(ipinfo);
++	}
++	if(ipinfo->bitmask & EBT_IP_DHCP_OPT77){
++		printf("--ip-dhcp-opt77 ");
++		print_dhcp_opt77(ipinfo);
++	}
++	if(ipinfo->bitmask & EBT_IP_DHCP_OPT125){
++		printf("--ip-dhcp-opt125 ");
++		print_dhcp_opt125(ipinfo);
++	}
++#endif
+ }
+ 
+ static int compare(const struct ebt_entry_match *m1,
+@@ -350,6 +826,19 @@
+ 		if (ipinfo1->dscp != ipinfo2->dscp)
+ 			return 0;
+ 	}
++
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++        if (ipinfo1->bitmask & EBT_IP_LENGTH) {
++		if (ipinfo1->length[0] != ipinfo2->length[0] ||
++		   ipinfo1->length[1] != ipinfo2->length[1])
++			return 0;
++	}
++	if (ipinfo1->bitmask & EBT_IP_TCP_FLAGS) {
++		if (ipinfo1->tcp_flg_cmp!= ipinfo2->tcp_flg_cmp ||
++		   ipinfo1->tcp_flg_mask!= ipinfo2->tcp_flg_mask)
++			return 0;
++	}
++#endif
+ 	return 1;
+ }
+ 
+Index: ebtables-v2.0.10-4/extensions/ebt_ip6.c
+===================================================================
+--- ebtables-v2.0.10-4.orig/extensions/ebt_ip6.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-v2.0.10-4/extensions/ebt_ip6.c	2014-01-07 20:36:45.000000000 +0800
+@@ -20,8 +20,11 @@
+ #include <getopt.h>
+ #include <netdb.h>
+ #include "../include/ebtables_u.h"
++#if 1 /* ZyXEL QoS, John */
++#include "../include/linux/netfilter_bridge/ebt_ip6.h"
++#else
+ #include <linux/netfilter_bridge/ebt_ip6.h>
+-
++#endif
+ 
+ 
+ #define IP_SOURCE '1'
+@@ -31,6 +34,9 @@
+ #define IP_SPORT  '5'
+ #define IP_DPORT  '6'
+ #define IP_ICMP6  '7'
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++#define IP_LENGTH '8'
++#endif
+ 
+ static const struct option opts[] =
+ {
+@@ -47,6 +53,10 @@
+ 	{ "ip6-destination-port" , required_argument, 0, IP_DPORT  },
+ 	{ "ip6-dport"            , required_argument, 0, IP_DPORT  },
+ 	{ "ip6-icmp-type"	 , required_argument, 0, IP_ICMP6  },
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++	{ "ip6-length"           , required_argument, 0, IP_LENGTH  },
++	{ "ip6-len"            	, required_argument, 0, IP_LENGTH  },
++#endif
+ 	{ 0 }
+ };
+ 
+@@ -272,6 +282,7 @@
+ 	print_icmp_code(code);
+ }
+ 
++#if 0 /* ZyXEL QoS, John, for passing compiler error (warning: not used) */
+ static void print_icmpv6types(void)
+ {
+ 	unsigned int i;
+@@ -291,7 +302,53 @@
+ 	}
+ 	printf("\n");
+ }
++#endif
++
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++static uint16_t parse_length(const char *name)
++{
++	char *end;
++	int length;
++
++	length = strtol(name, &end, 10);
++
++	if (*end != '\0'){
++		ebt_print_error("Problem with specified length '%s'", name);
++		return 0; /* never reached */
++	}else if (length >= 0 || length <= 0xFFFF) {
++		return length;
++	}	
++}
++
++static void
++parse_length_range( const char *lengthstring, uint16_t *length)
++{
++	char *buffer;
++	char *cp;
++	
++	buffer = strdup(lengthstring);
++	if ((cp = strchr(buffer, ':')) == NULL)
++		length[0] = length[1] = parse_length(buffer);
++	else {
++		*cp = '\0';
++		cp++;
++		length[0] = buffer[0] ? parse_length( buffer) : 0;
++		length[1] = cp[0] ? parse_length( cp) : 0xFFFF;
++		
++		if (length[0] > length[1])
++			ebt_print_error("Invalid lengthrange (min > max)");
++	}
++	free(buffer);
++}
+ 
++static void print_length_range(uint16_t *length)
++{
++	if (length[0] == length[1])
++		printf("%d ", length[0]);
++	else
++		printf("%d:%d ", length[0], length[1]);
++}
++#endif
+ static void print_help()
+ {
+ 	printf(
+@@ -302,8 +359,11 @@
+ "--ip6-proto  [!] protocol      : ipv6 protocol specification\n"
+ "--ip6-sport  [!] port[:port]   : tcp/udp source port or port range\n"
+ "--ip6-dport  [!] port[:port]   : tcp/udp destination port or port range\n"
+-"--ip6-icmp-type [!] type[[:type]/code[:code]] : ipv6-icmp type/code or type/code range\n");
+-print_icmpv6types();
++"--ip6-icmp-type [!] type[[:type]/code[:code]] : ipv6-icmp type/code or type/code range\n"
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++"--ip6-len    [!] length[:length] : ip length or legth range\n"
++#endif
++);
+ }
+ 
+ static void init(struct ebt_entry_match *match)
+@@ -320,6 +380,10 @@
+ #define OPT_PROTO  0x08
+ #define OPT_SPORT  0x10
+ #define OPT_DPORT  0x20
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++#define OPT_LENGTH 0X40
++#endif
++
+ static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
+    unsigned int *flags, struct ebt_entry_match **match)
+ {
+@@ -402,6 +466,17 @@
+ 		}
+ 		ipinfo->bitmask |= EBT_IP6_PROTO;
+ 		break;
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++	case IP_LENGTH:
++		ebt_check_option2(flags, OPT_LENGTH);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP6_LENGTH;
++		if (optind > argc)
++			ebt_print_error("Missing IP length argument");
++		parse_length_range(argv[optind - 1], ipinfo->length);
++		ipinfo->bitmask |= EBT_IP6_LENGTH;
++		break;
++#endif
+ 	default:
+ 		return 0;
+ 	}
+@@ -491,6 +566,15 @@
+ 			printf("! ");
+ 		print_icmp_type(ipinfo->icmpv6_type, ipinfo->icmpv6_code);
+ 	}
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++	if (ipinfo->bitmask & EBT_IP6_LENGTH) {
++		printf("--ip6-len ");
++		if (ipinfo->invflags & EBT_IP6_LENGTH) {
++			printf("! ");
++		}
++		print_length_range(ipinfo->length);
++	}
++#endif
+ }
+ 
+ static int compare(const struct ebt_entry_match *m1,
+@@ -540,6 +624,13 @@
+ 		    ipinfo1->icmpv6_code[1] != ipinfo2->icmpv6_code[1])
+ 			return 0;
+ 	}
++#if 1 /* ZyXEL QoS, John (porting from MSTC)*/
++	if (ipinfo1->bitmask & EBT_IP6_LENGTH) {
++		if (ipinfo1->length[0] != ipinfo2->length[0] ||
++				ipinfo1->length[1] != ipinfo2->length[1])
++			return 0;
++	}
++#endif
+ 	return 1;
+ }
+ 
+Index: ebtables-v2.0.10-4/extensions/ebt_policer.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.10-4/extensions/ebt_policer.c	2014-01-07 20:57:54.000000000 +0800
+@@ -0,0 +1,508 @@
++/* Shared library add-on to ebtables to add policer support, ZyXEL Stan, 20100107 */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_policer.h"
++
++#define EBT_POLICER_RATE_KBPS        10       /* Policer default rate in kbps. */
++#define EBT_POLICER_BURST_KBYTE      10       /* Policer default burst in kbyte. */
++#define EBT_POLICER_MAX_INPUT_VALUE  1000000  /* Max rate value user can input in kbps or mbps. */
++
++#if 1//__MSTC__, Jones For compilation
++#define FLAG_MODE          0x01
++#define FLAG_POLICER       0x02
++#define FLAG_POLICER_BURST 0x04
++#define FLAG_CRATE         0x08
++#define FLAG_CBS_BURST     0x10
++#define FLAG_PRATE         0x20
++#define FLAG_PBS_BURST     0x40
++#define FLAG_EBS_BURST     0x80
++
++#define MODE_TBF   0
++#define MODE_SRTCM 1
++#define MODE_TRTCM 2
++
++static struct option opts[] = {
++    { "mode",          required_argument, 0, '#' },
++    { "policer",       required_argument, 0, '%' },
++    { "policer-burst", required_argument, 0, '$' },
++    { "crate",         required_argument, 0, '1' },
++    { "cbs-burst",     required_argument, 0, '2' },
++    { "prate",         required_argument, 0, '3' },
++    { "pbs-burst",     required_argument, 0, '4' },
++    { "ebs-burst",     required_argument, 0, '5' },
++    { 0 }
++};
++#else
++#define FLAG_POLICER		         0x01
++#define FLAG_POLICER_BURST	         0x02
++
++#define ARG_POLICER	                 '1'
++#define ARG_POLICER_BURST            '2'
++
++static struct option opts[] = {
++    { "policer",		required_argument, 0, ARG_POLICER },
++    { "policer-burst",	required_argument, 0, ARG_POLICER_BURST },
++    { 0 }
++};
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++/* Function which prints out usage message. */
++static void print_help(void)
++{
++	printf(
++	    "policer options:\n"
++	    "--mode name                     mode name match, default is tbf.\n"
++	    "                                If you want to use tbf mode, you can skip this option.\n"
++	    "                                [Support tbf, srtcm, trtcm.]\n" 
++	    "tbf mode: \n"
++	    "--policer rate			max data rate match, default %ukbps\n"
++	    "                                [Bits per second followed by kbps or mbps.\n"
++	    "                                Support 1kbps to 1000000kbps or 1mbps to 1000000mbps.] \n"   
++	    "--policer-burst size		size to match in a burst, default %ukb\n"
++	    "                                [Kilo-bytes followed by kb.\n"
++	    "                                Support 1kb to 1000kb.]\n" 
++	    "srtcm mode: \n"
++	    "The nfmark field of red packet is marked as 0x10000, \n"
++	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "--crate rate			committed data rate match, default %ukbps\n" 
++	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
++	    "--ebs-burst size		size to match in EBS burst, default %ukb\n"
++	    "trtcm mode: \n"
++	    "The nfmark field of red packet is marked as 0x10000, \n"
++	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "--crate rate			committed data rate match, default %ukbps\n" 
++	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
++	    "--prate rate			peak data rate match, default %ukbps\n"
++	    "                                [Msut be equal or greater than crate.]\n"
++	    "--pbs-burst size		size to match in PBS burst, default %ukb\n\n",
++	    EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE,
++	    EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE, EBT_POLICER_BURST_KBYTE,
++	    EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE, EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE);
++}
++#else
++/* Function which prints out usage message. */
++static void print_help(void)
++{
++	printf(
++	    "policer options:\n"
++	    "--policer rate			max data rate match: default %ukbps\n"
++	    "                                [Bits per second followed by kbps or mbps.\n"
++	    "                                Support 1kbps to 1000000kbps or 1mbps to 1000000mbps.] \n"
++	    "--policer-burst size		size to match in a burst, default %ukb\n"
++	    "                                [Kilo-bytes followed by kb.\n"
++	    "                                Support 1kb to 1000kb.]\n"
++	    "\n", EBT_POLICER_RATE_KBPS, EBT_POLICER_BURST_KBYTE);
++}
++#endif
++
++/* parse_rate(): to check the rate and preprocess the rate. */
++static int parse_rate(const char *rate, u_int32_t *val)
++{
++	const char *kbps;
++	const char *mbps;
++	u_int32_t r;
++	u_int32_t mult = 1;
++
++	kbps = strstr(rate, "kbps"); /* String comparison. */
++	mbps = strstr(rate, "mbps"); /* String comparison. */
++
++	if ((!kbps && !mbps) || (kbps && mbps)) {	  	
++		return 0;  
++	}	
++	else if (kbps) {	
++		if (strlen(kbps + 4) != 0) {
++			return 0;	
++		}		
++		mult = 1; /* kbps scale */
++	}	
++	else if (mbps) {
++		if (strlen(mbps + 4) != 0) {
++			return 0;
++		}
++		mult = 1000; /* mbps scale */
++	}
++	
++	r = strtoul(rate, NULL, 0);	
++
++	if (!r) {
++		return 0;
++	}
++
++	if (r > EBT_POLICER_MAX_INPUT_VALUE) { /* prevent user enter greater than IPT_POLICER_MAX_INPUT_VALUE */
++		return 0;
++	}	
++	*val = r * mult;
++	return 1;
++}
++
++#if 1//__MSTC__, Jones For compilation
++/* Initialize the match. */
++static void init(struct ebt_entry_match *m)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)m->data;
++	/* Default mode is TBF. */
++	r->policerMode = MODE_TBF;
++
++	/* Prepare default rate string, such as 10kbps. */
++	char rate_buf[16];
++	sprintf(rate_buf, "%dkbps", EBT_POLICER_RATE_KBPS); 
++
++	parse_rate(rate_buf, &r->rate);
++	r->burst = EBT_POLICER_BURST_KBYTE;
++	/* For srtcm and trtcm. */
++	r->pRate = r->rate;
++	r->pbsBurst = EBT_POLICER_BURST_KBYTE;
++#if 1 /* Init creditCap to check if the rule is new or not. __OBM__. ZyXEL, Stan Su, 20100611. */
++	r->creditCap = 0;
++#endif
++
++}
++/* end init */
++#else
++/* Initialize the match. */
++static void init(struct ebt_entry_match *m)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)m->data;
++
++	/* Prepare default rate string, such as 10kbps. */
++	char rate_buf[16];
++	sprintf(rate_buf, "%dkbps", EBT_POLICER_RATE_KBPS); 
++
++	parse_rate(rate_buf, &r->avg);
++	r->burst = EBT_POLICER_BURST_KBYTE;
++}
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++static int parse(int c, char **argv, int argc,
++                 const struct ebt_u_entry *entry,
++                 unsigned int *flags,
++                 struct ebt_entry_match **match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)(*match)->data;
++	const char *str1;
++	char *remainder;
++
++	switch(c) {
++	case '#':
++		/* Check Mode */
++		ebt_check_option2(flags, FLAG_MODE);
++		if (ebt_check_inverse2(optarg)) {
++			ebt_print_error("Unexpected `!' after --mode");
++		}
++		if (strcmp(optarg, "tbf") == 0) {
++			r->policerMode = MODE_TBF;
++		}
++		else if (strcmp(optarg, "srtcm") == 0) {
++			r->policerMode = MODE_SRTCM;
++		}
++		else if (strcmp(optarg, "trtcm") == 0) {
++			r->policerMode = MODE_TRTCM;
++		}
++		else {
++			ebt_print_error("bad mode '%s'", optarg);
++		}
++		break;
++
++	case '%':
++		if (r->policerMode == 0) {
++			/* Check parameter of tbf */
++			ebt_check_option2(flags, FLAG_POLICER);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --policer");
++			}
++			if (!parse_rate(optarg, &r->rate)) {
++				ebt_print_error("bad rate '%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}	
++
++	case '$':
++		if (r->policerMode == 0) {
++			/* Check parameter of tbf */
++			ebt_check_option2(flags, FLAG_POLICER_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --policer-burst");
++			}
++			str1 = optarg;
++			r->burst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++				ebt_print_error("bad --policer-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '1':
++		if (r->policerMode == 1 || r->policerMode == 2) {
++			/* Check parameter of srtcm or trtcm */
++			ebt_check_option2(flags, FLAG_CRATE);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --crate");
++			}
++			if (!parse_rate(optarg, &r->rate)) {
++				ebt_print_error("bad committed information rate '%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '2':
++		if (r->policerMode == 1 || r->policerMode == 2) {
++			/* Check parameter of srtcm or trtcm */
++			ebt_check_option2(flags, FLAG_CBS_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --cbs-burst");
++			}
++			str1 = optarg;
++			r->burst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++				ebt_print_error("bad --cbs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '3':
++		if (r->policerMode == 2) {
++			/* Check parameter of trtcm */
++			ebt_check_option2(flags, FLAG_PRATE);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --prate");
++			}
++			if (!parse_rate(optarg, &r->pRate)) {
++				ebt_print_error("bad peak information rate '%s'", optarg);
++			}
++			if (r->rate > r->pRate) {
++				ebt_print_error("prate msut be equal or greater than crate");
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '4':
++		if (r->policerMode == 2) {
++			/* Check parameter of trtcm */
++			ebt_check_option2(flags, FLAG_PBS_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --pbs-burst");
++			}
++			str1 = optarg;
++			r->pbsBurst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->pbsBurst > 1000 || r->pbsBurst <= 0) {
++				ebt_print_error("bad --pbs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '5':
++		if (r->policerMode == 1) {
++			/* Check parameter of srtcm */
++			ebt_check_option2(flags, FLAG_EBS_BURST);
++			if (ebt_check_inverse2(optarg)) {
++				ebt_print_error("Unexpected `!' after --ebs-burst");
++			}
++			str1 = optarg;
++			r->pbsBurst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->pbsBurst > 1000 || r->pbsBurst <= 0) {
++				ebt_print_error("bad --ebs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	default:
++		return 0;
++	}
++
++	return 1;
++}
++/* end parse */
++#else
++static int parse(int c, char **argv, int argc,
++                 const struct ebt_u_entry *entry,
++                 unsigned int *flags,
++                 struct ebt_entry_match **match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)(*match)->data;
++	const char *str1;
++	char *remainder;
++
++	switch(c) {
++	case ARG_POLICER:
++		check_option(flags, FLAG_POLICER);
++		if (check_inverse(optarg)) {
++			print_error("Unexpected `!' after --policer");
++		}
++		if (!parse_rate(optarg, &r->avg)) {
++			print_error("bad rate `%s'", optarg);
++		}
++		break;
++
++	case ARG_POLICER_BURST:
++		check_option(flags, FLAG_POLICER_BURST);
++		if (check_inverse(optarg)) {
++			print_error("Unexpected `!' after --policer-burst");
++		}
++
++		str1 = optarg;
++		r->burst = strtol(str1, &remainder, 0);
++		if (strcmp(remainder, "kb") != 0 || r->burst > 1000 || r->burst <= 0) {
++			print_error("bad --policer-burst `%s'", optarg);
++		}
++		break;
++
++	default:
++		return 0;
++	}
++
++	return 1;
++}
++#endif
++
++/* Final check; nothing. */
++static void final_check(const struct ebt_u_entry *entry,
++                        const struct ebt_entry_match *match, 
++                        const char *name,
++                        unsigned int hookmask,
++                        unsigned int time)
++{
++	/* empty */
++}
++
++struct rates
++{
++    const char *name;
++    u_int32_t mult;
++};
++
++static struct rates g_rates[] =
++{
++    { "kbps", 1 },
++    { "mbps", 1000 },
++    { "gbps", 1000000 },
++};
++
++static void print_rate(u_int32_t period)
++{
++	unsigned int i;
++
++	for (i = 1; i < sizeof(g_rates) / sizeof(struct rates); i ++)
++		if (period < g_rates[i].mult 
++			    || period / g_rates[i].mult < period % g_rates[i].mult ) {
++			break;
++		}
++
++	printf("%u%s ", period / g_rates[i - 1].mult , g_rates[i - 1].name);
++}
++
++#if 1//__MSTC__, Jones For compilation
++/* Prints out the matchinfo. */
++static void
++print(const struct ebt_u_entry *entry, const struct ebt_entry_match *match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)match->data;
++
++	switch(r->policerMode) {
++	case MODE_TBF:
++		printf("policer: rate ");
++		print_rate(r->rate);
++		printf("burst %ukbytes ", r->burst);
++		break;
++
++	case MODE_SRTCM:
++		printf("srtcm: cRate ");
++		print_rate(r->rate);
++		printf("cbs-burst %ukbytes ", r->burst);
++		printf("ebs-burst %ukbytes ", r->pbsBurst);
++		break;
++	
++	case MODE_TRTCM:
++		printf("trtcm: cRate ");
++		print_rate(r->rate);
++		printf("cbs-burst %ukbytes ", r->burst);
++		printf("pRate ");
++		print_rate(r->pRate);
++		printf("pbs-burst %ukbytes ", r->pbsBurst);	
++		break;
++	}
++}
++/* end print */
++#else
++/* Prints out the matchinfo. */
++static void
++print(const struct ebt_u_entry *entry, const struct ebt_entry_match *match)
++{
++	struct ebt_policer_info *r = (struct ebt_policer_info *)match->data;
++
++	printf("policer: rate ");
++	print_rate(r->avg);
++	printf("burst %ukbytes ", r->burst);
++}
++#endif
++static int compare(const struct ebt_entry_match* m1, const struct ebt_entry_match *m2)
++{
++	struct ebt_policer_info* li1 = (struct ebt_policer_info*)m1->data;
++	struct ebt_policer_info* li2 = (struct ebt_policer_info*)m2->data;
++#if 1//__MSTC__, Jones For compilation
++	if (li1->rate!= li2->rate) {
++		return 0;
++	}
++#else
++       if (li1->avg != li2->avg) {
++		return 0;
++	}
++#endif
++	if (li1->burst != li2->burst) {
++		return 0;
++	}
++	return 1;
++}
++
++static struct ebt_u_match policer_match =
++{
++    .name         = EBT_POLICER_MATCH,
++    .size         = sizeof(struct ebt_policer_info),
++    .help         = print_help,
++    .init         = init,
++    .parse        = parse,
++    .final_check  = final_check,
++    .print        = print,
++    .compare      = compare,
++    .extra_ops    = opts,
++};
++
++static void _init(void) __attribute((constructor));
++static void _init(void)
++{
++	ebt_register_match(&policer_match);
++}
++
+Index: ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_AUTOMAP.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_AUTOMAP.h	2014-01-07 20:44:48.000000000 +0800
+@@ -0,0 +1,51 @@
++/* Used by ebt_AUTOMAP.c, MitraStar Jeff, 20110114*/
++#ifndef __LINUX_BRIDGE_EBT_AUTOMAP_H
++#define __LINUX_BRIDGE_EBT_AUTOMAP_H
++
++#define EBT_AUTOMAP_TARGET "AUTOMAP"
++
++#define AUTOMAP_TYPE_8021P  0x1
++#define AUTOMAP_TYPE_DSCP   0x2
++#define AUTOMAP_TYPE_PKTLEN 0x4
++
++#define DSCP_MASK_SHIFT   5
++#define ETHERPRI_MARK_SHIFT   12
++
++
++		/*
++		Auto Priority Mapping Table
++
++
++			DSCP	|   Packet Length	| 802.1P	|     Queue     |
++		   ---------------------------------------------
++					|				|   001	|       0 		|
++					|				|		|			|
++					|				|   010	|       1		|
++					|				|		|			|
++			0x00       |       >1100		|   000	|       2		|
++					|				|		|			|
++			0x08       |       250-1100	|   011	|       3		|
++					|				|		|			|
++			0x10       |				|   100	|       4		|
++					|				|		|			|
++			0x18       |       <250		|   101	|       5		|
++					|				|		|			|
++		0x20,0x28	|				|   110	|       6		|
++					|				|		|			|
++		0x30,0x38  	|				|   111	|       7		|
++		*/
++		
++
++/* accoding to tr181 8021p to DSCP mapping table(upstream), higher value higher priority*/
++unsigned short vlan8021pToPriorityQueue[8] = {2,0,1,3,4,5,6,7};
++unsigned short dscpPrecedenceToPriorityQueue[8] = {2,3,4,5,6,6,7,7};
++
++
++/* target info */
++struct ebt_automap_t_info {
++	int type;	
++	int marktable[8];
++};
++
++#endif
++
+Index: ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ip.h
+===================================================================
+--- ebtables-v2.0.10-4.orig/include/linux/netfilter_bridge/ebt_ip.h	2014-01-20 19:32:29.845277204 +0800
++++ ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ip.h	2014-01-07 19:44:36.000000000 +0800
+@@ -23,24 +23,133 @@
+ #define EBT_IP_PROTO 0x08
+ #define EBT_IP_SPORT 0x10
+ #define EBT_IP_DPORT 0x20
+-#define EBT_IP_DSCP  0x40  /* brcm */
++
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++#if defined(CONFIG_BCM_KF_NETFILTER) || !defined(CONFIG_BCM_IN_KERNEL)
++#define EBT_IP_DSCP  0x40
++#endif
++#define EBT_IP_LENGTH 0x80
++#define EBT_IP_TCP_FLAGS 0x100
++#define EBT_IP_DHCP_OPT60 0x200
++#define EBT_IP_DHCP_OPT61 0x400
++#define EBT_IP_DHCP_OPT77 0x800
++#define EBT_IP_DHCP_OPT125 0x1000
++#if defined(CONFIG_BCM_KF_NETFILTER) || !defined(CONFIG_BCM_IN_KERNEL)
++#define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
++ EBT_IP_SPORT | EBT_IP_DPORT | EBT_IP_DSCP | EBT_IP_LENGTH | EBT_IP_TCP_FLAGS |\
++ EBT_IP_DHCP_OPT60 | EBT_IP_DHCP_OPT61 | EBT_IP_DHCP_OPT77 | EBT_IP_DHCP_OPT125)
++#else
++#define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
++ EBT_IP_SPORT | EBT_IP_DPORT | EBT_IP_LENGTH | EBT_IP_TCP_FLAGS |\
++ EBT_IP_DHCP_OPT60 | EBT_IP_DHCP_OPT61 | EBT_IP_DHCP_OPT77 | EBT_IP_DHCP_OPT125)
++#endif
++#define DHCP_OPTION_MAX_LEN 556 /* IP header(20) + UDP header(8)+ DHCP header(528) */
++
++#define DHCP_PADDING                            0x00
++#define DHCP_VENDOR                             0x3c    /*option 60 */
++#define DHCP_CLIENT_ID                          0x3d    /*option 61 */
++#define DHCP_USER_CLASS_ID                      0x4d    /*option 77 */
++#define DHCP_VENDOR_IDENTIFYING 				0x7d    /*option 125 */
++#define DHCP_OPTION_OVER                        0x34
++#define DHCP_END                                0xFF
++
++#define OPTION_FIELD            0
++#define FILE_FIELD              1
++#define SNAME_FIELD             2
++
++
++
++/* miscellaneous defines */
++#define OPT_CODE 0
++#define OPT_LEN 1
++#define OPT_DATA 2
++
++#define OPTION_MAC_ENTRY 32
++
++/* each option data shift length */
++#define DHCP_OPT_LEN_FIELD_LEN  1
++#define DHCP_OPT125_ENTERPRISE_NUM_LEN 4
++#define DHCP_OPT125_DATA_SHIFT DHCP_OPT125_ENTERPRISE_NUM_LEN + DHCP_OPT_LEN_FIELD_LEN
++
++#else
++#if defined(CONFIG_BCM_KF_NETFILTER) || !defined(CONFIG_BCM_IN_KERNEL)
++#define EBT_IP_DSCP  0x40
+ #define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
+  EBT_IP_SPORT | EBT_IP_DPORT | EBT_IP_DSCP )
++#else 
++#define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
++ EBT_IP_SPORT | EBT_IP_DPORT )
++#endif
++#endif
+ #define EBT_IP_MATCH "ip"
+ 
+ /* the same values are used for the invflags */
+-struct ebt_ip_info {
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++struct cfgopt{
++        uint8_t len;
++        char cfgdata[254];
++};
++
++struct dhcpMessage {
++        uint8_t op;
++        uint8_t htype;
++        uint8_t hlen;
++        uint8_t hops;
++        uint32_t xid;
++        uint16_t secs;
++        uint16_t flags;
++        uint32_t ciaddr;
++        uint32_t yiaddr;
++        uint32_t siaddr;
++        uint32_t giaddr;
++        uint8_t chaddr[16];
++        uint8_t sname[64];
++        uint8_t file[128];
++        uint32_t cookie;
++        uint8_t options[308]; /* 312 - cookie */
++};
++
++struct ebt_ip_info
++{
+ 	__be32 saddr;
+ 	__be32 daddr;
+ 	__be32 smsk;
+ 	__be32 dmsk;
+ 	__u8  tos;
++#if defined(CONFIG_BCM_KF_NETFILTER) || !defined(CONFIG_BCM_IN_KERNEL)
+ 	__u8  dscp; /* brcm */
++#endif
++	__u8  protocol;
++	__u16  bitmask;
++	__u16  invflags;
++	__u8  tcp_flg_mask;
++	__u8  tcp_flg_cmp;
++	__u16 sport[2];
++	__u16 dport[2];
++	__u16 length[2];
++	struct cfgopt cfg60; //option 60
++    struct cfgopt cfg61; //option 61
++    struct cfgopt cfg77; //option 77
++    struct cfgopt cfg125; //option 125
++    char SrcMacArray[OPTION_MAC_ENTRY][ETH_ALEN];
++};
++#else
++/* the same values are used for the invflags */
++struct ebt_ip_info {
++	__be32 saddr;
++	__be32 daddr;
++	__be32 smsk;
++	__be32 dmsk;
++	__u8  tos;
++#if defined(CONFIG_BCM_KF_NETFILTER) || !defined(CONFIG_BCM_IN_KERNEL)
++	__u8  dscp;
++#endif
+ 	__u8  protocol;
+ 	__u8  bitmask;
+ 	__u8  invflags;
+ 	__u16 sport[2];
+ 	__u16 dport[2];
+ };
++#endif
+ 
+ #endif
+Index: ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ip6.h
+===================================================================
+--- ebtables-v2.0.10-4.orig/include/linux/netfilter_bridge/ebt_ip6.h	2011-12-16 04:02:48.000000000 +0800
++++ ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ip6.h	2014-01-07 15:03:51.000000000 +0800
+@@ -21,10 +21,16 @@
+ #define EBT_IP6_SPORT 0x10
+ #define EBT_IP6_DPORT 0x20
+ #define EBT_IP6_ICMP6 0x40
+-
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++#define EBT_IP6_LENGTH 0x80
++#define EBT_IP6_MASK (EBT_IP6_SOURCE | EBT_IP6_DEST | EBT_IP6_TCLASS |\
++                      EBT_IP6_PROTO | EBT_IP6_SPORT | EBT_IP6_DPORT | \
++                      EBT_IP6_ICMP6 | EBT_IP6_LENGTH)
++#else
+ #define EBT_IP6_MASK (EBT_IP6_SOURCE | EBT_IP6_DEST | EBT_IP6_TCLASS |\
+ 		      EBT_IP6_PROTO | EBT_IP6_SPORT | EBT_IP6_DPORT | \
+ 		      EBT_IP6_ICMP6)
++#endif
+ #define EBT_IP6_MATCH "ip6"
+ 
+ /* the same values are used for the invflags */
+@@ -45,6 +51,9 @@
+ 		__u16 dport[2];
+ 		__u8 icmpv6_code[2];
+ 	};
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++	__u16 length[2];
++#endif
+ };
+ 
+ #endif
+Index: ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_policer.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_policer.h	2014-01-07 20:45:00.000000000 +0800
+@@ -0,0 +1,39 @@
++/* Used by ebt_policer.c, ZyXEL Stan, 20100107*/
++#ifndef __LINUX_BRIDGE_EBT_POLICER_H
++#define __LINUX_BRIDGE_EBT_POLICER_H
++
++#define EBT_POLICER_MATCH "policer"  
++
++#define BITS_PER_BYTE 8 
++#define KILO_SCALE    1000 
++
++struct ebt_policer_info
++{
++#if 1//__MSTC__, Jones For compilation
++       int policerMode;
++
++	/* For srTCM and trTCM, rate means cRate and burst means cbsBurst.
++       For srTCM, pbsBurst means ebsBurst. */
++       u_int32_t rate, pRate;    
++	u_int32_t burst, pbsBurst;  /* Period multiplier for upper limit. */
++
++       /* Used internally by the kernel */
++       unsigned long prev;
++
++	/* For srTCM and trTCM, credit means cbsCredit and creditCap means cbsCreditCap.
++	   For srTCM, pbsCreditCap means ebsCreditCap. */
++	u_int32_t credit, pbsCredit;
++	u_int32_t creditCap, pbsCreditCap;
++#else
++	u_int32_t avg;    /* Average secs between packets * scale */
++	u_int32_t burst;  /* Period multiplier for upper limit. */
++
++	/* Used internally by the kernel */
++	unsigned long prev;
++	u_int32_t credit;
++	u_int32_t credit_cap, cost;
++#endif	
++};
++
++#endif
++

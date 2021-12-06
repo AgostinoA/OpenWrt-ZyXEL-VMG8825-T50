@@ -1,0 +1,393 @@
+Index: libzcfg_fe_dal-1.0/maintenance/mail/zcfg_fe_dal_mail_notification.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/mail/zcfg_fe_dal_mail_notification.c	2017-10-31 10:34:58.166245976 +0800
++++ libzcfg_fe_dal-1.0/maintenance/mail/zcfg_fe_dal_mail_notification.c	2017-10-31 10:57:05.126956000 +0800
+@@ -101,7 +101,7 @@
+ 
+ 	if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_SERVICE, &objIid, mailNotificationJobj, NULL)) == ZCFG_SUCCESS)
+ 	{
+-		printf("%s: Set mail service fail\n", __FUNCTION__);
++		dbg_printf("%s: Set mail service fail\n", __FUNCTION__);
+ 		goto exit;
+ 	}
+ 
+Index: libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_trust_domain.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/mgmt/zcfg_fe_dal_trust_domain.c	2017-10-31 10:34:58.082245976 +0800
++++ libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_trust_domain.c	2017-10-31 10:57:16.943137500 +0800
+@@ -15,7 +15,7 @@
+ 	{"Enable", 				dalType_boolean, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
+ 	{"IPAddress", 			dalType_string, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
+ 	{"SubnetMask", 			dalType_string, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
+-	{"IPAddressPrefix", 	dalType_IPPrefix,   0, 	0, 	NULL,	"AnyIP", dal_Add},
++	{"IPAddressPrefix", 	dalType_IPPrefix,   0, 	0, 	NULL,	NULL, 	dal_Add},
+ 	{"Index", 	 			dalType_int, 	    0, 	0, 	NULL,	NULL,	dal_Delete},
+ 	{NULL, 					0, 				    0, 	0, 	NULL,	NULL, 	0}
+ };
+Index: libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_snmp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/zcfg_fe_dal_snmp.c	2017-10-31 10:34:59.294245982 +0800
++++ libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_snmp.c	2017-10-31 10:56:57.143157700 +0800
+@@ -211,6 +211,7 @@
+ 	const char *host = NULL;
+ 	int port = 0;
+ 	bool found = false;
++	char dest[32] = {0};
+ 
+ 	retObj = json_object_new_object();
+ 
+@@ -246,17 +247,23 @@
+ 	ret = zcfgFeObjJsonGetNext(RDM_OID_TRAP_ADDR, &trapIid, &trapObj);
+ 	if(ret == ZCFG_SUCCESS){
+ 		host = json_object_get_string(json_object_object_get(trapObj, "Host"));
+-		json_object_object_add(retObj, "Host", json_object_new_string(host));
++		port = json_object_get_int(json_object_object_get(trapObj, "Port"));
++		if(port != 162){
++			sprintf(dest,"%s:%d",host,port);
++			json_object_object_add(retObj, "Host", json_object_new_string(dest));
++		}
++		else
++			json_object_object_add(retObj, "Host", json_object_new_string(host));
+ 		zcfgFeJsonObjFree(trapObj);
+ 	}
+ 	else if(trapObj==NULL){
+ 		json_object_object_add(retObj, "Host", json_object_new_string(""));
+-		printf("Fail to get object..\n");
++		dbg_printf("Fail to get object..\n");
+ 	}
+ 
+ 	json_object_array_add(Jarray, retObj);
+ 
+-	return ret;
++	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t zcfgFeDalSNMP(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+Index: libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_filesharing.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/usbService/zcfg_fe_dal_usb_filesharing.c	2017-10-31 10:34:58.542245978 +0800
++++ libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_filesharing.c	2017-10-31 10:59:37.518193600 +0800
+@@ -27,7 +27,8 @@
+ 	struct json_object *servconfobj = NULL;
+ 	struct json_object *accountobj = NULL, *accounttmpobj = NULL;
+ 	struct json_object *sambaobj = NULL, *sambatmpobj = NULL;
+-	int len_accountobj = 0, len_sambaobj = 0;
++	struct json_object *usbinfoobj = NULL, *usbinfotmpobj = NULL;
++	int len_accountobj = 0, len_sambaobj = 0, len_usbinfoobj = 0, num_usbinfoobj;
+ 	int num_accountobj, num_sambaobj;
+ 	if(json_object_get_type(Jarray) != json_type_array){
+ 		printf("wrong Jobj format!\n");
+@@ -37,34 +38,24 @@
+ 	servconfobj = json_object_object_get(obj, "Service Conf");
+ 	accountobj = json_object_object_get(obj, "Account");
+ 	sambaobj = json_object_object_get(obj, "Samba");
++	usbinfoobj = json_object_object_get(obj, "Usb Info");
+ 	len_accountobj = json_object_array_length(accountobj);
+ 	len_sambaobj = json_object_array_length(sambaobj);
++	len_usbinfoobj = json_object_array_length(usbinfoobj);
+ 	
+-	printf("Server Configuration: \n");
+-	printf("File Sharing Services:  %s \n",json_object_get_string(json_object_object_get(servconfobj, "File Sharing Services")));
+-	
+-	if(len_sambaobj != 0){
+-		printf("\nShare Directory List: \n");
+-		printf("%-10s %-10s %-35s %-50s %-10s \n", "Index", "Status", "Share Name", "Share Path", "Share Description");
+-		for(num_sambaobj=0;num_sambaobj<len_sambaobj;num_sambaobj++){
+-			sambatmpobj = json_object_array_get_idx(sambaobj, num_sambaobj);
+-			printf("%-10s %-10s %-35s %-50s %-10s \n",
+-				json_object_get_string(json_object_object_get(sambatmpobj, "Index")),
+-				json_object_get_string(json_object_object_get(sambatmpobj, "Status")),
+-				json_object_get_string(json_object_object_get(sambatmpobj, "Share Name")),
+-				json_object_get_string(json_object_object_get(sambatmpobj, "Share Path")),
+-				json_object_get_string(json_object_object_get(sambatmpobj, "Share Description")));
+-}
++	if(len_usbinfoobj != 0){
++		printf("USB Information: \n");
++		printf("%-20s %-20s %-30s \n","Volume","Capacity(MB)","Used Space(MB)");
++		for(num_usbinfoobj=0;num_usbinfoobj<len_usbinfoobj;num_usbinfoobj++){
++			usbinfotmpobj = json_object_array_get_idx(usbinfoobj, num_usbinfoobj);
++			printf("%-20s %-20s %-30s \n",
++				json_object_get_string(json_object_object_get(usbinfotmpobj, "Volume")),
++				json_object_get_string(json_object_object_get(usbinfotmpobj, "Capacity")),
++				json_object_get_string(json_object_object_get(usbinfotmpobj, "Used Space")));
++		}
+ 	}
+-	
+-	printf("\nAccount Management: \n");
+-	printf("%-20s %-30s \n","Status","User Name");
+-	for(num_accountobj=0;num_accountobj<len_accountobj;num_accountobj++){
+-		accounttmpobj = json_object_array_get_idx(accountobj, num_accountobj);
+-		printf("%-20s %-30s \n",
+-			json_object_get_string(json_object_object_get(accounttmpobj, "Status")),
+-			json_object_get_string(json_object_object_get(accounttmpobj, "Username")));
+-}
++	else
++		printf("USB do not plug in Device. \n");
+ 	}
+ 		
+ zcfgRet_t zcfgFeDalUsbFilesharingEdit(struct json_object *Jobj, char *replyMsg){
+@@ -84,7 +75,7 @@
+ 			json_object_object_add(sambaObj, "Enable", json_object_new_boolean(fileshare_enable));
+ 			zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA, &sambaIid, sambaObj, NULL);
+ 			zcfgFeJsonObjFree(sambaObj);
+-	}
++		}
+ 	}
+ 	if(json_object_object_get(Jobj, "fsShareDirIid")){	//for GUI edit
+ 		fileshare_idxarray = json_object_object_get(Jobj, "fsShareDirIid");
+@@ -99,9 +90,9 @@
+ 				json_object_object_add(sambadirObj, "X_ZYXEL_Browseable", json_object_new_boolean(browseable));
+ 				ret = zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, sambadirObj, NULL);
+ 				zcfgFeJsonObjFree(sambadirObj);
+-}
+-		}
++			}
+ 		}
++	}
+ 	else if(json_object_object_get(Jobj, "Index") || json_object_object_get(Jobj, "Browseable")){	//for dalcmd edit
+ 		if(!json_object_object_get(Jobj, "Index") || !json_object_object_get(Jobj, "Browseable")){
+ 			strcpy(replyMsg, "Index and Browseable are mandatory parameter if user want to enable/disable Share Directory List.");
+@@ -115,11 +106,11 @@
+ 				json_object_object_add(sambadirObj, "X_ZYXEL_Browseable", json_object_new_boolean(browseable));
+ 				ret = zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, sambadirObj, NULL);
+ 				zcfgFeJsonObjFree(sambadirObj);
++			}
++		}
+ 	}
++	return ret;
+ }
+-		}
+-			return ret;
+-		}
+ 	
+ zcfgRet_t zcfgFeDalUsbFilesharingGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -127,19 +118,24 @@
+ 	struct json_object *paramJobj = NULL;
+ 	struct json_object *paramJobj1 = NULL;
+ 	struct json_object *paramJobj2 = NULL;
++	struct json_object *paramJobj3 = NULL;
+ 	struct json_object *acctmpJobj = NULL;
+ 	struct json_object *sambadirJobj = NULL;
+ 	struct json_object *sambadirtmpJobj = NULL;
+ 	struct json_object *sambaJobj = NULL;
+ 	struct json_object *allJobj = NULL;
++	struct json_object *usbdevtmpJobj = NULL;
++	struct json_object *usbdevJobj = NULL;
+ 	
+ 	objIndex_t accountIid = {0};
+ 	objIndex_t sambadirIid = {0};
+ 	objIndex_t sambaIid = {0};
++	objIndex_t usbdevIid = {0};
+ 
+ 	acctmpJobj = json_object_new_array();
+ 	sambadirtmpJobj = json_object_new_array();
+ 	allJobj = json_object_new_object();
++	usbdevtmpJobj = json_object_new_array();
+ 	accountIid.level = 2;
+ 	accountIid.idx[0] = 2;
+ 
+@@ -170,14 +166,22 @@
+ 		json_object_array_add(sambadirtmpJobj, paramJobj1);
+ 		zcfgFeJsonObjFree(sambadirJobj);
+ 	}
+-
+-	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_SAMBA, &sambaIid, &sambaJobj) == ZCFG_SUCCESS){
++	while(zcfgFeObjJsonGetNext(RDM_OID_USB_USBHOSTS_HOST_DEV_PAR, &usbdevIid, &usbdevJobj) == ZCFG_SUCCESS){
+ 		paramJobj2 = json_object_new_object();
+-		json_object_object_add(paramJobj2, "File Sharing Services", JSON_OBJ_COPY(json_object_object_get(sambaJobj, "Enable")));
+-		json_object_object_add(allJobj, "Service Conf", paramJobj2);
++		json_object_object_add(paramJobj2, "Volume", JSON_OBJ_COPY(json_object_object_get(usbdevJobj, "PartitionName")));
++		json_object_object_add(paramJobj2, "Capacity", JSON_OBJ_COPY(json_object_object_get(usbdevJobj, "Capacity")));
++		json_object_object_add(paramJobj2, "Used Space", JSON_OBJ_COPY(json_object_object_get(usbdevJobj, "UsedSpace")));
++		json_object_array_add(usbdevtmpJobj, paramJobj2);
++		zcfgFeJsonObjFree(usbdevJobj);
++	}
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_SAMBA, &sambaIid, &sambaJobj) == ZCFG_SUCCESS){
++		paramJobj3 = json_object_new_object();
++		json_object_object_add(paramJobj3, "File Sharing Services", JSON_OBJ_COPY(json_object_object_get(sambaJobj, "Enable")));
++		json_object_object_add(allJobj, "Service Conf", paramJobj3);
+ 	}
+ 	json_object_object_add(allJobj, "Account", acctmpJobj);
+ 	json_object_object_add(allJobj, "Samba", sambadirtmpJobj);
++	json_object_object_add(allJobj, "Usb Info", usbdevtmpJobj);
+ 	json_object_array_add(Jarray, allJobj);
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_samba.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/usbService/zcfg_fe_dal_usb_samba.c	2017-10-31 10:34:58.542245978 +0800
++++ libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_samba.c	2017-10-31 10:59:59.767418300 +0800
+@@ -49,7 +49,7 @@
+ 	len_sambaobj = json_object_array_length(sambaobj);
+ 	len_usbinfoobj = json_object_array_length(usbinfoobj);
+ 
+-	if(len_usbinfoobj != 0){
++	/*if(len_usbinfoobj != 0){
+ 		printf("USB Information: \n");
+ 		printf("%-20s %-20s %-30s \n","Volume","Capacity(MB)","Used Space(MB)");
+ 		for(num_usbinfoobj=0;num_usbinfoobj<len_usbinfoobj;num_usbinfoobj++){
+@@ -59,12 +59,12 @@
+ 				json_object_get_string(json_object_object_get(usbinfotmpobj, "Capacity")),
+ 				json_object_get_string(json_object_object_get(usbinfotmpobj, "Used Space")));
+ 		}
+-	}
++	}*/
+ 	
+ 	printf("\nServer Configuration: \n");
+ 	printf("File Sharing Services:  %s \n",json_object_get_string(json_object_object_get(servconfobj, "File Sharing Services")));
+ 	
+-	if(len_sambaobj != 0){
++	if(len_sambaobj != 0 && len_usbinfoobj != 0){
+ 		printf("\nShare Directory List: \n");
+ 		printf("%-10s %-10s %-35s %-50s %-10s \n", "Index", "Status", "Share Name", "Share Path", "Share Description");
+ 		for(num_sambaobj=0;num_sambaobj<len_sambaobj;num_sambaobj++){
+@@ -89,7 +89,7 @@
+ }
+ 
+ zcfgRet_t zcfgFeDalUsbSambaAdd(struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfgRet_t ret = ZCFG_SUCCESS, ret1 = ZCFG_SUCCESS;
+ 	struct json_object *sambadirObj = NULL;
+ 	objIndex_t sambadirIid = {0};
+ 
+@@ -133,6 +133,14 @@
+ 			return ZCFG_INVALID_PARAM_VALUE;
+ 		}
+ 	}
++
++	if(json_object_object_get(Jobj, "HostName")){
++		ret = dalcmdParamCheck(NULL, RootPath, RDM_OID_ZY_SAMBA_DIR, "X_ZYXEL_RootPath", "RootPath", replyMsg);
++		ret1 = dalcmdParamCheck(NULL, HostName, RDM_OID_ZY_SAMBA_DIR, "X_ZYXEL_Hostname", "HostName", replyMsg);
++		if(ret != ZCFG_SUCCESS && ret1 != ZCFG_SUCCESS)
++			return ret;
++	}
++	
+  	if(zcfgFeObjJsonAdd(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, NULL) == ZCFG_SUCCESS){
+ 		if(zcfgFeObjJsonGet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, &sambadirObj) == ZCFG_SUCCESS){
+ 			json_object_object_add(sambadirObj, "X_ZYXEL_RootPath", json_object_new_string(RootPath));
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_account.c	2017-10-31 10:34:59.470245983 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2017-10-31 11:02:40.593499300 +0800
+@@ -746,6 +746,8 @@
+ 			primaryCodec = "G.726-32";
+ 		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "primaryCodec")),"G722"))
+ 			primaryCodec = "G.722";
++		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "primaryCodec")),"None"))
++			primaryCodec = "None";
+ 		else
+ 			primaryCodec = json_object_get_string(json_object_object_get(Jobj, "primaryCodec"));
+ 	}
+@@ -767,6 +769,8 @@
+ 			secondarydCodec = "G.726-32";
+ 		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "secondarydCodec")),"G722"))
+ 			secondarydCodec = "G.722";
++		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "secondarydCodec")),"None"))
++			secondarydCodec = "None";
+ 		else
+ 			secondarydCodec = json_object_get_string(json_object_object_get(Jobj, "secondarydCodec"));
+ 	}
+@@ -993,6 +997,8 @@
+ 			secondarydCodec = "G.726-32";
+ 		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "secondarydCodec")),"G722"))
+ 			secondarydCodec = "G.722";
++		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "secondarydCodec")),"None"))
++			secondarydCodec = "None";
+ 		else
+ 	secondarydCodec = json_object_get_string(json_object_object_get(Jobj, "secondarydCodec"));
+ 	}
+@@ -1010,6 +1016,8 @@
+ 			thirdCodec = "G.726-32";
+ 		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "thirdCodec")),"G722"))
+ 			thirdCodec = "G.722";
++		else if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "thirdCodec")),"None"))
++			thirdCodec = "None";
+ 		else
+ 	thirdCodec = json_object_get_string(json_object_object_get(Jobj, "thirdCodec"));
+ 	}
+@@ -1166,8 +1174,11 @@
+ 		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_MwiExpireTime", json_object_new_int(X_ZYXEL_MwiExpireTime));		
+ 		if(json_object_object_get(Jobj, "HotLine_WarmLine_Enable"))
+ 		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_WarmLineEnable", json_object_new_boolean(X_ZYXEL_WarmLineEnable));
+-		if(json_object_object_get(Jobj, "HotLineEnable"))
+-		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_HotLineEnable", json_object_new_boolean(X_ZYXEL_HotLineEnable));
++		if(json_object_object_get(Jobj, "HotLineEnable")){
++			json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_HotLineEnable", json_object_new_boolean(X_ZYXEL_HotLineEnable));
++			if(X_ZYXEL_HotLineEnable)
++				json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_WarmLineEnable", json_object_new_boolean(false));
++		}
+ 		if(json_object_object_get(Jobj, "HotLineNumber"))
+ 		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_HotLineNum", json_object_new_string(X_ZYXEL_HotLineNum));
+ 		if(json_object_object_get(Jobj, "WarmLineNumber"))
+@@ -1217,11 +1228,25 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *setJson = NULL;
+ 	const char* codec = NULL;
++	int codecpriority = 0;
+ 	//printf("%s() Enter \n ",__FUNCTION__);
+ 
+ 	IID_INIT(lineCodecListIid);
+ 	while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_LINE_CODEC_LIST, &lineIid, &lineCodecListIid, &lineCodecListObj) == ZCFG_SUCCESS){
+ 		codec = json_object_get_string(json_object_object_get(lineCodecListObj, "Codec"));
++		codecpriority = json_object_get_int(json_object_object_get(lineCodecListObj, "Priority"));
++		if(primaryCodec != NULL){
++			if(strcmp(codec, primaryCodec) && codecpriority == 1)
++				json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(100));
++		}
++		if(secondarydCodec != NULL){
++			if(strcmp(codec, secondarydCodec) && codecpriority == 2)
++				json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(100));
++		}
++		if(thirdCodec != NULL){
++			if(strcmp(codec, thirdCodec) && codecpriority == 3)
++				json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(100));
++		}
+ 		//printf("codec : %s   => primaryCodec : %s  ,  secondarydCodec : %s  , thirdCodec : %s \n",codec,primaryCodec, secondarydCodec, thirdCodec);
+ 		if(json_object_object_get(Jobj, "primaryCodec") && json_object_object_get(Jobj, "secondarydCodec") && json_object_object_get(Jobj, "thirdCodec")){
+ 		if(strcmp(primaryCodec,codec) && strcmp(secondarydCodec,codec) && strcmp(thirdCodec,codec)){
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-10-31 10:34:59.470245983 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-10-31 11:00:47.985239600 +0800
+@@ -2146,6 +2146,40 @@
+ 						if(!valid)
+ 							return false;
+ 						break;
++						case dalType_IPPrefix:
++							stringPtr = json_object_get_string(pramJobj);
++							if(paramList[i].enumeration != NULL){
++								if(findInList(dalHandler->parameter[j].enumeration, stringPtr, "|") == true){
++									json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++									break;
++								}
++							}
++							ptr_buf = strdup(stringPtr);
++							ptr = strchr(ptr_buf, '/');
++							if(ptr == NULL || !strcmp(ptr+1, "") || !isDigitString(ptr+1)){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								free(ptr_buf);
++								return false;
++							}
++							*ptr = '\0';
++							intValue = atoi(ptr+1);
++							if(strchr(ptr_buf, ':') != NULL){ //IPv6 Prefix
++								if(intValue<0 || intValue>128 || validateIPv6(ptr_buf) == false){
++									printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++									free(ptr_buf);
++									return false;
++								}
++							}
++							else{ //IPv4 Prefix
++								if(intValue<0 || intValue>32 || validateIPv4(ptr_buf) == false){
++									printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++									free(ptr_buf);
++									return false;
++								}
++							}
++							free(ptr_buf);
++							json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++							break;
+ 					case dalType_emailAddr:
+ 					case dalType_emailList:
+ 						stringPtr = json_object_get_string(pramJobj);

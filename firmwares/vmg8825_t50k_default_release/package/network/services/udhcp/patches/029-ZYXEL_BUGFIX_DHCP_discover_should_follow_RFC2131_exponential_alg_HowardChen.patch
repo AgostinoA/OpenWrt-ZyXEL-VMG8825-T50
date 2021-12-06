@@ -1,0 +1,184 @@
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2019-03-27 15:44:24.374141378 +0800
++++ udhcp-0.9.8/Makefile	2019-03-27 17:01:31.198268860 +0800
+@@ -28,7 +28,7 @@
+ 
+ #INC_PATH = -I$(USERSPACE_ZCFG_INCLUDE)
+ 
+-LINK_LIBS = -ljson -lzcfg_msg -lzcmd_tool -lzcfg_fe_rdm_access -lzcfg_fe_rdm_struct 
++LINK_LIBS = -ljson -lzcfg_msg -lzcmd_tool -lzcfg_fe_rdm_access -lzcfg_fe_rdm_struct -lm 
+ 
+ OBJS_SHARED = options.o socket.o packet.o pidfile.o
+ DHCPD_OBJS = dhcpd.o arpping.o files.o leases.o serverpacket.o
+@@ -76,6 +76,10 @@
+ CFLAGS += -DSUPPORT_XPON
+ endif
+ 
++ifneq ($(strip $(CONFIG_ZYXEL_DHCP_DISCOVER_EXPONENTIAL)),)
++CFLAGS += -DZYXEL_DHCP_DISCOVER_EXPONENTIAL
++endif
++
+ ifneq ($(strip $(CONFIG_ZYXEL_FAKE_IP_169_254_X_X)),)
+ CFLAGS += -DZYXEL_FAKE_IP_169_254_X_X
+ endif
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2019-03-27 15:44:24.382141378 +0800
++++ udhcp-0.9.8/dhcpc.c	2019-03-27 17:42:40.826336905 +0800
+@@ -305,6 +305,95 @@
+ 
+ }
+ 
++#ifdef ZYXEL_DHCP_DISCOVER_EXPONENTIAL
++/*!
++ *	for RFC2131 exponential backoff algorithm,
++ *  caculate the vaule of exponential
++ *
++ * @param[in]       retrytimes		message retransmission times
++ *
++ * @return      the vaule of exponential
++*/
++static int resultExponentialBackoff(int retrytimes)
++{
++	int valueExponential = 0;
++	valueExponential = pow(2,retrytimes );
++	return valueExponential;
++}
++
++static void dhcp_discover_exponential(unsigned long *xid, time_t *now){
++	if ( resultExponentialBackoff(packet_num) <= 64 ) {
++		if (packet_num == 0)
++			*xid = random_xid();
++#if 1 //__ZyXEL__,20150331,Cj_Lai Transation ID + last four words of WAN interface MAC address.
++		int j;
++		*xid  = *xid  / 1000000;
++		for(j = 4; j < 6; j++ ){
++				*xid  = *xid  * 1000 + (unsigned int)client_config.arp[j];
++		}
++#endif
++		/* send discover packet */
++		send_discover(*xid , requested_ip); /* broadcast */
++
++		if(resultExponentialBackoff(packet_num)<=64){
++			timeout = *now + resultExponentialBackoff(packet_num);
++		}else{
++			timeout = *now;
++		}
++		packet_num++;
++	} else {
++		if (client_config.background_if_no_lease
++#if 1 // ZyXEL IWei 20160623, fix kernel memory leak (in ps Slab value), do not need fork to background again and again.
++			&& !client_config.foreground
++#endif
++		) {
++			LOG(LOG_INFO, "No lease, forking to background.");
++			background();
++		} else if (client_config.abort_if_no_lease) {
++			LOG(LOG_INFO, "No lease, failing.");
++			exit_client(1);
++		}
++		/* wait to try again */
++		timeout = *now;
++		packet_num = 0;
++	}
++}
++#else
++static void dhcp_discover_general(unsigned long *xid, time_t *now){
++	if (packet_num < 3) {
++		if (packet_num == 0)
++			*xid = random_xid();
++
++#if 1 //__ZyXEL__,20150331,Cj_Lai Transation ID + last four words of WAN interface MAC address.
++		int j;
++		*xid = *xid / 1000000;
++		for(j = 4; j < 6; j++ ){
++				*xid = *xid * 1000 + (unsigned int)client_config.arp[j];
++		}
++#endif
++		/* send discover packet */
++		send_discover(*xid, requested_ip); /* broadcast */
++
++		timeout = *now + ((packet_num == 2) ? 4 : 2);
++		packet_num++;
++	} else {
++		if (client_config.background_if_no_lease
++#if 1 // ZyXEL IWei 20160623, fix kernel memory leak (in ps Slab value), do not need fork to background again and again.
++			&& !client_config.foreground
++#endif
++		) {
++			LOG(LOG_INFO, "No lease, forking to background.");
++			background();
++		} else if (client_config.abort_if_no_lease) {
++			LOG(LOG_INFO, "No lease, failing.");
++			exit_client(1);
++		}
++		/* wait to try again */
++		packet_num = 0;
++		timeout = *now + INIT_TIMEOUT;
++	}
++}
++#endif
+ 
+ #ifdef COMBINED_BINARY
+ int udhcpc_main(int argc, char *argv[])
+@@ -510,49 +599,21 @@
+ 			/* timeout dropped to zero */
+ 			switch (state) {
+ 			case INIT_SELECTING:
++#ifdef ZYXEL_DHCP_DISCOVER_EXPONENTIAL
++				dhcp_discover_exponential(&xid, &now);
++#else
+ #ifdef ZYXEL_FAKE_IP_169_254_X_X
+-				if(discoverSet >= 2){
+-					timeout = 0x7fffffff;
+-					run_script(NULL, "fakeIP");
+-				    continue;
+-				}
+-#endif
+-				if (packet_num < 3) {
+-					if (packet_num == 0)
+-						xid = random_xid();
+-
+-#if 1 //__ZyXEL__,20150331,Cj_Lai Transation ID + last four words of WAN interface MAC address.
+-					int j;
+-					xid = xid / 1000000;
+-					for(j = 4; j < 6; j++ ){
+-					        xid = xid * 1000 + (unsigned int)client_config.arp[j];
++					if(discoverSet >= 2){
++						timeout = 0x7fffffff;
++						run_script(NULL, "fakeIP");
++						continue;
+ 					}
+ #endif
+-						
+-					/* send discover packet */
+-					send_discover(xid, requested_ip); /* broadcast */
+-					
+-					timeout = now + ((packet_num == 2) ? 4 : 2);
+-					packet_num++;
+-				} else {
+-					if (client_config.background_if_no_lease
+-#if 1 // ZyXEL IWei 20160623, fix kernel memory leak (in ps Slab value), do not need fork to background again and again.
+-						&& !client_config.foreground
+-#endif
+-					) {
+-						LOG(LOG_INFO, "No lease, forking to background.");
+-						background();
+-					} else if (client_config.abort_if_no_lease) {
+-						LOG(LOG_INFO, "No lease, failing.");
+-						exit_client(1);
+-				  	}
+-					/* wait to try again */
+-					packet_num = 0;
+-					timeout = now + INIT_TIMEOUT;
++				dhcp_discover_general(&xid, &now);
+ #ifdef ZYXEL_FAKE_IP_169_254_X_X
+-					discoverSet++;
++				discoverSet++;
+ #endif
+-				}
++#endif //ZYXEL_DHCP_DISCOVER_EXPONENTIAL
+ 				break;
+ 			case RENEW_REQUESTED:
+ 			case REQUESTING:

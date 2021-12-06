@@ -1,0 +1,729 @@
+Index: libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_zlog_setting.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_zlog_setting.c	2018-11-26 14:49:34.323322147 +0800
+@@ -0,0 +1,663 @@
++/*!
++ *  @file zcfg_fe_dal_zlog_setting.c
++ *
++ *  @author     ZE-Lin Chen
++ *  @date       2018-11-05
++ *  @copyright  Copyright 2017 Zyxel Communications Corp. All Rights Reserved.
++ */
++#include <json/json.h>
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++#include "zlog_api.h"
++
++dal_param_t ZLOG_SETTING_param[]=
++{
++    {"Enable",                      dalType_boolean, 0, 0,  NULL},
++    {"Severity",                    dalType_string,  0, 0,  NULL ,  "EMERG|ALERT|CRITICAL|ERROR|WARNING|NOTICE|INFO|DEBUG",  NULL},
++    {"Console",                     dalType_boolean, 0, 0,  NULL},
++    {"UsbFile",                     dalType_boolean, 0, 0,  NULL},
++    {"Filename",                    dalType_string,  0, 0,  NULL},
++    {"SyslogServer",                dalType_boolean, 0, 0,  NULL},
++    {"SyslogServerIp",              dalType_string,  0, 0,  NULL},
++    {"SyslogServerPort",            dalType_int,     0, 0,  NULL},
++    {"Userdefinefile",              dalType_boolean, 0, 0,  NULL},
++    {"FullPath",                    dalType_string,  0, 0,  NULL},
++    {"Index",                       dalType_int,     0, 0,  NULL},
++    {NULL,						    0,				 0,	0,  NULL ,   NULL, 				 0},
++};
++
++/*!
++ *  combine in user config and current config
++ *
++ *  @param [in]     usr_config      configuration set by/from user
++ *  @param [inout]  config          [in]  current configuration in system
++ *                                  [out] resulting config of user config + current config
++ *
++ *  @return 0                       - successful
++ *          other                   - failed
++ */
++static int _edittingSettingCombine(struct json_object *usr_config, struct json_object *config)
++{
++    bool                enable;
++    bool                console;
++    bool                usbFile;
++    bool                syslogServer;
++    bool                userdefinefile;
++    const char          *severity;
++    const char          *filename;
++    const char          *syslogServerIp;
++    const char          *fullPath;
++    unsigned int        syslogServerPort;
++    struct json_object  *tmp = NULL;
++
++    if (usr_config == NULL)
++    {
++        ZLOG_ERROR("usr_config == NULL");
++        return -1;
++    }
++
++    if (config == NULL)
++    {
++        ZLOG_ERROR("config == NULL");
++        return -1;
++    }
++
++    tmp = json_object_object_get(usr_config, "Enable");
++
++    if (tmp)
++    {
++        enable = json_object_get_boolean(tmp);
++        json_object_object_add(config, "Enable", json_object_new_boolean(enable));
++    }
++
++    tmp = json_object_object_get(usr_config, "Severity");
++
++    if (tmp)
++    {
++        severity = json_object_get_string(tmp);
++
++        if (severity == NULL)
++        {
++            ZLOG_ERROR("severity == NULL");
++            return -1;
++        }
++
++        if (!strcmp("EMERG", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(0));
++        }
++        else if (!strcmp("ALERT", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(1));
++        }
++        else if (!strcmp("CRITICAL", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(2));
++        }
++        else if (!strcmp("ERROR", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(3));
++        }
++        else if (!strcmp("WARNING", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(4));
++        }
++        else if (!strcmp("NOTICE", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(5));
++        }
++        else if (!strcmp("INFO", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(6));
++        }
++        else if (!strcmp("DEBUG", severity))
++        {
++            json_object_object_add(config, "Severity", json_object_new_int(7));
++        }
++    }
++
++    tmp = json_object_object_get(usr_config, "Console");
++
++    if (tmp)
++    {
++        console = json_object_get_boolean(tmp);
++        json_object_object_add(config, "Console", json_object_new_boolean(console));
++    }
++
++    tmp = json_object_object_get(usr_config, "UsbFile");
++
++    if (tmp)
++    {
++        usbFile = json_object_get_boolean(tmp);
++        json_object_object_add(config, "UsbFile", json_object_new_boolean(usbFile));
++    }
++
++    tmp = json_object_object_get(usr_config, "Filename");
++
++    if (tmp)
++    {
++        filename = json_object_get_string(tmp);
++        json_object_object_add(config, "Filename", json_object_new_string(filename));
++    }
++
++    tmp = json_object_object_get(usr_config, "SyslogServer");
++
++    if (tmp)
++    {
++        syslogServer = json_object_get_boolean(tmp);
++        json_object_object_add(config, "SyslogServer", json_object_new_boolean(syslogServer));
++    }
++
++    tmp = json_object_object_get(usr_config, "SyslogServerIp");
++
++    if (tmp)
++    {
++        syslogServerIp = json_object_get_string(tmp);
++        json_object_object_add(config, "SyslogServerIp", json_object_new_string(syslogServerIp));
++    }
++
++    tmp = json_object_object_get(usr_config, "SyslogServerPort");
++
++    if (tmp)
++    {
++        syslogServerPort = json_object_get_int(tmp);
++        json_object_object_add(config, "SyslogServerPort", json_object_new_int(syslogServerPort));
++    }
++
++    tmp = json_object_object_get(usr_config, "Userdefinefile");
++
++    if (tmp)
++    {
++        userdefinefile = json_object_get_boolean(tmp);
++        json_object_object_add(config, "Userdefinefile", json_object_new_boolean(userdefinefile));
++    }
++
++    tmp = json_object_object_get(usr_config, "FullPath");
++
++    if (tmp)
++    {
++        fullPath = json_object_get_string(tmp);
++        json_object_object_add(config, "FullPath", json_object_new_string(fullPath));
++    }
++
++    return 0;
++}
++
++/*!
++ *  copy all object values into dal-module config
++ *
++ *  @param [in] categoryJobj        current configuration in system
++ *  @param [inout]config            [in]  new config for dal config
++ *                                  [out] resulting config of new config + current config  suitable for dal-module config
++ *
++ *  @return 0                       - successful
++ *          other                   - failed
++ */
++static int _gettingSettingCombine(struct json_object *categoryJobj, struct json_object *config)
++{
++    int severity;
++
++    if (categoryJobj == NULL)
++    {
++        ZLOG_ERROR("categoryJobj == NULL");
++        return -1;
++    }
++
++    if (config == NULL)
++    {
++        ZLOG_ERROR("programJobj == NULL");
++        return -1;
++    }
++
++    json_object_object_add(config, "Enable", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "Enable")));
++    json_object_object_add(config, "Name", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "Describe")));
++
++    severity = json_object_get_int(json_object_object_get(categoryJobj, "Severity"));
++
++    switch (severity)
++    {
++        case 0:
++            json_object_object_add(config, "Severity", json_object_new_string("EMERG"));
++            break;
++
++        case 1:
++            json_object_object_add(config, "Severity", json_object_new_string("ALERT"));
++            break;
++
++        case 2:
++            json_object_object_add(config, "Severity", json_object_new_string("CRITICAL"));
++            break;
++
++        case 3:
++            json_object_object_add(config, "Severity", json_object_new_string("ERROR"));
++            break;
++
++        case 4:
++            json_object_object_add(config, "Severity", json_object_new_string("WARNING"));
++            break;
++
++        case 5:
++            json_object_object_add(config, "Severity", json_object_new_string("NOTICE"));
++            break;
++
++        case 6:
++            json_object_object_add(config, "Severity", json_object_new_string("INFO"));
++            break;
++
++        case 7:
++            json_object_object_add(config, "Severity", json_object_new_string("DEBUG"));
++            break;
++
++        default:
++            ZLOG_ERROR("invalid severity %d", severity);
++            return -1;
++    } // switch
++
++    json_object_object_add(config, "Console", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "Console")));
++    json_object_object_add(config, "UsbFile", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "UsbFile")));
++    json_object_object_add(config, "Filename", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "Filename")));
++    json_object_object_add(config, "SyslogServer", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "SyslogServer")));
++    json_object_object_add(config, "SyslogServerIp", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "SyslogServerIp")));
++    json_object_object_add(config, "SyslogServerPort", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "SyslogServerPort")));
++    json_object_object_add(config, "Userdefinefile", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "Userdefinefile")));
++    json_object_object_add(config, "FullPath", JSON_OBJ_COPY(json_object_object_get(categoryJobj, "FullPath")));
++
++    return 0;
++}
++
++/*!
++ *  Edit zlog setting fot dalcmd or Edit zlog data model setting
++ *
++ *  @param [in]  Jobj       is a storage logsetting struct
++ *  @param [out] replyMsg   respond message
++ *                          could be NULL
++ *
++ *  @return ZCFG_SUCCESS    - successful
++ *          other           - failed
++ */
++zcfgRet_t zcfgFeDalZlogSettingEdit(struct json_object *Jobj, char *replyMsg)
++{
++    int             index                       = 0;
++    struct          json_object *obj            = NULL;
++    struct          json_object *logSettingJobj = NULL;
++    struct          json_object *categoryJobj   = NULL;
++    objIndex_t      logSettingIid;
++    objIndex_t      categoryIid;
++    bool            enable;
++
++    if (Jobj == NULL)
++    {
++        ZLOG_ERROR("Jobj == NULL");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    /*--for set dal cmd ---*/
++    if (json_object_get_type(Jobj) == json_type_object)
++    {
++        if (!json_object_object_get(Jobj, "Enable") && !json_object_object_get(Jobj, "Index"))
++        {
++            if (replyMsg)
++            {
++                strcpy(replyMsg, "Please enter Enable or Index");
++            }
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++
++        /*--for zlog-category ---*/
++        index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++
++        if (index < 0)
++        {
++            ZLOG_ERROR("invalid index %d", index);
++			return ZCFG_INTERNAL_ERROR;
++        }
++
++        if (index != 0)
++        {
++            IID_INIT(categoryIid);
++			categoryIid.idx[0] = index;
++			categoryIid.level = 1;
++
++			if (zcfgFeObjJsonGet(RDM_OID_ZLOG_CATEGORY, &categoryIid, &categoryJobj) != ZCFG_SUCCESS)
++            {
++                ZLOG_ERROR("Fail to get RDM_OID_ZLOG_CATEGORY");
++				return ZCFG_INTERNAL_ERROR;
++			}
++
++            if (_edittingSettingCombine(Jobj, categoryJobj) == -1)
++            {
++                ZLOG_ERROR("Fail to _edittingSettingCombine()");
++                zcfgFeJsonObjFree(categoryJobj);
++                return ZCFG_INTERNAL_ERROR;
++            }
++
++            if (zcfgFeObjJsonSet(RDM_OID_ZLOG_CATEGORY, &categoryIid, categoryJobj, NULL) != ZCFG_SUCCESS)
++            {
++                ZLOG_ERROR("Fail to set RDM_OID_ZLOG_CATEGORY");
++                zcfgFeJsonObjFree(categoryJobj);
++				return ZCFG_INTERNAL_ERROR;
++			}
++			zcfgFeJsonObjFree(categoryJobj);
++			return ZCFG_SUCCESS;
++        }
++
++        /*--for zlog-config ---*/
++        IID_INIT(logSettingIid);
++
++        if (zcfgFeObjJsonGet(RDM_OID_ZLOG_CONFIG, &logSettingIid, &logSettingJobj) != ZCFG_SUCCESS)
++        {
++            ZLOG_ERROR("Fail to get RDM_OID_ZLOG_CONFIG\n");
++            return ZCFG_INTERNAL_ERROR;
++        }
++
++        enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++
++        if (json_object_object_get(Jobj, "Enable"))
++        {
++            json_object_object_add(logSettingJobj, "Enable", json_object_new_boolean(enable));
++        }
++
++        if (zcfgFeObjJsonSet(RDM_OID_ZLOG_CONFIG, &logSettingIid, logSettingJobj, NULL) != ZCFG_SUCCESS)
++        {
++            ZLOG_ERROR("Fail to set RDM_OID_ZLOG_CONFIG\n");
++            zcfgFeJsonObjFree(logSettingJobj);
++            return ZCFG_INTERNAL_ERROR;
++        }
++
++        zcfgFeJsonObjFree(logSettingJobj);
++        return ZCFG_SUCCESS;
++    }//if
++
++    /*--for set zlog data model ---*/
++    obj = json_object_array_get_idx(Jobj, 0);
++    IID_INIT(logSettingIid);
++
++    if (zcfgFeDalZlogCategory(Jobj) != ZCFG_SUCCESS)
++    {
++        ZLOG_ERROR("Fail to zcfgFeDalZlogCategory()");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    if (zcfgFeObjJsonGet(RDM_OID_ZLOG_CONFIG, &logSettingIid, &logSettingJobj) != ZCFG_SUCCESS)
++    {
++        ZLOG_ERROR("Fail to get RDM_OID_ZLOG_CONFIG\n");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    if (_edittingSettingCombine(obj, logSettingJobj) == -1)
++    {
++        ZLOG_ERROR("Fail to _edittingSettingCombine()");
++        zcfgFeJsonObjFree(logSettingJobj);
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    if (zcfgFeObjJsonSet(RDM_OID_ZLOG_CONFIG, &logSettingIid, logSettingJobj, NULL) != ZCFG_SUCCESS)
++    {
++        ZLOG_ERROR("Fail to set RDM_OID_ZLOG_CONFIG\n");
++        zcfgFeJsonObjFree(logSettingJobj);
++        return ZCFG_INTERNAL_ERROR;
++    }
++    zcfgFeJsonObjFree(logSettingJobj);
++    return ZCFG_SUCCESS;
++}
++
++/*!
++ *  zlog data model for category setting
++ *
++ *  @param [in] Jobj        is a storage categorylogsetting struct object
++ *
++ *  @return ZCFG_SUCCESS    - successful
++ *          other           - failed
++ */
++zcfgRet_t zcfgFeDalZlogCategory(struct json_object *Jobj)
++{
++    struct          json_object *reqObject          = NULL;
++    struct          json_object *categoryJobj       = NULL;
++    int             index                           = 0;
++    int             len                             = 0;
++    objIndex_t      categoryIid;
++
++    if (Jobj == NULL)
++    {
++        ZLOG_ERROR("Jobj == NULL");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    /*-------------------------------
++    Array[0]    : Zlog Setting-Enable
++    Array[1]    : All
++    Array[2] -  : Program
++    ---------------------------------*/
++    len = json_object_array_length(Jobj);
++
++    for (int reqObjIdx = 1; reqObjIdx < len; ++reqObjIdx)
++    {
++        reqObject = json_object_array_get_idx(Jobj, reqObjIdx);
++
++        IID_INIT(categoryIid);
++        index = json_object_get_int(json_object_object_get(reqObject, "Index"));
++        
++        if (index < 0)
++        {
++            ZLOG_ERROR("invalid index %d", index);
++			return ZCFG_INTERNAL_ERROR;
++        }
++
++        categoryIid.idx[0] = index;
++		categoryIid.level = 1;
++
++        if (zcfgFeObjJsonGet(RDM_OID_ZLOG_CATEGORY, &categoryIid, &categoryJobj) != ZCFG_SUCCESS)
++        {
++            ZLOG_ERROR("Fail to Get RDM_OID_ZLOG_CATEGORY");
++            return ZCFG_INTERNAL_ERROR;
++        }
++
++        if (_edittingSettingCombine(reqObject, categoryJobj) == -1)
++        {
++            ZLOG_ERROR("Fail to _edittingSettingCombine()");
++            zcfgFeJsonObjFree(categoryJobj);
++            return ZCFG_INTERNAL_ERROR;
++        }
++
++        if (zcfgFeObjJsonSet(RDM_OID_ZLOG_CATEGORY, &categoryIid, categoryJobj, NULL) != ZCFG_SUCCESS)
++        {
++            ZLOG_ERROR("Fail to Set RDM_OID_ZLOG_CATEGORY");
++            zcfgFeJsonObjFree(categoryJobj);
++            return ZCFG_INTERNAL_ERROR;
++        }
++        zcfgFeJsonObjFree(categoryJobj);
++    }
++    return ZCFG_SUCCESS;
++}
++
++/*!
++ *  Get zlog data module value put into Jarray
++ *
++ *  @param [in]  Jobj           is a storage zlogsetting struct
++ *  @param [out] Jarray         is a storage zlogsetting all struct array
++ *
++ *  @return ZCFG_SUCCESS        - successful
++ *          other               - failed
++ */
++zcfgRet_t zcfgFeDalZlogSettingGet(struct json_object *Jobj, struct json_object *Jarray)
++{
++    struct json_object *sysJobj         = NULL;
++    struct json_object *LogJobj         = NULL;
++    struct json_object *categoryJobj    = NULL;
++    struct json_object *config          = NULL;
++    objIndex_t          LogIid          = {0};
++    objIndex_t          CategoryIid     = {0};
++
++    if (Jobj == NULL)
++    {
++        ZLOG_ERROR("Jobj == NULL");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    if (Jarray == NULL)
++    {
++        ZLOG_ERROR("Jarray == NULL");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    IID_INIT(LogIid);
++
++    if (zcfgFeObjJsonGet(RDM_OID_ZLOG_CONFIG, &LogIid, &LogJobj) != ZCFG_SUCCESS)
++    {
++        ZLOG_ERROR("Fail to Get RDM_OID_ZLOG_CONFIG");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    json_object_array_add(Jarray, LogJobj);
++
++    IID_INIT(CategoryIid);
++
++    while (zcfgFeObjJsonGetNext(RDM_OID_ZLOG_CATEGORY, &CategoryIid, &categoryJobj) == ZCFG_SUCCESS)
++    {
++        config = json_object_new_object();
++		json_object_object_add(config, "Index", json_object_new_int(CategoryIid.idx[0]));
++
++        if (_gettingSettingCombine(categoryJobj, config) == -1)
++        {
++            ZLOG_ERROR("Fail to _gettingSettingCombine()");
++            zcfgFeJsonObjFree(categoryJobj);
++            return ZCFG_INTERNAL_ERROR;
++        }
++
++        json_object_array_add(Jarray, config);
++		zcfgFeJsonObjFree(categoryJobj);
++    }
++    return ZCFG_SUCCESS;
++}
++
++/*!
++ *  zlog setting is showing in the console
++ *
++ *  @param [in] Jarray    is a storage logsetting array
++ */
++void zcfgFeDalShowZlogSetting(struct json_object *Jarray)
++{
++    struct json_object    *obj            = NULL;
++    int                   len             = 0;
++    int                   i;
++    int                   index;
++    int                   syslogServerIp;
++    int                   syslogServerPort;
++    const char            *name;
++    const char            *enable;
++    const char            *severity;
++    const char            *console;
++    const char            *usbFile;
++    const char            *filename;
++    const char            *syslogServer;
++    const char            *userdefinefile;
++    const char            *fullPath;
++
++    if (Jarray == NULL)
++    {
++        ZLOG_ERROR("Jarray == NULL");
++        return;
++    }
++
++    if (json_object_get_type(Jarray) != json_type_array)
++    {
++       ZLOG_ERROR("wrong Jobj format!\n");
++       return;
++    }
++
++    obj = json_object_array_get_idx(Jarray, 0);
++    printf("Zlog Setting \n");
++    printf("%-2s %-20s %-10s \n", "", "Syslog Logging:", json_object_get_string(json_object_object_get(obj, "Enable")));
++    printf("%-2s %-20s %-10s \n", "", "Status:", json_object_get_string(json_object_object_get(obj, "Status")));
++    printf("\n");
++
++    /*-------------------------------
++    Array[0]    : Zlog Setting-Enable
++    Array[1]    : All
++    Array[2] -  : Program
++    ---------------------------------*/
++    len = json_object_array_length(Jarray);
++
++    for (i = 1; i < len; ++i)
++    {
++        obj = json_object_array_get_idx(Jarray, i);
++
++        if (obj != NULL)
++        {
++            index               = json_object_get_int(json_object_object_get(obj, "Index"));
++            name                = json_object_get_string(json_object_object_get(obj, "Name"));
++            enable              = json_object_get_string(json_object_object_get(obj, "Enable"));
++            severity            = json_object_get_string(json_object_object_get(obj, "Severity"));
++            console             = json_object_get_string(json_object_object_get(obj, "Console"));
++            usbFile             = json_object_get_string(json_object_object_get(obj, "UsbFile"));
++            filename            = json_object_get_string(json_object_object_get(obj, "Filename"));
++            syslogServer        = json_object_get_string(json_object_object_get(obj, "SyslogServer"));
++            syslogServerIp      = json_object_get_string(json_object_object_get(obj, "SyslogServerIp"));
++            syslogServerPort    = json_object_get_string(json_object_object_get(obj, "SyslogServerPort"));
++            userdefinefile      = json_object_get_string(json_object_object_get(obj, "Userdefinefile"));
++            fullPath            = json_object_get_string(json_object_object_get(obj, "FullPath"));
++
++            printf("%-6s %-14s %-7s %-7s %-7s %-7s %-10s %-7s %-8s %-10s %-10s %-20s \n","Index", "Name", "Enable", "Severity", "Console", "UsbFile", "Filename", "Server", "ServerIp", "ServerPort", "Userdefinefile", "FullPath");
++            printf("%-6u %-14s %-7s %-8s %-7s %-7s %-10s %-7s %-8s %-10s %-10s %-20s \n", index, name, enable, severity, console, usbFile, filename, syslogServer, syslogServerIp, syslogServerPort, userdefinefile, fullPath);
++        }
++    }
++}
++
++/*!
++ *  zlog dal-module put or get
++ *
++ *  @param [in] method      request method
++ *  @param [in] Jobj        is a json_object struct
++ *  @param [in] Jarray      is a json_object struct
++ *
++ *  @return ZCFG_SUCCESS    - successful
++ *          other           - failed
++ */
++zcfgRet_t zcfgFeDalZlogSetting(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++    zcfgRet_t ret = ZCFG_SUCCESS;
++
++    if (method == NULL)
++    {
++        ZLOG_ERROR("method == NULL");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    if (Jobj == NULL)
++    {
++        ZLOG_ERROR("Jobj == NULL");
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    if (!strcmp(method, "GET"))
++    {
++        if (Jarray == NULL)
++        {
++            ZLOG_ERROR("Jarray == NULL");
++            return ZCFG_INTERNAL_ERROR;
++        }
++    }
++
++    if (!strcmp(method, "PUT"))
++    {
++        ret = zcfgFeDalZlogSettingEdit(Jobj, replyMsg);
++    }
++    else if (!strcmp(method, "GET"))
++    {
++        ret = zcfgFeDalZlogSettingGet(Jobj, Jarray);
++    }
++    else
++    {
++        ZLOG_ERROR("Unknown method :%s\n", method);
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++    return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-11-26 14:44:31.658825405 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-11-26 14:48:04.404468336 +0800
+@@ -86,6 +86,9 @@
+ #endif
+ extern dal_param_t MAIL_NOTIFICATION_param[];
+ extern dal_param_t LOG_SETTING_param[];
++#ifdef CONFIG_ZLOG_USE_DEBUG
++extern dal_param_t ZLOG_SETTING_param[];
++#endif
+ extern dal_param_t PING_TEST_param[];
+ extern dal_param_t IEEE_8021AG_param[];
+ extern dal_param_t IEEE_8023AH_param[];
+@@ -185,6 +188,9 @@
+ extern zcfgRet_t zcfgFeDalMailNotification(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalLogSetting(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalSysLog(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#ifdef CONFIG_ZLOG_USE_DEBUG
++extern zcfgRet_t zcfgFeDalZlogSetting(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#endif
+ extern zcfgRet_t zcfgFeDalPingTest(const char *method, struct json_object *Jobj,struct json_object *Jarray,  char *replyMsg);
+ extern zcfgRet_t zcfgFe8021ag(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFe8023ah(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -275,6 +281,9 @@
+ extern void zcfgFeDalShowWwanBackup(struct json_object *Jarray);
+ extern void zcfgFeDalShowMailNotification(struct json_object *Jarray);
+ extern void zcfgFeDalShowLogSetting(struct json_object *Jarray);
++#ifdef CONFIG_ZLOG_USE_DEBUG
++extern void zcfgFeDalShowZlogSetting(struct json_object *Jarray);
++#endif
+ extern void zcfgFeDalShowWifiWmm(struct json_object *Jarray);
+ extern void zcfgFeDalShowLanSetup(struct json_object *Jarray);
+ extern void zcfgFeDalShowParentCtl(struct json_object *Jarray);
+@@ -357,6 +366,9 @@
+ {"email_ntfy",		MAIL_NOTIFICATION_param,zcfgFeDalMailNotification,zcfgFeDalShowMailNotification,	"add|delete|get", 		"Email_Notify"},//Email_Notify
+ {"logset",			LOG_SETTING_param,	zcfgFeDalLogSetting,	zcfgFeDalShowLogSetting,	"get|edit", 		"Log"}, //Log
+ {"sys_log", 		SYS_LOG_param, 		zcfgFeDalSysLog,		zcfgFeDalShowSysLog,		"get|delete", 		"Log"},
++#ifdef CONFIG_ZLOG_USE_DEBUG
++{"zlog",            ZLOG_SETTING_param, zcfgFeDalZlogSetting,   zcfgFeDalShowZlogSetting,   "get|edit",         "Log"}, //Zlog
++#endif
+ {"PINGTEST",		PING_TEST_param,	zcfgFeDalPingTest,		NULL,						"edit",				""},//
+ {"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag,			NULL,						"edit",				""},//Diagnostic_Result
+ {"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah,			NULL,						"edit",				""},//Diagnostic_Result
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2018-11-26 14:44:47.838825405 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2018-11-26 14:45:59.950825405 +0800
+@@ -255,6 +255,11 @@
+ CFLAGS += -DZYXEL_FEATURE_BITS
+ endif
+ 
++#zlog
++ifeq ($(CONFIG_ZLOG_USE_DEBUG),y)
++CFLAGS += -DCONFIG_ZLOG_USE_DEBUG
++endif
++
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+ 

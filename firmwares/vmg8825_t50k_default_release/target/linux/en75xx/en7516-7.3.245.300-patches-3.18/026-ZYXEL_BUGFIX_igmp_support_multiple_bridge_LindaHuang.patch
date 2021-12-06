@@ -1,0 +1,180 @@
+Index: linux-3.18.21/net/bridge/ecnt_br.c
+===================================================================
+--- linux-3.18.21.orig/net/bridge/ecnt_br.c	2018-05-30 15:30:41.643012520 +0800
++++ linux-3.18.21/net/bridge/ecnt_br.c	2018-05-30 15:55:17.578331288 +0800
+@@ -296,6 +296,10 @@
+ 	#define MUL_PROTO_IGMP 1
+ 	#define MUL_PROTO_MLD 2
+ 
++#if 1//ZYXEL
++	static struct list_head br_list;
++	static spinlock_t	 br_lock;
++#endif
+ 	static struct list_head hwnat_igmp_entry;
+ 	static unsigned int hwnat_igmp_flag = 1;
+ 	static unsigned int hwnat_age_time = 3000;
+@@ -596,6 +600,30 @@
+ 	
+ 	return mask;
+ }
++#if 1//ZYXEL
++unsigned long igmp_hwnat_port_mask_zyxel(struct net_bridge *br,IGMP_HWNATEntry_t* entry)
++{	
++	struct net_bridge *br_p = br;
++	struct multicast_br_list *b_entry = NULL;
++	struct multicast_br_list *ptr = NULL;
++	int mask = 0;
++	
++	if(br_p)
++		return igmp_hwnat_port_mask(br_p, entry);
++	else
++	{
++		spin_lock(&br_lock);
++		list_for_each_entry_safe(b_entry, ptr, &br_list, list)
++	    {
++			mask = igmp_hwnat_port_mask(b_entry->br, entry);
++			if(mask != 0)
++				break;
++	    }
++		spin_unlock(&br_lock);
++	}
++	return mask;
++}
++#endif
+ 
+ /**************************************************
+ Function: Delete a entry maintained by SW
+@@ -1009,7 +1037,11 @@
+ 			continue;
+ 		}
+ 
++#if 1 //ZYXEL
++		mask = igmp_hwnat_port_mask_zyxel(br,entry);
++#else
+ 		mask = igmp_hwnat_port_mask(br,entry);
++#endif
+ 		old_mask = entry->mask;
+ 		if (mask != old_mask)
+ 		{
+@@ -1204,8 +1236,12 @@
+ 	
+ 	spin_unlock(&hwnat_lock);
+ 
++#if 1 //ZYXEL
++	igmp_hwnat_update_all(NULL);
++#else
+ 	if (hwnat_br)
+ 		igmp_hwnat_update_all(hwnat_br);
++#endif
+ 
+ 	return 0;
+ }
+@@ -1606,8 +1642,50 @@
+ };
+ #endif
+ 
++#if 1 //ZYXEL
++#ifdef TCSUPPORT_MULTICAST_SPEED
++void addbr_to_bridge_list(struct net_bridge *br)
++{
++	struct multicast_br_list *b;
++	b = kzalloc(sizeof(*b), GFP_KERNEL);
++	if (b == NULL)
++		return ERR_PTR(-ENOMEM);
++
++	b->br = br;
++	strncpy(b->name, br->dev->name, IFNAMSIZ);
++	spin_lock(&br_lock);
++	list_add(&b->list, &br_list);
++	spin_unlock(&br_lock);
++}
++
++void delbr_to_bridge_list(struct net_bridge *br)
++{
++	struct multicast_br_list *entry = NULL;
++	struct multicast_br_list *ptr = NULL;
++
++	spin_lock(&br_lock);
++	list_for_each_entry_safe(entry, ptr, &br_list, list)
++    {
++        if(strcmp(entry->name, br->dev->name)== 0)
++        {
++            list_del(&entry->list);
++			kfree(entry);
++            entry = NULL;
++        }
++    }
++	spin_unlock(&br_lock);
++}
++#endif
++#endif
++
+ void igmp_hwnat_init(struct net_bridge *br)
+ {
++#if 1 //ZYXEL
++	struct file* fp = NULL;		
++	fp = filp_open("/proc/tc3162/igmp_hwnat", O_RDWR, 0);	
++	if (IS_ERR(fp))
++	{
++#endif
+ 	struct proc_dir_entry *hwnat_proc = NULL;
+ 	INIT_LIST_HEAD(&hwnat_igmp_entry);
+ 	spin_lock_init(&hwnat_lock);
+@@ -1629,7 +1707,21 @@
+ 	hwnat_proc = create_proc_entry("tc3162/igmp_hwnat", 0, NULL);
+ 	hwnat_proc->read_proc = igmp_hwnat_read_proc;
+ 	hwnat_proc->write_proc = igmp_hwnat_write_proc;
++#if 1 //ZYXEL
++		INIT_LIST_HEAD(&br_list);
++	}
++	else
++	{		
++		filp_close(fp,NULL);
++	}
++#endif
++#if 1 //ZYXEL	
++#ifdef TCSUPPORT_MULTICAST_SPEED
++		addbr_to_bridge_list(br);
++#endif
++#else
+ 	hwnat_br = br;
++#endif
+ 	return;
+ }
+ 
+Index: linux-3.18.21/net/bridge/br_if.c
+===================================================================
+--- linux-3.18.21.orig/net/bridge/br_if.c	2015-09-01 06:19:23.000000000 +0800
++++ linux-3.18.21/net/bridge/br_if.c	2018-05-30 15:50:31.636913381 +0800
+@@ -278,6 +278,11 @@
+ 		del_nbp(p);
+ 	}
+ 
++#if 1//ZYXEL
++#ifdef TCSUPPORT_MULTICAST_SPEED
++	delbr_to_bridge_list(br);
++#endif
++#endif
+ 	br_fdb_delete_by_port(br, NULL, 1);
+ 
+ 	br_vlan_flush(br);
+Index: linux-3.18.21/net/bridge/br_private.h
+===================================================================
+--- linux-3.18.21.orig/net/bridge/br_private.h	2018-05-30 15:12:13.000000000 +0800
++++ linux-3.18.21/net/bridge/br_private.h	2018-05-30 15:14:28.478186857 +0800
+@@ -352,6 +352,15 @@
+ #endif
+ };
+ 
++#if 1//ZYXEL
++struct multicast_br_list
++{       
++    struct list_head 	list;
++    struct net_bridge	*br;
++	char				name[IFNAMSIZ];
++};
++#endif
++
+ #define BR_INPUT_SKB_CB(__skb)	((struct br_input_skb_cb *)(__skb)->cb)
+ 
+ #ifdef CONFIG_BRIDGE_IGMP_SNOOPING

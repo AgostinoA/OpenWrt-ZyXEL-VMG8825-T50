@@ -1,0 +1,252 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2017-07-07 18:12:08.496327026 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2017-07-07 18:14:06.079447937 +0800
+@@ -193,6 +193,19 @@
+ 
+ time_t t1, t2;
+ 
++//find key2 in Jobj2, if it exist add it to Jobj1 as key1
++static int replaceParam(struct json_object *Jobj1, char *key1, struct json_object *Jobj2, char *key2)
++{
++	struct json_object *pramJobj = NULL;
++
++	pramJobj = json_object_object_get(Jobj2, key2);
++	if (pramJobj) {
++		json_object_object_add(Jobj1, key1, JSON_OBJ_COPY(pramJobj));
++		return 1;
++	}
++	return 0;
++}
++
+ //convert string to lower case
+ void stolower(char *str, char *buf, size_t size)
+ {
+@@ -1492,7 +1505,6 @@
+ zcfgRet_t dalcmdWifiGeneralEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	int Index;
+-	objIndex_t iid;
+ 	struct json_object *paramObj = NULL;
+ 	const char *RadioReference = NULL, *SSIDReference = NULL;
+ 	uint8_t SSIDIdx;
+@@ -1666,13 +1678,218 @@
+ 	return ret;
+ }
+ 
++void zcfgDalGetIid(struct json_object *Jobj, char *iidName, objIndex_t *iid)
++{
++	struct json_object *iidArray = NULL;
++	uint8_t iidIdx;
++
++	iidArray = json_object_object_get(Jobj, iidName);
++	for (iidIdx = 0 ; iidIdx < 6 ; iidIdx++) {
++		iid->idx[iidIdx] = json_object_get_int(json_object_array_get_idx(iidArray, iidIdx));
++		if (iid->idx[iidIdx] != 0) {
++			iid->level = iidIdx + 1;
++		}
++	}
++	return;
++}
++
++void zcfgDalWlanGetMainSsidIndex(int *main2gFound, int *main5gFound)
++{
++	char *str;
++	struct json_object *obj = NULL;
++	objIndex_t iid;
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &iid, &obj) == ZCFG_SUCCESS) {
++		if (json_object_get_int(json_object_object_get(obj, "X_ZYXEL_MainSSID")) == true) {
++			str = (char*)json_object_get_string(json_object_object_get(obj, "LowerLayers"));
++			if (strncmp(str, "WiFi.Radio.1", strlen("WiFi.Radio.1")) == 0) {
++				*main2gFound = iid.idx[0];
++			}
++			else if (strncmp(str, "WiFi.Radio.2", strlen("WiFi.Radio.2")) == 0) {
++				*main5gFound = iid.idx[0];
++			}
++		}
++		json_object_put(obj);
++		obj = NULL;
++	}
++	return;
++}
++
++static int needCopy(int main2gIndex, int main5gIndex, objIndex_t *iid)
++{
++#ifdef BUILD_SONIQ
++	struct json_object *soniqObj = NULL;
++	objIndex_t soniqIid = {0};
++	bool soniqEnabled = false;
++
++	IID_INIT(soniqIid);
++
++	if (zcfgFeObjJsonGet(RDM_OID_WIFI_QSTEER, &soniqIid, &soniqObj) == ZCFG_SUCCESS) {
++		soniqEnabled = json_object_get_int(json_object_object_get(soniqObj, "Enable"));
++		zcfgFeJsonObjFree(soniqObj);
++		if (soniqEnabled == false) {
++			return false;
++		}
++	}
++	else {
++		return false;
++	}
++	if (iid->idx[0] == main2gIndex) { //2g main
++		return true;
++	}
++	else if (iid->idx[0] == (main2gIndex + 1)) { //2g guest1
++		return true;
++	}
++#endif
++	return false;
++}
++
++zcfgRet_t zcfgDalWlanCopy2gto5g(struct json_object *Jobj)
++{
++	struct json_object *ssidObj = NULL, *ssidObj5g = NULL, *apObj = NULL, *apObj5g = NULL, *apSecObj = NULL, *apSecObj5g = NULL;
++	objIndex_t ssidObjIid = {0}, ssidObj5gIid = {0}, apObjIid = {0}, apObj5gIid = {0}, apSecObjIid = {0}, apSecObj5gIid = {0};
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int main2gFound = 0, main5gFound = 0;
++	char *str2g, *str5g;
++
++	zcfgDalWlanGetMainSsidIndex(&main2gFound, &main5gFound);
++
++	/* ssidObj */
++	IID_INIT(ssidObjIid);
++	zcfgDalGetIid(Jobj, "wlSsidIid", &ssidObjIid);
++
++	if (needCopy(main2gFound, main5gFound, &ssidObjIid) == true) {
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &ssidObjIid, &ssidObj)) != ZCFG_SUCCESS) {
++			goto error;
++		}
++		IID_INIT(ssidObj5gIid);
++		ssidObj5gIid.idx[0] = ssidObjIid.idx[0] - main2gFound + main5gFound;
++		ssidObj5gIid.level = 1;
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &ssidObj5gIid, &ssidObj5g)) != ZCFG_SUCCESS) {
++			goto error;
++		}
++
++		replaceParam(ssidObj5g, "SSID", ssidObj, "SSID");
++
++		zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_SSID, &ssidObj5gIid, ssidObj5g, NULL);
++		json_object_put(ssidObj);
++		ssidObj = NULL;
++		json_object_put(ssidObj5g);
++		ssidObj5g = NULL;
++	}
++
++	/* apObj */
++	IID_INIT(apObjIid);
++	zcfgDalGetIid(Jobj, "wlApIid", &apObjIid);
++
++	if (needCopy(main2gFound, main5gFound, &apObjIid) == true) {
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT, &apObjIid, &apObj)) != ZCFG_SUCCESS) {
++			goto error;
++		}
++		IID_INIT(apObj5gIid);
++		apObj5gIid.idx[0] = apObjIid.idx[0] - main2gFound + main5gFound;
++		apObj5gIid.level = 1;
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT, &apObj5gIid, &apObj5g)) != ZCFG_SUCCESS) {
++			goto error;
++		}
++
++		replaceParam(apObj5g, "SSIDAdvertisementEnabled", apObj, "SSIDAdvertisementEnabled");
++		replaceParam(apObj5g, "IsolationEnable", apObj, "IsolationEnable");
++		replaceParam(apObj5g, "X_ZYXEL_BssIdIsolation", apObj, "X_ZYXEL_BssIdIsolation");
++
++		zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT, &apObj5gIid, apObj5g, NULL);
++		json_object_put(apObj);
++		apObj = NULL;
++		json_object_put(apObj5g);
++		apObj5g = NULL;
++	}
++
++	/* apSecObj */
++	IID_INIT(apSecObjIid);
++	zcfgDalGetIid(Jobj, "wlSecIid", &apSecObjIid);
++
++	if (needCopy(main2gFound, main5gFound, &apSecObjIid) == true) {
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_SEC, &apSecObjIid, &apSecObj)) != ZCFG_SUCCESS) {
++			goto error;
++		}
++		IID_INIT(apSecObj5gIid);
++		apSecObj5gIid.idx[0] = apSecObjIid.idx[0] - main2gFound + main5gFound;
++		apSecObj5gIid.level = 1;
++		if ((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_SEC, &apSecObj5gIid, &apSecObj5g)) != ZCFG_SUCCESS) {
++			goto error;
++		}
++
++		/*
++ 		*  special case: 2.4G security mode does not support on 5G
++		*  		"ModesSupported": "None,WPA-Personal,WPA2-Personal,WPA-WPA2-Personal,"
++		*  		"ModeEnabled": "WEP-128"
++ 		*/
++		str2g = (char*)json_object_get_string(json_object_object_get(apSecObj, "ModeEnabled"));
++		str5g = (char*)json_object_get_string(json_object_object_get(apSecObj5g, "ModesSupported"));
++		if (strstr(str5g, str2g) != NULL) {
++			replaceParam(apSecObj5g, "ModeEnabled", apSecObj, "ModeEnabled");
++			replaceParam(apSecObj5g, "WEPKey", apSecObj, "WEPKey");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEPKey2", apSecObj, "X_ZYXEL_WEPKey2");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEPKey3", apSecObj, "X_ZYXEL_WEPKey3");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEPKey4", apSecObj, "X_ZYXEL_WEPKey4");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEP64Key1", apSecObj, "X_ZYXEL_WEP64Key1");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEP64Key2", apSecObj, "X_ZYXEL_WEP64Key2");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEP64Key3", apSecObj, "X_ZYXEL_WEP64Key3");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEP64Key4", apSecObj, "X_ZYXEL_WEP64Key4");
++			replaceParam(apSecObj5g, "X_ZYXEL_DefaultKeyID", apSecObj, "X_ZYXEL_DefaultKeyID");
++			replaceParam(apSecObj5g, "X_ZYXEL_WepModeSelect", apSecObj, "X_ZYXEL_WepModeSelect");
++			replaceParam(apSecObj5g, "PreSharedKey", apSecObj, "PreSharedKey");
++			replaceParam(apSecObj5g, "KeyPassphrase", apSecObj, "KeyPassphrase");
++			replaceParam(apSecObj5g, "RekeyingInterval", apSecObj, "RekeyingInterval");
++			replaceParam(apSecObj5g, "X_ZYXEL_AutoGenPSK", apSecObj, "X_ZYXEL_AutoGenPSK");
++			replaceParam(apSecObj5g, "X_ZYXEL_Auto_PSK", apSecObj, "X_ZYXEL_Auto_PSK");
++			replaceParam(apSecObj5g, "X_ZYXEL_Auto_PSK_Length", apSecObj, "X_ZYXEL_Auto_PSK_Length");
++			replaceParam(apSecObj5g, "X_ZYXEL_AutoGenPSK_algorithm", apSecObj, "X_ZYXEL_AutoGenPSK_algorithm");
++			replaceParam(apSecObj5g, "X_ZYXEL_AutoGenWepKey", apSecObj, "X_ZYXEL_AutoGenWepKey");
++			replaceParam(apSecObj5g, "X_ZYXEL_Auto_WepKey26", apSecObj, "X_ZYXEL_Auto_WepKey26");
++			replaceParam(apSecObj5g, "X_ZYXEL_Auto_WepKey10", apSecObj, "X_ZYXEL_Auto_WepKey10");
++			replaceParam(apSecObj5g, "X_ZYXEL_PassphraseType", apSecObj, "X_ZYXEL_PassphraseType");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEPAuthentication", apSecObj, "X_ZYXEL_WEPAuthentication");
++			replaceParam(apSecObj5g, "X_ZYXEL_WEPEncryption", apSecObj, "X_ZYXEL_WEPEncryption");
++			replaceParam(apSecObj5g, "X_ZYXEL_WPAAuthentication", apSecObj, "X_ZYXEL_WPAAuthentication");
++			replaceParam(apSecObj5g, "X_ZYXEL_11iAuthentication", apSecObj, "X_ZYXEL_11iAuthentication");
++			replaceParam(apSecObj5g, "X_ZYXEL_Encryption", apSecObj, "X_ZYXEL_Encryption");
++			replaceParam(apSecObj5g, "X_ZYXEL_WPAEncryption", apSecObj, "X_ZYXEL_WPAEncryption");
++			replaceParam(apSecObj5g, "X_ZYXEL_11iEncryption", apSecObj, "X_ZYXEL_11iEncryption");
++			replaceParam(apSecObj5g, "X_ZYXEL_Preauth", apSecObj, "X_ZYXEL_Preauth");
++			replaceParam(apSecObj5g, "X_ZYXEL_ReauthInterval", apSecObj, "X_ZYXEL_ReauthInterval");
++
++			zcfgFeObjJsonBlockedSet(RDM_OID_WIFI_ACCESS_POINT_SEC, &apSecObj5gIid, apSecObj5g, NULL);
++		}
++		json_object_put(apSecObj);
++		apSecObj = NULL;
++		json_object_put(apSecObj5g);
++		apSecObj5g = NULL;
++	}
++
++error:
++	json_object_put(ssidObj);
++	json_object_put(ssidObj5g);
++	json_object_put(apObj);
++	json_object_put(apObj5g);
++	json_object_put(apSecObj);
++	json_object_put(apSecObj5g);
++
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalWifiGeneral(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+ 	//if(!strcmp(method, "POST"))
+ 		//ret = zcfgFeDalWifiGeneralAdd(Jobj, NULL);
+-	if(!strcmp(method, "PUT"))
++	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalWifiGeneralEdit(Jobj, NULL);
++#ifdef BUILD_SONIQ
++		zcfgDalWlanCopy2gto5g(Jobj);
++#endif
++	}
+ 	else if(!strcmp(method, "GET"))
+ 		ret = zcfgFeDalWifiGeneralGet(Jobj, Jarray, NULL);
+ 	else

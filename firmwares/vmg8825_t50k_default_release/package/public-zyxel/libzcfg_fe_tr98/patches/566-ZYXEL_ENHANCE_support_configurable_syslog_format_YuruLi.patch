@@ -1,0 +1,262 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2018-05-09 16:18:36.512609312 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2018-05-09 16:18:36.540609312 +0800
+@@ -311,6 +311,7 @@
+ {e_TR98_LANDING_PAGE			, &tr98Obj[e_TR98_LANDING_PAGE			  -e_TR98_START]},
+ #endif
+ {e_TR98_FEATURE_FLAG			, &tr98Obj[e_TR98_FEATURE_FLAG			  -e_TR98_START]},
++{e_TR98_DNS			            , &tr98Obj[e_TR98_DNS         			  -e_TR98_START]},
+ {e_TR98_DNS_RT_ENTRY            , &tr98Obj[e_TR98_DNS_RT_ENTRY            -e_TR98_START]},
+ {e_TR98_DNS_ENTRY    	        , &tr98Obj[e_TR98_DNS_ENTRY     	      -e_TR98_START]},
+ {e_TR98_D_DNS                   , &tr98Obj[e_TR98_D_DNS                   -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2018-05-09 16:18:36.524609312 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2018-05-09 16:18:36.540609312 +0800
+@@ -216,6 +216,7 @@
+ #define TR98_STD_UPNP_DEV			  "InternetGatewayDevice.UPnP.Device"
+ 
+ #define TR98_ZYXEL_EXT                "InternetGatewayDevice.X_ZYXEL_EXT"
++#define TR98_DNS                      "InternetGatewayDevice.X_ZYXEL_EXT.DNS"
+ #define TR98_DNS_RT_ENTRY             "InternetGatewayDevice.X_ZYXEL_EXT.DNSRouteEntry.i"
+ #define TR98_DNS_ENTRY     		      "InternetGatewayDevice.X_ZYXEL_EXT.DNSEntry.i"
+ #define TR98_D_DNS                    "InternetGatewayDevice.X_ZYXEL_EXT.DynamicDNS"
+@@ -607,6 +608,7 @@
+ {TR98_LANDING_PAGE, 			0,				para_Landing_Page,		zyExtLandingPageObjGet,	 zyExtLandingPageObjSet,	NULL,	NULL,	NULL,	NULL,	NULL},
+ #endif
+ {TR98_FEATURE_FLAG,				0,              para_Feature_Flag,		zyExtFeatureFlagObjGet,	 zyExtFeatureFlagObjSet,	NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_DNS,						0,				para_Dns,				zyExtDnsObjGet,			 zyExtDnsObjSet, NULL, NULL, NULL, NULL, NULL},
+ {TR98_DNS_RT_ENTRY,             ATTR_INDEX_CREA,para_DnsRtEntry,        zyExtDnsRtObjGet,        zyExtDnsRtObjSet,       zyExtDnsRtObjAdd, zyExtDnsRtObjDel,zyExtDnsRtObjNotify, NULL, zyExtDnsRtObjAttrSet},
+ //{TR98_DNS_ENTRY, 	            ATTR_INDEX_CREA,para_DnsEntry, 		    zyExtDnsEntryObjGet,     zyExtDnsEntryObjSet,    zyExtDnsEntryObjAdd, zyExtDnsEntryObjDel,zyExtDnsEntryObjNotify, zyExtDnsEntryObjAttrGet, zyExtDnsEntryObjAttrSet},
+ {TR98_DNS_ENTRY, 	            ATTR_INDEX_CREA,para_DnsEntry, 		    zyExtDnsEntryObjGet,     zyExtDnsEntryObjSet,    zyExtDnsEntryObjAdd, zyExtDnsEntryObjDel, NULL, NULL, NULL},
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2018-05-09 16:18:36.528609312 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2018-05-09 16:21:45.356079884 +0800
+@@ -7477,6 +7477,167 @@
+ }
+ #endif
+ 
++/* "InternetGatewayDevice.X_ZYXEL_EXT.DNS" */
++zcfgRet_t zyExtDnsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *Jobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	const char *X_ZYXEL_BoundInterfaceList = NULL;
++	int len = 0;
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_DNS, &objIid, &Jobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/
++		paramValue = json_object_object_get(Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "X_ZYXEL_BoundInterfaceList")) {
++					X_ZYXEL_BoundInterfaceList = json_object_get_string(paramValue);
++					
++					if(X_ZYXEL_BoundInterfaceList) {
++						char wanIpConnName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++						char tr98IntfList[TR98_MAX_OBJ_NAME_LENGTH * 5] = {0};
++						char interface_str[256] = {0};
++						char *ipIfaceName = NULL, *tmp = NULL;
++						
++						sprintf(interface_str, "%s", X_ZYXEL_BoundInterfaceList);
++						ipIfaceName = strtok_r(interface_str, ",", &tmp);
++						while (ipIfaceName != NULL) {
++							memset(wanIpConnName, 0, TR98_MAX_OBJ_NAME_LENGTH);
++							
++							if (zcfgFe181To98MappingNameGet(ipIfaceName, wanIpConnName) != ZCFG_SUCCESS) {
++								ipIfaceName = strtok_r(NULL, "," ,&tmp);
++								continue;
++							}
++							strcat(tr98IntfList, wanIpConnName);
++							strcat(tr98IntfList, ",");
++							ipIfaceName = strtok_r(NULL, ",", &tmp);
++						}
++						len = strlen(tr98IntfList);
++						if(tr98IntfList[len-1] == ',')
++							tr98IntfList[len-1] = '\0';
++						json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tr98IntfList));
++						paramList++;
++						continue;
++					}
++					
++					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++					paramList++;
++					continue;
++			}
++			
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++	json_object_put(Jobj);
++
++	return ZCFG_SUCCESS;
++}
++
++/* "InternetGatewayDevice.X_ZYXEL_EXT.DNS" */
++zcfgRet_t zyExtDnsObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *Jobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	const char *X_ZYXEL_BoundInterfaceList = NULL;
++	int len;
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &objIid, &Jobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = Jobj;
++		Jobj = NULL;
++		Jobj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			if(!strcmp(paramList->name, "X_ZYXEL_BoundInterfaceList")) {
++				X_ZYXEL_BoundInterfaceList = json_object_get_string(paramValue);
++				
++				if(X_ZYXEL_BoundInterfaceList) {
++					char tr181IntfList[TR98_MAX_OBJ_NAME_LENGTH * 5] = {0};
++					char ipIfaceName[32] = {0};
++					char interface_str[256] = {0};
++					char *wanIpConnName = NULL, *tmp = NULL;
++					
++					sprintf(interface_str, "%s", X_ZYXEL_BoundInterfaceList);
++					wanIpConnName = strtok_r(interface_str, ",", &tmp);
++					while (wanIpConnName != NULL) {
++						sprintf(wanIpConnName, "%s", wanIpConnName);
++						memset(ipIfaceName, 0, 32);
++						
++						if (zcfgFe98To181MappingNameGet(wanIpConnName, ipIfaceName) != ZCFG_SUCCESS) {
++							wanIpConnName = strtok_r(NULL, "," ,&tmp);
++							continue;
++						}
++						strcat(tr181IntfList, ipIfaceName);
++						strcat(tr181IntfList, ",");
++						wanIpConnName = strtok_r(NULL, ",", &tmp);
++					}
++					len = strlen(tr181IntfList);
++					if(tr181IntfList[len-1] == ',')
++						tr181IntfList[len-1] = '\0';
++					json_object_object_add(Jobj, paramList->name, json_object_new_string(tr181IntfList));
++					paramList++;
++					continue;
++				}
++				
++				json_object_object_add(Jobj, paramList->name, json_object_new_string(""));
++				paramList++;
++				continue;
++			}
++			
++			tr181ParamValue = json_object_object_get(Jobj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DNS, &objIid, Jobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(Jobj);
++			return ret;
++		}
++		json_object_put(Jobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
+ /* "InternetGatewayDevice.X_ZYXEL_EXT.FeatureFlag" */
+ zcfgRet_t zyExtFeatureFlagObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2018-05-09 16:18:36.528609312 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2018-05-09 16:18:36.544609312 +0800
+@@ -1,5 +1,6 @@
+ /*Parameter*/
+ extern tr98Parameter_t para_extend[];
++extern tr98Parameter_t para_Dns[];
+ extern tr98Parameter_t para_DnsRtEntry[];
+ extern tr98Parameter_t para_DnsEntry[];
+ extern tr98Parameter_t para_DDns[];
+@@ -77,6 +78,10 @@
+ zcfgRet_t zyExtObjGet(char *, int , struct json_object **, bool );
+ zcfgRet_t zyExtObjSet(char *, int , struct json_object *, struct json_object * );
+ 
++//InternetGatewayDevice.X_ZYXEL_EXT.DNS
++extern zcfgRet_t zyExtDnsObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyExtDnsObjSet(char *, int , struct json_object *, struct json_object *);
++
+ /*InternetGatewayDevice.X_ZYXEL_EXT.DNSRouteEntry.i*/
+ extern zcfgRet_t zyExtDnsRtObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t zyExtDnsRtObjSet(char *, int , struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2018-05-09 16:18:36.528609312 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2018-05-09 16:18:36.544609312 +0800
+@@ -8,6 +8,15 @@
+ 	{ NULL, 0, 0}
+ };
+ 
++tr98Parameter_t para_Dns[] = {
++	{ "SupportedRecordTypes", PARAMETER_ATTR_READONLY, 14, json_type_string},
++	{ "X_ZYXEL_BoundInterfaceList", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "X_ZYXEL_RedirectLANSideDNSQuery", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_ActiveDNSServers", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "X_ZYXEL_DNSQueryScenario", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ NULL, 0, 0}
++};
++
+ tr98Parameter_t para_DnsRtEntry[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "DomainName", PARAMETER_ATTR_WRITE, 257, json_type_string},
+@@ -139,6 +148,7 @@
+ 	{ "ZCFG_LOG_Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "LogMode", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	{ "Interval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "RemoteLogFormat", PARAMETER_ATTR_WRITE, 256, json_type_string},
+ 	{ NULL, 0, 0}
+ };
+ 
+@@ -155,6 +165,7 @@
+ 	{ "Describe", PARAMETER_ATTR_READONLY, 50, json_type_string},
+ 	{ "Level", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "Filter", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "LocalLogFormat", PARAMETER_ATTR_WRITE, 256, json_type_string},
+ 	{ NULL, 0, 0}
+ };
+ 

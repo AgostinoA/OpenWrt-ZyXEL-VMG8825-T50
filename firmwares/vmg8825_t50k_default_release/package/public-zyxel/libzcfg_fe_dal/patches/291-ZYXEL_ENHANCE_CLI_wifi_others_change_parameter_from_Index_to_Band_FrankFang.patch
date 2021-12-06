@@ -1,0 +1,75 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_others.c	2017-08-07 15:45:06.317402444 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c	2017-08-07 16:00:38.712008375 +0800
+@@ -17,7 +17,7 @@
+ 
+ dal_param_t WIFI_OTHERS_param[]={
+ 	//WiFi Radio
+-	{"Index",						dalType_int,		1,	8,	NULL,	NULL,	dal_Edit},
++	{"Band",						dalType_string,		0,	0,	NULL,	"2.4GHz|5GHz",	dal_Edit},
+ 	{"wlRtsThrshld",				dalType_int,		0,	0,	NULL,	NULL,	0},
+ 	{"wlFrgThrshld",				dalType_int, 		0,	0,	NULL,	NULL,	0},
+ 	{"AutoChannelTimer",			dalType_int,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+@@ -162,6 +162,39 @@
+ 	
+ }
+ 
++void prepareJObj(struct json_object *Jobj){
++	char *band=NULL;
++	int ssidIndex;
++	struct json_object *SsidObj = NULL;
++	struct json_object *RadioObj = NULL;
++	objIndex_t SsidIid={0};	
++	objIndex_t RadioIid={0};	
++	const char *tmpLowerLayer = NULL;
++	uint8_t tmpRadioIndex;
++
++	if(json_object_object_get(Jobj, "Band")){
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_RADIO, &RadioIid, &RadioObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "Band")),json_object_get_string(json_object_object_get(RadioObj, "OperatingFrequencyBand")))){
++				break;
++			}
++			zcfgFeJsonObjFree(RadioObj);
++		}
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &SsidIid, &SsidObj) == ZCFG_SUCCESS){
++			tmpLowerLayer = json_object_get_string(json_object_object_get(SsidObj, "LowerLayers"));
++			sscanf(tmpLowerLayer, "WiFi.Radio.%hhu", &tmpRadioIndex);
++			if(RadioIid.idx[0] == tmpRadioIndex){
++				ssidIndex = SsidIid.idx[0];
++				break;
++			}
++			zcfgFeJsonObjFree(SsidObj);
++		}
++		json_object_object_add(Jobj, "Index", json_object_new_int(ssidIndex));
++		json_object_object_del(Jobj, "Band");
++		zcfgFeJsonObjFree(SsidObj);
++		zcfgFeJsonObjFree(RadioObj);
++	}
++}
++
+ zcfgRet_t zcfgFeDalWifiOthersGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t SsidIid={0};
+@@ -199,8 +232,10 @@
+ 	json_object_object_add(pramJobj, "wlPreamble", JSON_OBJ_COPY(json_object_object_get(RadioObj, "X_ZYXEL_Preamble")));
+ 	json_object_array_add(Jarray, pramJobj);
+ 
+-	zcfgFeJsonObjFree(SsidObj);
+-	zcfgFeJsonObjFree(RadioObj);
++	if(SsidObj)
++		zcfgFeJsonObjFree(SsidObj);
++	if(RadioObj)
++		zcfgFeJsonObjFree(RadioObj);
+ 	return ret;
+ }
+ 
+@@ -782,6 +817,8 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+ 	t1 = time(NULL);
++
++	prepareJObj(Jobj);
+ 	
+ 	//if(!strcmp(method, "POST"))
+ 		//ret = zcfgFeDalWifiOthersAdd(Jobj, NULL);

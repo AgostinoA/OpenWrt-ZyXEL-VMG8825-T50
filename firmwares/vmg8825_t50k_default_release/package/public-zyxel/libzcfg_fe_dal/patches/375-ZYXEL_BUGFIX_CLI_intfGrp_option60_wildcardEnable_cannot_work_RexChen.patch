@@ -1,0 +1,191 @@
+Index: libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2017-11-16 16:13:51.125025654 +0800
++++ libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2017-11-16 16:14:37.405676700 +0800
+@@ -273,7 +273,7 @@
+ 	const char *SourceMACFromVendorClassIDFilter = NULL;
+ 	const char *SourceMACAddressFilterList = NULL;
+ 	bool enable_criteria = false;
+-	int len = 0, i;
++	int len = 0, i, idx = 0;
+ 	getWanLanList(&obj);
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_BR, &bridgeIid, &bridgeJobj) == ZCFG_SUCCESS){
+ 		paramJobj = json_object_new_object();
+@@ -407,6 +407,7 @@
+ 							SourceMACFromClientIDFilter = json_object_get_string(json_object_object_get(bridgefilterObj, "SourceMACFromClientIDFilter"));
+ 							SourceMACFromVendorClassIDFilter = json_object_get_string(json_object_object_get(bridgefilterObj, "SourceMACFromVendorClassIDFilter"));
+ 							SourceMACAddressFilterList = json_object_get_string(json_object_object_get(bridgefilterObj, "SourceMACAddressFilterList"));
++							idx = bridgefilterIid.idx[0];
+ 							if(strcmp(SourceMACFromVSIFilter,"")){
+ 								sprintf(criinfo,"op125<%s>",op125tmp);
+ 								break;
+@@ -428,6 +429,7 @@
+ 				}
+ 			}
+ 		}
++		json_object_object_add(paramJobj, "idx", json_object_new_int(idx));
+ 		json_object_object_add(paramJobj, "lanIntf", json_object_new_string(LAN));
+ 		json_object_object_add(paramJobj, "Criteria", json_object_new_string(criinfo));
+ 		json_object_array_add(Jarray, JSON_OBJ_COPY(paramJobj));
+@@ -466,6 +468,8 @@
+ 	const char *wildcardenable = NULL;
+ 	const char *optionstr = NULL;
+ 	const char *orgtype = NULL;
++	const char *cmd = NULL;
++	bool wildcard = false;
+ 	
+ 	int criteriaNum = 0;
+ 	int count = 0;
+@@ -639,11 +643,22 @@
+ 		}
+ 			}
+ 		else{
++			cmd = json_object_get_string(json_object_object_get(Jobj, "cmdtype"));
+ 			macvalue = json_object_get_string(json_object_object_get(obj, "mac_value"));
+ 			op60value = json_object_get_string(json_object_object_get(obj, "op60_value"));
+ 			op61value = json_object_get_string(json_object_object_get(obj, "op61_value"));
+ 			op125value = json_object_get_string(json_object_object_get(obj, "op125value"));
+-			wildcardenable = json_object_get_string(json_object_object_get(obj, "wildcardEnable"));
++			if(!strcmp(cmd, "GUI")){
++				wildcardenable = json_object_get_string(json_object_object_get(obj, "wildcardEnable"));
++			}
++			else if(!strcmp(cmd, "CLI")){
++				wildcard = json_object_get_boolean(json_object_object_get(obj, "wildcardEnable"));
++				if(wildcard)
++					wildcardenable = "Y";
++				else
++					wildcardenable = "N";
++
++			}
+ 			IID_INIT(newBrFilterIid);
+ 			if((ret = zcfgFeObjJsonAdd(RDM_OID_BRIDGING_FILTER, &newBrFilterIid, NULL)) != ZCFG_SUCCESS) {
+ 				return ret;
+@@ -777,7 +792,7 @@
+ 	char brPathName[32] = {0}, lanIntf_tmp[512] = {0}, brPath[32] = {0}, ifname[8] = {0}, cnt[4] = {0}, buf[512] = {0}, bfKey[4] = {0};
+ 	char *single_lanIntf = NULL, *rest_str = NULL, *op125value = NULL;
+ 	const char *act = NULL, *wildcardenable = NULL, *origVlanName = NULL, *ptr = NULL, *tmp = NULL, *brRefKey = NULL, *cmd = NULL;
+-	bool lanIntfSet = false;
++	bool lanIntfSet = false, wildcard = false;
+ 	if(json_object_object_get(Jobj, "critInfo"))
+ 		GUICeireriaReconstruct(Jobj, replyMsg);
+ 	if(json_object_object_get(Jobj, "type"))
+@@ -969,8 +984,18 @@
+ 				op60value = json_object_get_string(json_object_object_get(obj, "op60_value"));
+ 				op61value = json_object_get_string(json_object_object_get(obj, "op61_value"));
+ 				op125value = json_object_get_string(json_object_object_get(obj, "op125value"));
+-				wildcardenable = json_object_get_string(json_object_object_get(obj, "wildcardEnable"));
+-				cmd = json_object_get_string(json_object_object_get(obj, "cmd"));
++			cmd = json_object_get_string(json_object_object_get(Jobj, "cmdtype"));
++				if(!strcmp(cmd, "GUI")){
++					wildcardenable = json_object_get_string(json_object_object_get(obj, "wildcardEnable"));
++				}
++				else if(!strcmp(cmd ,"CLI")){
++					wildcard = json_object_get_boolean(json_object_object_get(obj, "wildcardEnable"));
++					if(wildcard)
++						wildcardenable = "Y";
++					else
++						wildcardenable = "N";
++				}
++				
+ 				IID_INIT(BridgeFilterIid);
+ 				if(reset == 0){
+ 					if(strcmp(act,"delete")){
+@@ -1094,7 +1119,7 @@
+ 	const char *tmp = NULL;
+ 	const char *origcriteria = NULL;
+ 	char type[16] = {0}, act[6] = {0};
+-	int idx = 0;
++	int idx = 0, index = 0;
+ 	criteria = json_object_new_object();
+ 	currArray = json_object_new_array();
+ 	zcfgFeDalIntrGrpGet(NULL, currArray, NULL);
+@@ -1104,6 +1129,7 @@
+ 		idx = 1;
+ 	currObj = json_object_array_get_idx(currArray, idx-1);
+ 	origcriteria = json_object_get_string(json_object_object_get(currObj, "Criteria"));
++	index = json_object_get_int(json_object_object_get(currObj, "idx"));
+ 	tmp = json_object_get_string(json_object_object_get(Jobj, "type"));
+ 	if(strstr(origcriteria,tmp))
+ 		strcpy(act,"edit");
+@@ -1117,6 +1143,7 @@
+ 		json_object_object_add(criteria, "mac_value", JSON_OBJ_COPY(json_object_object_get(Jobj, "mac_value")));
+ 		json_object_object_add(criteria, "wildcardEnable", json_object_new_string("N"));
+ 		json_object_object_add(criteria, "act", json_object_new_string(act));
++		json_object_object_add(criteria, "idx", json_object_new_int(index));
+ 		json_object_object_add(criteria, "cmd", json_object_new_string("CLI"));
+ 		json_object_object_del(Jobj, "mac_value");
+ 		json_object_object_add(Jobj, "0", JSON_OBJ_COPY(criteria));
+@@ -1142,6 +1169,7 @@
+ 		}
+ 		json_object_object_add(criteria, "wildcardEnable", json_object_new_string("Y"));
+ 		json_object_object_add(criteria, "act", json_object_new_string(act));
++		json_object_object_add(criteria, "idx", json_object_new_int(index));
+ 		op125ParameterTrahsfer(criteria);
+ 		json_object_object_add(criteria, "cmd", json_object_new_string("CLI"));
+ 		json_object_object_add(Jobj, "0", JSON_OBJ_COPY(criteria));
+@@ -1152,6 +1180,7 @@
+ 		json_object_object_add(criteria, "wildcardEnable", JSON_OBJ_COPY(json_object_object_get(Jobj, "wildcardEnable")));
+ 		json_object_object_add(criteria, "act", json_object_new_string(act));
+ 		json_object_object_add(criteria, "cmd", json_object_new_string("CLI"));
++		json_object_object_add(criteria, "idx", json_object_new_int(index));
+ 		json_object_object_del(Jobj, "op60_value");
+ 		json_object_object_del(Jobj, "wildcardEnable");
+ 		json_object_object_add(Jobj, "0", JSON_OBJ_COPY(criteria));
+@@ -1162,6 +1191,7 @@
+ 		json_object_object_add(criteria, "wildcardEnable", json_object_new_string("N"));
+ 		json_object_object_add(criteria, "act", json_object_new_string(act));
+ 		json_object_object_add(criteria, "cmd", json_object_new_string("CLI"));
++		json_object_object_add(criteria, "idx", json_object_new_int(index));
+ 		json_object_object_del(Jobj, "op61_value");
+ 		json_object_object_add(Jobj, "0", JSON_OBJ_COPY(criteria));
+ 	}
+@@ -1220,8 +1250,8 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *obj = NULL, *mac = NULL, *opt60 = NULL, *opt61 = NULL, *opt125 = NULL, *vlan = NULL;
+ 	const char *tmp = NULL;
+-	int count = 0;
+-	char cnt[4] = {0}, pt[256] = {0}, OUI[64] = {0}, SN[64] = {0}, Class[64] = {0}, Enterprise_Number[8] = {0};
++	int count = 0, len = 0;
++	char cnt[4] = {0}, pt[256] = {0}, OUI[64] = {0}, SN[64] = {0}, Class[64] = {0}, Enterprise_Number[8] = {0}, newmac[256] = {0};
+ 	char *ptr = NULL, *buf[64] = {0}, *type = NULL, *mac_value = NULL ,*op125type = NULL, *ptrtmp = NULL, *idx = NULL, *ptr1 = NULL, *act = NULL;
+ 	char *op60_value = NULL, *op61_value = NULL, *vlangroup = NULL, *wildcard = NULL, *op125typeStr = NULL;
+ 
+@@ -1241,13 +1271,24 @@
+ 		ptr = ptr+1;
+ 		if(!strcmp(type, "MAC address")){
+ 			mac_value = strtok_r(NULL, ",", &ptr);
++			while(mac_value != NULL){
++				if(!strncmp(mac_value, "wildcardEnable", 14))
++					break;
++				strcat(newmac, mac_value);
++				strcat(newmac, ",");
++				mac_value = strtok_r(NULL, ",", &ptr);
++			}
++			len = strlen(newmac);
++			if(len > 0){
++				if(newmac[len-1] == ',')
++					newmac[len-1] = '\0';
++			}
+ 			ptrtmp = strtok_r(NULL, ",", &ptr);
+-			if(ptr!=NULL){
+-				if(!strncmp(ptr, "idx", 3)){
+-					ptr1 = strtok_r(NULL, ":", &ptr);
+-					idx = strtok_r(NULL, ",", &ptr);
++			if(ptrtmp!=NULL){
++				if(!strncmp(ptrtmp, "idx", 3)){
++					ptr1 = strtok_r(NULL, ":", &ptrtmp);
+ 					act = strtok_r(NULL, ":", &ptr);
+-					json_object_object_add(mac, "idx", json_object_new_int(atoi(idx)));
++					json_object_object_add(mac, "idx", json_object_new_int(atoi(ptrtmp)));
+ 					json_object_object_add(mac, "act", json_object_new_string(ptr));
+ 				}
+ 				else if(!strncmp(ptr, "act", 3)){
+@@ -1256,7 +1297,7 @@
+ 				}
+ 			}
+ 			json_object_object_add(mac, "type", json_object_new_string("mac"));
+-			json_object_object_add(mac, "mac_value", json_object_new_string(mac_value));
++			json_object_object_add(mac, "mac_value", json_object_new_string(newmac));
+ 			json_object_object_add(mac, "wildcardEnable", json_object_new_string("N"));
+ 			json_object_object_add(Jobj, cnt, JSON_OBJ_COPY(mac));
+ 		}

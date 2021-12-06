@@ -1,0 +1,268 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_acl.c	2018-02-02 20:58:00.545605009 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c	2018-02-02 20:48:33.076429700 +0800
+@@ -58,7 +58,11 @@
+ };
+ 
+ void zcfgFeDalShowFirewallACL(struct json_object *Jarray){
+-	int i, len = 0;
++	int i, len = 0, index = 0, SourcePort = 0, SourcePortRange = 0, DestPort = 0, DestPortRange = 0;
++	int ServiceIndex = 0;
++	const char *protocol = NULL;
++	char tmp[64] = {0}, srcport[32] = {0}, dstport[32] = {0};
++	
+ 	//int j = 1;
+ 	struct json_object *obj = NULL;
+ 	if(json_object_get_type(Jarray) != json_type_array){
+@@ -71,23 +75,47 @@
+ 
+ 	len = json_object_array_length(Jarray);
+ 	for(i=0;i<len;i++){
+-#if 0
+-		int k = 0;
+-		while(atoi(json_object_get_string(json_object_object_get(json_object_array_get_idx(Jarray, k), "Order"))) != j){
+-			k=k+1;
+-		}
+-		j=j+1;
+-		obj = json_object_array_get_idx(Jarray, k);
+-#endif
+ 		obj = json_object_array_get_idx(Jarray, i);
+-		printf("%-6s %-6s %-13s %-41s %-41s %-40s %-12s\n",
++		ServiceIndex = json_object_get_int(json_object_object_get(obj, "X_ZYXEL_ServiceIndex"));
++		protocol = json_object_get_string(json_object_object_get(obj, "Protocol"));
++		tmp[0] = '\0';
++		printf("%-6s %-6s %-13s %-41s %-41s ",
+ 			json_object_get_string(json_object_object_get(obj, "Index")),
+ 		    json_object_get_string(json_object_object_get(obj, "Order")),
+-		    json_object_get_string(json_object_object_get(obj, "Description")),
++		    json_object_get_string(json_object_object_get(obj, "Name")),
+ 		    json_object_get_string(json_object_object_get(obj, "SourceIP")),
+-		    json_object_get_string(json_object_object_get(obj, "DestIP")),
+-		    json_object_get_string(json_object_object_get(obj, "Protocol")),
+-		    json_object_get_string(json_object_object_get(obj, "Action")));
++		    json_object_get_string(json_object_object_get(obj, "DestIP")));
++		if(ServiceIndex != 0){
++			printf("%-40s ",json_object_get_string(json_object_object_get(obj, "ServiceName")));
++		}
++		else{
++			if(!strcmp(protocol,"TCP/UDP") ||!strcmp(protocol,"TCP") ||!strcmp(protocol,"UDP")){
++				index = json_object_get_int(json_object_object_get(obj, "Index"));
++				SourcePort = json_object_get_int(json_object_object_get(obj, "SourcePort"));
++				SourcePortRange = json_object_get_int(json_object_object_get(obj, "SourcePortRangeMax"));
++				DestPort = json_object_get_int(json_object_object_get(obj, "DestPort"));
++				DestPortRange = json_object_get_int(json_object_object_get(obj, "DestPortRangeMax"));
++				if(SourcePortRange != -1)
++					sprintf(srcport,"%d:%d",SourcePort,SourcePortRange);
++				else if(SourcePort != -1)
++					sprintf(srcport,"%d",SourcePort);
++				else
++					strcpy(srcport,"Any");
++				if(DestPortRange != -1)
++					sprintf(dstport,"%d:%d",DestPort,DestPortRange);
++				else if(DestPort != -1)
++					sprintf(dstport,"%d",DestPort);
++				else
++					strcpy(dstport,"Any");
++
++				sprintf(tmp, "%s:%s-->%s",protocol,srcport,dstport);	
++				printf("%-40s ",tmp);
++			}
++			else{
++				printf("%-40s ",json_object_get_string(json_object_object_get(obj, "Protocol")));
++			}
++		}
++		printf("%-12s\n",json_object_get_string(json_object_object_get(obj, "Action")));
+ 	}
+ }
+ 
+@@ -559,23 +587,111 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *paramJobj = NULL;
+ 	struct json_object *FiremallACLJobj = NULL;
++	struct json_object *protocolobj = NULL;
+ 	int Protocol = 0;
+ 	const char *SourceIP = NULL;
+ 	const char *DestIP = NULL;
+-	char buf[64] = {0}, srcport[32] = {0}, dstport[32] = {0};
++	char buf[64] = {0};
+ 	const char *SourceMask = 0;
+ 	const char *DestMask = 0;
+-	char *sourceportchar = NULL;
+-	char *destportchar = NULL;
+-	int SourcePort = NULL;
+-	int SourcePortRange = NULL;
+-	int DestPort = NULL;
+-	int DestPortRange = NULL;
+ 	int icmptype = 0;
+ 	int icmptypecode = 0;
++	int ServiceIndex = 0;
++	int index = 0;
+ 	const char *tmp = NULL;
++	const char *Name = NULL;
+ 	objIndex_t FiremallACLIid = {0};
++	objIndex_t protocolIid = {0};
++	IID_INIT(FiremallACLIid);
++	IID_INIT(protocolIid);
++		
++	if(json_object_object_get(Jobj, "Index")){
++		index =	json_object_get_int(json_object_object_get(Jobj, "Index"));		
++		ret = convertIndextoIid(index, &FiremallACLIid, RDM_OID_FIREWALL_CHAIN_RULE, NULL, NULL, replyMsg);		
++		if(ret != ZCFG_SUCCESS)			
++			return ret;		
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FIREWALL_CHAIN_RULE, &FiremallACLIid , &FiremallACLJobj) == ZCFG_SUCCESS){
++			paramJobj = json_object_new_object();
++			json_object_object_add(paramJobj, "Index", json_object_new_int(FiremallACLIid.idx[1]));
++		
++			Protocol = json_object_get_int(json_object_object_get(FiremallACLJobj, "Protocol"));
++			switch(Protocol){
++				case -2: //TCPUDP
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string("TCP/UDP"));
++					break;
++				case 6:	 //TPC
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string("TCP"));
++					break;
++				case 17: //UDP
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string("UDP"));
++					break;
++				case -1: //ALL
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string("ALL"));
++					break;
++				case 1: //ICMP
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string("ICMP"));
++					break;
++				case 58: //ICMPv6
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string("ICMPV6"));
++					icmptype = json_object_get_int(json_object_object_get(FiremallACLJobj,"X_ZYXEL_ICMPType"));
++					icmptypecode = json_object_get_int(json_object_object_get(FiremallACLJobj,"X_ZYXEL_ICMPTypeCode"));
++					tmp = ICMPv6_type(icmptype,icmptypecode);
++					sprintf(buf, "ICMPv6:%s", tmp);
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string(buf));
++					break;
++				default:
++					json_object_object_add(paramJobj, "Protocol", json_object_new_string(""));
++					break;
++			}
++		
++			json_object_object_add(paramJobj, "Order", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Order")));
++			json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Description")));
++			json_object_object_add(paramJobj, "SourcePort", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "SourcePort")));
++			json_object_object_add(paramJobj, "SourcePortRangeMax", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "SourcePortRangeMax")));
++			json_object_object_add(paramJobj, "DestPort", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "DestPort")));
++			json_object_object_add(paramJobj, "DestPortRangeMax", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "DestPortRangeMax")));
++			json_object_object_add(paramJobj, "Direction", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "X_ZYXEL_Direction")));
++			json_object_object_add(paramJobj, "IPVersion", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "IPVersion")));
++			json_object_object_add(paramJobj, "X_ZYXEL_ScheduleRule", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "X_ZYXEL_ScheduleRule")));
++			json_object_object_add(paramJobj, "LimitRate", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "X_ZYXEL_LimitRate")));
++			json_object_object_add(paramJobj, "X_ZYXEL_TCPFlagMask", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "X_ZYXEL_TCPFlagMask")));
++
++			SourceIP = json_object_get_string(json_object_object_get(FiremallACLJobj, "SourceIP"));
++			DestIP = json_object_get_string(json_object_object_get(FiremallACLJobj, "DestIP"));
++			if(!strcmp(SourceIP,"")){
++				json_object_object_add(paramJobj, "SourceIP", json_object_new_string("Any"));
++			}
++			else{
++				SourceMask = json_object_get_string(json_object_object_get(FiremallACLJobj, "SourceMask"));
++				sprintf(buf, "%s/%s", SourceIP, SourceMask);
++				json_object_object_add(paramJobj, "SourceIP", json_object_new_string(buf));
++			}
++			if(!strcmp(DestIP,"")){
++				json_object_object_add(paramJobj, "DestIP", json_object_new_string("Any"));
++			}
++			else{
++				DestMask = json_object_get_string(json_object_object_get(FiremallACLJobj, "DestMask"));
++				sprintf(buf, "%s/%s", DestIP, DestMask);
++				json_object_object_add(paramJobj, "DestIP", json_object_new_string(buf));
++			}
++			json_object_object_add(paramJobj, "Action", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Target")));
++
++			ServiceIndex = json_object_get_int(json_object_object_get(FiremallACLJobj, "X_ZYXEL_ServiceIndex"));
++			json_object_object_add(paramJobj, "X_ZYXEL_ServiceIndex", json_object_new_int(ServiceIndex));
++			if(ServiceIndex != 0){
++				protocolIid.level = 1;
++				protocolIid.idx[0] = ServiceIndex;
++				if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolobj) == ZCFG_SUCCESS){
++					json_object_object_add(paramJobj, "ServiceName", JSON_OBJ_COPY(json_object_object_get(protocolobj, "Name")));
++					zcfgFeJsonObjFree(protocolobj);
++				}
++			}
++		
++			json_object_array_add(Jarray, paramJobj);
+ 
++			zcfgFeJsonObjFree(FiremallACLJobj);
++		}
++	}
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_FIREWALL_CHAIN_RULE, &FiremallACLIid, &FiremallACLJobj) == ZCFG_SUCCESS){
+ 		paramJobj = json_object_new_object();
+ 		json_object_object_add(paramJobj, "Index", json_object_new_int(FiremallACLIid.idx[1]));
+@@ -583,34 +699,13 @@
+ 		Protocol = json_object_get_int(json_object_object_get(FiremallACLJobj, "Protocol"));
+ 		switch(Protocol){
+ 			case -2: //TCPUDP
++				json_object_object_add(paramJobj, "Protocol", json_object_new_string("TCP/UDP"));
++				break;
+ 			case 6:	 //TPC
++				json_object_object_add(paramJobj, "Protocol", json_object_new_string("TCP"));
++				break;
+ 			case 17: //UDP
+-				SourcePort = json_object_get_int(json_object_object_get(FiremallACLJobj, "SourcePort"));
+-				SourcePortRange = json_object_get_int(json_object_object_get(FiremallACLJobj, "SourcePortRangeMax"));
+-				DestPort = json_object_get_int(json_object_object_get(FiremallACLJobj, "DestPort"));
+-				DestPortRange = json_object_get_int(json_object_object_get(FiremallACLJobj, "DestPortRangeMax"));
+-
+-				if(SourcePortRange != -1)
+-					sprintf(srcport,"%d:%d",SourcePort,SourcePortRange);
+-				else if(SourcePort != -1)
+-					sprintf(srcport,"%d",SourcePort);
+-				else
+-					strcpy(srcport,"Any");
+-				if(DestPortRange != -1)
+-					sprintf(dstport,"%d:%d",DestPort,DestPortRange);
+-				else if(DestPort != -1)
+-					sprintf(dstport,"%d",DestPort);
+-				else
+-					strcpy(dstport,"Any");
+-				
+-				if(Protocol == -2)
+-					sprintf(buf, "TCP/UDP:%s-->%s",srcport,dstport);
+-				else if(Protocol == 6)
+-					sprintf(buf, "TCP:%s-->%s",srcport,dstport);
+-				else if(Protocol == 17)
+-					sprintf(buf, "UDP:%s-->%s",srcport,dstport);
+-					
+-				json_object_object_add(paramJobj, "Protocol", json_object_new_string(buf));
++				json_object_object_add(paramJobj, "Protocol", json_object_new_string("UDP"));
+ 				break;
+ 			case -1: //ALL
+ 				json_object_object_add(paramJobj, "Protocol", json_object_new_string("ALL"));
+@@ -632,7 +727,11 @@
+ 		}
+ 		
+ 		json_object_object_add(paramJobj, "Order", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Order")));
+-		json_object_object_add(paramJobj, "Description", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Description")));
++		json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Description")));
++		json_object_object_add(paramJobj, "SourcePort", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "SourcePort")));
++		json_object_object_add(paramJobj, "SourcePortRangeMax", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "SourcePortRangeMax")));
++		json_object_object_add(paramJobj, "DestPort", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "DestPort")));
++		json_object_object_add(paramJobj, "DestPortRangeMax", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "DestPortRangeMax")));
+ 		
+ 		SourceIP = json_object_get_string(json_object_object_get(FiremallACLJobj, "SourceIP"));
+ 		DestIP = json_object_get_string(json_object_object_get(FiremallACLJobj, "DestIP"));
+@@ -655,6 +754,17 @@
+ 		}
+ 
+ 		json_object_object_add(paramJobj, "Action", JSON_OBJ_COPY(json_object_object_get(FiremallACLJobj, "Target")));
++
++		ServiceIndex = json_object_get_int(json_object_object_get(FiremallACLJobj, "X_ZYXEL_ServiceIndex"));
++		json_object_object_add(paramJobj, "X_ZYXEL_ServiceIndex", json_object_new_int(ServiceIndex));
++		if(ServiceIndex != 0){
++			protocolIid.level = 1;
++			protocolIid.idx[0] = ServiceIndex;
++			if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolobj) == ZCFG_SUCCESS){
++				json_object_object_add(paramJobj, "ServiceName", JSON_OBJ_COPY(json_object_object_get(protocolobj, "Name")));
++				zcfgFeJsonObjFree(protocolobj);
++			}
++		}
+ 		
+ 		json_object_array_add(Jarray, paramJobj);
+ 

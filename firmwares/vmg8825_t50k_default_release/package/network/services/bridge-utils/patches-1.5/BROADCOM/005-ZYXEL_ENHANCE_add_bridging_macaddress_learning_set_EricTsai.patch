@@ -1,0 +1,131 @@
+Index: bridge-utils-1.5/brctl/brctl_cmd.c
+===================================================================
+--- bridge-utils-1.5.orig/brctl/brctl_cmd.c	2019-05-27 16:31:06.315054044 +0800
++++ bridge-utils-1.5/brctl/brctl_cmd.c	2019-05-27 16:31:06.323054044 +0800
+@@ -225,6 +225,25 @@
+ 	return err != 0;
+ }
+ 
++static int br_cmd_set_macaddrlearning(int argc, char *const *argv)
++{
++	unsigned long value;
++	int err;
++
++	if(sscanf(argv[3], "%lu", &value) != 1)
++		return 1;
++
++	if(value != 1 && value != 0)
++		return 1;
++
++	err = br_set_mac_address_learning(argv[1], argv[2], value);
++	if(err)
++		fprintf(stderr, "set mac address learning failed: %s\n",
++				strerror(err));
++
++	return err != 0;
++}
++
+ static int br_cmd_sethello(int argc, char *const* argv)
+ {
+ 	struct timeval tv;
+@@ -1219,6 +1238,8 @@
+ 	  "<bridge> <port> <cost>\tset path cost" },
+ 	{ 3, "setportprio", br_cmd_setportprio,
+ 	  "<bridge> <port> <prio>\tset port priority" },
++	{ 3, "setmaclearning", br_cmd_set_macaddrlearning,
++	  "<bridge> <port> <value>\t\t port: ifname(0=no specific port), value: 0-disable 1-enable"},
+ #if defined(PLATFORM_BROADCOM) && !(defined(BRCM_SDK_502L04) || defined(BRCM_SDK_502L05) || defined(BRCM_SDK_502L06))
+ 	{ 2, "enableportsnooping", br_cmd_enableportsnooping,
+ 	  "<bridge> <value>\t0-disable 1-standard 2-blocking" },
+Index: bridge-utils-1.5/libbridge/libbridge_devif.c
+===================================================================
+--- bridge-utils-1.5.orig/libbridge/libbridge_devif.c	2019-05-27 16:31:06.315054044 +0800
++++ bridge-utils-1.5/libbridge/libbridge_devif.c	2019-05-27 16:58:58.404872300 +0800
+@@ -28,6 +28,12 @@
+ #include "libbridge.h"
+ #include "libbridge_private.h"
+ 
++#ifndef BRCTL_SET_BR_MAC_LEARNING
++#define BRCTL_SET_BR_MAC_LEARNING 0
++#endif
++
++extern int brcmSdkVsion;
++
+ static FILE *fpopen(const char *dir, const char *name)
+ {
+ 	char path[SYSFS_PATH_MAX];
+@@ -309,11 +315,13 @@
+ {
+ 	int ret;
+ 	char path[SYSFS_PATH_MAX];
+-	FILE *f;
++	FILE *f = NULL;
+ 
+-	snprintf(path, SYSFS_PATH_MAX, SYSFS_CLASS_NET "%s/%s", bridge, name);
++	if(name){
++		snprintf(path, SYSFS_PATH_MAX, SYSFS_CLASS_NET "%s/%s", bridge, name);
++		f = fopen(path, "w");
++	}
+ 
+-	f = fopen(path, "w");
+ 	if (f) {
+ 		ret = fprintf(f, "%ld\n", value);
+ 		fclose(f);
+@@ -354,6 +362,18 @@
+ 		      BRCTL_SET_AGEING_TIME);
+ }
+ 
++static int port_set(const char *, const char *, const char *, unsigned long, unsigned long);
++int br_set_mac_address_learning(const char *br, const char *port, unsigned long value)
++{
++	//printf("%s: port= %s\n", __FUNCTION__, port);
++	if(*port == '0'){
++		// no specific port
++		return (brcmSdkVsion >= 50205) ? br_set(br, NULL, value, BRCTL_SET_BR_MAC_LEARNING) : ENOTSUP;
++	}else{
++		return port_set(br, port, "learning", value, 0);
++	}
++}
++
+ int br_set_stp_state(const char *br, int stp_state)
+ {
+ 	return br_set(br, "stp_state", stp_state, BRCTL_SET_BRIDGE_STP_STATE);
+Index: bridge-utils-1.5/libbridge/libbridge.h
+===================================================================
+--- bridge-utils-1.5.orig/libbridge/libbridge.h	2019-05-27 16:31:06.315054044 +0800
++++ bridge-utils-1.5/libbridge/libbridge.h	2019-05-27 16:31:06.323054044 +0800
+@@ -113,6 +113,7 @@
+ extern int br_set_bridge_hello_time(const char *br, struct timeval *tv);
+ extern int br_set_bridge_max_age(const char *br, struct timeval *tv);
+ extern int br_set_ageing_time(const char *br, struct timeval *tv);
++extern int br_set_mac_address_learning(const char *br, const char *port, unsigned long value);
+ extern int br_set_stp_state(const char *br, int stp_state);
+ extern int br_set_bridge_priority(const char *br, int bridge_priority);
+ extern int br_set_port_priority(const char *br, const char *p, 
+Index: bridge-utils-1.5/brctl/brctl.c
+===================================================================
+--- bridge-utils-1.5.orig/brctl/brctl.c	2019-05-27 16:31:06.287054045 +0800
++++ bridge-utils-1.5/brctl/brctl.c	2019-05-27 17:00:53.335128100 +0800
+@@ -27,6 +27,8 @@
+ 
+ #include "brctl.h"
+ 
++int brcmSdkVsion = 0;
++
+ static void help()
+ {
+ 	printf("Usage: brctl [commands]\n");
+@@ -82,6 +84,13 @@
+ 		goto help;
+ #endif
+ 	}
++
++#ifdef BRCM_SDK_502L05
++	brcmSdkVsion = 50205;
++//#else
++
++#endif
++
+ 	
+ 	if (argc < cmd->nargs + 1) {
+ 		printf("Incorrect number of arguments for command\n");

@@ -1,0 +1,1005 @@
+Index: clinkc/include/cybergarage/upnp/caction.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/caction.h	2018-09-21 19:51:58.141329715 +0800
++++ clinkc/include/cybergarage/upnp/caction.h	2018-09-21 19:51:58.945329692 +0800
+@@ -57,13 +57,25 @@
+ 	CgXmlNode *actionNode;
+ 	CgUpnpArgumentList *argumentList;
+ 	/**** Execution Data ****/
+-	BOOL (*listener)(struct _CgUpnpAction *);
++	int (*listener)(struct _CgUpnpAction *);
+ 	CgUpnpStatus *upnpStatus;
+ 	void *userData;
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++	int (*rout) (void *, struct _CgUpnpAction *);
++	int (*argumentParser)(void *);
++	CgXmlNode *(*resParamHandler) (void *, struct _CgUpnpAction *);
++#endif
+ } CgUpnpAction, CgUpnpActionList;
+ 
+-typedef BOOL (*CG_UPNP_ACTION_LISTNER)(CgUpnpAction *);
+-
++typedef int (*CG_UPNP_ACTION_LISTNER)(CgUpnpAction *);
++
++//#ifdef ZYXEL_CMS_ENHANCEMENT
++// CG_UPNP_CMS2_ACTION_ROUT, success: return 1, fail: return cms2 error code
++typedef int (*CG_UPNP_CMS2_ACTION_ROUT)(void *, CgUpnpAction *);
++// CG_UPNP_CMS2_ACTION_ARGUPARSER, success: return 1, fail: return cms2 error code
++typedef int (*CG_UPNP_CMS2_ACTION_ARGUPARSER)(void *);
++typedef CgXmlNode *(*CG_UPNP_CMS2_ACTION_RESPARMHDLER)(void *, CgUpnpAction *);
++//#endif
+ /****************************************************************************
+  * Function (Action)
+  ****************************************************************************/
+@@ -300,6 +311,15 @@
+  */
+ #define cg_upnp_action_getlistner cg_upnp_action_getlistener
+ 
++// ZYXEL_CMS2_ENHANCEMENT
++#define cg_upnp_cms2_action_getactionrout(action) (action->rout)
++#define cg_upnp_cms2_action_getargumentparser(action) (action->argumentParser)
++#define cg_upnp_cms2_action_getresponseparamhandle(action) (action->resParamHandler)
++
++#define cg_upnp_cms2_action_setactionrout(action, rt) (action->rout = rt)
++#define cg_upnp_cms2_action_setargumentparser(action, parser) (action->argumentParser = parser)
++#define cg_upnp_cms2_action_setresparamhandler(action, handler) (action->resParamHandler = handler)
++
+ /****************************************************************************
+  * User Data
+  ****************************************************************************/
+Index: clinkc/include/cybergarage/upnp/cdevice.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/cdevice.h	2018-09-21 19:51:57.597329731 +0800
++++ clinkc/include/cybergarage/upnp/cdevice.h	2018-09-21 19:51:58.945329692 +0800
+@@ -200,6 +200,8 @@
+ 	CG_UPNP_SERVICE_PERFORMLISTNER performListner;
+ #endif
+ 
++  CgString *stdHeadLine;
++
+ } CgUpnpDevice, CgUpnpDeviceList;
+ 
+ /****************************************
+@@ -728,6 +730,14 @@
+  */
+ #define cg_upnp_device_geturlbase(dev) cg_xml_node_getchildnodevalue(cg_upnp_device_getrootnode(cg_upnp_device_getrootdevice(dev)), CG_UPNP_DEVICE_URLBASE_NAME)
+ 
++
++/*****************************************************************************
++ * Device std
++ ******************************************************************************/
++void cg_upnp_device_add_stdheadline(CgUpnpDevice *dev, char *std);
++char *cg_upnp_device_retrieve_stdheadline(CgUpnpDevice *dev);
++
++
+ /*****************************************************************************
+  * Start/Stop
+  *****************************************************************************/
+@@ -856,6 +866,23 @@
+ #ifdef ZYXEL_PATCH /*support ztr64, ZyXEL 2013, charisse*/
+ void cg_upnp_device_setperflistener(CgUpnpDevice *dev, CG_UPNP_SERVICE_PERFORMLISTNER perfListner);
+ #endif
++
++/*****************************************************************************
++ * CMS handle routines
++ *****************************************************************************/
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++
++// set cms2 action handle rout
++void cg_upnp_cms2_device_setactionrout(CgUpnpDevice *dev, CG_UPNP_CMS2_ACTION_ROUT actionrout);
++
++// set cms2 action argument parsing rout
++void cg_upnp_cms2_device_setactionargumentparser(CgUpnpDevice *dev, CG_UPNP_CMS2_ACTION_ARGUPARSER argumentparser);
++
++// set cms2 action response param handle rout
++void cg_upnp_cms2_device_setactionresparamhandler(CgUpnpDevice *dev, CG_UPNP_CMS2_ACTION_RESPARMHDLER resparamhandler);
++
++#endif
++
+ /*****************************************************************************
+  * User Data
+  *****************************************************************************/
+Index: clinkc/src/cybergarage/upnp/cdevice.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cdevice.c	2018-09-21 19:51:58.373329708 +0800
++++ clinkc/src/cybergarage/upnp/cdevice.c	2018-09-21 19:51:58.945329692 +0800
+@@ -92,6 +92,7 @@
+ 
+ 	if  ( NULL != dev )
+ 	{
++		memset(dev, 0, sizeof(CgUpnpDevice));
+ 		cg_list_node_init((CgList *)dev);
+ 
+ #ifdef CG_HTTP_USE_PERSISTENT_CONNECTIONS
+@@ -162,6 +163,7 @@
+ 	cg_thread_delete(dev->advertiser);
+ 	
+ 	cg_string_delete(dev->descriptionURI);
++	cg_string_delete(dev->stdHeadLine);
+ 
+ 	cg_upnp_ssdp_packet_delete(dev->ssdpPkt);
+ 	
+@@ -188,6 +190,8 @@
+ 	cg_upnp_servicelist_clear(dev->serviceList);
+ 	cg_upnp_iconlist_clear(dev->iconList);
+ 
++	cg_string_clear(dev->stdHeadLine);
++
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
+@@ -205,6 +209,32 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++void cg_upnp_device_add_stdheadline(CgUpnpDevice *dev, char *std)
++{
++	CgString *stdheadline;
++
++	if(!dev || !std)
++		return;
++
++	stdheadline = dev->stdHeadLine;
++	if(!stdheadline){
++		stdheadline = cg_string_new();
++		dev->stdHeadLine = stdheadline;
++	}
++
++	cg_string_addcsv(stdheadline, std);
++
++}
++
++char *cg_upnp_device_retrieve_stdheadline(CgUpnpDevice *dev)
++{
++	CgString *stdheadline;
++
++	stdheadline = dev ? dev->stdHeadLine : NULL;
++	return cg_string_getvalue(stdheadline);
++
++}
++
+ /****************************************
+ * cg_upnp_device_getrootdevice
+ ****************************************/
+@@ -1964,6 +1994,49 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++
++void cg_upnp_cms2_device_setactionrout(CgUpnpDevice *dev, CG_UPNP_CMS2_ACTION_ROUT actionrout)
++{
++	CgUpnpService *service;
++	CgUpnpDevice *childDev;
++
++	for (service=cg_upnp_device_getservices(dev); service != NULL; service = cg_upnp_service_next(service))
++		cg_upnp_cms2_service_setactionrout(service, actionrout);
++
++	for (childDev = cg_upnp_device_getdevices(dev); childDev != NULL; childDev = cg_upnp_device_next(childDev))
++		cg_upnp_cms2_device_setactionrout(childDev, actionrout);
++
++
++}
++
++void cg_upnp_cms2_device_setactionargumentparser(CgUpnpDevice *dev, CG_UPNP_CMS2_ACTION_ARGUPARSER argumentparser)
++{
++	CgUpnpService *service;
++	CgUpnpDevice *childDev;
++
++	for (service=cg_upnp_device_getservices(dev); service != NULL; service = cg_upnp_service_next(service))
++		cg_upnp_cms2_service_setactionargumentparser(service, argumentparser);
++
++	for (childDev = cg_upnp_device_getdevices(dev); childDev != NULL; childDev = cg_upnp_device_next(childDev))
++		cg_upnp_cms2_device_setactionargumentparser(childDev, argumentparser);
++
++}
++
++void cg_upnp_cms2_device_setactionresparamhandler(CgUpnpDevice *dev, CG_UPNP_CMS2_ACTION_RESPARMHDLER resparamhandler)
++{
++	CgUpnpService *service;
++	CgUpnpDevice *childDev;
++
++	for (service=cg_upnp_device_getservices(dev); service != NULL; service = cg_upnp_service_next(service))
++		cg_upnp_cms2_service_setactionresparamhandler(service, resparamhandler);
++
++	for (childDev = cg_upnp_device_getdevices(dev); childDev != NULL; childDev = cg_upnp_device_next(childDev))
++		cg_upnp_cms2_device_setactionresparamhandler(childDev, resparamhandler);
++
++}
++#endif
++
+ /****************************************
+ * cg_upnp_device_setquerylistener
+ ****************************************/
+Index: clinkc/include/cybergarage/upnp/cservice.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/cservice.h	2010-03-16 00:00:24.000000000 +0800
++++ clinkc/include/cybergarage/upnp/cservice.h	2018-09-21 19:51:58.949329692 +0800
+@@ -483,6 +483,19 @@
+  */
+ void cg_upnp_service_setactionlistener(CgUpnpService *service, CG_UPNP_ACTION_LISTNER actionListener);
+ 
++
++/*******************************************************************************
++ * CMS2 Handle Routines
++ *******************************************************************************/
++
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++void cg_upnp_cms2_service_setactionrout(CgUpnpService *service, CG_UPNP_CMS2_ACTION_ROUT actionrout);
++
++void cg_upnp_cms2_service_setactionargumentparser(CgUpnpService *service, CG_UPNP_CMS2_ACTION_ARGUPARSER argumentparser);
++
++void cg_upnp_cms2_service_setactionresparamhandler(CgUpnpService *service, CG_UPNP_CMS2_ACTION_RESPARMHDLER resparamhandler);
++#endif
++
+ /**
+  * Set a query listener to the service
+  *
+Index: clinkc/src/cybergarage/upnp/cservice.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cservice.c	2018-09-21 19:51:58.281329711 +0800
++++ clinkc/src/cybergarage/upnp/cservice.c	2018-09-21 19:51:58.949329692 +0800
+@@ -1056,6 +1056,38 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++void cg_upnp_cms2_service_setactionrout(CgUpnpService *service, CG_UPNP_CMS2_ACTION_ROUT actionrout)
++{
++	CgUpnpActionList *actionList;
++	CgUpnpAction *action;
++
++	actionList = cg_upnp_service_getactionlist(service);
++	for (action=cg_upnp_actionlist_gets(actionList); action != NULL; action = cg_upnp_action_next(action))
++		cg_upnp_cms2_action_setactionrout(action, actionrout);
++}
++
++void cg_upnp_cms2_service_setactionargumentparser(CgUpnpService *service, CG_UPNP_CMS2_ACTION_ARGUPARSER argumentparser)
++{
++	CgUpnpActionList *actionList;
++	CgUpnpAction *action;
++
++	actionList = cg_upnp_service_getactionlist(service);
++	for (action=cg_upnp_actionlist_gets(actionList); action != NULL; action = cg_upnp_action_next(action))
++		cg_upnp_cms2_action_setargumentparser(action, argumentparser);
++}
++
++void cg_upnp_cms2_service_setactionresparamhandler(CgUpnpService *service, CG_UPNP_CMS2_ACTION_RESPARMHDLER resparamhandler)
++{
++	CgUpnpActionList *actionList;
++	CgUpnpAction *action;
++
++	actionList = cg_upnp_service_getactionlist(service);
++	for (action=cg_upnp_actionlist_gets(actionList); action != NULL; action = cg_upnp_action_next(action))
++		cg_upnp_cms2_action_setresparamhandler(action, resparamhandler);
++}
++#endif
++
+ /****************************************
+ * cg_upnp_service_setquerylistener
+ ****************************************/
+Index: clinkc/src/cybergarage/upnp/cdevice_http_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cdevice_http_server.c	2018-09-21 19:51:58.157329715 +0800
++++ clinkc/src/cybergarage/upnp/cdevice_http_server.c	2018-09-21 19:51:58.949329692 +0800
+@@ -278,9 +278,12 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	httpReq = cg_soap_request_gethttprequest(soapReq);
++	char *stdheadline = httpReq ? cg_upnp_device_retrieve_stdheadline((CgUpnpDevice *)cg_http_request_getuserdata(httpReq)) : NULL;
++	int deviceCMS2 = stdheadline ? (strstr(stdheadline, "CMS2") ? 1 : 0) : 0;
+ 	
+ 	soapRes = cg_soap_response_new();
+-	cg_upnp_control_soap_response_setfaultresponse(soapRes, code, cg_upnp_status_code2string(code));
++	char *errDescript = deviceCMS2 ? cg_upnp_cms2_status_code2string(code) : cg_upnp_status_code2string(code);
++	cg_upnp_control_soap_response_setfaultresponse(soapRes, code, errDescript);
+ 	httpRes = cg_soap_response_gethttpresponse(soapRes);
+ 	cg_http_request_postresponse(httpReq, httpRes);
+ 	cg_soap_response_delete(soapRes);
+@@ -322,6 +325,8 @@
+ 
+ 	httpReq = cg_soap_request_gethttprequest(soapReq);
+ 	
++	char *stdheadline = httpReq ? cg_upnp_device_retrieve_stdheadline((CgUpnpDevice *)cg_http_request_getuserdata(httpReq)) : NULL;
++
+ #if !defined(CG_UPNP_NOUSE_QUERYCTRL)
+ 	if (cg_upnp_control_isqueryrequest(soapReq) == TRUE) {
+ 		queryReq = cg_upnp_control_query_request_new();
+@@ -334,8 +339,24 @@
+ 	
+ #if !defined(CG_UPNP_NOUSE_ACTIONCTRL)
+ 	if (cg_upnp_control_isactionrequest(soapReq) == TRUE) {
++		char *actionName = NULL;
++		CgUpnpAction *action = NULL;
+ 		actionReq = cg_upnp_control_action_request_new();
+-		cg_upnp_control_action_request_setsoaprequest(actionReq, soapReq);
++
++		if(stdheadline && strstr(stdheadline, "CMS2")){
++			actionName = cg_soap_request_retrieve_soapaction_name(soapReq);
++			action = cg_upnp_service_getactionbyname(service, actionName);
++			if(actionName)
++				free(actionName);
++			cg_upnp_control_action_request_setuserdata(actionReq, action);
++		}
++
++		int rst = cg_upnp_control_action_request_setsoaprequest(actionReq, soapReq);
++		if(rst != 1){
++			cg_upnp_device_invalidcontrolrecieved(soapReq, rst);
++			cg_upnp_control_action_request_delete(actionReq);
++			return;
++		}
+ 		cg_upnp_device_actioncontrolrequestrecieved(service, actionReq);
+ 		cg_upnp_control_action_request_delete(actionReq);
+ 		return;
+@@ -377,10 +398,17 @@
+ 		cg_upnp_device_invalidactioncontrolrecieved(actionReq);
+ 		return;
+ 	}
+-	
+-	actionArgList = cg_upnp_action_getargumentlist(action);
+-	actionReqArgList = cg_upnp_control_action_request_getargumentlist(actionReq);
+-	cg_upnp_argumentlist_set(actionArgList, actionReqArgList);
++
++	CgSoapRequest *soapReq = cg_upnp_control_action_request_getsoaprequest(actionReq);
++	CgHttpRequest *httpReq = soapReq ? cg_soap_request_gethttprequest(soapReq) : NULL;
++	char *stdheadline = httpReq ? cg_upnp_device_retrieve_stdheadline((CgUpnpDevice *)cg_http_request_getuserdata(httpReq)) : NULL;
++	int deviceCMS2 = stdheadline ? (strstr(stdheadline, "CMS2") ? 1 : 0) : 0;
++
++	if(!deviceCMS2){
++		actionArgList = cg_upnp_action_getargumentlist(action);
++		actionReqArgList = cg_upnp_control_action_request_getargumentlist(actionReq);
++		cg_upnp_argumentlist_set(actionArgList, actionReqArgList);
++	}
+ 
+ #ifdef ZYXEL_PATCH /*support ztr64, ZyXEL 2013, charisse*/
+ 	parentDev = (CgUpnpDevice*)service->parentDevice;
+Index: clinkc/include/cybergarage/upnp/cupnp_status.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/cupnp_status.h	2018-09-21 19:51:58.141329715 +0800
++++ clinkc/include/cybergarage/upnp/cupnp_status.h	2018-09-21 19:51:58.949329692 +0800
+@@ -86,6 +86,17 @@
+ #define CG_UPNP_STATUS_SESSION_ID_EXPIRE 899
+ #endif
+ 
++// TR-064 U2 CMS2
++#define CG_UPNP_CODE_INVALID_XML_ARGUMENT 702
++#define CG_UPNP_CODE_NO_SUCH_NAME 703
++#define CG_UPNP_CODE_INVALID_VALUE_TYPE 704
++#define CG_UPNP_CODE_INVALID_VALUE 705
++#define CG_UPNP_CODE_READ_ONLY_VIOLATION 706
++#define CG_UPNP_CODE_MULTIPLE_SET 707
++#define CG_UPNP_CODE_RESOURCE_TEMP_UNAVAILABLE 708
++
++
++
+ /****************************************
+  * Data Type
+  ****************************************/
+@@ -165,6 +176,12 @@
+  */
+ char *cg_upnp_status_code2string(int code);
+ 
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++char *cg_upnp_cms2_status_code2string(int code);
++#else
++#define cg_upnp_cms2_status_code2string cg_upnp_status_code2string
++#endif
++
+ #ifdef  __cplusplus
+ 
+ } /* extern "C" */
+Index: clinkc/src/cybergarage/upnp/cupnp_status.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cupnp_status.c	2018-09-21 19:51:58.157329715 +0800
++++ clinkc/src/cybergarage/upnp/cupnp_status.c	2018-09-21 19:51:58.949329692 +0800
+@@ -64,7 +64,7 @@
+ * cg_upnp_status_code2string
+ ****************************************/
+ 
+-char *cg_upnp_status_code2string(int code)
++char *cg_upnp_status_basic_code2string(int code)
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
+@@ -81,6 +81,36 @@
+ 	case CG_UPNP_STATUS_OUT_OF_MEMORY: return "Out of Memory";
+ 	case CG_UPNP_STATUS_HUMAN_INTER_REQUIRED: return "Human Intervention Required";
+ 	case CG_UPNP_STATUS_STRING_ARG_TOO_LONG: return "String Argument Too Long";
++#endif
++	default: return NULL;
++	}
++}
++
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++char *cg_upnp_cms2_status_code2string(int code)
++{
++	char *rst = "";
++
++	if(!(rst = cg_upnp_status_basic_code2string(code))){
++		switch(code){
++		case CG_UPNP_CODE_INVALID_XML_ARGUMENT: return "Invalid XML Argument";
++		case CG_UPNP_CODE_NO_SUCH_NAME: return "No Such Name";
++		case CG_UPNP_CODE_INVALID_VALUE_TYPE: return "Invalid Value Type";
++		case CG_UPNP_CODE_INVALID_VALUE: return "Invalid Value";
++		case CG_UPNP_CODE_READ_ONLY_VIOLATION: return "Read Only Violation";
++		default: return "";
++		}
++	}
++
++	return rst;
++}
++#endif
++
++char *cg_upnp_status_code2string(int code)
++{
++	if(!cg_upnp_status_basic_code2string(code)){
++		switch(code){
++#ifdef ZYXEL_PATCH /* ZyXEL 2013, charisse*/
+ 	//TR-064
+ 	case CG_UPNP_STATUS_ACTION_NOT_AUTH: return "Action Not Authorized";
+ 	case CG_UPNP_STATUS_VALUE_ALREADY_SPE: return "ValueAlreadySpecified able";
+@@ -119,6 +149,8 @@
+ 	case CG_UPNP_STATUS_WRITE_ACCESS_DISABLE: return "WriteAccessDisabled";
+ 	case CG_UPNP_STATUS_SESSION_ID_EXPIRE: return "SessionIDExpired";
+ #endif
++		default: return "";
++		}
+ 	}
+ 	 return "";
+ 
+Index: clinkc/src/cybergarage/soap/csoap.c
+===================================================================
+--- clinkc.orig/src/cybergarage/soap/csoap.c	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/src/cybergarage/soap/csoap.c	2018-09-21 19:51:58.949329692 +0800
+@@ -45,3 +45,27 @@
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
++
++char *cg_soap_request_retrieve_soapaction_name(CgSoapRequest *soapReq)
++{
++	char *soapAction = cg_soap_request_getsoapaction(soapReq);
++	char *actionName = NULL;
++
++	//!soapReq, !actionName
++
++	const char *actionStr = soapAction ? strstr(soapAction, "#") : 0;
++	if(actionStr){
++		actionStr++;
++		int actionNameLen = strlen(actionStr);
++		if(!actionNameLen)
++			return NULL;
++		actionName = malloc(actionNameLen+1);
++		strcpy(actionName, actionStr);
++		if(actionName[actionNameLen-1] == 34){
++			actionName[actionNameLen-1] = '\0';
++		}
++	}
++
++	return actionName;
++}
++
+Index: clinkc/src/cybergarage/upnp/control/caction_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/control/caction_request.c	2008-10-22 13:41:47.000000000 +0800
++++ clinkc/src/cybergarage/upnp/control/caction_request.c	2018-09-21 19:51:58.949329692 +0800
+@@ -52,7 +52,8 @@
+ 		actionReq->soapReq = cg_soap_request_new();
+ 		actionReq->isSoapReqCreated = TRUE;
+ 		actionReq->actionRes = cg_upnp_control_action_response_new();
+-		
++		actionReq->userdata = NULL;
++		actionReq->userdataRelease = NULL;
+ 		actionReq->argList = cg_upnp_argumentlist_new();
+ 	}
+ 	
+@@ -93,6 +94,12 @@
+ 
+ 	if (actionReq->isSoapReqCreated == TRUE)
+ 		cg_soap_request_delete(actionReq->soapReq);
++
++	if(actionReq->userdata && actionReq->userdataRelease){
++		actionReq->userdataRelease(actionReq->userdata);
++		actionReq->userdata = NULL;
++	}
++
+ 	actionReq->soapReq = cg_soap_request_new();
+ 	actionReq->isSoapReqCreated = TRUE;
+ 	
+@@ -105,11 +112,12 @@
+ * cg_upnp_control_action_request_setsoaprequest
+ ****************************************/
+ 
+-void cg_upnp_control_action_request_setsoaprequest(CgUpnpActionRequest *actionReq, CgSoapRequest *soapReq)
++int cg_upnp_control_action_request_setsoaprequest(CgUpnpActionRequest *actionReq, CgSoapRequest *soapReq)
+ {
+ 	CgXmlNode *actionNode;
+ 	CgXmlNode *argNode;
+ 	CgUpnpArgument *arg;
++	int deviceCMS2 = 0;
+ 	
+ 	cg_log_debug_l4("Entering...\n");
+ 
+@@ -119,11 +127,45 @@
+ 	actionReq->isSoapReqCreated = FALSE;
+ 	
+ 	cg_upnp_argumentlist_clear(actionReq->argList);
++	//actionReq->argList = NULL;
+ 	
+ 	actionNode = cg_upnp_control_action_request_getactionnode(actionReq);
+ 	if (actionNode == NULL)
+-		return;
++		return CG_UPNP_STATUS_INVALID_ACTION;
+ 	
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++	CG_UPNP_CMS2_ACTION_ARGUPARSER argumentparser;
++	CgUpnpAction *caction = cg_upnp_control_action_request_getuserdata(actionReq);
++	cg_upnp_control_action_request_setuserdata(actionReq, NULL);
++
++	if(caction)
++	{
++		//actionReq->argList = cg_upnp_argumentlist_new();
++		argumentparser = cg_upnp_cms2_action_getargumentparser(caction);
++		if(argumentparser){
++			int rst = argumentparser(actionReq);
++			if(rst != 1){
++				return rst;
++			}
++		}else{
++			for (argNode = cg_xml_node_getchildnodes(actionNode); argNode != NULL; argNode = cg_xml_node_next(argNode)) {
++				arg = cg_upnp_argument_new();
++				cg_upnp_argument_setargumentnode(arg, argNode);
++				cg_upnp_argument_setname(arg, cg_xml_node_getname( argNode ) );
++				cg_upnp_argument_setvalue(arg, cg_xml_node_getvalue( argNode ) );
++				cg_upnp_argumentlist_add(actionReq->argList, arg);
++			}
++		}
++	}else{
++		for (argNode = cg_xml_node_getchildnodes(actionNode); argNode != NULL; argNode = cg_xml_node_next(argNode)) {
++			arg = cg_upnp_argument_new();
++			cg_upnp_argument_setargumentnode(arg, argNode);
++			cg_upnp_argument_setname(arg, cg_xml_node_getname( argNode ) );
++			cg_upnp_argument_setvalue(arg, cg_xml_node_getvalue( argNode ) );
++			cg_upnp_argumentlist_add(actionReq->argList, arg);
++		}
++	}
++#else
+ 	for (argNode = cg_xml_node_getchildnodes(actionNode); argNode != NULL; argNode = cg_xml_node_next(argNode)) {
+ 		arg = cg_upnp_argument_new();
+ 		cg_upnp_argument_setargumentnode(arg, argNode);
+@@ -131,9 +173,13 @@
+ 		cg_upnp_argument_setvalue(arg, cg_xml_node_getvalue( argNode ) );
+ 		cg_upnp_argumentlist_add(actionReq->argList, arg);
+ 	}
++#endif
++
+ 
+ 	cg_soap_request_createcontent(soapReq);
+ 
++	return 1;
++
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
+Index: clinkc/src/cybergarage/upnp/control/caction_response.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/control/caction_response.c	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/src/cybergarage/upnp/control/caction_response.c	2018-09-21 19:52:24.794320600 +0800
+@@ -48,7 +48,10 @@
+ 	{	
+ 		actionRes->soapRes = cg_soap_response_new();
+ 		actionRes->isSoapResCreated = TRUE;
+-
++		actionRes->descript = NULL;
++		actionRes->userdata = NULL;
++		actionRes->userdataRelease = NULL;
++
+ 		actionRes->argList = cg_upnp_argumentlist_new();
+ 	}
+ 	
+@@ -65,6 +67,8 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	if(!actionRes)
++		return;
+ 	cg_upnp_control_action_response_clear(actionRes);
+ 	
+ 	if (actionRes->isSoapResCreated == TRUE)
+@@ -90,6 +94,9 @@
+ 	actionRes->soapRes = cg_soap_response_new();
+ 	actionRes->isSoapResCreated = TRUE;
+ 		
++	cg_string_clear(actionRes->descript);
++	if(actionRes->userdata && actionRes->userdataRelease)
++		actionRes->userdataRelease(actionRes->userdata);
+ 	cg_upnp_argumentlist_clear(actionRes->argList);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -167,6 +174,61 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++// specify description of action response, std, action name
++void cg_upnp_control_action_response_setdescriptvalue(CgUpnpActionResponse *cactionRes, char *value)
++{
++	CgString *csdescript;
++
++	if(!cactionRes)
++		return;
++
++	csdescript = cactionRes->descript;
++	if(csdescript){
++		cg_string_setvalue(csdescript, value);
++	}else{
++		csdescript = cg_string_new();
++		cg_string_setvalue(csdescript, value);
++		cactionRes->descript = csdescript;
++	}
++}
++
++char *cg_upnp_control_action_response_getdescriptvalue(CgUpnpActionResponse *cactionRes)
++{
++	CgString *csdescript;
++
++	if(!cactionRes)
++		return NULL;
++
++	csdescript = cactionRes->descript;
++
++	return cg_string_getvalue(csdescript);
++}
++
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++static CgXmlNode *cg_upnp_control_cms2_action_response_createresponsenode(CgUpnpActionResponse *actionRes, CgUpnpAction *action)
++{
++	CgXmlNode *actionNameResNode;
++	cg_log_debug_l4("Entering...\n");
++
++	/*
++	<cms: ResponseDataStructName xmlns:cms="urn:schemas-upnp-org:dm:cms"
++	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
++	xsi:schemaLocation="urn:schemas-upnp-org:dm:cms
++	http://www.upnp.org/schemas/dm/cms.xsd"> */
++
++	CG_UPNP_CMS2_ACTION_RESPARMHDLER resparamhandle = cg_upnp_cms2_action_getresponseparamhandle(action);
++	if(resparamhandle){
++		actionNameResNode = resparamhandle(actionRes, action);
++	}else{
++		actionNameResNode = cg_upnp_control_action_response_createresponsenode(action);
++	}
++
++	return actionNameResNode;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++#endif
++
+ /****************************************
+ * cg_upnp_control_action_response_setresponse
+ ****************************************/
+@@ -176,19 +238,29 @@
+ 	CgSoapResponse *soapRes;
+ 	CgHttpResponse *httpRes;
+ 	CgXmlNode *bodyNode;
+-	CgXmlNode *resNode;
++	CgXmlNode *resNode = NULL;
+ 	CgXmlNode *envNode;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	soapRes = cg_upnp_control_action_response_getsoapresponse(actionRes);
+ 	httpRes = cg_soap_response_gethttpresponse(soapRes);
++	char *descript = cg_upnp_control_action_response_getdescriptvalue(actionRes);
++	int deviceCMS2 = (descript && strstr(descript, "CMS2")) ? 1 :0;
+ 
+ 	cg_http_response_setstatuscode(httpRes, CG_HTTP_STATUS_OK);
+ 	cg_upnp_control_soap_response_initializeenvelopenode(soapRes);
+ 
+ 	bodyNode = cg_soap_response_getbodynode(soapRes);
+-	resNode = cg_upnp_control_action_response_createresponsenode(action);
++
++	if(!deviceCMS2){
++		resNode = cg_upnp_control_action_response_createresponsenode(action);
++	}
++#ifdef ZYXEL_CMS2_ENHANCEMENT
++	else{
++		resNode = cg_upnp_control_cms2_action_response_createresponsenode(actionRes, action);
++	}
++#endif
+ 	cg_xml_node_addchildnode(bodyNode, resNode);
+ 	
+ 	envNode = cg_soap_response_getenvelopenode(soapRes);
+Index: clinkc/include/cybergarage/upnp/control/ccontrol.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/control/ccontrol.h	2018-09-21 19:51:57.597329731 +0800
++++ clinkc/include/cybergarage/upnp/control/ccontrol.h	2018-09-21 19:51:58.949329692 +0800
+@@ -181,6 +181,9 @@
+ 	CgSoapResponse *soapRes;
+ 	BOOL isSoapResCreated;
+ 	CgUpnpArgumentList *argList;
++	CgString *descript;
++	void *userdata;
++	void (*userdataRelease)(void *);
+ } CgUpnpActionResponse;
+ 
+ /**
+@@ -191,6 +194,8 @@
+ 	BOOL isSoapReqCreated;
+ 	CgUpnpArgumentList *argList;
+ 	CgUpnpActionResponse *actionRes;
++	void *userdata;
++	void (*userdataRelease)(void *);
+ } CgUpnpActionRequest;
+ 
+ /**** Query ****/
+@@ -319,7 +324,7 @@
+  * @param actionReq Action request
+  * @param soapReq Soap request
+  */
+-void cg_upnp_control_action_request_setsoaprequest(CgUpnpActionRequest *actionReq, CgSoapRequest *soapReq);
++int cg_upnp_control_action_request_setsoaprequest(CgUpnpActionRequest *actionReq, CgSoapRequest *soapReq);
+ 
+ /**
+  * Get soap request associated with action request
+@@ -339,6 +344,19 @@
+  */
+ #define cg_upnp_control_action_request_getargumentlist(actionReq) (actionReq->argList)
+ 
++
++// set action request argumentlist
++#define cg_upnp_control_action_request_setargumentlist(cactionReq, List) (cactionReq->argList = List)
++
++// set action request user data
++#define cg_upnp_control_action_request_setuserdata(cactionReq, data) (cactionReq->userdata = data)
++
++// set action request user data release rout
++#define cg_upnp_control_action_request_setuserdata_releaserout(cactionReq, rout) (cactionReq->userdataRelease = rout)
++
++// retrieve action request user data
++#define cg_upnp_control_action_request_getuserdata(cactionReq) (cactionReq->userdata)
++
+ /**
+  * Get XML action node from action request
+  *
+@@ -374,6 +392,11 @@
+  */
+ #define cg_upnp_control_action_request_getactionresponse(actionReq) (actionReq->actionRes)
+ 
++
++// set action request 'action response'
++#define cg_upnp_control_action_request_setactionresponse(actionReq, Res) (actionReq->actionRes = Res)
++
++
+ /**
+  * Send action request
+  *
+@@ -429,6 +452,26 @@
+  */
+ void cg_upnp_control_action_response_setresponse(CgUpnpActionResponse *actionRes, CgUpnpAction *action);
+ 
++
++
++// set action response argumentlist
++#define cg_upnp_control_action_response_getargumentlist(cactionRes) (cactionRes->argList)
++
++// retrieve action response argumentlist
++#define cg_upnp_control_action_response_setargumentlist(cactionRes, argumentList) (cactionRes->argList = argumentList)
++
++// set action response user data
++#define cg_upnp_control_action_response_setuserdata(cactionRes, data) (cactionRes->userdata = data)
++
++// set action response user data release rout
++#define cg_upnp_control_action_response_setuserdata_releaserout(cactionRes, rout) (cactionRes->userdataRelease = rout)
++
++// set action response description
++void cg_upnp_control_action_response_setdescriptvalue(CgUpnpActionResponse *, char *);
++
++// retrieve action response description
++char *cg_upnp_control_action_response_getdescriptvalue(CgUpnpActionResponse *);
++
+ /**
+  * Check if action response indicates that action invoke was successfull
+  *
+Index: clinkc/include/cybergarage/soap/csoap.h
+===================================================================
+--- clinkc.orig/include/cybergarage/soap/csoap.h	2018-09-21 19:51:57.597329731 +0800
++++ clinkc/include/cybergarage/soap/csoap.h	2018-09-21 19:51:58.949329692 +0800
+@@ -143,6 +143,8 @@
+ 
+ CgXmlNode *cg_soap_createenvelopebodynode();
+ 
++char *cg_soap_request_retrieve_soapaction_name(CgSoapRequest *soapReq);
++
+ #ifdef  __cplusplus
+ }
+ #endif
+Index: clinkc/include/cybergarage/util/cstring.h
+===================================================================
+--- clinkc.orig/include/cybergarage/util/cstring.h	2009-08-04 10:10:06.000000000 +0800
++++ clinkc/include/cybergarage/util/cstring.h	2018-09-21 19:51:58.953329692 +0800
+@@ -156,6 +156,7 @@
+ 	
+ int cg_string_length(CgString *str);
+ 
++char *cg_string_addcsv(CgString *str, char *value);
+ char *cg_string_addvalue(CgString *str, char *value);
+ char *cg_string_naddvalue(CgString *str, char *value, int valueLen);
+ char *cg_string_addrepvalue(CgString *str, char *value, int repeatCnt);
+Index: clinkc/src/cybergarage/util/cstring.c
+===================================================================
+--- clinkc.orig/src/cybergarage/util/cstring.c	2009-05-21 03:31:13.000000000 +0800
++++ clinkc/src/cybergarage/util/cstring.c	2018-09-21 19:51:58.953329692 +0800
+@@ -232,6 +232,28 @@
+ 	return str->valueSize;
+ }
+ 
++char *cg_string_addcsv(CgString *str, char *value)
++{
++	if(!str || !value)
++		return NULL;
++
++	if(cg_string_length(str)){
++		int n = 0;
++		char *csvstr = (value && (n = strlen(value))) ? (char *)malloc(n+2) : 0;
++		if(csvstr){
++			*(csvstr+n+1) = '\0';
++			*csvstr = ',';
++			strcat(csvstr, value);
++			return cg_string_addvalue(str, csvstr);
++		}
++	}else{
++		cg_string_setvalue(str, value);
++		return cg_string_getvalue(str);
++	}
++
++	return NULL;
++}
++
+ /****************************************
+ * cg_string_add
+ ****************************************/
+Index: clinkc/src/cybergarage/upnp/caction.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/caction.c	2008-06-05 04:55:54.000000000 +0800
++++ clinkc/src/cybergarage/upnp/caction.c	2018-09-21 19:51:58.953329692 +0800
+@@ -42,6 +42,7 @@
+ 
+ 	if ( NULL != action )
+ 	{
++		memset(action, 0, sizeof(CgUpnpAction));
+ 		cg_list_node_init((CgList *)action);
+ 		
+ 		action->parentService = NULL;
+Index: clinkc/src/cybergarage/upnp/cargument_list.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cargument_list.c	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/src/cybergarage/upnp/cargument_list.c	2018-09-21 19:51:58.953329692 +0800
+@@ -33,8 +33,10 @@
+ 
+ 	argumentList = (CgUpnpArgument *)malloc(sizeof(CgUpnpArgument));
+ 
+-	if ( NULL != argumentList )
++	if ( NULL != argumentList ){
++		memset(argumentList, 0, sizeof(CgUpnpArgument));
+ 		cg_list_header_init((CgList *)argumentList);
++	}
+ 
+ 	return argumentList;
+ 
+@@ -49,6 +51,11 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	if(!argumentList)
++		return;
++
++	if(argumentList->value)
++		cg_string_delete(argumentList->value);
+ 	cg_list_clear((CgList*)argumentList, (CG_LIST_DESTRUCTORFUNC)cg_upnp_argument_delete);
+ 	free(argumentList);
+ 
+@@ -104,3 +111,13 @@
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
++
++void cg_upnp_argumentlist_setvalue(CgUpnpArgumentList *argumentList, const char *value)
++{
++	//!argumentList, !value
++
++	if(!argumentList->value)
++		argumentList->value = cg_string_new();
++
++	cg_string_setvalue(argumentList->value, value);
++}
+Index: clinkc/include/cybergarage/xml/cxml.h
+===================================================================
+--- clinkc.orig/include/cybergarage/xml/cxml.h	2010-06-24 23:34:31.000000000 +0800
++++ clinkc/include/cybergarage/xml/cxml.h	2018-09-21 19:51:58.953329692 +0800
+@@ -150,6 +150,8 @@
+ CgXmlNode *cg_xml_node_getrootnode(CgXmlNode *node);
+ 
+ #define cg_xml_node_getchildnodelist(node) (node->nodeList)
++#define cg_xml_node_setchildnodelist(node, list) (node->nodeList=list)
++
+ void cg_xml_node_addchildnode(CgXmlNode *node, CgXmlNode *cnode);
+ void cg_xml_node_setchildnode(CgXmlNode *node, char *name, char *value);
+ char *cg_xml_node_getchildnodevalue(CgXmlNode *node, char *name);
+@@ -183,6 +185,8 @@
+ char *cg_xml_node_tostring(CgXmlNode *node, BOOL withChildNode, CgString *str);
+ void  cg_xml_node_print(CgXmlNode *node);
+ 
++void cg_xml_nodelist_print(CgXmlNode *, const char *);
++
+ void cg_xml_node_copy(CgXmlNode *dstNode, CgXmlNode *srcNode);
+ 
+ /****************************************
+Index: clinkc/src/cybergarage/xml/cxml_node.c
+===================================================================
+--- clinkc.orig/src/cybergarage/xml/cxml_node.c	2010-06-24 23:34:31.000000000 +0800
++++ clinkc/src/cybergarage/xml/cxml_node.c	2018-09-21 19:51:58.953329692 +0800
+@@ -418,10 +418,35 @@
+ 
+ void  cg_xml_node_print(CgXmlNode *node)
+ {
++
++	if(!node){
++		//printf("node empty\n");
++		return;
++	}
++
+ 	CgString *str = cg_string_new();
+ 	cg_xml_node_tostring(node, TRUE, str);
+ 	printf("%s", cg_string_getvalue(str));
+ 	cg_string_delete(str);
+ }
+ 
++void cg_xml_nodelist_print(CgXmlNodeList *nodelist, const char *listName)
++{
++	if(!nodelist)
++		printf("%s empty", listName ? listName : "nodelist");
++
++	if(!listName)
++		cg_xml_node_print(nodelist);
++
++	CgXmlNode *handleNode = cg_xml_node_new();
++	cg_xml_node_setname(handleNode, listName);
++	CgXmlNode *pvsHandleNode = cg_xml_node_getparentnode(nodelist);
++	cg_xml_node_setchildnodelist(handleNode, nodelist);
++	cg_xml_node_print(handleNode);
++	cg_xml_node_setparentnode(nodelist, pvsHandleNode);
++	cg_xml_node_setchildnodelist(handleNode, NULL);
++	cg_xml_node_delete(handleNode);
++
++}
++
+ 
+Index: clinkc/src/cybergarage/upnp/event/csubscription_response.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/event/csubscription_response.c	2018-09-21 19:51:57.609329730 +0800
++++ clinkc/src/cybergarage/upnp/event/csubscription_response.c	2018-09-21 19:51:58.953329692 +0800
+@@ -34,7 +34,7 @@
+ 
+ void cg_upnp_event_subscription_subscriberesponse_setresponse(CgUpnpSubscriptionResponse *subRes, int code)
+ {
+-    char *server[CG_UPNP_SEVERNAME_MAXLEN];
++    char server[CG_UPNP_SEVERNAME_MAXLEN];
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	cg_http_response_setstatuscode(subRes, code);
+Index: clinkc/include/cybergarage/upnp/cargument.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/cargument.h	2009-08-11 23:56:14.000000000 +0800
++++ clinkc/include/cybergarage/upnp/cargument.h	2018-09-21 19:51:58.953329692 +0800
+@@ -355,6 +355,10 @@
+  */
+ void cg_upnp_argumentlist_set(CgUpnpArgumentList *argumentList, CgUpnpArgumentList *srcArgumentList);
+ 
++void cg_upnp_argumentlist_setvalue(CgUpnpArgumentList *argumentList, const char *value);
++#define cg_upnp_argumentlist_getvalue(argumentList) ((argumentList && argumentList->value) ? cg_string_getvalue(argumentList->value) : NULL)
++
++
+ #ifdef  __cplusplus
+ }
+ #endif

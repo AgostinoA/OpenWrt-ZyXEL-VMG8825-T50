@@ -1,0 +1,90 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-12-21 11:19:56.062661153 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-12-21 11:20:34.239575522 +0800
+@@ -672,16 +672,23 @@
+  *
+  *   Related object in TR181:
+  *   Device.DSL.Channel.i
++ *   Device.DSL.Line.i
+  */
+ zcfgRet_t WANDslIfaceCfgObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
++	char tr181Obj[32] = {0};
+ 	char dslChannelObj[32] = {0};
++	char dslLineObj[32] = {0};
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char *ptr = NULL;
+-	objIndex_t objIid;
+-	struct json_object *dslChannel = NULL;
++	tr98Parameter_t *paramList = NULL;
++	objIndex_t objIid, dslLineIid;
++	uint32_t dslLineOid = 0;
++	struct json_object *dslChannel = NULL, *dslLine = NULL;
+ 	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -709,6 +716,7 @@
+ 	objIid.level = 1;
+ 
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_DSL_CHANNEL, &objIid, &dslChannel)) == ZCFG_SUCCESS) {
++		strcpy(dslLineObj, json_object_get_string(json_object_object_get(dslChannel, "LowerLayers")));
+ 		if(multiJobj){
+ 			tmpObj = dslChannel;
+ 			dslChannel = NULL;
+@@ -733,6 +741,51 @@
+ 
+ 	}
+ 
++	sprintf(tr181Obj, "Device.%s", dslLineObj);
++	IID_INIT(dslLineIid);
++	dslLineOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
++
++	if((ret =ret = zcfgFeObjJsonGet(dslLineOid, &dslLineIid, &dslLine)) == ZCFG_SUCCESS){
++		if(multiJobj){
++			tmpObj = dslLine;
++			dslLine = NULL;
++			dslLine = zcfgFeJsonMultiObjAppend(dslLineOid, &dslLineIid, multiJobj, tmpObj);
++		}
++
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name != NULL) {
++			/*Write new parameter value from tr98 object to tr181 objects*/
++			paramValue = json_object_object_get(tr98Jobj, paramList->name);
++			if(paramValue != NULL) {
++				tr181ParamValue = json_object_object_get(dslLine, paramList->name);
++				if(tr181ParamValue != NULL) {
++					json_object_object_add(dslLine, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++#if TR98_MAPPING_DEBUG
++			printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++			paramList++;
++		}
++
++		if(multiJobj){
++			json_object_put(tmpObj);
++		}
++		else {
++			if((ret = zcfgFeObjJsonSet(dslLineOid, &dslLineIid, dslLine, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set DSL.Line Fail\n", __FUNCTION__);
++				json_object_put(dslLine);
++				return ret;
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set DSL.Line Success\n", __FUNCTION__);
++			}
++			json_object_put(dslLine);
++		}
++	}
++
+ 	return ZCFG_SUCCESS;
+ }
+ /*  

@@ -1,0 +1,161 @@
+Index: libzcfg_fe_tr98-1.0/voice.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.c	2016-10-18 15:27:09.412757701 +0800
++++ libzcfg_fe_tr98-1.0/voice.c	2016-10-18 19:02:32.326294677 +0800
+@@ -128,6 +128,31 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t zcfgFeTr181FindingIpIfaceByLowerLayer(char *lowerLayer, char *result)
++{
++	objIndex_t objIid;
++	rdm_IpIface_t *iface = NULL;
++
++	if(lowerLayer == NULL || result == NULL){
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	IID_INIT(objIid);
++	while(zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&iface) == ZCFG_SUCCESS) {
++		if(strcmp(iface->LowerLayers, lowerLayer) == 0) {
++			sprintf(result,"IP.Interface.%d",objIid.idx[0]);// TR181 path is one base.
++			printf("result: %s\n",result);
++			zcfgFeObjStructFree(iface);
++			return ZCFG_SUCCESS;
++		}
++
++		zcfgFeObjStructFree(iface);
++	}
++
++	return ZCFG_NO_SUCH_OBJECT;
++
++}
++
+ int getVoiceAttrGet(zcfg_offset_t oid, int handler, char *paramName){
+ 	int attrValue = ZCFG_NO_SUCH_PARAMETER;
+ 	tr98Parameter_t *paramList = NULL;
+@@ -346,7 +371,12 @@
+ zcfgRet_t voiceProfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t profIid;
++	objIndex_t profIid, objIid;
++	char *intf = NULL, *tmp_ptr = NULL, *boundList = NULL;
++	char tempName[128] = {0};
++	char tr98ObjName[128] = {0};
++	char boundIfList[512] = {0};
++	rdm_IpIface_t *ipIfaceObj = NULL;
+ 
+ 	IID_INIT(profIid);
+ 	profIid.level = 2;
+@@ -358,6 +388,46 @@
+ 		return ret;
+ 	}
+ 
++	/*Brady 20161017, the format of BoundList should follow TR-98 path for GET(WANDevice.{i}.WANConnectionDevice.{i}.WANIPConnection.{i}/WANDevice.{i}.WANConnectionDevice.{i}.WANPPPConnection.{i}). */
++	boundList = json_object_get_string(json_object_object_get(*tr98Jobj,"X_ZYXEL_BoundIfList"));
++	if(boundList != NULL){
++		intf = strtok_r(boundList, ", ", &tmp_ptr);
++		boundIfList[0] = '\0';
++		while(intf != NULL){
++			if(*intf != '\0' ){
++				IID_INIT(objIid);
++				objIid.level = 1;
++				sscanf(intf, "IP.Interface.%hhu", &objIid.idx[0]);
++				memset(tr98ObjName, 0, sizeof(tr98ObjName));
++				memset(tempName, 0, sizeof(tempName));
++				if(feObjStructGet(RDM_OID_IP_IFACE, &objIid, (void **)&ipIfaceObj, TR98_GET_WITHOUT_UPDATE) == ZCFG_SUCCESS ) {
++					if(strstr(ipIfaceObj->LowerLayers, "PPP.Interface") != NULL){
++						zcfgFe181To98MappingNameGet(ipIfaceObj->LowerLayers, tr98ObjName);
++					}else{
++						zcfgFe181To98MappingNameGet(intf, tr98ObjName);
++					}
++					
++					if(tr98ObjName[0] != '\0'){
++						sscanf(tr98ObjName,"InternetGatewayDevice.%s",tempName);
++						if(boundIfList[0] != '\0'){
++							strcat(boundIfList, ",");
++						}
++						strcat(boundIfList, tempName);
++					}
++
++					zcfgFeObjStructFree(ipIfaceObj);
++
++				}else{
++					printf("%s() Can't find corresponding ipIface Obj ,interface(%s)\n", __FUNCTION__, intf);
++				}
++				
++
++			}
++			intf = strtok_r(NULL, ", ", &tmp_ptr);
++		}
++		json_object_object_add(*tr98Jobj, "X_ZYXEL_BoundIfList", json_object_new_string(boundIfList));
++	}
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+@@ -369,9 +439,14 @@
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	struct json_object *paramValue = NULL;
++	char *intf = NULL, *tmp_ptr = NULL;
+ 	char *value = NULL;
+ 	char *enalbe = NULL;
+ 	char new_string[128]={0};
++	char tr181ObjPath[128] = {0};
++	char tr98ObjPath[128] = {0};
++	char tr181Name[32] = {0};
++	char boundIfList[512] = {0};
+ 	
+ 	IID_INIT(profIid);
+ 	profIid.level = 2;
+@@ -433,6 +508,35 @@
+ 				    	return ZCFG_NO_SUCH_PARAMETER;  
+ 					}
+ 					json_object_object_add(profObj, paramList->name, json_object_new_string(new_string));
++				}else if(!strcmp(paramList->name, "X_ZYXEL_BoundIfList")){
++					/*Brady 20161017, the format of BoundList followed TR-181 path for SET(IP.Interface.{i}). */
++					intf = strtok_r(value, ", ", &tmp_ptr);
++					while(intf != NULL){
++						if(*intf != '\0' ){
++							memset(tr181Name, 0, sizeof(tr181Name));
++							memset(tr181ObjPath, 0, sizeof(tr181ObjPath));
++							snprintf(tr98ObjPath, sizeof(tr98ObjPath), "InternetGatewayDevice.%s",intf);
++							zcfgFe98To181MappingNameGet(tr98ObjPath, tr181ObjPath);
++
++							if(strstr(tr181ObjPath, "PPP.Interface") != NULL){
++								zcfgFeTr181FindingIpIfaceByLowerLayer(tr181ObjPath, tr181Name);
++							}else if(strstr(tr181ObjPath, "IP.Interface") != NULL){
++								strcpy(tr181Name, tr181ObjPath);
++							}else{
++								printf("%s() Bonded Interface Not accept. Interface:%s\n", __FUNCTION__, tr181ObjPath);
++							}
++
++							if(tr181Name[0] != '\0'){
++								if(boundIfList[0] != '\0'){
++									strcat(boundIfList, ",");
++								}	
++								strcat(boundIfList, tr181Name);
++							}
++							
++						}
++						intf = strtok_r(NULL, ", ", &tmp_ptr);
++					}
++					json_object_object_add(profObj, "X_ZYXEL_BoundIfList", json_object_new_string(boundIfList));
+ 				}else{
+ 					json_object_object_add(profObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				}
+Index: libzcfg_fe_tr98-1.0/voice.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.h	2016-10-18 15:27:09.412757701 +0800
++++ libzcfg_fe_tr98-1.0/voice.h	2016-10-18 15:28:12.686573700 +0800
+@@ -106,7 +106,7 @@
+ 	//{ "X_ZYXEL_SPNum", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	//{ "X_ZYXEL_V18_Support", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_BoundIfName", PARAMETER_ATTR_WRITE, 33, json_type_string},
+-	{ "X_ZYXEL_BoundIfList", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "X_ZYXEL_BoundIfList", PARAMETER_ATTR_WRITE, 513, json_type_string},
+ 	{ "X_ZYXEL_ActiveBoundIfName", PARAMETER_ATTR_READONLY, 33, json_type_string},
+ 	{ "X_ZYXEL_BoundIpAddr", PARAMETER_ATTR_READONLY, 18, json_type_string},
+ 	{ "X_ZYXEL_FlashUsageStyle", PARAMETER_ATTR_WRITE, 257, json_type_string},

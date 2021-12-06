@@ -1,0 +1,231 @@
+--- a/src/cybergarage/http/chttp_packet.c
++++ b/src/cybergarage/http/chttp_packet.c
+@@ -404,8 +404,11 @@ void cg_http_packet_read_headers(CgHttpP
+ /****************************************
+ * cg_http_packet_read_chunk
+ ****************************************/
+-
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++long cg_http_packet_read_chunk(CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize, FILE *fp)
++#else
+ long cg_http_packet_read_chunk(CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize)
++#endif
+ {
+ 	long readLen = 0;
+ 	long conLen = 0;
+@@ -439,7 +442,14 @@ long cg_http_packet_read_chunk(CgHttpPac
+ 	}
+ 	
+ 	/* Append content to packet */
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++	if(fp)
++		fwrite(content, readLen, 1, fp);
++	else
++		cg_http_packet_appendncontent(httpPkt, content, readLen);
++#else
+ 	cg_http_packet_appendncontent(httpPkt, content, readLen);
++#endif
+ 	free(content); content = NULL;
+ 	
+ 	if (readLen == conLen)
+@@ -509,7 +519,11 @@ BOOL cg_http_packet_read_body(CgHttpPack
+ 		{
+ 			conLen = 0;
+ 			do {
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++				readLen = cg_http_packet_read_chunk(httpPkt, sock, lineBuf, lineBufSize, NULL);
++#else
+ 				readLen = cg_http_packet_read_chunk(httpPkt, sock, lineBuf, lineBufSize);
++#endif
+ 				conLen += readLen;
+ 			} while (readLen > 0);
+ 			
+@@ -532,11 +546,101 @@ BOOL cg_http_packet_read_body(CgHttpPack
+ 	return TRUE;
+ }
+ 
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++/****************************************
++* cg_http_packet_read_body_to_file
++****************************************/
++BOOL cg_http_packet_read_body_to_file(CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize, char *savedFile)
++{
++	long readLen;
++	int conLen;
++	char readBuf[READBUF_LENGTH + 1];
++	int tries = 0;
++	FILE *fp = NULL;
++	int length;
++
++	cg_log_debug_l4("Entering...\n");
++
++	conLen = cg_http_packet_getcontentlength(httpPkt);
++	if (0 < conLen) {
++
++	fp = fopen( savedFile, "wb" );
++	if (!fp) {
++		cg_log_debug_l4( "fopen %s fail", savedFile );
++		return FALSE;
++	}
++
++		readLen = 0;
++
++		/* Read content until conLen is reached, or tired of trying */
++		while (readLen < conLen && tries < 20)
++		{
++			length = cg_socket_read(sock, readBuf, READBUF_LENGTH);
++			readLen += length;
++			if (length <= 0){
++				tries++;
++			}
++			else
++				fwrite(readBuf, length, 1, fp);
++		}
++
++		if (readLen <= 0){
++			fclose(fp);
++			return TRUE;
++		}
++		cg_http_packet_setcontentpointer(httpPkt, NULL, readLen);
++		fclose(fp);
++	}
++	else if (cg_http_packet_getheadervalue(httpPkt,
++					CG_HTTP_CONTENT_LENGTH) == NULL)
++	{
++		/* header existance must be checked! otherwise packets which
++		   rightly report 0 as content length, will jam the http */
++		fp = fopen( savedFile, "wb" );
++		if (!fp) {
++			cg_log_debug_l4( "fopen %s fail", savedFile );
++			return FALSE;
++		}
++
++		/* Check if we read chunked encoding */
++		if (cg_http_packet_ischunked(httpPkt) == TRUE)
++		{
++			conLen = 0;
++			do {
++				readLen = cg_http_packet_read_chunk(httpPkt, sock, lineBuf, lineBufSize, fp);
++				conLen += readLen;
++				/*TODO... not finished*/
++				fwrite(lineBuf, readLen, 1, fp);
++			} while (readLen > 0);
++
++			cg_http_packet_setcontentlength(httpPkt,conLen);
++		} else {
++			readLen = 0;
++			conLen = 0;
++			while ((readLen = cg_socket_read(sock, readBuf, READBUF_LENGTH)) > 0)
++			{
++				conLen += readLen;
++				fwrite(readBuf, readLen, 1, fp);
++			}
++
++			cg_http_packet_setcontentlength(httpPkt, conLen);
++		}
++		fclose(fp);
++	}
++
++	cg_log_debug_l4("Leaving...\n");
++	return TRUE;
++}
++#endif
+ /****************************************
+ * cg_http_packet_read
+ ****************************************/
+ 
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++BOOL cg_http_packet_read(CgHttpPacket *httpPkt, CgSocket *sock, BOOL onlyHeader, char *lineBuf, int lineBufSize, char *savedFile)
++#else
+ BOOL cg_http_packet_read(CgHttpPacket *httpPkt, CgSocket *sock, BOOL onlyHeader, char *lineBuf, int lineBufSize)
++#endif
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
+@@ -547,8 +651,14 @@ BOOL cg_http_packet_read(CgHttpPacket *h
+ 
+ 	if (onlyHeader)
+ 		return TRUE;
+-
++#ifdef ZYXEL_PATCH  /*support save content to file, by ZyXEL charisse*/
++	if(savedFile == NULL)
++		return cg_http_packet_read_body(httpPkt, sock, lineBuf, lineBufSize);
++	else
++		return cg_http_packet_read_body_to_file(httpPkt, sock, lineBuf, lineBufSize, savedFile);
++#else
+ 	return cg_http_packet_read_body(httpPkt, sock, lineBuf, lineBufSize);
++#endif
+ }
+ 
+ /****************************************
+--- a/include/cybergarage/http/chttp.h
++++ b/include/cybergarage/http/chttp.h
+@@ -372,8 +372,13 @@ void cg_http_packet_post(CgHttpPacket *h
+ void cg_http_packet_read_headers(CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize);
+ BOOL cg_http_packet_read_body(
+ 							  CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize);
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++BOOL cg_http_packet_read_body_to_file(
++							  CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize, char *savedFile);
++BOOL cg_http_packet_read(CgHttpPacket *httpPkt, CgSocket *sock, BOOL onlyHeader, char *lineBuf, int lineBufSize, char *savedFile);
++#else
+ BOOL cg_http_packet_read(CgHttpPacket *httpPkt, CgSocket *sock, BOOL onlyHeader, char *lineBuf, int lineBufSize);
+-
++#endif
+ /**** Content-Length ****/
+ #if defined(CG_USE_INT64)
+ #define cg_http_packet_setcontentlength(httpPkt,value) cg_http_packet_setheaderlonglong(httpPkt,CG_HTTP_CONTENT_LENGTH,value)
+@@ -527,8 +532,11 @@ void cg_http_response_setreasonphrase(Cg
+ char *cg_http_response_getreasonphrase(CgHttpResponse *httpRes);
+ void cg_http_response_setstatuscode(CgHttpResponse *httpRes, int code);
+ int cg_http_response_getstatuscode(CgHttpResponse *httpRes);
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++BOOL cg_http_response_read(CgHttpResponse *httpRes, CgSocket *sock, BOOL onlyHeader, char *savedFile);
++#else
+ BOOL cg_http_response_read(CgHttpResponse *httpRes, CgSocket *sock, BOOL onlyHeader);
+-
++#endif
+ /*#define cg_http_response_issuccessful(httpRes) ((cg_http_response_getstatuscode(httpRes) == CG_HTTP_STATUS_OK) ? TRUE : FALSE)*/
+ #define cg_http_response_issuccessful(httpRes) (cg_http_response_getstatuscode(httpRes) >= 200 && cg_http_response_getstatuscode(httpRes) < 300 )
+ 
+--- a/src/cybergarage/http/chttp_response.c
++++ b/src/cybergarage/http/chttp_response.c
+@@ -169,7 +169,11 @@ char *cg_http_response_getreasonphrase(C
+ * cg_http_response_read
+ ****************************************/
+ 
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++BOOL cg_http_response_read(CgHttpResponse *httpRes, CgSocket *sock, BOOL onlyHeader, char *savedFile)
++#else
+ BOOL cg_http_response_read(CgHttpResponse *httpRes, CgSocket *sock, BOOL onlyHeader)
++#endif
+ {
+ 	char lineBuf[CG_HTTP_READLINE_BUFSIZE];
+ 	CgStringTokenizer *strTok;
+@@ -196,8 +200,11 @@ BOOL cg_http_response_read(CgHttpRespons
+ 	}
+ 	cg_string_tokenizer_delete(strTok);
+ 
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++	cg_http_packet_read((CgHttpPacket *)httpRes, sock, onlyHeader, lineBuf, sizeof(lineBuf), savedFile);
++#else
+ 	cg_http_packet_read((CgHttpPacket *)httpRes, sock, onlyHeader, lineBuf, sizeof(lineBuf));
+-	
++#endif
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return TRUE;
+--- a/src/cybergarage/http/chttp_request.c
++++ b/src/cybergarage/http/chttp_request.c
+@@ -363,7 +363,11 @@ cg_log_debug_s("\nRequest: %s%s%s:%d%s%s
+ 	cg_http_packet_post((CgHttpPacket *)httpReq, sock);
+ 	
+ 	/**** read response ****/
++#ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
++	cg_http_response_read(httpReq->httpRes, sock, cg_http_request_isheadrequest(httpReq), NULL);
++#else
+ 	cg_http_response_read(httpReq->httpRes, sock, cg_http_request_isheadrequest(httpReq));
++#endif
+ 
+ #ifdef CG_SHOW_TIMINGS	
+ 	gettimeofday(&end_time, NULL);

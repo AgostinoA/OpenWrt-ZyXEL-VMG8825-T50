@@ -1,0 +1,497 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2016-02-01 13:49:02.172391307 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2016-02-01 13:55:07.400398313 +0800
+@@ -2671,6 +2671,8 @@
+ 	struct json_object *rtJobj = NULL;
+ 	bool defaultRtModify = false;
+ 	const char *lowerLayer = NULL;
++	bool staticDnsType = false;
++	char tr181DnsType[45+1] = {0};
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -2694,37 +2696,75 @@
+ 		IID_INIT(vlanTermIid);
+ 		sscanf(lowerLayer, "Ethernet.VLANTermination.%hhu", &vlanTermIid.idx[0]);
+ 		vlanTermIid.level = 1;
+-		if((ret = zcfgFeObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj)) != ZCFG_SUCCESS)
++		if((ret = zcfgFeObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj)) != ZCFG_SUCCESS) {
++			json_object_put(ipIfaceJobj);
+ 			return ret;
++		}
+ 	}
+ 	
+ 	IID_INIT(natIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &natIid, &natJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &natIid, &natJobj)) != ZCFG_SUCCESS){
++		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
+ 		return ret;
++	}
+ 	
+ 	IID_INIT(natSessionIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj)) != ZCFG_SUCCESS){
++		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
++		json_object_put(natJobj);
+ 		return ret;
++	}
+ 
+ 	/*DNSServer*/
+-	if(dnsInfoGetJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj, false, false) == ZCFG_SUCCESS) //dns v4
++	const char *tr98DnsType = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_DNSType"));
++	if(tr98DnsType && !strcmp(tr98DnsType, TR181_DNS_TYPE_STATIC))
++		staticDnsType = true;
++
++	if(dnsInfoGetJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj, false, false) == ZCFG_SUCCESS){ //dns v4
+ 		isDnsObjExist = true;
++		const char *paramDnsType = json_object_get_string(json_object_object_get(dnsSrvJobj, "X_ZYXEL_Type"));
++		if(paramDnsType && strlen(paramDnsType))
++			strcpy(tr181DnsType, paramDnsType);
++	}
++
+ #ifdef IPV6INTERFACE_PROFILE
+ 	if(dnsInfoGetJobj(ipIface, &dnsSrvV6Iid, (struct json_object **)&dnsSrvV6Jobj, true, false) == ZCFG_SUCCESS) //dns v6
+ 		isDnsObjExist = true;
+ #endif
+-	if(isDnsObjExist){
+-		IID_INIT(dnsIid);
+-		if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++	if(!isDnsObjExist && (staticDnsType == true)){
++		if(dnsAddJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj) != ZCFG_SUCCESS) {
+ 			json_object_put(ipIfaceJobj);
+-			json_object_put(dnsSrvJobj);
+-			return ret;
++			json_object_put(vlanTermJobj);
++			json_object_put(natJobj);
++			json_object_put(natSessionJobj);
++			return ZCFG_INTERNAL_ERROR;
+ 		}
++		isDnsObjExist = true;
++
++#ifdef IPV6INTERFACE_PROFILE
++
++#endif
++	}
++
++	IID_INIT(dnsIid);
++	zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
++		json_object_put(dnsSrvJobj);
++		return ret;
+ 	}
+ 
+ 	IID_INIT(igmpIid);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS) {
+ 		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
+ 		if(isDnsObjExist == true) {
+ 			json_object_put(dnsSrvJobj);
+ 			json_object_put(dnsJobj);
+@@ -2736,6 +2776,9 @@
+ 	if(natIntfGetJobj((const char *)ipIface, &natIntfIid, (struct json_object **)&natIntfJobj) != ZCFG_SUCCESS) {
+ 		printf("%s : Retrieve NAT interface setting fail\n", __FUNCTION__);
+ 		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
+ 		json_object_put(igmpJobj);
+ 		if(isDnsObjExist == true) {
+ 			json_object_put(dnsSrvJobj);
+@@ -2749,6 +2792,9 @@
+ 	rtIid.idx[0] = 1;
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER, &rtIid, &rtJobj)) != ZCFG_SUCCESS) {
+ 		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
+ 		if(isDnsObjExist == true) {
+ 			json_object_put(dnsSrvJobj);
+ 			json_object_put(dnsJobj);
+@@ -2763,15 +2809,47 @@
+ 	if(defaultRtGetObj((const char *)ipIface, &rtIpIid, (struct json_object **)&rtIpJobj) != ZCFG_SUCCESS) {
+ 		printf("%s : Retrieve routing ip fail\n", __FUNCTION__);
+ 		json_object_put(ipIfaceJobj);
++		json_object_put(vlanTermJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
+ 		json_object_put(igmpJobj);
+ 		if(isDnsObjExist == true) {
+ 			json_object_put(dnsSrvJobj);
+ 			json_object_put(dnsJobj);
+ 		}
+ 		json_object_put(natIntfJobj);
++		json_object_put(rtJobj);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
++	paramValue = json_object_object_get(tr98Jobj, "AddressingType");
++	addrType = json_object_get_string(paramValue);
++
++	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
++	connType = json_object_get_string(paramValue);
++
++	if(!strcmp(connType, "IP_Routed")) {
++		/*Set IP Address*/
++		ret = ipaddrSet(ipIface, &ipIfaceIid, &ipIfaceJobj, addrType, tr98Jobj);
++		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++			printf("%s: ipaddrSet return %d\n", __FUNCTION__, ret);
++			json_object_put(ipIfaceJobj);
++			json_object_put(vlanTermJobj);
++			json_object_put(natJobj);
++			json_object_put(natSessionJobj);
++			json_object_put(igmpJobj);
++			json_object_put(dnsSrvJobj);
++			json_object_put(dnsJobj);
++			json_object_put(natIntfJobj);
++			json_object_put(rtIpJobj);
++			json_object_put(rtJobj);
++			return ret;
++		}
++		else {
++			ret = ZCFG_SUCCESS;
++		}
++	}
++
+ 	if(multiJobj){
+ 
+ 		if(dnsSrvJobj){
+@@ -2830,27 +2908,7 @@
+ 			json_object_put(tmpObj);
+ 		}
+ 	}
+-	
+-	paramValue = json_object_object_get(tr98Jobj, "AddressingType");
+-	addrType = json_object_get_string(paramValue);
+-
+-	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
+-	connType = json_object_get_string(paramValue);
+ 
+-	if(!strcmp(connType, "IP_Routed")) {
+-		/*Set IP Address*/
+-		ret = ipaddrSet(ipIface, &ipIfaceIid, &ipIfaceJobj, addrType, tr98Jobj);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-			printf("%s: ipaddrSet return %d\n", __FUNCTION__, ret);
+-			json_object_put(ipIfaceJobj);
+-			json_object_put(rtIpJobj);
+-			json_object_put(rtJobj);
+-			return ret;
+-		}
+-		else {
+-			ret = ZCFG_SUCCESS;
+-		}
+-	}
+ 
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+@@ -2936,7 +2994,7 @@
+ 			else if(!strcmp(paramList->name, "DNSServers")){
+ 				if(dnsSrvJobj){
+ 					paramValue2 = json_object_object_get(dnsSrvJobj, "DNSServer");
+-					
++#if 0
+ 					if(paramValue2){
+ 						if(strcmp(json_object_get_string(paramValue), json_object_get_string(paramValue2))){
+ 							json_object_object_add(tr98Jobj, "X_ZYXEL_DNSType", json_object_new_string(TR181_DNS_TYPE_STATIC)); // need to set tr98Jobj, workaround
+@@ -2946,8 +3004,11 @@
+ 							}
+ 						}
+ 					}
+-					
+-					json_object_object_add(dnsSrvJobj, "DNSServer", JSON_OBJ_COPY(paramValue));
++#endif
++					if(!strcmp(tr181DnsType, TR181_DNS_TYPE_STATIC) &&  strcmp(tr98DnsType, TR181_DNS_TYPE_STATIC))
++						json_object_object_add(dnsSrvJobj, "DNSServer", json_object_new_string(""));
++					else
++						json_object_object_add(dnsSrvJobj, "DNSServer", JSON_OBJ_COPY(paramValue));
+ 					paramList++;
+ 					continue;
+ 				}
+@@ -3078,7 +3139,7 @@
+ 		zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, ipIfaceJobj);
+ 		json_object_put(ipIfaceJobj);
+ 
+-		if(defaultRtModify == true)	{
++		if(defaultRtModify == true){
+ 			printf("%s: set default route is required\n", __FUNCTION__);
+ 			zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, multiJobj, rtIpJobj);
+ 		}
+@@ -5204,6 +5265,8 @@
+ 	const char *lowerLayer = NULL;
+ 	struct json_object *rtJobj = NULL;
+ 	objIndex_t rtIid;
++	bool staticDnsType = false;
++	char tr181DnsType[45+1] = {0};
+ 
+ 	zcfgLog(ZCFG_LOG_INFO,"%s : Enter\n", __FUNCTION__);
+ 
+@@ -5296,26 +5359,49 @@
+ 	
+ 	/*DNSServer*/
+ 
+-	if(dnsInfoGetJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj, false, false) == ZCFG_SUCCESS) //dns v4
++	const char *tr98DnsType = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_DNSType"));
++	if(tr98DnsType && !strcmp(tr98DnsType, TR181_DNS_TYPE_STATIC))
++		staticDnsType = true;
++
++	if(dnsInfoGetJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj, false, false) == ZCFG_SUCCESS) { //dns v4
+ 		isDnsObjExist = true;
++		const char *paramDnsType = json_object_get_string(json_object_object_get(dnsSrvJobj, "X_ZYXEL_Type"));
++		if(paramDnsType && strlen(paramDnsType))
++			strcpy(tr181DnsType, paramDnsType);
++	}
++
+ #ifdef IPV6INTERFACE_PROFILE
+ 	if(dnsInfoGetJobj(ipIface, &dnsSrvV6Iid, (struct json_object **)&dnsSrvV6Jobj, true, false) == ZCFG_SUCCESS) //dns v6
+ 		isDnsObjExist = true;
+ #endif	
+-	if(isDnsObjExist){
+-		IID_INIT(dnsIid);
+-		zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
+-		if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++
++	if(!isDnsObjExist && (staticDnsType == true)){
++		if(dnsAddJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj) != ZCFG_SUCCESS) {
+ 			json_object_put(vlanTermJobj);
+ 			json_object_put(rtJobj);
+ 			json_object_put(pppIfaceJobj);
+ 			json_object_put(ipIfaceJobj);
+-			json_object_put(natJobj);
+-			json_object_put(natSessionJobj);
+-			json_object_put(natIntfJobj);
+-			json_object_put(dnsSrvJobj);
+-			return ret;
++			return ZCFG_INTERNAL_ERROR;
+ 		}
++		isDnsObjExist = true;
++
++#ifdef IPV6INTERFACE_PROFILE
++
++#endif
++	}
++
++	IID_INIT(dnsIid);
++	zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++		json_object_put(vlanTermJobj);
++		json_object_put(rtJobj);
++		json_object_put(pppIfaceJobj);
++		json_object_put(ipIfaceJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
++		json_object_put(natIntfJobj);
++		json_object_put(dnsSrvJobj);
++		return ret;
+ 	}
+ 
+ 	IID_INIT(igmpIid);
+@@ -5335,6 +5421,30 @@
+ 	}
+ 
+ 	if(multiJobj){
++		if(vlanTermJobj){
++			tmpObj = vlanTermJobj;
++			vlanTermJobj = NULL;
++			vlanTermJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
++		if(natJobj){
++			tmpObj = natJobj;
++			natJobj = NULL;
++			natJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT, &natIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
++		if(natSessionJobj){
++			tmpObj = natSessionJobj;
++			natSessionJobj = NULL;
++			natSessionJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_SESSION_CTL, &natSessionIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
++		{
++			tmpObj = natIntfJobj;
++			natIntfJobj = NULL;
++			natIntfJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_INTF_SETTING, &natIntfIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 		if(dnsSrvJobj){
+ 			tmpObj = dnsSrvJobj;
+ 			dnsSrvJobj = NULL;
+@@ -5350,52 +5460,22 @@
+ 			json_object_put(tmpObj);
+ 		}
+ #endif
+-		if(dnsJobj){
+-			tmpObj = dnsJobj;
+-			dnsJobj = NULL;
+-			dnsJobj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS, &dnsIid, multiJobj, tmpObj);			
+-			json_object_put(tmpObj);
+-		}
+-		if(igmpJobj){
+-			tmpObj = igmpJobj;
+-			igmpJobj = NULL;
+-			igmpJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_IGMP, &igmpIid, multiJobj, tmpObj);
+-			json_object_put(tmpObj);
+-		}
+-		if(vlanTermJobj){
+-			tmpObj = vlanTermJobj;
+-			vlanTermJobj = NULL;
+-			vlanTermJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, multiJobj, tmpObj);
+-			json_object_put(tmpObj);
+-		}
+-		if(pppIfaceJobj){
+-			tmpObj = pppIfaceJobj;
+-			pppIfaceJobj = NULL;
+-			pppIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_PPP_IFACE, &pppIfaceIid, multiJobj, tmpObj);
+-			json_object_put(tmpObj);
+-		}
+ 		if(ipIfaceJobj){
+ 			tmpObj = ipIfaceJobj;
+ 			ipIfaceJobj = NULL;
+ 			ipIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
+-		if(natJobj){
+-			tmpObj = natJobj;
+-			natJobj = NULL;
+-			natJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT, &natIid, multiJobj, tmpObj);
+-			json_object_put(tmpObj);
+-		}
+-		if(natSessionJobj){
+-			tmpObj = natSessionJobj;
+-			natSessionJobj = NULL;
+-			natSessionJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_SESSION_CTL, &natSessionIid, multiJobj, tmpObj);
++		if(pppIfaceJobj){
++			tmpObj = pppIfaceJobj;
++			pppIfaceJobj = NULL;
++			pppIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_PPP_IFACE, &pppIfaceIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
+-		{
+-			tmpObj = natIntfJobj;
+-			natIntfJobj = NULL;
+-			natIntfJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_INTF_SETTING, &natIntfIid, multiJobj, tmpObj);
++		if(igmpJobj){
++			tmpObj = igmpJobj;
++			igmpJobj = NULL;
++			igmpJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_IGMP, &igmpIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
+ 		{
+@@ -5404,6 +5484,12 @@
+ 			rtJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER, &rtIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
++		if(dnsJobj){
++			tmpObj = dnsJobj;
++			dnsJobj = NULL;
++			dnsJobj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS, &dnsIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 	}
+ 
+ 	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
+@@ -5414,6 +5500,12 @@
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "Enable")) {
++				json_object_object_add(ipIfaceJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				json_object_object_add(pppIfaceJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
+ 			if(!strcmp(paramList->name, "Name")) {
+ 				if((tr181ParamValue = json_object_object_get(ipIfaceJobj, "X_ZYXEL_SrvName"))) {
+ 					json_object_object_add(ipIfaceJobj, "X_ZYXEL_SrvName", JSON_OBJ_COPY(paramValue));
+@@ -5491,7 +5583,7 @@
+ 			else if(!strcmp(paramList->name, "DNSServers")){
+ 				if(dnsSrvJobj){
+ 					paramValue2 = json_object_object_get(dnsSrvJobj, "DNSServer");
+-					
++#if 0
+ 					if(paramValue2){
+ 						if(strcmp(json_object_get_string(paramValue), json_object_get_string(paramValue2))){
+ 							json_object_object_add(tr98Jobj, "X_ZYXEL_DNSType", json_object_new_string(TR181_DNS_TYPE_STATIC)); // need to set tr98Jobj, workaround
+@@ -5501,8 +5593,11 @@
+ 							}
+ 						}
+ 					}
+-					
+-					json_object_object_add(dnsSrvJobj, "DNSServer", JSON_OBJ_COPY(paramValue));
++#endif
++					if(!strcmp(tr181DnsType, TR181_DNS_TYPE_STATIC) &&  strcmp(tr98DnsType, TR181_DNS_TYPE_STATIC))
++						json_object_object_add(dnsSrvJobj, "DNSServer", json_object_new_string(""));
++					else
++ 						json_object_object_add(dnsSrvJobj, "DNSServer", JSON_OBJ_COPY(paramValue));
+ 					paramList++;
+ 					continue;
+ 				}
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2016-02-01 13:49:01.192391288 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2016-02-01 13:49:02.188391307 +0800
+@@ -324,9 +324,9 @@
+ #else
+ zcfgRet_t dnsInfoGetJobj(char *ipIface, objIndex_t *dnsIid, struct json_object **dnsSrvJobj, bool ipv6, bool updateFlag){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	char *interface = NULL;
+-	char *type = NULL;
+-	char *dnsServers = NULL;
++	const char *interface = NULL;
++	const char *type = NULL;
++	const char *dnsServers = NULL;
+ 	
+ 	IID_INIT(*dnsIid);
+ 	while((ret = feObjJsonGetNext(RDM_OID_DNS_CLIENT_SRV, dnsIid, dnsSrvJobj, updateFlag)) == ZCFG_SUCCESS) {
+@@ -335,7 +335,8 @@
+ 		if(!strcmp(ipIface, interface)){
+ 			if(ipv6 && (!strcmp("DHCPv6", type) || !strcmp("RouterAdvertisement", type)))
+ 				return ret;
+-			else if(!ipv6 && (!strcmp("DHCPv4", type) || !strcmp("DHCP", type)))
++			//else if(!ipv6 && (!strcmp("DHCPv4", type) || !strcmp("DHCP", type)))
++			else if(!ipv6)
+ 				return ret;
+ 			else{
+ 				dnsServers = json_object_get_string(json_object_object_get((*dnsSrvJobj), "DNSServer"));
+@@ -351,9 +352,13 @@
+ 
+ zcfgRet_t dnsAddJobj(char *ipIface, objIndex_t *dnsIid, struct json_object **dnsSrvJobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	char *interface = NULL;
++	const char *interface = NULL;
+ 	bool found = false;
++
++	//if(!dnsIid || !dnsSrvJobj)
+ 	
++	*dnsSrvJobj = NULL;
++
+ 	IID_INIT(*dnsIid);
+ 	while((ret = feObjJsonGetNext(RDM_OID_DNS_CLIENT_SRV, dnsIid, dnsSrvJobj, false)) == ZCFG_SUCCESS) {
+ 		interface = json_object_get_string(json_object_object_get((*dnsSrvJobj), "Interface"));
+@@ -369,10 +374,15 @@
+ 		if((ret = zcfgFeObjStructAdd(RDM_OID_DNS_CLIENT_SRV, dnsIid, NULL)) != ZCFG_SUCCESS){
+ 			return ret;
+ 		}
+-		*dnsSrvJobj = json_object_new_object();
++		//*dnsSrvJobj = json_object_new_object();
++		if((ret = zcfgFeObjJsonGet(RDM_OID_DNS_CLIENT_SRV, dnsIid, dnsSrvJobj)) != ZCFG_SUCCESS){;
++			return ret;
++		}
+ 	}
+-	json_object_object_add(*dnsSrvJobj, "interface", json_object_new_string(ipIface));
+-	json_object_object_add(*dnsSrvJobj, "X_ZYXEL_Type", json_object_new_string(TR181_DNS_TYPE_STATIC));
++
++	if(ipIface && strstr(ipIface, "IP.Interface"))
++		json_object_object_add(*dnsSrvJobj, "Interface", json_object_new_string(ipIface));
++	//json_object_object_add(*dnsSrvJobj, "X_ZYXEL_Type", json_object_new_string(""));
+ 	return ret;
+ }
+ #endif

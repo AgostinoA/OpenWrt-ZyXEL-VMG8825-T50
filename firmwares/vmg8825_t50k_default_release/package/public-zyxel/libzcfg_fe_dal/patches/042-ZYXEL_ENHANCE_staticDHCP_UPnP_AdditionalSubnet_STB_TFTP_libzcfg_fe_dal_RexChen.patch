@@ -1,0 +1,619 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-10-21 08:09:32.719686757 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-10-21 08:15:17.422502300 +0800
+@@ -9,6 +9,7 @@
+ NETWORK_DNS_PATH = ./network/dns
+ NETWORK_NAT_PATH = ./network/nat
+ NETWORK_ROUTING_PATH = ./network/routing
++NETWORK_HOME_PATH = ./network/homeNetworking
+ NETWORK_INTF_GP_PATH = ./network/interfaceGrouping
+ NETWORK_VLANGRP_PATH = ./network/vlanGroup
+ NETWORK_IGMPMLD_PATH = ./network/igmp_mld
+@@ -22,6 +23,7 @@
+ SOURCES += $(wildcard $(NETWORK_DNS_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_ROUTING_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_NAT_PATH)/*.c)
++SOURCES += $(wildcard $(NETWORK_HOME_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_INTF_GP_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_VLANGRP_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_IGMPMLD_PATH)/*.c)
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c	2016-10-05 12:12:31.159147200 +0800
+@@ -0,0 +1,171 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t SUBNET_param[]={
++	{"selectedGrp",		dalType_string, 0,	0,	NULL},
++	{"ipAlias_Enable", 			dalType_boolean,	0,	0,	NULL},
++	{"ipAlias_X_ZYXEL_Alias",	dalType_boolean,	0,	0,	NULL},
++	{"ipAlias_IPAddress", 		dalType_string,	0,	0,	NULL},
++	{"ipAlias_SubnetMask", 		dalType_string,	0,	0,	NULL},
++	{"PubLan", 					dalType_boolean,	0,	0,	NULL},
++	{"PubLan_IP", 				dalType_string,	0,	0,	NULL},
++	{"PubLan_Mask", 			dalType_string,	0,	0,	NULL},
++	{"PubLan_DHCP", 			dalType_boolean,	0,	0,	NULL},
++	{"PubLan_ARP", 				dalType_boolean,	0,	0,	NULL},
++	{NULL,					0,	0,	0,	NULL},
++};
++
++static struct json_object *ipIntfObj = NULL;
++static objIndex_t ipIntfIid = {0};
++
++zcfgRet_t setIPAlias(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *ipAliasObj = NULL;
++	struct json_object *ipv4AddrObj = NULL;
++	objIndex_t ipAliasIid = {0};
++	objIndex_t ipv4AddrIid = {0};
++	bool aliasEnable = false, curAlias = false;
++	bool found = false, setParam = false;
++	const char *aliasAddr = NULL, *curAliasAddr = NULL;
++	const char *aliasSubMask = NULL, *curAliasSubMask = NULL;
++	bool X_ZYXEL_Alias = false;
++	
++	aliasEnable = json_object_get_boolean(json_object_object_get(Jobj, "ipAlias_Enable"));
++
++	IID_INIT(ipAliasIid);
++	IID_INIT(ipv4AddrIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE_V4_ADDR, &ipv4AddrIid, &ipv4AddrObj) == ZCFG_SUCCESS) {
++		curAlias = json_object_get_boolean(json_object_object_get(ipv4AddrObj, "X_ZYXEL_Alias"));
++		if((ipv4AddrIid.idx[0] != ipIntfIid.idx[0]) || (curAlias == false)){
++			continue;
++		}
++		curAliasAddr = json_object_get_string(json_object_object_get(ipv4AddrObj, "IPAddress"));
++		curAliasSubMask = json_object_get_string(json_object_object_get(ipv4AddrObj, "SubnetMask"));
++		found = true;
++		memcpy(&ipAliasIid, &ipv4AddrIid, sizeof(objIndex_t));
++		ipAliasObj = ipv4AddrObj;
++		break;                                          
++	}
++
++	if(aliasEnable){
++		aliasAddr = json_object_get_string(json_object_object_get(Jobj, "ipAlias_IPAddress"));
++		aliasSubMask = json_object_get_string(json_object_object_get(Jobj, "ipAlias_SubnetMask"));
++		X_ZYXEL_Alias = json_object_get_boolean(json_object_object_get(Jobj, "ipAlias_X_ZYXEL_Alias"));
++
++		if(found){
++			if(strcmp(curAliasAddr, aliasAddr) || strcmp(curAliasSubMask, aliasSubMask)){
++				setParam = true;
++			}
++		}else{//POST
++			memcpy(&ipAliasIid, &ipIntfIid, sizeof(objIndex_t));
++			ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid, NULL);
++			if(ret == ZCFG_SUCCESS){
++				zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid, &ipAliasObj);
++				setParam = true;
++			}
++		}
++
++		if(setParam){
++			json_object_object_add(ipAliasObj, "Enable", json_object_new_boolean(aliasEnable));
++			json_object_object_add(ipAliasObj, "X_ZYXEL_Alias", json_object_new_boolean(X_ZYXEL_Alias));
++			json_object_object_add(ipAliasObj, "IPAddress", json_object_new_string(aliasAddr));
++			json_object_object_add(ipAliasObj, "SubnetMask", json_object_new_string(aliasSubMask));
++
++			zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid, ipAliasObj, NULL);
++		}
++	}else{
++		if(found){
++			ret = zcfgFeObjJsonDel(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid, NULL);
++		}
++	}
++	
++	zcfgFeJsonObjFree(ipAliasObj);
++	zcfgFeJsonObjFree(ipv4AddrObj);
++	return ret;
++}
++
++zcfgRet_t setPublicLan(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	bool pubLan = false, curPubLan = false;
++	bool pubLanDHCP = false, curPubDHCP = false;
++	bool pubLanARP = false, curPubARP = false;
++	const char *pubLanIP = NULL, *curPubLanIP = NULL;
++	const char *pubLanMask = NULL, *curPubLanMask = NULL;
++	
++	pubLan = json_object_get_boolean(json_object_object_get(Jobj, "PubLan"));
++	pubLanIP = json_object_get_string(json_object_object_get(Jobj, "PubLan_IP"));
++	pubLanMask = json_object_get_string(json_object_object_get(Jobj, "PubLan_Mask"));
++	pubLanDHCP = json_object_get_boolean(json_object_object_get(Jobj, "PubLan_DHCP"));
++	pubLanARP = json_object_get_boolean(json_object_object_get(Jobj, "PubLan_ARP"));
++
++	
++	if(ipIntfObj){
++		curPubLan = json_object_get_boolean(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan"));
++		curPubLanIP = json_object_get_string(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_IP"));
++		curPubLanMask = json_object_get_string(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_Mask"));
++		curPubDHCP = json_object_get_boolean(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_DHCP"));
++		curPubARP = json_object_get_boolean(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_ARP"));
++
++		if( pubLan != curPubLan || strcmp(pubLanIP, curPubLanIP)|| 
++			strcmp(pubLanMask, curPubLanMask)||
++			pubLanDHCP != curPubDHCP || pubLanARP != curPubARP){
++
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan", json_object_new_boolean(pubLan));
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_IP", json_object_new_string(pubLanIP));
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_Mask", json_object_new_string(pubLanMask));
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_DHCP", json_object_new_boolean(pubLanDHCP));
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_ARP", json_object_new_boolean(pubLanARP));
++			
++			zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ipIntfIid, ipIntfObj, NULL);
++		}
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_Addnl_Subnet_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char *selectedGrp = NULL, *srvName = NULL, *ifName = NULL;
++	selectedGrp = json_object_get_string(json_object_object_get(Jobj, "selectedGrp"));
++
++	IID_INIT(ipIntfIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ipIntfIid, &ipIntfObj) == ZCFG_SUCCESS) {
++		srvName = json_object_get_string(json_object_object_get(ipIntfObj, "X_ZYXEL_SrvName"));
++		ifName = json_object_get_string(json_object_object_get(ipIntfObj, "X_ZYXEL_IfName")); 
++		if((!strcmp(selectedGrp, "Default") || !strcmp(selectedGrp, srvName)) &&
++			!strncmp(ifName, "br", 2)){
++			break;
++		}                                           
++    }
++
++	setIPAlias(Jobj);
++	setPublicLan(Jobj);
++	
++	zcfgFeJsonObjFree(ipIntfObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalAddnlSubnet(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_Addnl_Subnet_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_static_dhcp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_static_dhcp.c	2016-10-05 12:12:31.163147200 +0800
+@@ -0,0 +1,180 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++
++dal_param_t STATIC_DHCP_param[] =
++{
++	{"Enable", 		dalType_boolean, 	0, 	0, 	NULL},
++	{"IPAddr", 		dalType_v4Addr, 	0, 	0, 	NULL},
++	{"MACAddr", 	dalType_string, 	0, 	0, 	NULL},
++	{"targetIdx", 	dalType_int,		0,	0,	NULL},	
++	{NULL, 			0, 					0, 	0, 	NULL}
++};
++
++zcfgRet_t zcfgFeDalStatic_DHCP_Add(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *ipIfaceObj = NULL;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *dhcpSrvObj = NULL;
++	objIndex_t ifaceIid = {0};
++	objIndex_t dhcpIid = {0};
++	objIndex_t dhcpSrvIid = {0};
++	const char *IfName = NULL;
++	const char *dhcpIfacePath = NULL;
++	int targetIdx = 0, count = 0;
++	bool found = false;
++	bool enable = false;
++	const char *ipAddr = NULL;
++	const char *mac = NULL;
++	char ifacePath[32] = {0};
++
++
++	targetIdx = json_object_get_int(json_object_object_get(Jobj, "targetIdx"));
++	
++	IID_INIT(ifaceIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ifaceIid, &ipIfaceObj) == ZCFG_SUCCESS) {
++		IfName = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_IfName"));
++		if(!strncmp(IfName, "br", 2)){
++			if(targetIdx == count){//found
++				sprintf(ifacePath, "IP.Interface.%hhu", ifaceIid.idx[0]);
++				break;
++			}
++			else
++				count++;
++		}
++	}
++	
++	IID_INIT(dhcpIid);
++	IID_INIT(dhcpSrvIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL, &dhcpIid, &dhcpObj) == ZCFG_SUCCESS) {
++		dhcpIfacePath = json_object_get_string(json_object_object_get(dhcpObj, "Interface"));
++		if(!strcmp(ifacePath, dhcpIfacePath)){
++			memcpy(&dhcpSrvIid, &dhcpIid, sizeof(objIndex_t));
++			found = true;
++			break;
++		}
++	}
++
++	if(found){//POST
++		ret = zcfgFeObjJsonAdd(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, NULL);
++		if(ret == ZCFG_SUCCESS){
++			ret = zcfgFeObjJsonGet(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, &dhcpSrvObj);
++		}
++
++		if(ret == ZCFG_SUCCESS){
++			enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++			ipAddr = json_object_get_string(json_object_object_get(Jobj, "IPAddr"));
++			mac = json_object_get_string(json_object_object_get(Jobj, "MACAddr"));
++			
++			json_object_object_add(dhcpSrvObj, "Enable", json_object_new_boolean(enable));
++			json_object_object_add(dhcpSrvObj, "Yiaddr", json_object_new_string(ipAddr));
++			json_object_object_add(dhcpSrvObj, "Chaddr", json_object_new_string(mac));
++
++			ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, dhcpSrvObj, NULL);
++		}
++
++	}
++
++	zcfgFeJsonObjFree(ipIfaceObj);
++	zcfgFeJsonObjFree(dhcpObj);
++	zcfgFeJsonObjFree(dhcpSrvObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_Static_DHCP_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *dhcpSrvObj = NULL;
++	objIndex_t dhcpSrvIid = {0};
++	int rowIndex = 0;
++	int count = 0;
++	bool enable = false;
++	const char *ipAddr = NULL;
++	const char *mac = NULL;
++	bool found = false;
++
++	rowIndex = json_object_get_int(json_object_object_get(Jobj, "rowIndex"));
++
++	IID_INIT(dhcpSrvIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, &dhcpSrvObj) == ZCFG_SUCCESS) {
++		if(count == rowIndex){
++			found = true;
++			break;
++		}
++		else
++			count++;
++	}
++	
++	if(found){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++		ipAddr = json_object_get_string(json_object_object_get(Jobj, "IPAddr"));
++		mac = json_object_get_string(json_object_object_get(Jobj, "MACAddr"));
++		
++		json_object_object_add(dhcpSrvObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(dhcpSrvObj, "Yiaddr", json_object_new_string(ipAddr));
++		json_object_object_add(dhcpSrvObj, "Chaddr", json_object_new_string(mac));
++
++		ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, dhcpSrvObj, NULL);
++
++	}
++
++	zcfgFeJsonObjFree(dhcpSrvObj);
++	return ret;
++}
++zcfgRet_t zcfgFeDalStatic_DHCP_Delete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *dhcpSrvObj = NULL;
++	objIndex_t dhcpSrvIid = {0};
++	int rowIndex = 0;
++	int count = 0;
++	bool found = false;
++
++	rowIndex = json_object_get_int(json_object_object_get(Jobj, "rowIndex"));
++
++	IID_INIT(dhcpSrvIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, &dhcpSrvObj) == ZCFG_SUCCESS) {
++		if(count == rowIndex){
++			found = true;
++			break;
++		}
++		else
++			count++;
++	}
++
++	if(found){
++		ret = zcfgFeObjJsonDel(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, NULL);
++	}
++
++	zcfgFeJsonObjFree(dhcpSrvObj);
++	return ret;
++	
++}
++zcfgRet_t zcfgFeDalStaticDHCP(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDal_Static_DHCP_Edit(Jobj, NULL);
++	}else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalStatic_DHCP_Add(Jobj, NULL);
++	}else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalStatic_DHCP_Delete(Jobj, NULL);
++	}else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_stb_vendor_id.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_stb_vendor_id.c	2016-10-05 12:12:31.155147200 +0800
+@@ -0,0 +1,67 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t STB_param[]={
++	{"STBVendorID1", dalType_string,	0,	0,	NULL},
++	{"STBVendorID2", dalType_string,	0,	0,	NULL},
++	{"STBVendorID3", dalType_string,	0,	0,	NULL},
++	{"STBVendorID4", dalType_string,	0,	0,	NULL},
++	{"STBVendorID5", dalType_string,	0,	0,	NULL},
++	{NULL,					0,	0,	0,	NULL},
++};
++
++zcfgRet_t zcfgFeDal_STB_VendorID_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *STBObj = NULL;
++	objIndex_t STBIid = {0};
++	const char *STBVendorID1 = NULL;
++	const char *STBVendorID2 = NULL;
++	const char *STBVendorID3 = NULL;
++	const char *STBVendorID4 = NULL;
++	const char *STBVendorID5 = NULL;
++
++	STBVendorID1 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID1"));
++	STBVendorID2 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID2"));
++	STBVendorID3 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID3"));
++	STBVendorID4 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID4"));
++	STBVendorID5 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID5"));
++	
++	IID_INIT(STBIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &STBIid, &STBObj);
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(STBObj, "STBVendorID1", json_object_new_string(STBVendorID1));
++		json_object_object_add(STBObj, "STBVendorID2", json_object_new_string(STBVendorID2));
++		json_object_object_add(STBObj, "STBVendorID3", json_object_new_string(STBVendorID3));
++		json_object_object_add(STBObj, "STBVendorID4", json_object_new_string(STBVendorID4));
++		json_object_object_add(STBObj, "STBVendorID5", json_object_new_string(STBVendorID5));
++		zcfgFeObjJsonSet(RDM_OID_S_T_B_VENDOR_I_D, &STBIid, STBObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(STBObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalSTBVendorID(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_STB_VendorID_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_tftp_ser_name.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_tftp_ser_name.c	2016-10-05 12:12:31.143147200 +0800
+@@ -0,0 +1,53 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t TFTPSerName_param[]={
++	{"TFTPServerName", dalType_string,	0,	0,	NULL},
++	{NULL,					0,	0,	0,	NULL},
++};
++
++zcfgRet_t zcfgFeDal_TFTPSerName_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *tftpObj = NULL;
++	objIndex_t tftpIid = {0};
++	const char *tftpServerName = NULL;
++
++	IID_INIT(tftpIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_T_F_T_P_SRV_NAME, &tftpIid, &tftpObj);
++
++	if(ret == ZCFG_SUCCESS){
++		tftpServerName = json_object_get_string(json_object_object_get(Jobj, "TFTPServerName"));
++
++		json_object_object_add(tftpObj, "TFTPServerName", json_object_new_string(tftpServerName));
++		ret = zcfgFeObjJsonSet(RDM_OID_T_F_T_P_SRV_NAME, &tftpIid, tftpObj, NULL);
++	}
++	
++	zcfgFeJsonObjFree(tftpObj);
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalTFTPSerName(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_TFTPSerName_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_upnp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_upnp.c	2016-10-05 12:12:31.143147200 +0800
+@@ -0,0 +1,60 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t UPNP_param[]={
++	{"Enable", dalType_boolean,	0,	0,	NULL},
++	{"X_ZYXEL_NATTEnable", dalType_boolean,	0,	0,	NULL},
++	{NULL,					0,	0,	0,	NULL},
++
++};
++
++zcfgRet_t zcfgFeDal_UPnP_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *upnpObj = NULL;
++	objIndex_t upnpIid = {0};
++	bool enable = false;
++	bool natEnable = false;
++
++	IID_INIT(upnpIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &upnpIid, &upnpObj);
++
++	if(ret == ZCFG_SUCCESS){
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++		natEnable = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_NATTEnable"));
++
++
++		json_object_object_add(upnpObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(upnpObj, "X_ZYXEL_NATTEnable", json_object_new_boolean(natEnable));
++
++		ret = zcfgFeObjJsonSet(RDM_OID_UPNP_DEV, &upnpIid, upnpObj, NULL);
++	}
++	
++	zcfgFeJsonObjFree(upnpObj);
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalUPnP(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_UPnP_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-10-21 08:09:32.743686756 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-10-21 08:15:00.618737300 +0800
+@@ -21,6 +21,12 @@
+ extern dal_param_t NAT_ADDR_MAPPING_param[];
+ extern dal_param_t NAT_SESSION_CTL_param[];
+ extern dal_param_t IntfGrp_param[];
++extern dal_param_t UPNP_param[];
++extern dal_param_t TFTPSerName_param[];
++
++extern dal_param_t STB_param[];
++extern dal_param_t SUBNET_param[];
++extern dal_param_t STATIC_DHCP_param[];
+ extern dal_param_t VLANGRP_param[];
+ extern dal_param_t IGMPMLD_param[];
+ extern dal_param_t WIFI_GENERAL_param[];
+@@ -49,6 +55,12 @@
+ extern zcfgRet_t zcfgFeDalNatAddrMapping(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatSessionCtl(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalIntrGrp(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalUPnP(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalTFTPSerName(const char *method, struct json_object *Jobj, char *replyMsg);
++
++extern zcfgRet_t zcfgFeDalSTBVendorID(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalAddnlSubnet(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalStaticDHCP(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVlanGroup(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalIGMPMLD(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWifiGeneral(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -86,6 +98,12 @@
+ {"NAT_ADDR_MAPPING",NAT_ADDR_MAPPING_param,	zcfgFeDalNatAddrMapping},
+ {"NAT_SESSION_CTL", NAT_SESSION_CTL_param,	zcfgFeDalNatSessionCtl},
+ {"INTF_GP",			IntfGrp_param,		zcfgFeDalIntrGrp},
++{"UPNP",			UPNP_param, 		zcfgFeDalUPnP},
++{"TFTPSERNAME",		TFTPSerName_param,	zcfgFeDalTFTPSerName},
++
++{"STB",				STB_param, 			zcfgFeDalSTBVendorID},
++{"SUBNET",			SUBNET_param,		zcfgFeDalAddnlSubnet},
++{"STATICDHCP",		STATIC_DHCP_param,	zcfgFeDalStaticDHCP},
+ {"VLANGRP", 		VLANGRP_param,		zcfgFeDalVlanGroup},
+ {"IGMPMLD", 		IGMPMLD_param,		zcfgFeDalIGMPMLD},
+ {"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral},

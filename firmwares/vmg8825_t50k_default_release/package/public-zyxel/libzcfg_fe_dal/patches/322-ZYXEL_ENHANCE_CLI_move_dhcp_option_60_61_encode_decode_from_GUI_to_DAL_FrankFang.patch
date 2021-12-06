@@ -1,0 +1,229 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2017-08-30 11:12:38.792953068 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2017-08-30 17:57:19.553216732 +0800
+@@ -383,6 +383,112 @@
+ 	
+ }
+ 
++int charStrToHexStr(char *str, char *hex){
++	int i;
++	for(i=0;i<strlen(str);i++){
++		char a = str[i];
++		int b = (int)a;
++		char c[2]={0};
++		sprintf(c,"%x%x",(b/16),(b%16));
++		strcat(hex,c);
++	}
++	return 1;
++}
++int intToHexStr(int num, char *hex){
++	if(num>=(16*16)||num<0)
++		return 0;
++	sprintf(hex,"%x%x",(num/16),(num%16));
++	return 1;
++}
++int opt61ValEncode(char *iaid, char *duid, char *encVal, int tag){
++	if(encVal)
++		strcpy(encVal,"");
++
++	//*(iaid+4)='\0';
++	
++	int strLen = 1+4+2+(strlen(duid)/2);
++	char tagStr[2]={0};
++	char hexLen[2]={0};
++
++	intToHexStr(tag,tagStr);
++	strcat(encVal,tagStr);
++
++	intToHexStr(strLen,hexLen);
++	strcat(encVal,hexLen);
++
++	strcat(encVal,"ff");
++	strcat(encVal,iaid);
++	strcat(encVal,"0002");
++	strcat(encVal,duid);
++
++	return 1;
++}
++
++int opt60ValEncode(char *val, char *encVal, int tag){
++
++	if(encVal)
++		strcpy(encVal,"");
++
++	int strLen = strlen(val);
++	char tagStr[2]={0};
++	char hexLen[2]={0};
++	char charStr[256]={0};
++	char hexStr[256]={0};
++
++	intToHexStr(tag,tagStr);
++	strcat(encVal,tagStr);
++
++	intToHexStr(strLen,hexLen);
++	strcat(encVal,hexLen);
++
++	strncpy(charStr,val,strLen);
++	*(charStr+strLen)='\0';
++	charStrToHexStr(charStr,hexStr);
++	strcat(encVal,hexStr);
++
++	return 1;
++}
++
++int hexStrToCharStr(char *hex, char* str){
++	char a[2]={0};
++	int i=0;
++	int hexTokLen = 2;
++	while(1){
++		if(i>=strlen(hex)){
++			break;
++		}
++		strncpy(a,hex+i,hexTokLen);
++		*(a+hexTokLen)='\0';
++		int hh = (int)strtol(a,NULL,16);
++		char t[5]={0};
++		sprintf(t,"%c",(char)hh);
++		strcat(str,t);
++		i=i+hexTokLen;
++	}
++	return 1;
++}
++
++int opt60ValDecode(char *val, char *decVal){
++	char hexStr[256]={0};
++	char charStr[256]={0};
++	if(strlen(val)<=4){
++		strcpy(decVal,"");
++		return 1;
++	}
++	if(decVal)
++		strcpy(decVal,"");
++	strncpy(hexStr,val+4,(strlen(val)-4));
++	hexStrToCharStr(hexStr,charStr);
++	strcpy(decVal,charStr);
++	return 1;
++}
++
++int opt61ValDecode(char *val, char *iaid, char *duid){
++	int duidLen = strlen(val)-18;
++	strncpy(iaid,val+6,8);
++	strncpy(duid,val+18,duidLen);
++	return 1;
++}
+ 
+ //the length of delim must be 1 or function may not work well
+ bool genNewInterface(char *delim, char *newInterface, const char *oldInterface, const char *targetIntf, bool add){
+@@ -1425,12 +1531,34 @@
+ 	char optValueName[32] = {0};
+ 	zcfg_offset_t oid;
+ 	//bool Enable = false;
++	char tmp[256]={0};
++	char Value[256]={0};
++	char *opt60Val = NULL;
+ 	
+ 	oid = RDM_OID_DHCPV4_SENT_OPT;
+ 	//sprintf(optEnableName, "option%dEnable", Tag); //ex. option60Enable
+ 	sprintf(optValueName, "option%dValue", Tag); //ex. option60Value
+ 	//Enable = json_object_get_boolean(json_object_object_get(Jobj, optEnableName));
+ 
++	if(Tag==60){
++		opt60Val = json_object_get_string(json_object_object_get(Jobj, "option60Value"));
++		strcpy(tmp,opt60Val);
++		opt60ValEncode(tmp,Value,Tag);
++		json_object_object_add(Jobj,"option60Value",json_object_new_string(Value));
++	}
++	else if(Tag==61){
++		char *tmpIaid = NULL;
++		char *tmpDuid = NULL;
++		if(json_object_object_get(Jobj, "option61Iaid"))
++			tmpIaid = json_object_get_string(json_object_object_get(Jobj, "option61Iaid"));
++		if(json_object_object_get(Jobj, "option61Duid"))
++			tmpDuid = json_object_get_string(json_object_object_get(Jobj, "option61Duid"));
++		if(json_object_object_get(Jobj, "option61Iaid")&&json_object_object_get(Jobj, "option61Duid")){
++			opt61ValEncode(tmpIaid,tmpDuid,Value,Tag);
++			json_object_object_add(Jobj,"option61Value",json_object_new_string(Value));
++		}
++	}
++
+ 	if(*optObj){
+ 		json_object_object_add(*optObj, "Enable", json_object_new_boolean(true));
+ 		replaceParam(*optObj, "Value", Jobj, optValueName);
+@@ -1633,6 +1761,7 @@
+ 	const char *CurrValue = "", *Value = NULL;
+ 	struct json_object *pramJobj = NULL;
+ 	bool needSet = false;
++	char tmp[256]={0};
+ 	
+ 	oid = RDM_OID_DHCPV4_SENT_OPT;
+ 	
+@@ -1657,6 +1786,24 @@
+ 	else
+ 		Value = CurrValue;
+ 
++	if(Tag==60 && optEnable){
++		strcpy(tmp,Value);
++		opt60ValEncode(tmp,Value,Tag);
++	}
++	else if(Tag==61 && optEnable){
++		char *tmpIaid = NULL;
++		char *tmpDuid = NULL;
++		if(json_object_object_get(Jobj, "option61Iaid"))
++			tmpIaid = json_object_get_string(json_object_object_get(Jobj, "option61Iaid"));
++		if(json_object_object_get(Jobj, "option61Duid"))
++			tmpDuid = json_object_get_string(json_object_object_get(Jobj, "option61Duid"));
++		if(json_object_object_get(Jobj, "option61Iaid")&&json_object_object_get(Jobj, "option61Duid")){
++			strcpy(tmp,"");
++			opt61ValEncode(tmpIaid,tmpDuid,tmp,Tag);
++			Value = tmp;
++		}
++	}
++
+ 	if(CurrOptEnable && optEnable){//enable to enable
+ 		if(*optObj && strcmp(CurrValue, Value)){
+ 			json_object_object_add(*optObj, "Enable", json_object_new_boolean(true));
+@@ -1697,6 +1844,7 @@
+ 	if(!needSet)
+ 		if(*optObj) {zcfgFeJsonObjFree(*optObj);}
+ 
++	printf("fe_dal_broadband.c:%d::%s() toString(*optObj)=%s\n",__LINE__,__FUNCTION__,json_object_to_json_string(*optObj));
+ 	return ret;
+ }
+ 
+@@ -3854,17 +4002,30 @@
+ 			value = json_object_get_string(json_object_object_get(obj, "Value"));
+ 			if(tag == 60 ){
+ 				json_object_object_add(pramJobj, "option60Enable", json_object_new_boolean(opt));
+-				json_object_object_add(pramJobj, "option60Value", json_object_new_string(value));
++				if(strlen(value)>=4){
++					char decVal[256]={0};
++					opt60ValDecode(value,decVal);
++					json_object_object_add(pramJobj, "option60Value", json_object_new_string(decVal));
++				}
++				else{
++					json_object_object_add(pramJobj, "option60Value", json_object_new_string(""));
++				}
+ 			}else if(tag == 61 ){
+ 				json_object_object_add(pramJobj, "option61Enable", json_object_new_boolean(opt));
+-				json_object_object_add(pramJobj, "option61Value", json_object_new_string(value));
++				char iaidVal[256]={0};
++				char duidVal[256]={0};
++				if(opt){
++					opt61ValDecode(value,iaidVal,duidVal);
++				}
++				json_object_object_add(pramJobj, "option61Iaid", json_object_new_string(iaidVal));
++				json_object_object_add(pramJobj, "option61Duid", json_object_new_string(duidVal));
+ 			}else if(tag == 125 ){
+ 				json_object_object_add(pramJobj, "option125Enable", json_object_new_boolean(opt));
+ 				json_object_object_add(pramJobj, "option125Value", json_object_new_string(value));
+ 			}
+-				zcfgFeJsonObjFree(obj);
+-			}                                                                                                
+-   		}
++			zcfgFeJsonObjFree(obj);
++		}                                                                                                
++	}
+ 
+ 	//static ppp
+ 	if(strstr(CurrEncapsulation, "PPP") && pppIfaceObj != NULL){

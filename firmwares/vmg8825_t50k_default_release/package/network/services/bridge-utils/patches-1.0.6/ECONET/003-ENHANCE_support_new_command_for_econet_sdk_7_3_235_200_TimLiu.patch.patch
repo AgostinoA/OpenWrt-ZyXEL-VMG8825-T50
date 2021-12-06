@@ -1,0 +1,125 @@
+Index: bridge-utils-1.0.6/brctl/brctl.c
+===================================================================
+--- bridge-utils-1.0.6.orig/brctl/brctl.c	2017-04-21 10:48:18.940694867 +0800
++++ bridge-utils-1.0.6/brctl/brctl.c	2017-04-21 11:11:30.983135420 +0800
+@@ -85,7 +85,7 @@
+ 	ret = cmd->func(argc, argv);
+ 	
+ 	//printf("config br0 mac address.\n");
+-#if 0 //ZYXEL, Mark, do not excute this script. becuse the zcfg will config bridge interface MAC address.
++#ifndef ZCFG_USED //ZYXEL, Mark, do not excute this script. becuse the zcfg will config bridge interface MAC address.
+ 	system("/usr/script/br_conf.sh");
+ #endif
+ 	return ret;
+Index: bridge-utils-1.0.6/libbridge/Makefile.in
+===================================================================
+--- bridge-utils-1.0.6.orig/libbridge/Makefile.in	2017-04-21 10:48:18.960694867 +0800
++++ bridge-utils-1.0.6/libbridge/Makefile.in	2017-04-21 11:07:48.401708741 +0800
+@@ -5,8 +5,7 @@
+ RANLIB=@RANLIB@
+ 
+ CC=@CC@
+-CFLAGS = -Wall -g $(KERNEL_HEADERS) -pipe -mips32r2 -fhonour-copts  -msoft-float -DPLATFORM_ECONET -DZYXEL_PATCH
+-CFLAGS += -DTCSUPPORT_IGMP_SNOOPING -DTCSUPPORT_IGMP_SNOOPING_V3 -DTCSUPPORT_IGMPSNOOPING_ENHANCE -DTCSUPPORT_MLD_SNOOPING -DCONFIG_IGMP_SNOOPING -DCONFIG_MLD_SNOOPING -DCONFIG_BRIDGE_IGMP_SNOOPING
++CFLAGS = -Wall -g $(KERNEL_HEADERS) @CFLAGS@
+ 
+ prefix=@prefix@
+ exec_prefix=@exec_prefix@
+Index: bridge-utils-1.0.6/brctl/brctl_cmd.c
+===================================================================
+--- bridge-utils-1.0.6.orig/brctl/brctl_cmd.c	2017-04-21 10:48:18.952694867 +0800
++++ bridge-utils-1.0.6/brctl/brctl_cmd.c	2017-04-21 11:17:39.043533680 +0800
+@@ -697,6 +697,82 @@
+ }
+ #endif
+ #endif
++
++#ifdef TCSUPPORT_OMCI
++static int dump_omci_port_info(const char *br, const char *p,  void *arg)
++{
++	struct port_info pinfo;
++//	char *brname = (char*)arg;
++#define CHUNK 128
++	int i, n;
++	struct fdb_entry *fdb = NULL;
++	int offset = 0;
++
++
++	if (br_get_port_info(br, p, &pinfo)) {
++		printf("Can't get info for %p",p);
++		return 1;
++	}
++
++	for(;;) {
++		fdb = realloc(fdb, (offset + CHUNK) * sizeof(struct fdb_entry));
++		if (!fdb) {
++			fprintf(stderr, "Out of memory\n");
++			return 1;
++		}
++
++		n = br_read_fdb(br, fdb+offset, offset, CHUNK);
++		if (n == 0)
++			break;
++
++		if (n < 0) {
++			fprintf(stderr, "read of forward table failed: %s\n",
++				strerror(errno));
++			return 1;
++		}
++
++		offset += n;
++	}
++
++	qsort(fdb, offset, sizeof(struct fdb_entry), compare_fdbs);
++
++	for (i = 0; i < offset; i++) {
++		const struct fdb_entry *f = fdb + i;
++		if(f->port_no == pinfo.port_no){
++			printf("%s \t", p);
++//			printf("%3i \t", f->port_no);
++			printf("%.2x:%.2x:%.2x:%.2x:%.2x:%.2x \t",
++			       f->mac_addr[0], f->mac_addr[1], f->mac_addr[2],
++			       f->mac_addr[3], f->mac_addr[4], f->mac_addr[5]);
++			printf("%s\t\t", f->is_local?"yes":"no");
++			br_show_timer(&f->ageing_timer_value);
++			printf("\n");
++		}
++	}
++
++//	printf("%s (%d)\t\tis_router: %s\n", p, pinfo.port_no, pinfo.is_router?"yes":"no");
++
++	return 0;
++}
++
++static int br_omci_cmd_showmacs(int argc, char *const* argv)
++{
++	int err;
++
++	if(argc < 2){
++		printf("please input parameters, example br0\n");
++		return 0;
++	}
++//	printf("interface \tport no \tmac addr \t\tis local?\tageing timer\n");
++	printf("interface \tmac addr \t\tis local?\tageing timer\n");
++
++	err = br_foreach_port(argv[1], dump_omci_port_info, NULL);
++	if (err < 0)
++		printf("can't get ports: %s\n", strerror(-err));
++
++	return 0;
++}
++#endif
+ #endif
+ 
+ static const struct command commands[] = {
+@@ -769,6 +845,10 @@
+ 	  "<bridge> <time>\tset mldsnooping age time" },
+ #endif
+ #endif
++#ifdef TCSUPPORT_OMCI
++	{ 1, "showportmacs", br_omci_cmd_showmacs,
++	  "<bridge>\t\tshow omci macs"},
++#endif
+ #endif
+ };
+ 

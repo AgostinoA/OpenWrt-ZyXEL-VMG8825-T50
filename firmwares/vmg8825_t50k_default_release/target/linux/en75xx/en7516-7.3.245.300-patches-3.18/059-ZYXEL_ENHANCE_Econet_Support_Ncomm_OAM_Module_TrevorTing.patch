@@ -1,0 +1,126 @@
+Index: linux-3.18.21/include/uapi/linux/if_ether.h
+===================================================================
+--- linux-3.18.21.orig/include/uapi/linux/if_ether.h	2018-07-06 14:30:07.646093000 +0800
++++ linux-3.18.21/include/uapi/linux/if_ether.h	2018-07-06 14:38:41.618093000 +0800
+@@ -101,6 +101,10 @@
+ 
+ #define ETH_P_802_3_MIN	0x0600		/* If the value in the ethernet type is less than this value
+ 					 * then the frame is Ethernet II. Else it is 802.3 */
++#if defined(ZYXEL_KF_TMS)
++#define ETH_P_8021AG    0x8902      /* 802.1ag Connectivity Fault Mgmt */
++#define ETH_P_8023AH    0x8809      /* 802.3ah Ethernet OAM */
++#endif
+ 
+ /*
+  *	Non DIX types. Won't clash for 1500 types.
+Index: linux-3.18.21/net/core/dev.c
+===================================================================
+--- linux-3.18.21.orig/net/core/dev.c	2018-07-06 14:30:07.806093000 +0800
++++ linux-3.18.21/net/core/dev.c	2018-07-06 14:39:06.458093000 +0800
+@@ -3602,6 +3602,12 @@
+ }
+ EXPORT_SYMBOL_GPL(netdev_rx_handler_register);
+ 
++#if defined(ZYXEL_KF_TMS)
++unsigned char oam_skip_smux = 0; //OAM packet don't into smux when service started.
++int (*bcm_1ag_handle_frame_check_hook)(struct sk_buff *) = NULL;
++int (*bcm_3ah_handle_frame_check_hook)(struct sk_buff *, struct net_device *) = NULL;
++#endif
++
+ /**
+  *	netdev_rx_handler_unregister - unregister receive handler
+  *	@dev: device to unregister a handler from
+@@ -3658,9 +3664,38 @@
+ 
+ 	orig_dev = skb->dev;
+ 
++#if defined(ZYXEL_KF_TMS)
++	/*******************************
++	   for ECONET 7.3.245.300 with TMS module 6.86,
++	   move this part of TMS code before ecnt_netif_recv_inline_hook(),
++	   because oam_skip_smux will be accessed by ecnt_netif_recv_inline_hook()
++	   Trevor, 20180706
++	*************************************************************** */
++    oam_skip_smux = 0;
++    /* Check if 802.1ag service is started. */
++    if (bcm_1ag_handle_frame_check_hook)
++	{
++        /* We want to skip vlanctl for 1ag packet. */
++        if (bcm_1ag_handle_frame_check_hook(skb))
++        {
++            oam_skip_smux = 1;
++        }
++    }
++    /* Check if 802.3ah service is started. */
++    if (bcm_3ah_handle_frame_check_hook)
++    {
++        /* We want to skip vlanctl for 3ah packet, or for any packet when 3ah loopback was enabled. */
++        if ((bcm_3ah_handle_frame_check_hook(skb, skb->dev)))
++        {
++            oam_skip_smux = 1;
++        }
++    }
++#endif /* #if defined(ZYXEL_KF_TMS) */
++
+ 	ret = ecnt_netif_recv_inline_hook(&skb);
+ 	if(ret != ECNT_CONTINUE)
+ 		return NET_RX_DROP;
++
+ 	skb_reset_network_header(skb);
+ 	if (!skb_transport_header_was_set(skb))
+ 		skb_reset_transport_header(skb);
+@@ -3749,6 +3784,9 @@
+ 		 * and set skb->priority like in vlan_do_receive()
+ 		 * For the time being, just ignore Priority Code Point
+ 		 */
++#if defined(ZYXEL_KF_TMS)
++        if (skb->protocol != htons(ETH_P_8021AG) && skb->protocol != htons(ETH_P_8023AH))
++#endif //defined(ZYXEL_KF_TMS)
+ 		skb->vlan_tci = 0;
+ 	}
+ 
+@@ -3807,7 +3845,7 @@
+ 		ret = __netif_receive_skb_core(skb, true);
+ 		tsk_restore_flags(current, pflags, PF_MEMALLOC);
+ 	} else
+-		ret = __netif_receive_skb_core(skb, false);
++         ret = __netif_receive_skb_core(skb, false);
+ 
+ 	return ret;
+ }
+@@ -7409,3 +7447,10 @@
+ }
+ 
+ subsys_initcall(net_dev_init);
++
++#if defined(ZYXEL_KF_TMS)
++EXPORT_SYMBOL(oam_skip_smux);
++EXPORT_SYMBOL(bcm_1ag_handle_frame_check_hook);
++EXPORT_SYMBOL(bcm_3ah_handle_frame_check_hook);
++#endif
++
+Index: linux-3.18.21/net/core/ecnt_net_core.h
+===================================================================
+--- linux-3.18.21.orig/net/core/ecnt_net_core.h	2018-07-06 14:30:07.806093000 +0800
++++ linux-3.18.21/net/core/ecnt_net_core.h	2018-07-06 14:38:53.678093000 +0800
+@@ -311,6 +311,9 @@
+ #if defined(TCSUPPORT_PON_VLAN)
+ 	int vlan_mode = MODE_HGU;
+ #endif
++#if defined(ZYXEL_KF_TMS)
++	extern unsigned char oam_skip_smux; //OAM packet don't into smux when service started.
++#endif
+ 
+ 	ECNT_CORE_DEV_HOOK(ECNT_NETIF_RCV_SKB, skb);
+ 
+@@ -355,6 +358,10 @@
+ 
+ #ifdef CONFIG_SMUX
+ 	if((orig_dev->priv_flags & IFF_RSMUX) && smux_pkt_recv_hook
++#if defined(ZYXEL_KF_TMS)
++		/* Porting NComm TMS module for Ethernet OAM feature add "!oam_skip_smux" to not into SMUX */
++		&&!(oam_skip_smux)
++#endif
+ #ifdef TCSUPPORT_XPON_HAL_API_EXT
+ 		&&!(skb->mark&DOWNSTREAM_SIMULATION_MASK)
+ #endif

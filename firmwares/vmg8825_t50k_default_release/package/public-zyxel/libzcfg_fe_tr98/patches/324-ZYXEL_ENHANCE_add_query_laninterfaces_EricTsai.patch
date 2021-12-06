@@ -1,0 +1,96 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-05-20 17:22:59.719326414 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-05-20 17:22:59.731326415 +0800
+@@ -362,7 +362,7 @@
+ //{TR98_STA_WMM_PARAM,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_HOSTS,                    0, para_Hosts,				lanDevHostsObjGet,			NULL,                   NULL,             NULL,            lanDevHostsObjNotify, NULL, lanDevHostsObjAttrSet},
+ {TR98_HOST,                     ATTR_INDEXNODE, para_Host,				lanDevHostObjGet,			NULL,                   NULL,             NULL,            lanDevHostObjNotify, lanDevHostObjAttrGet, lanDevHostObjAttrSet},
+-//{TR98_LAN_INTF,                 0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_LAN_INTF,                 0, para_LanDev,           lanIfacesObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_INTF_ETH_INTF_CONF,   ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_USB_INTF_CONF,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_INTF_WLAN_CFG,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2016-05-20 17:22:59.695326414 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2016-05-20 17:22:59.731326415 +0800
+@@ -968,6 +968,53 @@
+ 	return ret;
+ }
+ 
++/*  TR98 Object Name : InternetGatewayDevice.LANInterfaces
++
++    Related object in TR181:
++	Device.WiFi.
++	Device.USB.
++	Device.Ethernet.Interface.i.
++*/
++zcfgRet_t lanIfacesObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	objIndex_t objIid, wifiObjIid, ethIntfIid;
++	int numberOfEthIntf = 0;
++	int numberOfWlanIntf = 0;
++	int numberOfUsbIntf = 0;
++	struct json_object *wifiJObj = NULL;
++	rdm_UsbIntf_t *usbIntfObj = NULL;
++	rdm_EthIface_t *ethIntfObj = NULL;
++
++	IID_INIT(wifiObjIid);
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI, &wifiObjIid, &wifiJObj) == ZCFG_SUCCESS){
++		numberOfWlanIntf = json_object_get_int(json_object_object_get(wifiJObj, "AccessPointNumberOfEntries"));
++		json_object_put(wifiJObj);
++	}
++
++	IID_INIT(objIid);
++	while(feObjStructGetNext(RDM_OID_USB_INTF, &objIid, (void **)&usbIntfObj, updateFlag) == ZCFG_SUCCESS){
++		if(!usbIntfObj->Upstream){
++			numberOfUsbIntf++;
++		}
++		zcfgFeObjStructFree(usbIntfObj);
++	}
++
++	IID_INIT(ethIntfIid);
++	while(feObjStructGetNext(RDM_OID_ETH_IFACE, &ethIntfIid, (void **)&ethIntfObj, updateFlag) == ZCFG_SUCCESS){
++		if(!ethIntfObj->Upstream){
++			numberOfEthIntf++;
++		}
++		zcfgFeObjStructFree(ethIntfObj);
++	}
++
++	*tr98Jobj = json_object_new_object();
++	json_object_object_add(*tr98Jobj, "LANEthernetInterfaceNumberOfEntries", json_object_new_int(numberOfEthIntf));
++	json_object_object_add(*tr98Jobj, "LANUSBInterfaceNumberOfEntries", json_object_new_int(numberOfUsbIntf));
++	json_object_object_add(*tr98Jobj, "LANWLANConfigurationNumberOfEntries", json_object_new_int(numberOfWlanIntf));
++
++	return ZCFG_SUCCESS;
++}
++
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i
+ 
+     Related object in TR181:
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2016-05-20 17:22:59.403326408 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2016-05-20 17:22:59.731326415 +0800
+@@ -47,6 +47,7 @@
+ extern int lanDevHostObjAttrGet(char *, int, char *);
+ extern zcfgRet_t lanDevHostObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
++extern zcfgRet_t lanIfacesObjGet(char *, int , struct json_object **, bool );
+ 
+ extern zcfgRet_t lanDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevObjAdd(char *tr98FullPathName, int *idx);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-05-20 17:22:59.539326411 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-05-20 17:21:09.812762400 +0800
+@@ -161,7 +161,7 @@
+ //{e_TR98_STA_WMM_PARAM           , &tr98Obj[e_TR98_STA_WMM_PARAM           -e_TR98_START]},
+ {e_TR98_HOSTS                   , &tr98Obj[e_TR98_HOSTS                   -e_TR98_START]},
+ {e_TR98_HOST                    , &tr98Obj[e_TR98_HOST                    -e_TR98_START]},
+-//{e_TR98_LAN_INTF                , &tr98Obj[e_TR98_LAN_INTF                -e_TR98_START]},
++{e_TR98_LAN_INTF                , &tr98Obj[e_TR98_LAN_INTF                -e_TR98_START]},
+ //{e_TR98_LAN_INTF_ETH_INTF_CONF  , &tr98Obj[e_TR98_LAN_INTF_ETH_INTF_CONF  -e_TR98_START]},
+ //{e_TR98_USB_INTF_CONF           , &tr98Obj[e_TR98_USB_INTF_CONF           -e_TR98_START]},
+ //{e_TR98_LAN_INTF_WLAN_CFG       , &tr98Obj[e_TR98_LAN_INTF_WLAN_CFG       -e_TR98_START]},

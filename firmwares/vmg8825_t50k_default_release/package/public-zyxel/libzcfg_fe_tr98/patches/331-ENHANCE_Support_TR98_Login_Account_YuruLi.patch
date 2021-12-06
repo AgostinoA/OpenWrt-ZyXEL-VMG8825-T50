@@ -1,0 +1,175 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2016-06-30 11:18:48.182859031 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2016-06-30 11:18:48.194859031 +0800
+@@ -53,6 +53,10 @@
+ CFLAGS += -DZyXEL_DHCP_OPTION125
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT),y)
++CFLAGS += -DZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT
++endif
++
+ #Sunrise
+ ifneq ($(strip $(CONFIG_SUNRISE_STB_PROVISION)),)
+ CFLAGS += -DSUNRISE_STB_PROVISION
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-06-30 11:18:48.182859031 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-06-30 11:18:48.194859031 +0800
+@@ -212,7 +212,7 @@
+ #define TR98_LOG_CLASSIFY             "InternetGatewayDevice.X_ZYXEL_EXT.Log_Setting.LogClassify.i"
+ #define TR98_LOG_CATEGORY		      "InternetGatewayDevice.X_ZYXEL_EXT.Log_Setting.LogClassify.i.Category.i"
+ 
+-#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT)
++#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ #define TR98_LOG_CFG           		  "InternetGatewayDevice.X_ZYXEL_EXT.LoginCfg"
+ #define TR98_LOG_CFG_GP           	  "InternetGatewayDevice.X_ZYXEL_EXT.LoginCfg.LogGp.i"
+ #define TR98_LOG_CFG_GP_ACCOUNT       "InternetGatewayDevice.X_ZYXEL_EXT.LoginCfg.LogGp.i.Account.i"
+@@ -462,10 +462,10 @@
+ {TR98_UPNP,         		    0,              para_Upnp,	   		    zyExtUPnPObjGet, 	     zyExtUPnPObjSet,		NULL,             NULL,            NULL, NULL, NULL},
+ {TR98_REMO_TRUSTDOMAIN,         ATTR_INDEX_CREA,para_RemoTrustDomain,   zyExtRemoteMgmtTrustDomainObjGet,                    zyExtRemoteMgmtTrustDomainObjSet,                   zyExtRemoteMgmtTrustDomainObjAdd,            zyExtRemoteMgmtTrustDomainObjDel,            NULL},
+ {TR98_IGMP,                     0,              para_Igmp,              zyExtIgmpObjGet,         zyExtIgmpObjSet,        NULL,             NULL,            zyExtIgmpObjNotify, NULL, NULL},
+-#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT)
++#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ {TR98_LOG_CFG,                  0,              NULL,              NULL,         NULL,        NULL,             NULL,            NULL, NULL, NULL},
+ {TR98_LOG_CFG_GP,               ATTR_INDEX_CREA,para_LogCfgGp,          zyExtLogCfgGpObjGet,       zyExtLogCfgGpObjSet,        NULL,             NULL,            NULL,   NULL,    NULL},
+-#ifdef SOL_TR69_LOGINACCOUNT
++#if defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ {TR98_LOG_CFG_GP_ACCOUNT,       ATTR_INDEX_CREA,para_LogCfgGpAccount,   zyExtLogCfgGpAccountObjGet,		zyExtLogCfgGpAccountObjSet,        zyExtLogCfgGpAccountObjAdd,             zyExtLogCfgGpAccountObjDel,            NULL, NULL, NULL},
+ #else
+ {TR98_LOG_CFG_GP_ACCOUNT,       ATTR_INDEX_CREA,para_LogCfgGpAccount,   zyExtLogCfgGpAccountObjGet,		zyExtLogCfgGpAccountObjSet,        zyExtLogCfgGpAccountObjAdd,             NULL,            NULL, NULL, NULL},
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2016-06-30 11:18:48.126859029 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2016-06-30 11:18:48.198859031 +0800
+@@ -3245,7 +3245,7 @@
+ 	return ret;
+ }
+ 
+-#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT)
++#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ /*
+  *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_EXT.LoginCfg.LogGp.i
+  *
+@@ -3268,7 +3268,7 @@
+ 
+ 	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_EXT.LoginCfg.LogGp.%hhu", &objIid.idx[0]);
+ #ifdef SOL_TR69_LOGINACCOUNT
+-	objIid.idx[0] += 1;  //Don't display high level
++	objIid.idx[0] += 1; //Don't display high level
+ #endif
+ 
+ 	if((ret = feObjJsonGet(RDM_OID_ZY_LOG_CFG_GP, &objIid, &LogCfgGpJobj, updateFlag)) != ZCFG_SUCCESS)
+@@ -3468,25 +3468,23 @@
+ {
+ 	zcfgRet_t ret;
+ 	char loginCfgGpAccoutPath[128] = "InternetGatewayDevice.X_ZYXEL_EXT.LoginCfg.LogGp.%hhu.Account";
+-#ifdef SOL_TR69_LOGINACCOUNT
+-	uint32_t  loginCfgGpAccoutOid = RDM_OID_ZY_LOG_CFG_GP_ACCOUNT;
+-#else
+-	uint32_t  loginCfgGpAccoutOid = 0;
++#ifdef SUNRISE_RANDOM_PASSWORD
+ 	struct json_object *loginCfgGpAccoutObj = NULL;
+ #endif
+ 	objIndex_t loginCfgGpAccoutIid;
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+ 
+-#ifndef SOL_TR69_LOGINACCOUNT
++#ifdef SUNRISE_RANDOM_PASSWORD
+ 	IID_INIT(loginCfgGpAccoutIid);
+ 	loginCfgGpAccoutIid.level = 2;
+ 	loginCfgGpAccoutIid.idx[0] = 1;
+ 	loginCfgGpAccoutIid.idx[1] = 3;
+-	loginCfgGpAccoutOid = RDM_OID_ZY_LOG_CFG_GP_ACCOUNT;
+ 
+-	if(zcfgFeObjJsonGet(loginCfgGpAccoutOid, &loginCfgGpAccoutIid, &loginCfgGpAccoutObj) == ZCFG_SUCCESS)
++	if(zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginCfgGpAccoutIid, &loginCfgGpAccoutObj) == ZCFG_SUCCESS){
++		json_object_put(loginCfgGpAccoutObj);
+ 		return ZCFG_REQUEST_REJECT;
++	}
+ #endif
+ 
+ 	IID_INIT(loginCfgGpAccoutIid);
+@@ -3496,12 +3494,12 @@
+ 	loginCfgGpAccoutIid.idx[0] += 1; //Don't display high level
+ #endif
+ 
+-#ifndef SOL_TR69_LOGINACCOUNT
++#ifdef SUNRISE_RANDOM_PASSWORD
+ 	if(loginCfgGpAccoutIid.idx[0] != 1)
+ 		return ZCFG_REQUEST_REJECT;
+ #endif
+ 
+-	if((ret = zcfgFeObjStructAdd(loginCfgGpAccoutOid, &loginCfgGpAccoutIid, NULL)) != ZCFG_SUCCESS) {
++	if((ret = zcfgFeObjStructAdd(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &loginCfgGpAccoutIid, NULL)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add LoginCfg.LogGp.%hhu.Account. Fail.\n", __FUNCTION__, loginCfgGpAccoutIid.idx[0]);
+ 		return ret;
+ 	}
+@@ -3511,7 +3509,7 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
+-#ifdef SOL_TR69_LOGINACCOUNT
++#if defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ zcfgRet_t zyExtLogCfgGpAccountObjDel(char *tr98FullPathName)
+ {
+         objIndex_t objIid;
+@@ -3521,9 +3519,12 @@
+ 
+         IID_INIT(objIid);
+         objIid.level = 2;
+-		if(sscanf(tr98FullPathName, loginCfgGpAccoutPath, &objIid.idx[0], &objIid.idx[1]) != 2) return ZCFG_INVALID_OBJECT;
+-		objIid.idx[0] += 1;
++		if(sscanf(tr98FullPathName, loginCfgGpAccoutPath, &objIid.idx[0], &objIid.idx[1]) != 2)
++			return ZCFG_INVALID_OBJECT;
+ 		
++#ifdef SOL_TR69_LOGINACCOUNT
++		objIid.idx[0] += 1;
++#endif
+         return zcfgFeObjStructDel(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &objIid, NULL);;
+ }
+ #endif
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2016-06-30 11:18:48.130859030 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2016-06-30 11:18:48.198859031 +0800
+@@ -13,7 +13,7 @@
+ extern tr98Parameter_t para_8021ag[];
+ extern tr98Parameter_t para_RemoTrustDomain[];
+ extern tr98Parameter_t para_Igmp[];
+-#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT)
++#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ extern tr98Parameter_t para_LogCfgGp[];
+ extern tr98Parameter_t para_LogCfgGpAccount[];
+ #endif
+@@ -143,13 +143,13 @@
+ extern int zyExtIgmpObjAttrGet(char *, int, char *);
+ extern zcfgRet_t zyExtIgmpObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
+-#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT)
++#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ extern zcfgRet_t zyExtLogCfgGpObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtLogCfgGpObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
+ extern zcfgRet_t zyExtLogCfgGpAccountObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtLogCfgGpAccountObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ extern zcfgRet_t zyExtLogCfgGpAccountObjAdd(char *tr98FullPathName, int *idx);
+-#ifdef SOL_TR69_LOGINACCOUNT
++#if defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT) || defined(SOL_TR69_LOGINACCOUNT)
+ extern zcfgRet_t zyExtLogCfgGpAccountObjDel(char *tr98FullPathName);
+ #endif
+ #endif
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2016-06-30 11:18:48.130859030 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2016-06-30 11:19:20.164927649 +0800
+@@ -71,7 +71,7 @@
+ 	{ NULL, 0, 0}
+ };
+ 
+-#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT)
++#if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ tr98Parameter_t para_LogCfgGp[] = {
+ 	{ "Level", PARAMETER_ATTR_READONLY, 17, json_type_string},
+ 	{ "Page", PARAMETER_ATTR_WRITE, 2049, json_type_string},

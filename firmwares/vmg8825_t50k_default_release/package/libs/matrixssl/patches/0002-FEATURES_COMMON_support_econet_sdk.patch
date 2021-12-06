@@ -1,0 +1,352 @@
+Index: matrixssl-1-8-open/src/Makefile
+===================================================================
+--- matrixssl-1-8-open.orig/src/Makefile	2014-06-23 17:06:50.021977217 +0800
++++ matrixssl-1-8-open/src/Makefile	2014-06-23 17:23:15.257591128 +0800
+@@ -92,6 +92,14 @@
+ STRIP	= /opt/brcm/hndtools-mipsel-uclibc/bin/mipsel-uclibc-strip
+ endif
+ 
++ifeq ($(SUPPORT_ECONET_SDK),y)
++OBJECTS += ../examples/sslSocket$(O)
++CFLAGS += -DSUPPORT_ECONET_SDK
++ifneq ($(CWMP_MULTI_CA),)
++CFLAGS += -DMULTI_CA
++endif
++endif
++
+ all: compile
+ 
+ compile: $(OBJECTS) $(LIBRARY) $(STATIC)
+@@ -107,6 +115,10 @@
+ 					crypto/cryptoLayer.h crypto/peersec/pscrypto.h
+ pki/*.o: matrixInternal.h matrixConfig.h Makefile \
+ 			pki/matrixPki.h pki/pkiInternal.h
++
++../examples/sslSocket.o: ../matrixSsl.h ../matrixCommon.h matrixInternal.h matrixConfig.h \
++			Makefile ../examples/sslSocket.h
++
+ #
+ # Build the library
+ #
+Index: matrixssl-1-8-open/src/os/linux/linux.c
+===================================================================
+--- matrixssl-1-8-open.orig/src/os/linux/linux.c	2006-04-04 19:14:02.000000000 +0800
++++ matrixssl-1-8-open/src/os/linux/linux.c	2014-06-23 17:06:50.033977066 +0800
+@@ -68,6 +68,7 @@
+ 
+ int32 sslOpenOsdep(void)
+ {
++#ifndef SUPPORT_ECONET_SDK
+ 	FILE		*cpuInfo;
+ 	double		mhz;
+ 	char		line[80] = "";
+@@ -126,16 +127,22 @@
+ #endif /* !OSX */
+ #endif /* USE_MULTITHREADING */
+ 	return psOpenMalloc(MAX_MEMORY_USAGE);
++#else
++	printf("sslOpenOsdep\n");
++	return 0;
++#endif /* #ifndef SUPPORT_ECONET_SDK */
+ }
+ 
+ int32 sslCloseOsdep(void)
+ {
++#ifndef SUPPORT_ECONET_SDK
+ 	psCloseMalloc();
+ #ifdef USE_MULTITHREADING
+ 	pthread_mutexattr_destroy(&attr);
+ #endif
+ 	close(randfd);
+ 	close(urandfd);
++#endif
+ 	return 0;
+ }
+ 
+@@ -143,9 +150,30 @@
+ 	Read from /dev/random non-blocking first, then from urandom if it would 
+ 	block.  Also, handle file closure case and re-open.
+ */
++#ifdef SUPPORT_ECONET_SDK
++static uint32 tc_rand;
++
++static unsigned char tcrandom(void)
++{
++	tc_rand = tc_rand * 1664525 + 1013904223;
++	return (unsigned char) (tc_rand >> 24);
++}
++
++int hostapd_get_rand(unsigned char *buf, int32 len)
++{
++	int i;
++
++	for(i = 0; i < len; i++) {
++		buf[i] = tcrandom();
++	}
++
++	return 0;
++}
++#endif
+ 
+ int32 sslGetEntropy(unsigned char *bytes, int32 size)
+ {
++#ifndef SUPPORT_ECONET_SDK
+ 	int32				rc, sanity, retry, readBytes;
+ 	unsigned char 	*where = bytes;
+ 
+@@ -204,6 +232,9 @@
+ 		size -= rc;
+ 	}
+ 	return readBytes;
++#else
++	return hostapd_get_rand(bytes, size);
++#endif
+ }
+ 
+ #ifdef DEBUG
+Index: matrixssl-1-8-open/src/os/osLayer.h
+===================================================================
+--- matrixssl-1-8-open.orig/src/os/osLayer.h	2006-04-04 19:14:02.000000000 +0800
++++ matrixssl-1-8-open/src/os/osLayer.h	2014-06-23 17:06:50.033977066 +0800
+@@ -173,6 +173,9 @@
+ 	compiled out.  sslAsserts still go to stderr, but psBreak is not called.
+ 
+ */
++#ifdef SUPPORT_ECONET_SDK
++#define DEBUG 1
++#endif
+ 
+ #if DEBUG
+ extern void	psBreak();
+Index: matrixssl-1-8-open/src/pki/x509.c
+===================================================================
+--- matrixssl-1-8-open.orig/src/pki/x509.c	2006-04-04 19:14:02.000000000 +0800
++++ matrixssl-1-8-open/src/pki/x509.c	2014-06-23 17:06:50.033977066 +0800
+@@ -321,6 +321,9 @@
+ 		if ((rc = psGetFileBin(pool, certFile, (unsigned char**)&certBuf,
+ 				&certBufLen)) < 0) {
+ 			matrixStrDebugMsg("Couldn't open file %s\n", certFile);
++#ifdef SUPPORT_ECONET_SDK
++			psFree(certFile);
++#endif
+ 			goto err;
+ 		}
+ 		psFree(certFile);
+Index: matrixssl-1-8-open/src/matrixInternal.h
+===================================================================
+--- matrixssl-1-8-open.orig/src/matrixInternal.h	2006-04-04 19:14:00.000000000 +0800
++++ matrixssl-1-8-open/src/matrixInternal.h	2014-06-23 17:06:50.033977066 +0800
+@@ -276,6 +276,10 @@
+ 	unsigned char	minVer;
+ 	int32				recordHeadLen;
+ 	int32				hshakeHeadLen;
++#if defined(SUPPORT_ECONET_SDK) && defined(MULTI_CA)
++	int32 (*readNewCert)(sslKeys_t **keys);
++	int32	maxCertNum;    /*Default max number of cert is 1*/
++#endif
+ } ssl_t;
+ 
+ typedef struct {
+Index: matrixssl-1-8-open/src/matrixSsl.c
+===================================================================
+--- matrixssl-1-8-open.orig/src/matrixSsl.c	2006-04-04 19:14:00.000000000 +0800
++++ matrixssl-1-8-open/src/matrixSsl.c	2014-06-23 17:06:50.033977066 +0800
+@@ -57,6 +57,9 @@
+ {
+ 	if (matrixPkiOpen() < 0) {
+ 		matrixStrDebugMsg("PKI open failure\n", NULL);
++#ifdef SUPPORT_ECONET_SDK
++		printf("open failed\n");
++#endif
+ 		return -1;
+ 	}
+ 
+@@ -336,7 +339,16 @@
+ 	matrixStrDebugMsg("Library not built for cert validation support\n", NULL);
+ }
+ #endif /* USE_CLIENT_SIDE_SSL */
+-
++#if defined(SUPPORT_ECONET_SDK) && defined(MULTI_CA)
++void	matrixSslSetNewCertReader(ssl_t *ssl,int (*readNewCert)(sslKeys_t **keys),
++						int maxCertNum)
++{
++	if(readNewCert){
++		ssl->readNewCert = readNewCert;
++		ssl->maxCertNum = maxCertNum;
++	}
++}
++#endif
+ /******************************************************************************/
+ /*
+ 	Initialize the SHA1 and MD5 hash contexts for the handshake messages
+Index: matrixssl-1-8-open/src/sslDecode.c
+===================================================================
+--- matrixssl-1-8-open.orig/src/sslDecode.c	2006-04-04 19:14:00.000000000 +0800
++++ matrixssl-1-8-open/src/sslDecode.c	2014-06-23 17:06:50.037977016 +0800
+@@ -493,6 +493,13 @@
+ 	sslRsaCert_t	*cert, *currentCert, *subjectCert;
+ 	int32			valid, i, certLen, certChainLen, anonCheck;
+ #endif /* USE_CLIENT_SIDE_SSL */
++#ifdef SUPPORT_ECONET_SDK
++#ifdef MULTI_CA
++	int32 checkTimes;
++#endif
++	char withCA[8]={0};
++	char noCASupport[8] = {0};
++#endif
+ 
+ 	rc = SSL_SUCCESS;
+ 	c = (unsigned char*)inbuf;
+@@ -1263,6 +1270,7 @@
+ 			matrixStrDebugMsg("Couldn't validate certificate chain\n", NULL);
+ 			return SSL_ERROR;	
+ 		}
++#ifndef SUPPORT_ECONET_SDK
+ /*
+ 		There may not be a caCert set.  The validate implemenation will just
+ 		take the subject cert and make sure it is a self signed cert.
+@@ -1286,6 +1294,91 @@
+ 				return SSL_ERROR;
+ 			}
+ 		}
++#else
++#ifdef MULTI_CA
++		for(checkTimes = 0; checkTimes < ssl->maxCertNum; checkTimes++){
++			
++			if (matrixX509ValidateCert(ssl->hsPool, subjectCert, 
++				ssl->keys == NULL ? NULL : ssl->keys->caCerts,
++				&subjectCert->valid) < 0) {
++				ssl->err = SSL_ALERT_BAD_CERTIFICATE;			
++			}
++			if (subjectCert->valid < 0 || ssl->err == SSL_ALERT_BAD_CERTIFICATE) {
++				/*Callback function is Null means just support one CA*/
++				if(ssl->readNewCert == NULL){
++					printf("liu_SslDecode:ca check failed\n");
++					ssl->err = SSL_ALERT_BAD_CERTIFICATE;
++					return SSL_ERROR;
++				}
++				matrixSslFreeKeys(ssl->keys);
++				ssl->keys = NULL;				
++				
++				while(checkTimes < (ssl->maxCertNum - 1)){
++					/*Callback to read new cert file*/
++					if((*(ssl->readNewCert))(&ssl->keys) != 0){
++						checkTimes++;
++					}
++					else{
++						break;
++					}					
++				}			
++			}
++			else{
++				printf("SslDecode:Yes,CA is valid!\n");
++				break;
++			}
++		}
++		if(checkTimes == ssl->maxCertNum){
++			matrixStrDebugMsg(
++				"Warning: Cert did not pass default validation checks\n", NULL);
++/*
++			If there is no user callback, fail on validation check because there
++			will be no intervention to give it a second look.
++*/
++			if (ssl->sec.validateCert == NULL) {
++				printf("liu_SslDecode:ca check all,but failed\n");
++				ssl->err = SSL_ALERT_BAD_CERTIFICATE;
++				return SSL_ERROR;
++			}
++		}	
++#else
++/*
++		There may not be a caCert set.  The validate implemenation will just
++		take the subject cert and make sure it is a self signed cert.
++*/
++		if (matrixX509ValidateCert(ssl->hsPool, subjectCert, 
++				ssl->keys == NULL ? NULL : ssl->keys->caCerts,
++				&subjectCert->valid) < 0) {
++			ssl->err = SSL_ALERT_BAD_CERTIFICATE;
++			matrixStrDebugMsg("Error validating certificate\n", NULL);
++			return SSL_ERROR;
++		}
++		if (subjectCert->valid < 0) {
++			matrixStrDebugMsg(
++				"Warning: Cert did not pass default validation checks\n", NULL);
++/*
++			If there is no user callback, fail on validation check because there
++			will be no intervention to give it a second look.
++*/	
++			tcapi_get("SslCA_Common","noCASupport", noCASupport);
++			if(strcmp(noCASupport,"Yes") == 0){
++				tcapi_get("SslCA_Common","withCA",withCA);
++				if(strcmp(withCA,"Yes")==0){
++					if (ssl->sec.validateCert == NULL) {
++						ssl->err = SSL_ALERT_BAD_CERTIFICATE;
++						return SSL_ERROR;
++					}
++				}
++			}else{
++				if (ssl->sec.validateCert == NULL) {
++					ssl->err = SSL_ALERT_BAD_CERTIFICATE;
++					return SSL_ERROR;
++				}
++			}
++		}
++#endif
++#endif /* #ifdef SUPPORT_ECONET_SDK */
++
+ /*
+ 		Call the user validation function with the entire cert chain.  The user
+ 		will proabably want to drill down to the last cert to make sure it
+Index: matrixssl-1-8-open/examples/sslSocket.h
+===================================================================
+--- matrixssl-1-8-open.orig/examples/sslSocket.h	2006-04-04 19:14:08.000000000 +0800
++++ matrixssl-1-8-open/examples/sslSocket.h	2014-06-23 17:06:50.037977016 +0800
+@@ -120,9 +120,17 @@
+ /*
+ 	Secure Socket apis
+ */
++#if defined(SUPPORT_ECONET_SDK) && defined(MULTI_CA)
++
++extern int			sslConnect(sslConn_t **cp, SOCKET fd, sslKeys_t *keys,
++						sslSessionId_t *id, short cipherSuite,
++						int (*certValidator)(sslCertInfo_t *t, void *arg),
++						int (*readNewCert)(sslKeys_t **keys),int maxCertNum);
++#else
+ extern int			sslConnect(sslConn_t **cp, SOCKET fd, sslKeys_t *keys,
+ 						sslSessionId_t *id, short cipherSuite,
+ 						int (*certValidator)(sslCertInfo_t *t, void *arg));
++#endif
+ extern int			sslAccept(sslConn_t **cp, SOCKET fd, sslKeys_t *keys,
+ 						int (*certValidator)(sslCertInfo_t *t, void *arg), int flags);
+ extern void			sslRehandshake(sslConn_t *cp);
+Index: matrixssl-1-8-open/examples/sslSocket.c
+===================================================================
+--- matrixssl-1-8-open.orig/examples/sslSocket.c	2006-04-04 19:14:08.000000000 +0800
++++ matrixssl-1-8-open/examples/sslSocket.c	2014-06-23 17:06:50.037977016 +0800
+@@ -237,9 +237,16 @@
+ 	phase in blocking mode.  The last parameter is an optional function
+ 	callback for user-level certificate validation.  NULL if not needed.
+ */
++#if defined(SUPPORT_ECONET_SDK) && defined(MULTI_CA)
++int sslConnect(sslConn_t **cpp, SOCKET fd, sslKeys_t *keys, 
++			   sslSessionId_t *id, short cipherSuite, 
++			   int (*certValidator)(sslCertInfo_t *t, void *arg),
++			   int (*readNewCert)(sslKeys_t **keys),int maxCertNum)
++#else
+ int sslConnect(sslConn_t **cpp, SOCKET fd, sslKeys_t *keys, 
+ 			   sslSessionId_t *id, short cipherSuite, 
+ 			   int (*certValidator)(sslCertInfo_t *t, void *arg))
++#endif
+ {
+ 	sslConn_t	*conn;
+ 
+@@ -254,6 +261,9 @@
+ 		return -1;
+ 	}
+ 	matrixSslSetCertValidator(conn->ssl, certValidator, NULL);
++#if defined(SUPPORT_ECONET_SDK) && defined(MULTI_CA)
++	matrixSslSetNewCertReader(conn->ssl,readNewCert,maxCertNum);
++#endif
+ 
+ 	*cpp = sslDoHandshake(conn, cipherSuite);
+ 	

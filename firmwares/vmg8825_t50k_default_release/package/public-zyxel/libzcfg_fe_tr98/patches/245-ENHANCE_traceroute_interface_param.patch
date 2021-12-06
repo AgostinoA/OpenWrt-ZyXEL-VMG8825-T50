@@ -1,0 +1,155 @@
+Index: libzcfg_fe_tr98-1.0/diag.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag.c	2015-11-10 15:38:56.892561461 +0800
++++ libzcfg_fe_tr98-1.0/diag.c	2015-11-10 15:42:21.195185500 +0800
+@@ -274,6 +274,9 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
++#define MAX_HOP_COUNT  64
++
+ /*
+  *   TR98 Object Name : InternetGatewayDevice.TraceRouteDiagnostics
+  *
+@@ -289,9 +292,6 @@
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char higherLayer[32] = {0};
+-	char devIpIface[48] = {0};
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -310,31 +310,53 @@
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/		
+ 		if(!strcmp(paramList->name, "Interface")) {
+-			paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-			if(paramValue != NULL) {
+-				strcpy(tr98ConnObjName, json_object_get_string(paramValue));
+-				if(zcfgFe98To181MappingNameGet(tr98ConnObjName, devIpIface) != ZCFG_SUCCESS) {
+-					json_object_object_add(traceRtObj, paramList->name, json_object_new_string(""));
++			const char *tr98Iface = json_object_get_string(json_object_object_get(tr98Jobj, paramList->name));
++			if(tr98Iface) {
++				char ipIface[300] = {0};
++				if(zcfgFe98To181IpIface(tr98Iface, ipIface) == ZCFG_SUCCESS) {
++					if(!strcmp(ipIface, "")) {
++						//if(!multiJobj)
++						//	json_object_put(traceRtObj);
++						//return ZCFG_NO_SUCH_OBJECT;
++						json_object_object_add(traceRtObj, paramList->name, json_object_new_string(""));
++					}
++					else
++						json_object_object_add(traceRtObj, paramList->name, json_object_new_string(ipIface));
+ 				}
+ 				else {
+-					if(strstr(devIpIface, "PPP.Interface") != NULL) {
+-						if((zcfgFeTr181IfaceStackHigherLayerGet(devIpIface, higherLayer)) != ZCFG_SUCCESS) {
+-							json_object_put(traceRtObj);
+-							return ZCFG_NO_SUCH_OBJECT;
+-						}
+-						memset(devIpIface, 0, sizeof(devIpIface));
+-						strcpy(devIpIface, higherLayer);
+-					}
+-					
+-					json_object_object_add(traceRtObj, paramList->name, json_object_new_string(devIpIface));
++					if(!multiJobj)
++						json_object_put(traceRtObj);
++					return ZCFG_NO_SUCH_OBJECT;
+ 				}
+ 			}
++			else {
++				//if(!multiJobj)
++				//	json_object_put(traceRtObj);
++				//return ZCFG_NO_SUCH_OBJECT;
++				json_object_object_add(traceRtObj, paramList->name, json_object_new_string(""));
++			}
+ 			paramList++;
+ 			continue;
+ 		}
+ 
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "NumberOfTries") || !strcmp(paramList->name, "Timeout") ||
++				!strcmp(paramList->name, "DataBlockSize")) {
++				if(json_object_get_int(paramValue) == 0) {
++					if(!multiJobj)
++						json_object_put(traceRtObj);
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
++			else if(!strcmp(paramList->name, "MaxHopCount")) {
++				unsigned int maxHopCount = json_object_get_int(paramValue);
++				if(!maxHopCount || maxHopCount > MAX_HOP_COUNT) {
++					if(!multiJobj)
++						json_object_put(traceRtObj);
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
+ 			tr181ParamValue = json_object_object_get(traceRtObj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+ 				json_object_object_add(traceRtObj, paramList->name, JSON_OBJ_COPY(paramValue));
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-11-10 15:38:56.908561461 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-11-10 15:42:17.528185500 +0800
+@@ -483,6 +483,45 @@
+ 	return ZCFG_NO_SUCH_OBJECT;
+ }
+ 
++zcfgRet_t zcfgFe98To181IpIface(const char *tr98IfaceName, char *ipIface)
++{
++	char tr98ObjName[300] = {0}, tr181ObjName[300] = {0};
++	char higherLayer[300] = {0};
++
++	if(!tr98IfaceName || !ipIface)
++		return ZCFG_INTERNAL_ERROR;
++
++	ipIface[0] = '\0';
++
++	if(!strcmp(tr98IfaceName, "")) {
++		return ZCFG_SUCCESS;
++	}
++
++	strncpy(tr98ObjName, tr98IfaceName, sizeof(tr98ObjName)-1);
++	if(strcmp(tr98ObjName, "") && (zcfgFe98To181MappingNameGet(tr98ObjName, tr181ObjName) != ZCFG_SUCCESS)) {
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	if(strstr(tr181ObjName, "PPP.Interface") != NULL) {
++		if((zcfgFeTr181IfaceStackHigherLayerGet(tr181ObjName, higherLayer)) != ZCFG_SUCCESS) {
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++		memset(tr181ObjName, 0, sizeof(tr181ObjName));
++		strncpy(tr181ObjName, higherLayer, sizeof(tr98ObjName)-1);
++					
++		if(!strstr(tr181ObjName, "IP.Interface")) {
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++	}
++
++	if(!strstr(tr181ObjName, "IP.Interface")) {
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	strncpy(ipIface, tr181ObjName, sizeof(tr181ObjName)-1);
++
++	return ZCFG_SUCCESS;
++}
+ 
+ #define setLinkObjParm(linkObj, value) { \
+ 	struct json_object *obj = (struct json_object *)(linkObj); \
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2015-11-10 15:38:56.644561453 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2015-11-10 15:42:31.386185500 +0800
+@@ -132,6 +132,7 @@
+ zcfgRet_t zcfgFe98ParamGuard(struct json_object *, const char *, struct json_object *);
+ void zcfgFe98ParamGuardRelease(struct json_object *);
+ 
++zcfgRet_t zcfgFe98To181IpIface(const char *tr98IfaceName, char *ipIface);
+ zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied);
+ 
+ zcfgRet_t zcfgFeTr181IfaceStackLowerLayerGet(char *higherLayer, char *result);

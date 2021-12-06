@@ -1,0 +1,478 @@
+--- a/lanDev.c
++++ b/lanDev.c
+@@ -21,6 +21,31 @@
+ #define TKIPAES 1
+ #define AES 2
+ 
++#ifdef SOL_TR69_NO_LAN_HOST
++#include "zcfg_net.h"
++#define LEASEFILE DNSMASQ_DHCP_LEASE_FILE
++#define ARPFILE "/proc/net/arp"
++#define ASSOCCMD "wlctl -i wl0 assoclist"
++#define ASSOCCMD_5G "wlctl -i wl1 assoclist"
++
++/*X_ZYXEL_ConnectionType*/
++#define CONNTYPE_ETH "Ethernet"
++#define CONNTYPE_USB "USB"
++#define CONNTYPE_WIRELESS "802.11"
++#define CONNTYPE_HOMEPNA "HomePNA"
++#define CONNTYPE_HOMEPLUG "HomePlug"
++#define CONNTYPE_OTHER "Other"
++
++/*AddressSource*/
++#define ADDRSRC_DHCP 	"DHCP"
++#define ADDRSRC_STATIC 	"Static"
++#define ADDRSRC_AUTO 	"AutoIP"
++#define ADDRSRC_NONE 	"None"
++
++#define TAG_DHCP 		(1 << 1)
++#define TAG_WIFI 		(1 << 2)
++#define TAG_LOSTWIFI 	(1 << 3)
++#endif
+ 
+ #define WPS_DEVICENAME "wps_devicename"
+ enum {
+@@ -161,6 +186,155 @@ bool setDhcpAddresses(char *ip, char *ma
+ }
+ #endif
+ 
++#ifdef SOL_TR69_NO_LAN_HOST
++typedef struct hostinfo_s{
++        char hwa[65];
++        char hostname[65];
++        char vid[256];
++        int tag;
++        unsigned long int lease;
++}hostinfo_t;
++
++typedef struct hostlist_s{
++        struct hostlist_s *next;
++        hostinfo_t hostinfo;
++}hostlist_t;
++
++hostlist_t* addHostToList(hostlist_t *list, char *hwa){
++        hostlist_t *theHostlist = NULL;
++        hostlist_t *tmpHostlist = NULL;
++        theHostlist = malloc(sizeof(hostlist_t));
++        memset(theHostlist, '\0', sizeof(hostlist_t));
++        if(list){
++                tmpHostlist = list;
++                while(tmpHostlist->next){
++                        tmpHostlist = tmpHostlist->next;
++                }
++                tmpHostlist->next = theHostlist;
++                memcpy(&theHostlist->hostinfo, hwa, strlen(hwa));
++        }
++        else{
++                list = theHostlist;
++        }
++        return theHostlist;
++}
++
++hostlist_t* findHostFromList(hostlist_t *list, char *hwa){
++        hostlist_t *tmpHostlist = NULL;
++
++        tmpHostlist = list;
++        while(tmpHostlist){
++                if(strcasecmp(tmpHostlist->hostinfo.hwa, hwa)==0){
++                        return tmpHostlist;
++                }
++                tmpHostlist = tmpHostlist->next;
++        }
++        return NULL;
++}
++
++void freeHostList(hostlist_t *list){
++	hostlist_t *theHostlist = NULL;
++	theHostlist = list;
++	while(theHostlist){
++		list = theHostlist->next;
++		free(theHostlist);
++		theHostlist = list;
++	}
++}
++
++zcfgRet_t lanDevHostListUpdate(hostlist_t **hostlist, int flag)
++{
++	FILE *leasefp = NULL;
++	FILE *assocfp = NULL;
++	char assoctmp[] = "/tmp/assoclist";
++	char syscmd[128]={0};
++	char line[512]={0};
++	char ip[32]={0};
++	char hwa[65]={0};
++	char clid[64]={0};
++	char hostname[65]={0};
++	char tmpVid[256]={0};
++	char *vid = NULL;
++	int num = 0;
++	unsigned long int lease;
++	hostlist_t *theHostlist = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s()\n", __FUNCTION__);
++
++	if(flag){
++		/*DHCP lease*/
++		zcfgLog(ZCFG_LOG_INFO, "%s(): open %s\n", __FUNCTION__, LEASEFILE);
++		leasefp = fopen( LEASEFILE, "r" );
++		if(leasefp != NULL){
++			while (fgets(line, sizeof(line), leasefp)) {
++				num = sscanf(line, "%lu %[^ ] %[^ ] %[^ ] %[^ ] %[^ ]\n",
++							&lease, hwa, ip, hostname, clid, tmpVid);
++				if((theHostlist = findHostFromList(hostlist, hwa))== NULL){
++					theHostlist = addHostToList(hostlist, hwa );
++					if(hostlist == NULL){
++						hostlist = theHostlist;
++					}
++				}
++				if(strcmp(hostname, "*")!=0){
++					strncpy(theHostlist->hostinfo.hostname, hostname, sizeof(theHostlist->hostinfo.hostname)-1);
++				}else{
++					strncpy(theHostlist->hostinfo.hostname, "Unknown", sizeof(theHostlist->hostinfo.hostname)-1);
++				}
++				if(strcmp(tmpVid, "*")!=0 && num>5){
++					vid = strstr(line, tmpVid);
++					if(vid != NULL){
++						vid = strtok(vid, "\n");
++						if(strlen(vid)<sizeof(theHostlist->hostinfo.vid))
++							strncpy(theHostlist->hostinfo.vid, vid, strlen(vid));
++						else
++							strncpy(theHostlist->hostinfo.vid, vid, sizeof(theHostlist->hostinfo.vid)-1);
++					}
++				}
++				strncpy(theHostlist->hostinfo.hwa, hwa, sizeof(theHostlist->hostinfo.hwa)-1);
++				
++				theHostlist->hostinfo.tag |= TAG_DHCP;
++				theHostlist->hostinfo.lease = lease;
++			}
++			fclose(leasefp);
++		}
++	}
++
++	/*Wireless*/
++	zcfgLog(ZCFG_LOG_INFO, "%s(): open %s\n", __FUNCTION__, ASSOCCMD);
++	sprintf(syscmd, "%s >> %s", ASSOCCMD, assoctmp);
++	system(syscmd);
++
++	memset(syscmd, '\0', sizeof(syscmd));
++	zcfgLog(ZCFG_LOG_INFO, "%s(): open %s\n", __FUNCTION__, ASSOCCMD_5G);
++	sprintf(syscmd, "%s >> %s", ASSOCCMD_5G, assoctmp);
++	system(syscmd);
++
++	assocfp = fopen(assoctmp, "r");
++	if(assocfp != NULL){
++		while (fgets(line, sizeof(line), assocfp)) {
++			zcfgLog(ZCFG_LOG_INFO, "%s(): wireless: %s\n", __FUNCTION__, line);
++			num = sscanf(line, "assoclist %s\n",
++						 hwa);
++			if((theHostlist = findHostFromList(hostlist, hwa))== NULL){
++				theHostlist = addHostToList(hostlist, hwa );
++				if(hostlist == NULL){
++					hostlist = theHostlist;
++				}
++			}
++			if(!strcmp(theHostlist->hostinfo.hostname, "*")){
++				strncpy(theHostlist->hostinfo.hostname, "Unknown", sizeof(theHostlist->hostinfo.hostname)-1);
++			}
++			strncpy(theHostlist->hostinfo.hwa, hwa, sizeof(theHostlist->hostinfo.hwa));
++			theHostlist->hostinfo.tag |= TAG_WIFI;
++		}
++		fclose(assocfp);
++		unlink(assoctmp);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++#endif
++
+ static zcfgRet_t ethLinkAdd(char *ethLinkPathName, char *lowerLayer)
+ {
+ 	zcfgRet_t ret;
+@@ -196,6 +370,59 @@ static zcfgRet_t ethLinkAdd(char *ethLin
+ */
+ zcfgRet_t lanDevHostsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
++#ifdef SOL_TR69_NO_LAN_HOST
++	FILE *arpfp = NULL;
++	char line[512]={0};
++	int type, flags;
++	char ip[32]={0};
++	char hwa[65]={0};
++	char mask[32]={0};
++	char dev[32]={0};
++	int num = 0;
++	uint32_t hostNum = 0;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++
++	/*ARP table*/
++	zcfgLog(ZCFG_LOG_INFO, "%s(): open %s\n", __FUNCTION__, ARPFILE);
++	arpfp = fopen(ARPFILE, "r");
++	if(arpfp == NULL){
++		zcfgLog(ZCFG_LOG_ERR, "%s(): open %s fail\n", __FUNCTION__, ARPFILE);
++		return ZCFG_SUCCESS;
++	}
++	fgets(line, sizeof(line), arpfp);
++	while (fgets(line, sizeof(line), arpfp)) {
++		mask[0] = '-'; mask[1] = '\0';
++		dev[0] = '-'; dev[1] = '\0';
++		/* All these strings can't overflow
++		 * because fgets above reads limited amount of data */
++		num = sscanf(line, "%s 0x%x 0x%x %s %s %s\n",
++					 ip, &type, &flags, hwa, mask, dev);
++		if (num < 4)
++			break;
++
++		/*incomplete, skip*/
++		if(flags == 0){
++			continue;
++		}
++
++		if(strcmp(hwa,"00:00:00:00:00:00")==0){
++			continue;
++		}
++
++		// all LAN dev should be br+ ,no eth0, eth1, eth2... 
++		if(strstr(dev, "br") == NULL)
++			continue;
++		
++		hostNum++;
++	}	
++	fclose(arpfp);
++
++	/*fill up tr98 Host object*/
++	*tr98Jobj = json_object_new_object();
++	/*HostNumberOfEntries*/
++	json_object_object_add(*tr98Jobj, "HostNumberOfEntries", json_object_new_int(hostNum));
++#else
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid;
+ 	char tr181Name[32] = {0};
+@@ -237,6 +464,7 @@ zcfgRet_t lanDevHostsObjGet(char *tr98Fu
+ 	
+ 	*tr98Jobj = json_object_new_object();
+ 	json_object_object_add(*tr98Jobj, "HostNumberOfEntries", json_object_new_int(hostNum));
++#endif
+ 
+ 	return ZCFG_SUCCESS;
+ }
+@@ -250,6 +478,116 @@ zcfgRet_t lanDevHostsObjGet(char *tr98Fu
+ */
+ zcfgRet_t lanDevHostObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
++#ifdef SOL_TR69_NO_LAN_HOST
++	FILE *arpfp = NULL;
++	char line[512]={0};
++	int type, flags;
++	char ip[32]={0};
++	char hwa[65]={0};
++	char mask[32]={0};
++	char dev[32]={0};
++	int num = 0;
++	int idx = 0;
++	uint32_t hostNum = 0;
++	hostlist_t *hostlist = NULL;
++	hostlist_t *theHostlist = NULL;
++	
++	zcfgLog(ZCFG_LOG_INFO, "%s()\n", __FUNCTION__);
++	
++	//Refresh Hosts device list
++	lanDevHostListUpdate(&hostlist, 1);
++	
++	sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.Hosts.Host.%d", &idx);
++
++	/*ARP table*/
++	zcfgLog(ZCFG_LOG_INFO, "%s(): open %s\n", __FUNCTION__, ARPFILE);
++	arpfp = fopen(ARPFILE, "r");
++	if(arpfp == NULL){
++		zcfgLog(ZCFG_LOG_ERR, "%s(): open %s fail\n", __FUNCTION__, ARPFILE);
++		return ZCFG_SUCCESS;
++	}
++	fgets(line, sizeof(line), arpfp);
++	while (fgets(line, sizeof(line), arpfp)) {
++		mask[0] = '-'; mask[1] = '\0';
++		dev[0] = '-'; dev[1] = '\0';
++		/* All these strings can't overflow
++		 * because fgets above reads limited amount of data */
++		num = sscanf(line, "%s 0x%x 0x%x %s %s %s\n",
++					 ip, &type, &flags, hwa, mask, dev);
++		if (num < 4)
++			break;
++
++		/*incomplete, skip*/
++		if(flags == 0){
++			continue;
++		}
++
++		if(strcmp(hwa,"00:00:00:00:00:00")==0){
++			continue;
++		}
++
++		// all LAN dev should be br+ ,no eth0, eth1, eth2... 
++		if(strstr(dev, "br") == NULL)
++			continue;
++
++		hostNum++;
++		if(idx == hostNum) {
++			theHostlist = findHostFromList(hostlist, hwa);
++	
++			/*fill up tr98 Host object*/
++			*tr98Jobj = json_object_new_object();
++			json_object_object_add(*tr98Jobj, "MACAddress", json_object_new_string(hwa));
++			json_object_object_add(*tr98Jobj, "IPAddress", json_object_new_string(ip));	
++			json_object_object_add(*tr98Jobj, "ClientID", json_object_new_string(""));
++			json_object_object_add(*tr98Jobj, "UserClassID", json_object_new_string(""));
++	
++			if(theHostlist){
++				json_object_object_add(*tr98Jobj, "HostName", json_object_new_string(theHostlist->hostinfo.hostname));
++				json_object_object_add(*tr98Jobj, "VendorClassID", json_object_new_string(theHostlist->hostinfo.vid));
++				
++				if(theHostlist->hostinfo.tag & TAG_DHCP){
++					json_object_object_add(*tr98Jobj, "AddressSource", json_object_new_string(ADDRSRC_DHCP));
++					json_object_object_add(*tr98Jobj, "LeaseTimeRemaining", json_object_new_int(theHostlist->hostinfo.lease));
++				}else{
++					json_object_object_add(*tr98Jobj, "AddressSource", json_object_new_string(ADDRSRC_STATIC));
++					json_object_object_add(*tr98Jobj, "LeaseTimeRemaining", json_object_new_int(0));
++				}
++				
++				if(theHostlist->hostinfo.tag & TAG_WIFI){
++					json_object_object_add(*tr98Jobj, "InterfaceType", json_object_new_string(CONNTYPE_WIRELESS));
++				}else if(type ==1/*ether*/ || type==2/*ppp*/){
++					json_object_object_add(*tr98Jobj, "InterfaceType", json_object_new_string(CONNTYPE_ETH));
++				}
++				else{
++					json_object_object_add(*tr98Jobj, "InterfaceType", json_object_new_string(CONNTYPE_OTHER));
++				}
++					
++				if(theHostlist->hostinfo.tag & TAG_LOSTWIFI) 
++					json_object_object_add(*tr98Jobj, "Active", json_object_new_boolean(0));
++				else
++					json_object_object_add(*tr98Jobj, "Active", json_object_new_boolean(1));
++			}else{
++				json_object_object_add(*tr98Jobj, "HostName", json_object_new_string(""));
++				json_object_object_add(*tr98Jobj, "VendorClassID", json_object_new_string(""));
++				json_object_object_add(*tr98Jobj, "AddressSource", json_object_new_string(ADDRSRC_STATIC));
++				json_object_object_add(*tr98Jobj, "LeaseTimeRemaining", json_object_new_int(0));
++				json_object_object_add(*tr98Jobj, "Active", json_object_new_boolean(1));
++			
++				if(type ==1/*ether*/ || type==2/*ppp*/){
++					json_object_object_add(*tr98Jobj, "InterfaceType", json_object_new_string(CONNTYPE_ETH));
++				}
++				else{
++					json_object_object_add(*tr98Jobj, "InterfaceType", json_object_new_string(CONNTYPE_OTHER));
++				}
++			}
++			
++			break;
++		}
++	}	
++	fclose(arpfp);
++
++	freeHostList(hostlist);
++#else
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid, hostIid;
+ 	tr98Parameter_t *paramList = NULL;
+@@ -338,7 +676,8 @@ zcfgRet_t lanDevHostObjGet(char *tr98Ful
+ 	}
+ 	
+ 	json_object_put(hostJobj);
+-	
++#endif
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+@@ -4092,6 +4431,75 @@ write_parameters_complete:
+  */
+ zcfgRet_t lanDevWlanCfgAssocDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
++#ifdef SOL_TR69_NO_LAN_HOST
++	int idx = 0;
++	uint32_t hostNum = 0;	
++	FILE *arpfp = NULL;
++	char line[512]={0};
++	int type, flags;
++	char ip[32]={0};
++	char hwa[65]={0};
++	char mask[32]={0};
++	char dev[32]={0};
++	int num = 0;
++	hostlist_t *hostlist = NULL;
++	hostlist_t *theHostlist = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s()\n", __FUNCTION__);
++
++	//Refresh Hosts device list
++	lanDevHostListUpdate(&hostlist, 0);
++	
++	sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.WLANConfiguration.%*d.AssociatedDevice.%d", &idx);
++	
++	/*ARP table*/
++	zcfgLog(ZCFG_LOG_INFO, "%s(): open %s\n", __FUNCTION__, ARPFILE);
++	arpfp = fopen(ARPFILE, "r");
++	if(arpfp == NULL){
++		zcfgLog(ZCFG_LOG_ERR, "%s(): open %s fail\n", __FUNCTION__, ARPFILE);
++		return ZCFG_SUCCESS;
++	}
++	fgets(line, sizeof(line), arpfp);
++	while (fgets(line, sizeof(line), arpfp)) {
++		mask[0] = '-'; mask[1] = '\0';
++		dev[0] = '-'; dev[1] = '\0';
++		/* All these strings can't overflow
++		 * because fgets above reads limited amount of data */
++		num = sscanf(line, "%s 0x%x 0x%x %s %s %s\n",
++					 ip, &type, &flags, hwa, mask, dev);
++		if (num < 4)
++			break;
++
++		/*incomplete, skip*/
++		if(flags == 0){
++			continue;
++		}
++
++		if(strcmp(hwa,"00:00:00:00:00:00")==0){
++			continue;
++		}
++
++		// all LAN dev should be br+ ,no eth0, eth1, eth2... 
++		if(strstr(dev, "br") == NULL)
++			continue;
++
++		theHostlist = findHostFromList(hostlist, hwa);
++	
++		if(theHostlist){
++			hostNum++;
++			if(idx == hostNum) {
++				/*fill up tr98 Host object*/
++				*tr98Jobj = json_object_new_object();
++				json_object_object_add(*tr98Jobj, "AssociatedDeviceMACAddress", json_object_new_string(hwa));
++				json_object_object_add(*tr98Jobj, "AssociatedDeviceIPAddress", json_object_new_string(ip));
++				break;
++			}
++		}
++	}	
++	fclose(arpfp);
++
++	freeHostList(hostlist);
++#else
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid, hostIid;
+ 	tr98Parameter_t *paramList = NULL;
+@@ -4189,6 +4597,7 @@ zcfgRet_t lanDevWlanCfgAssocDevObjGet(ch
+ 	}
+ 	
+ 	json_object_put(hostJobj);
++#endif
+ 	
+ 	return ZCFG_SUCCESS;
+ }
+--- a/Makefile
++++ b/Makefile
+@@ -158,3 +158,6 @@ endif
+ ifeq ($(CONFIG_SOL_TR69_LOGINACCOUNT),y)
+ CFLAGS += -DSOL_TR69_LOGINACCOUNT
+ endif
++ifeq ($(CONFIG_SOL_TR69_NO_LAN_HOST),y)
++CFLAGS += -DSOL_TR69_NO_LAN_HOST
++endif

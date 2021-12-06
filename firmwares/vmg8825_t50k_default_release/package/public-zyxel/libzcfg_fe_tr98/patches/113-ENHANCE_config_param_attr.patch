@@ -1,0 +1,1471 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-04-14 14:54:48.540603442 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-04-14 14:54:48.568603442 +0800
+@@ -1827,13 +1827,15 @@
+ 	struct json_object *dnsV6SrvJobj = NULL;
+ #endif
+ 	tr98Parameter_t *paramList = NULL;
+-	char pmPath[256] = {0};
+-	char tmp[256] = {0};
+ 	int numOfEntries = 0;
++	const char *connStatus = NULL;
++#if 0
+ 	int i;
+-	char *connStatus = NULL;
++	char pmPath[256] = {0};
++	char tmp[256] = {0};
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char typeBuf[20] = {0};
++#endif
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -2126,8 +2128,10 @@
+ 	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL, *igmpJobj = NULL;
+ 	const char *addrType = NULL, *connType = NULL;
+ 	tr98Parameter_t *paramList = NULL;
++#if 0
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char typeBuf[20] = {0};
++#endif
+ 	char tmpbuf[256] = {0};
+ 	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
+ 	bool isDnsObjExist = false, firstEnter = true;
+@@ -3077,9 +3081,9 @@
+ 
+ int WANIpConnObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
+ {
+-	char tr181Obj[128] = {0};
+ 	char mapObj[128] = {0};
+ /*
++	char tr181Obj[128] = {0};
+ 	uint32_t  devInfoOid = 0, ipv4Oid = 0;
+ 	objIndex_t devInfoIid, ipv4Iid;
+ */
+@@ -3143,6 +3147,9 @@
+ 		else if(!strcmp(paramList->name, "ConnectionType")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_IP_IFACE, "X_ZYXEL_ConnectionType");
+ 		}
++		else if(!strcmp(paramList->name, "Uptime")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_IP_IFACE, "LastChange");
++		}
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6PrefixNumberOfEntries")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_IP_IFACE, "IPv6PrefixNumberOfEntries");
+ 		}
+@@ -3174,27 +3181,15 @@
+ 
+ zcfgRet_t WANIpConnObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+ {
+-	zcfgRet_t ret;
+-	char tr181Obj[128] = {0};
+-	char mapObj[128] = {0};
+-	uint32_t  devInfoOid = 0, ipv4Oid = 0;
+-	objIndex_t devInfoIid, ipv4Iid;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	int attrValue = 0;
+ 	tr98Parameter_t *paramList = NULL;
++	uint32_t rdmOid = 0;
++	char attrParamName[100] = {0};
++	char *attrParamNamePtr = NULL;
++	char *paramNamePtr = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+-	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+-		return ZCFG_INVALID_OBJECT;
+-	}
+-	
+-
+-	IID_INIT(devInfoIid);
+-	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
+-	devInfoOid = zcfgFeObjNameToObjId(tr181Obj, &devInfoIid);
+-	
+-	IID_INIT(ipv4Iid);
+-	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s.IPv4Address.1", mapObj);
+-	ipv4Oid = zcfgFeObjNameToObjId(tr181Obj, &ipv4Iid);
+ 
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+@@ -3203,39 +3198,121 @@
+ 			paramList++;
+ 			continue;
+ 		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
++		paramNamePtr = paramName;
++
++		break;
++
++	} /*Edn while*/
++
++	if(paramNamePtr) {
+ 		/*special case*/
+-		if(strcmp(paramList->name, "ExternalIPAddress") == 0){
+-			attrValue = zcfgFeParamAttrGetByName(ipv4Oid, "IPAddress");
++		if(!strcmp(paramList->name, "ExternalIPAddress")){
++			rdmOid = RDM_OID_IP_IFACE_V4_ADDR;
++			strcpy(attrParamName, "IPAddress");
+ 		}
+-		else if(strcmp(paramList->name, "SubnetMask") == 0){
+-			attrValue = zcfgFeParamAttrGetByName(ipv4Oid, paramList->name);
++		else if(!strcmp(paramList->name, "SubnetMask") || !strcmp(paramList->name, "AddressingType")){
++			rdmOid = RDM_OID_IP_IFACE_V4_ADDR;
+ 		}
+-		else{
+-			attrValue = zcfgFeParamAttrGetByName(devInfoOid, paramList->name);
++		else if(!strcmp(paramList->name, "DNSEnabled") || !strcmp( paramList->name, "X_ZYXEL_IPv6DNSEnabled")){
++			rdmOid = RDM_OID_DNS_CLIENT_SRV;
++			strcpy(attrParamName, "Enable");
+ 		}
+-		if(attrValue < 0) {
+-			ret = ZCFG_INVALID_ARGUMENTS;
+-			break;
++		else if(!strcmp(paramList->name, "X_ZYXEL_DNSType")){
++			rdmOid = RDM_OID_DNS_CLIENT_SRV;
++			strcpy(attrParamName, "X_ZYXEL_Type");
+ 		}
+-
+-		/*Write new parameter attribute from tr98 object to tr181 objects*/
+-		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
+-		if(strcmp(paramList->name, "ExternalIPAddress") == 0){
+-			ret = zcfgFeMultiParamAttrAppend(ipv4Oid, multiAttrJobj, "IPAddress", attrValue);
++		else if(!strcmp(paramList->name, "DNSServers") || !strcmp( paramList->name, "X_ZYXEL_IPv6DNSServers")){
++			rdmOid = RDM_OID_DNS_CLIENT_SRV;
++			strcpy(attrParamName, "DNSServer");
+ 		}
+-		else if(strcmp(paramList->name, "SubnetMask") == 0){
+-			ret = zcfgFeMultiParamAttrAppend(ipv4Oid, multiAttrJobj, paramList->name, attrValue);
++		else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")){
++			rdmOid = RDM_OID_ZY_IGMP;
++			strcpy(attrParamName, "Enable");
+ 		}
+-		else{
+-			ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, paramList->name, attrValue);
++		else if(!strcmp(paramList->name, "NATEnabled")){
++			rdmOid = RDM_OID_NAT_INTF_SETTING;
++			strcpy(attrParamName, "Enable");
+ 		}
+-		if( ret != ZCFG_SUCCESS){
+-			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, devInfoOid, paramList->name);
++		else if(!strcmp(paramList->name, "DefaultGateway")){
++			rdmOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++			strcpy(attrParamName, "GatewayIPAddress");
+ 		}
+-		break;
++		else if(!strcmp(paramList->name, "Name")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "X_ZYXEL_SrvName");
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "IPv6Enable");
++		}
++		else if(!strcmp(paramList->name, "ConnectionType")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "X_ZYXEL_ConnectionType");
++		}
++		else if(!strcmp(paramList->name, "Uptime")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "LastChange");
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6PrefixNumberOfEntries")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "IPv6PrefixNumberOfEntries");
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6AddressNumberOfEntries")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "IPv6AddressNumberOfEntries");
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Status")){
++			//attrValue = zcfgFeParamAttrGetByName(RDM_OID_IP_IFACE, "IPv6Status");
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "Status");
++		}
++		else if(!strcmp(paramList->name, "ConnectionStatus")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "Status");
++		}
++		else if(!strcmp(paramList->name, "PossibleConnectionTypes")){
++			rdmOid = RDM_OID_IP_IFACE;
++			strcpy(attrParamName, "X_ZYXEL_PossibleConnectionTypes");
++		}
++		else if(!strcmp(paramList->name, "LastConnectionError") || !strcmp(paramList->name, "AutoDisconnectTime") || !strcmp(paramList->name, "IdleDisconnectTime")
++				|| !strcmp(paramList->name, "WarnDisconnectDelay") || !strcmp(paramList->name, "RSIPAvailable") || !strcmp(paramList->name, "DNSOverrideAllowed")
++					|| !strcmp(paramList->name, "MACAddress") || !strcmp(paramList->name, "MACAddressOverride") || !strcmp(paramList->name, "ConnectionTrigger")
++				|| !strcmp(paramList->name, "RouteProtocolRx") || !strcmp(paramList->name, "ShapingRate") || !strcmp(paramList->name, "ShapingBurstSize")
++					|| !strcmp(paramList->name, "PortMappingNumberOfEntries")){
++			return ZCFG_SUCCESS;
++		}
++		else {
++			rdmOid = RDM_OID_IP_IFACE;
++		}
++	}
++	else {
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++
++	if(rdmOid) {
++		if(strlen(attrParamName) > 0)
++			attrParamNamePtr = attrParamName;
++		else
++			attrParamNamePtr = paramName;
++
++		attrValue = zcfgFeParamAttrGetByName(rdmOid, attrParamNamePtr);
++		if(attrValue < 0) {
++			return ZCFG_INVALID_ARGUMENTS;
++		}
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(rdmOid, multiAttrJobj, attrParamNamePtr, attrValue);
++		if(ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, rdmOid, attrParamNamePtr);
++		}
++	}
++	else {
++		return ZCFG_INVALID_ARGUMENTS;
++	}
+ 
+-	} /*Edn while*/
+-	
+ 	return ret;
+ }
+ 
+@@ -3279,6 +3356,111 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
++zcfgRet_t DhcpClientObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	char tr98Notify[256] = {0};
++	char *attrParamNamePtr = NULL;
++	char attrParamName[100] = {0};
++	
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	if(!attrParamNamePtr) {
++		attrParamNamePtr = attrParamName;
++		if(!strcmp(tr181ParamName, "SentOptionNumberOfEntries")) {
++			strcpy(attrParamNamePtr, "SentDHCPOptionNumberOfEntries");
++		}
++		else if(!strcmp(tr181ParamName, "ReqOptionNumberOfEntries")) {
++			strcpy(attrParamNamePtr, "ReqDHCPOptionNumberOfEntries");
++		}
++	}
++
++	if(attrParamNamePtr && strlen(attrParamNamePtr) > 0) {
++		sprintf(tr98Notify, "%s.%s", tr98ObjName, attrParamNamePtr);
++
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int DhcpClientObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "SentDHCPOptionNumberOfEntries")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_CLIENT, "SentOptionNumberOfEntries");
++		}
++		else if(!strcmp(paramList->name, "ReqDHCPOptionNumberOfEntries")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_CLIENT, "ReqOptionNumberOfEntries");
++		}
++
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t DhcpClientObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++	char attrParamName[100] = {0};
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramName, "SentDHCPOptionNumberOfEntries")){
++			strcpy(attrParamName, "SentOptionNumberOfEntries");
++		}
++		else if(!strcmp(paramName, "ReqDHCPOptionNumberOfEntries")){
++			strcpy(attrParamName, "ReqOptionNumberOfEntries");
++		}
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_CLIENT, attrParamName);
++		break;
++	}
++
++	if(attrValue >= 0) {
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(RDM_OID_DHCPV4_CLIENT, multiAttrJobj, attrParamName, attrValue);
++
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, RDM_OID_DHCPV4_CLIENT, attrParamName);
++		}
++	}
++	else {
++		ret = ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ret;
++}
++
+ /*
+  *   InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.DHCPClient.SentDHCPOption.i.
+  *
+@@ -3291,7 +3473,6 @@
+ 	objIndex_t dhcpcIid, optIid;
+ 	struct json_object *optObj = NULL;
+ 	struct json_object *paramValue = NULL;
+-	bool found = false;
+ 	tr98Parameter_t *paramList = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
+@@ -3511,6 +3692,98 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t DhcpClientOptObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	char tr98Notify[256] = {0};
++	tr98Parameter_t *paramList = NULL;
++	char *attrParamNamePtr = NULL;
++	
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, tr181ParamName)){
++			paramList++;
++			continue;
++		}
++		attrParamNamePtr = tr181ParamName;
++		break;
++	}
++
++	if(attrParamNamePtr && strlen(attrParamNamePtr) > 0) {
++		sprintf(tr98Notify, "%s.%s", tr98ObjName, attrParamNamePtr);
++
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int DhcpClientSentOptObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_SENT_OPT, paramName);
++
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t DhcpClientSentOptObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_SENT_OPT, paramName);
++		break;
++	}
++
++	if(attrValue >= 0) {
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(RDM_OID_DHCPV4_SENT_OPT, multiAttrJobj, paramName, attrValue);
++
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, RDM_OID_DHCPV4_SENT_OPT, paramName);
++		}
++	}
++	else {
++		ret = ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ret;
++}
++
+ /*
+  *   InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.DHCPClient.ReqDHCPOption.i.
+  *
+@@ -3523,7 +3796,6 @@
+ 	objIndex_t dhcpcIid, optIid;
+ 	struct json_object *optObj = NULL;
+ 	struct json_object *paramValue = NULL;
+-	bool found = false;
+ 	tr98Parameter_t *paramList = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
+@@ -3601,6 +3873,7 @@
+ 			tmpObj = optObj;
+ 			optObj = NULL;
+ 			optObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_REQ_OPT, &optIid, multiJobj, tmpObj);
++			zcfgFeJsonObjFree(tmpObj);
+ 		}
+ 
+ 		/* set(update) value to target object */
+@@ -3615,7 +3888,7 @@
+ 					json_object_object_add(optObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				}
+ 
+-				paramList++;;
++				paramList++;
+ 			}
+ 		}
+ 
+@@ -3626,8 +3899,8 @@
+ 				zcfgFeJsonObjFree(optObj);
+ 				return ret;
+ 			}
++			zcfgFeJsonObjFree(optObj);
+ 		}
+-		zcfgFeJsonObjFree(optObj);
+ 	}
+ 	else{
+ 		return ret;
+@@ -3685,6 +3958,99 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#if 0
++zcfgRet_t DhcpClientReqOptObjAttrNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	char tr98Notify[256] = {0};
++	tr98Parameter_t *paramList = NULL;
++	char *attrParamNamePtr = NULL;
++	
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, tr181ParamName)){
++			paramList++;
++			continue;
++		}
++		attrParamNamePtr = tr181ParamName;
++		break;
++	}
++
++	if(attrParamNamePtr && strlen(attrParamNamePtr) > 0) {
++		sprintf(tr98Notify, "%s.%s", tr98ObjName, attrParamNamePtr);
++
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++#endif
++
++int DhcpClientReqOptObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_REQ_OPT, paramName);
++
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t DhcpClientReqOptObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_DHCPV4_REQ_OPT, paramName);
++		break;
++	}
++
++	if(attrValue >= 0) {
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(RDM_OID_DHCPV4_REQ_OPT, multiAttrJobj, paramName, attrValue);
++
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, RDM_OID_DHCPV4_REQ_OPT, paramName);
++		}
++	}
++	else {
++		ret = ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ret;
++}
+ 
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i
+@@ -3712,12 +4078,7 @@
+ 	objIndex_t dnsV6SrvIid;
+ 	struct json_object *dnsV6SrvJobj = NULL;
+ #endif
+-	char pmPath[256] = {0};
+-	char tmp[256] = {0};
+ 	int numOfEntries = 0;
+-	int i;
+-	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char typeBuf[20] = {0};
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
+ 
+@@ -4937,7 +5298,7 @@
+ 
+ zcfgRet_t WANPppConnObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char tr181Obj[128] = {0};
+ 	char mapObj[128] = {0};
+ 	uint32_t  devInfoOid = 0, ipcpOid = 0;
+@@ -4966,6 +5327,11 @@
+ 			paramList++;
+ 			continue;
+ 		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
++
+ 		/*special case*/
+ 		if(strcmp(paramList->name, "ExternalIPAddress") == 0){
+ 			attrValue = zcfgFeParamAttrGetByName(ipcpOid, "LocalIPAddress");
+@@ -5005,7 +5371,7 @@
+  */
+ zcfgRet_t WANPortMappingObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char natPortMap[32] = {0};
+ 	objIndex_t objIid;
+ 	struct json_object *portMapJobj = NULL;
+@@ -5095,7 +5461,7 @@
+  */
+ zcfgRet_t WANPortMappingSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+ 	struct json_object *portMapJobj = NULL;
+ 	struct json_object *tmpObj = NULL;
+@@ -5189,7 +5555,7 @@
+  */
+ zcfgRet_t WANPortMappingAdd(char *tr98FullPathName, int *idx)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+ 	rdm_NatPortMapping_t *natPortMapObj = NULL;
+ 	char tr98ConnName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+@@ -5269,7 +5635,7 @@
+  */
+ zcfgRet_t WANPortMappingDel(char *tr98FullPathName)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+ 	char portMap[32] = {0};
+ 
+@@ -5312,7 +5678,7 @@
+ 			break;
+ 		}
+ 		
+-		if(strcmp(tr181ParamName, "Enabled") == 0) {
++		if(strcmp(tr181ParamName, "Enable") == 0) {
+ 			found = true;
+ 			sprintf(tr98Notify, "%s.%s", tr98ObjName, "PortMappingEnabled");
+ 			break;
+@@ -5355,7 +5721,7 @@
+ 	int attrValue = ZCFG_NO_SUCH_PARAMETER;
+ 	tr98Parameter_t *paramList = NULL;
+ 
+-	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
+ 
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -5399,7 +5765,7 @@
+ 
+ zcfgRet_t WANPortMappingAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char tr181Obj[128] = {0};
+ 	char mapObj[128] = {0};
+ 	uint32_t  devInfoOid = 0;
+@@ -5407,7 +5773,7 @@
+ 	int attrValue = 0;
+ 	tr98Parameter_t *paramList = NULL;
+ 
+-	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+ 		return ZCFG_INVALID_OBJECT;
+ 	}
+@@ -5424,9 +5790,13 @@
+ 			paramList++;
+ 			continue;
+ 		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
+ 		/*special case*/
+ 		if(strcmp(paramList->name, "PortMappingEnabled") == 0){
+-			attrValue = zcfgFeParamAttrGetByName(devInfoOid, "Enabled");
++			attrValue = zcfgFeParamAttrGetByName(devInfoOid, "Enable");
+ 		}else if(strcmp(paramList->name, "PortMappingLeaseDuration") == 0){
+ 			attrValue = zcfgFeParamAttrGetByName(devInfoOid, "LeaseDuration");
+ 		}else if(strcmp(paramList->name, "PortMappingProtocol") == 0){
+@@ -5444,7 +5814,7 @@
+ 		/*Write new parameter attribute from tr98 object to tr181 objects*/
+ 		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
+ 		if(strcmp(paramList->name, "PortMappingEnabled") == 0){
+-			ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, "Enabled", attrValue);
++			ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, "Enable", attrValue);
+ 		}else if(strcmp(paramList->name, "PortMappingLeaseDuration") == 0){
+ 			ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, "LeaseDuration", attrValue);
+ 		}else if(strcmp(paramList->name, "PortMappingProtocol") == 0){
+@@ -5531,6 +5901,133 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t WANConnStObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	char tr98Notify[256] = {0};
++	tr98Parameter_t *paramList = NULL;
++	char *attrParamNamePtr = NULL;
++	
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, tr181ParamName)){
++			paramList++;
++			continue;
++		}
++		attrParamNamePtr = tr181ParamName;
++		break;
++	}
++
++	if(attrParamNamePtr && strlen(attrParamNamePtr) > 0) {
++		sprintf(tr98Notify, "%s.Ethernet%s", tr98ObjName, attrParamNamePtr);
++
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int WANConnStObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++	uint32_t oid = 0;
++	int tr181ParamPos = 0;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(strstr(tr98FullPathName, "WANIP") != NULL) {
++		oid = RDM_OID_IP_IFACE_STAT;
++	}
++	else if(strstr(tr98FullPathName, "WANPPP") != NULL) {
++		oid = RDM_OID_PPP_IFACE_STAT;
++	}
++	else
++		return ZCFG_INVALID_OBJECT;
++
++	tr181ParamPos = strlen("Ethernet");
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		char *paramPtr = NULL;
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		paramPtr = paramName;
++		paramPtr += tr181ParamPos;
++
++		attrValue = zcfgFeParamAttrGetByName(oid, paramPtr);
++
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t WANConnStObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	uint32_t oid = 0;
++	tr98Parameter_t *paramList = NULL;
++	char *paramPtr = NULL;
++	int tr181ParamPos = 0;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(strstr(tr98FullPathName, "WANIP") != NULL) {
++		oid = RDM_OID_IP_IFACE_STAT;
++	}
++	else if(strstr(tr98FullPathName, "WANPPP") != NULL) {
++		oid = RDM_OID_PPP_IFACE_STAT;
++	}
++	else
++		return ZCFG_INVALID_OBJECT;
++
++	tr181ParamPos = strlen("Ethernet");
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
++		paramPtr = paramName;
++		paramPtr += tr181ParamPos;
++
++		attrValue = zcfgFeParamAttrGetByName(oid, paramPtr);
++
++		break;
++	}
++
++	if(attrValue >= 0) {
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(oid, multiAttrJobj, paramPtr, attrValue);
++
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, oid, paramPtr);
++		}
++	}
++	else {
++		ret = ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ret;
++}
++
+ /*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANATMF5LoopbackDiagnostics
+ 
+     Related object in TR181:
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2015-04-14 14:54:48.508603441 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2015-04-14 14:54:48.568603442 +0800
+@@ -288,27 +288,27 @@
+ 	{ "ConnectionType", PARAMETER_ATTR_WRITE, 35, json_type_string},
+ 	{ "Name", PARAMETER_ATTR_WRITE, 257, json_type_string},
+ 	{ "Uptime", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "LastConnectionError", PARAMETER_ATTR_READONLY, 32, json_type_string},
+-	{ "AutoDisconnectTime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "IdleDisconnectTime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "WarnDisconnectDelay", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "RSIPAvailable", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "LastConnectionError", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 32, json_type_string},
++	{ "AutoDisconnectTime", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "IdleDisconnectTime", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "WarnDisconnectDelay", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "RSIPAvailable", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_boolean},
+ 	{ "NATEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "AddressingType", PARAMETER_ATTR_WRITE, 8, json_type_string},
+ 	{ "ExternalIPAddress", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_ACTIVENOTIFY, 17, json_type_string},
+ 	{ "SubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "DefaultGateway", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "DNSEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "DNSOverrideAllowed", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "DNSOverrideAllowed", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_boolean},
+ 	{ "DNSServers", PARAMETER_ATTR_WRITE, 65, json_type_string},
+ 	{ "MaxMTUSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "MACAddress", PARAMETER_ATTR_WRITE, 19, json_type_string},
+-	{ "MACAddressOverride", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "ConnectionTrigger", PARAMETER_ATTR_WRITE, 10, json_type_string},
+-	{ "RouteProtocolRx", PARAMETER_ATTR_WRITE, 7, json_type_string},
+-	{ "ShapingRate", PARAMETER_ATTR_WRITE, 0, json_type_int},
+-	{ "ShapingBurstSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "PortMappingNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "MACAddress", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 19, json_type_string},
++	{ "MACAddressOverride", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_boolean},
++	{ "ConnectionTrigger", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 10, json_type_string},
++	{ "RouteProtocolRx", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 7, json_type_string},
++	{ "ShapingRate", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_int},
++	{ "ShapingBurstSize", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "PortMappingNumberOfEntries", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32},
+ 	{ "X_ZYXEL_DNSType", PARAMETER_ATTR_WRITE, 19, json_type_string},
+ 	{ "X_ZYXEL_IGMPProxyEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6RD_PROFILE
+@@ -354,7 +354,7 @@
+ 
+ tr98Parameter_t para_WANIpPortMap[] = {
+ 	{ "PortMappingEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "PortMappingLeaseDuration", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "PortMappingLeaseDuration", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
+ 	{ "RemoteHost", PARAMETER_ATTR_WRITE, 46, json_type_string},
+ 	{ "ExternalPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "ExternalPortEndRange", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+@@ -368,21 +368,21 @@
+ };
+ 
+ tr98Parameter_t para_WANIpConnStat[] = {
+-	{ "EthernetBytesSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetBytesReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetErrorsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetErrorsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetUnicastPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetUnicastPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetDiscardPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetDiscardPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetMulticastPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetMulticastPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetBroadcastPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetBroadcastPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "EthernetUnknownProtoPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "EthernetBytesSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetBytesReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetPacketsSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetPacketsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetErrorsSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetErrorsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetUnicastPacketsSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetUnicastPacketsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetDiscardPacketsSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetDiscardPacketsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetMulticastPacketsSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetMulticastPacketsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetBroadcastPacketsSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetBroadcastPacketsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
++	{ "EthernetUnknownProtoPacketsReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-04-14 14:54:48.524603441 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-04-14 14:54:48.568603442 +0800
+@@ -954,7 +954,7 @@
+ 
+ zcfgRet_t zcfgFeTr98Notify(struct json_object *tr181NotifyInfo, struct json_object **tr98NotifyInfo)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char tr181ObjName[128] = {0};
+ 	char tr181ParamName[64] = {0};
+@@ -1057,6 +1057,25 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++int zcfgFeTr98ParamAttrChk(int paramAttr, int notification)
++{
++
++	if((paramAttr & PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST) && (notification == 2)) {
++		printf("%s: ActiveNotify request is denied!\n", __FUNCTION__);		
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++	else if((paramAttr & PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST) && (notification == 1)) {
++		printf("%s: PassiveNotify request is denied!\n", __FUNCTION__);		
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++	else if((paramAttr & PARAMETER_ATTR_DENY_DISABLENOTIFY_REQUEST) && (notification == 0)) {
++		printf("%s: DisableNotify request is denied!\n", __FUNCTION__);		
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
+ int zcfgFeTr98ParamAttrGetByName(char *tr98ObjName, char *name)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2015-04-14 14:54:48.376603438 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2015-04-14 14:54:48.568603442 +0800
+@@ -55,6 +55,7 @@
+ zcfgRet_t zcfgFeTr98Notify(struct json_object *, struct json_object **);
+ zcfgRet_t zcfgFeTr98ParamList(char *);
+ 
++int zcfgFeTr98ParamAttrChk(int , int);
+ int zcfgFeTr98ParamAttrGetByName(char *, char *);
+ zcfgRet_t zcfgFeTr98AllParamAttrGetByObjName(char *, struct json_object *);
+ int zcfgFeTr98ParamAttrMultiSetByName(char *, char *, int , struct json_object *);
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-04-14 14:54:48.480603440 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-04-14 14:54:48.572603442 +0800
+@@ -3411,6 +3411,124 @@
+ 
+ 	return ret;
+ }
++
++zcfgRet_t lanDevWlanCfgObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++	char attrParamName[100] = {0};
++	char *attrParamNamePtr = NULL;
++	uint32_t wlanCfgOid = 0;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
++		if(!strcmp(paramName, "TotalAssociations")) {
++			strcpy(attrParamName, "AssociatedDeviceNumberOfEntries");
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_WIFI_ACCESS_POINT, attrParamName);
++			wlanCfgOid = RDM_OID_WIFI_ACCESS_POINT;
++			attrParamNamePtr = attrParamName;
++		}
++		else {
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_WIFI_ACCESS_POINT, paramName);
++			wlanCfgOid = RDM_OID_WIFI_ACCESS_POINT;
++			attrParamNamePtr = paramName;
++		}
++		break;
++	}
++
++		if(attrValue >= 0) {
++			/*Write new parameter attribute from tr98 object to tr181 objects*/
++			attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++			ret = zcfgFeMultiParamAttrAppend(wlanCfgOid, multiAttrJobj, attrParamNamePtr, attrValue);
++		
++			if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, wlanCfgOid, attrParamNamePtr);
++			}
++		}
++		else {
++			ret = ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ret;
++}
++
++int lanDevWlanCfgObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "TotalAssociations")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_WIFI_ACCESS_POINT, "AssociatedDeviceNumberOfEntries");
++		}
++
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t lanDevWlanCfgObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	char tr98Notify[256] = {0};
++	tr98Parameter_t *paramList = NULL;
++	char *attrParamNamePtr = NULL;
++	char attrParamName[100] = {0};
++	
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, tr181ParamName)){
++			paramList++;
++			continue;
++		}
++		attrParamNamePtr = tr181ParamName;
++		break;
++	}
++
++	if(!attrParamNamePtr) {
++		attrParamNamePtr = attrParamName;
++		if(!strcmp(tr181ParamName, "AssociatedDeviceNumberOfEntries")) {
++			strcpy(attrParamNamePtr, "TotalAssociations");
++		}
++	}
++
++	if(attrParamNamePtr && strlen(attrParamNamePtr) > 0) {
++		sprintf(tr98Notify, "%s.%s", tr98ObjName, attrParamNamePtr);
++
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WPS
+  *
+  *   Related object in TR181:
+@@ -3947,7 +4065,7 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
+-zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj)
++zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+ 	int idx = 0;
+@@ -3970,6 +4088,7 @@
+ 	ptr = strstr(tr98TmpName, ".WEPKey");
+ 	*ptr = '\0';
+ 
++	updateFlag = 0;
+ 	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i.WLANConfiguration.i */
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wifiSsid)) != ZCFG_SUCCESS) {
+ 		return ret;
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2015-04-14 14:54:48.320603437 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2015-04-14 14:54:48.572603442 +0800
+@@ -94,6 +94,9 @@
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i*/
+ extern zcfgRet_t lanDevWlanCfgObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t lanDevWlanCfgObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t lanDevWlanCfgObjAttrSet(char *, int , char *, int , struct json_object *);
++extern int lanDevWlanCfgObjAttrGet(char *, int , char *);
++extern zcfgRet_t lanDevWlanCfgObjNotify(char *, char *, struct json_object *, int , struct json_object **);
+ 
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.Stats*/
+ extern zcfgRet_t lanDevWlanCfgStatObjGet(char *, int, struct json_object **, bool);
+@@ -107,7 +110,7 @@
+ extern zcfgRet_t lanDevWlanCfgPskObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ 
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WEPKey.i*/
+-extern zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj);
++extern zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool);
+ extern zcfgRet_t lanDevWlanCfgWEPKeyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ 
+ /*InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPv6Address.i*/
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2015-04-14 14:54:48.316603437 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2015-04-14 14:54:48.572603442 +0800
+@@ -95,15 +95,22 @@
+ 
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.DHCPClient */
+ extern zcfgRet_t DhcpClientObjGet(char *, int, struct json_object **, bool);
++extern int DhcpClientObjAttrGet(char *, int , char *);
++extern zcfgRet_t DhcpClientObjAttrSet(char *, int, char *, int , struct json_object *);
++extern zcfgRet_t DhcpClientObjNotify(char *, char *, struct json_object *, int , struct json_object **);
+ extern zcfgRet_t DhcpClientSentOptObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t DhcpClientSentOptObjSet(char *, int, struct json_object *, struct json_object *);
+ extern zcfgRet_t DhcpClientSentOptObjAdd(char *, int *);
+ extern zcfgRet_t DhcpClientSentOptObjDel(char *);
++extern zcfgRet_t DhcpClientOptObjNotify(char *, char *, struct json_object *, int , struct json_object **);
++extern int DhcpClientSentOptObjAttrGet(char *, int , char *);
++extern zcfgRet_t DhcpClientSentOptObjAttrSet(char *, int, char *, int , struct json_object *);
+ extern zcfgRet_t DhcpClientReqOptObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t DhcpClientReqOptObjSet(char *, int, struct json_object *, struct json_object *);
+ extern zcfgRet_t DhcpClientReqOptObjAdd(char *, int *);
+ extern zcfgRet_t DhcpClientReqOptObjDel(char *);
+-
++extern int DhcpClientReqOptObjAttrGet(char *, int , char *);
++extern zcfgRet_t DhcpClientReqOptObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
+ extern zcfgRet_t WANPppConnObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t WANPppConnObjSet(char *, int, struct json_object *, struct json_object *);
+@@ -126,6 +133,9 @@
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.Stats */
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.Stats */
+ extern zcfgRet_t WANConnStObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t WANConnStObjNotify(char *, char *, struct json_object *, int , struct json_object **);
++extern int WANConnStObjAttrGet(char *, int , char *);
++extern zcfgRet_t WANConnStObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANATMF5LoopbackDiagnostics*/
+ extern zcfgRet_t WANAtmF5LoConfObjGet(char *, int, struct json_object **, bool);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-04-14 14:54:48.452603440 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-04-14 14:54:48.572603442 +0800
+@@ -268,7 +268,7 @@
+ {TR98_LAN_ETH_INTF_CONF_STAT,   0,              para_LanEthIntfConfStat,lanEthIntfConfStatObjGet,NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_USB_INTF_CONF,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_USB_INTF_CONF_STAT,   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_LAN_DEV_WLAN_CFG,         ATTR_INDEXNODE,	para_LanDevWlanCfg,     lanDevWlanCfgObjGet,     lanDevWlanCfgObjSet,    NULL,             NULL,            NULL},
++{TR98_LAN_DEV_WLAN_CFG,         ATTR_INDEXNODE,	para_LanDevWlanCfg,     lanDevWlanCfgObjGet,     lanDevWlanCfgObjSet, NULL, NULL, lanDevWlanCfgObjNotify, lanDevWlanCfgObjAttrGet, lanDevWlanCfgObjAttrSet},
+ {TR98_WLAN_CFG_STAT,            0,              para_LanDevWlanCfgStat, lanDevWlanCfgStatObjGet,        NULL,                   NULL,             NULL,            NULL},
+ {TR98_WPS,                      0,              para_LanDevWlanCfgWps,  lanDevWlanCfgWpsObjGet,  lanDevWlanCfgWpsObjSet, NULL,             NULL,            NULL},
+ //{TR98_REG,                      ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+@@ -305,12 +305,12 @@
+ {TR98_WAN_PTM_LINK_CONF_STAT,   0,              para_WANPtmLinkConfStat,WANPtmLinkConfStObjGet,  NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_ETH_LINK_CONF,        0,              para_WANEthLinkConf,    WANEthLinkConfObjGet,    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_WAN_POTS_LINK_CONF,       0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_WAN_IP_CONN,              ATTR_INDEX_CREA,para_WANIpConn,         WANIpConnObjGet,         WANIpConnObjSet,        WANIpConnObjAdd,  WANIpConnObjDel, WANIpConnObjNotify, /*NULL, NULL*/ WANIpConnObjAttrGet, WANIpConnObjAttrSet},
+-{TR98_DHCP_CLIENT,              0,              para_DhcpClient,        DhcpClientObjGet,        NULL,                   NULL,             NULL,            NULL},
+-{TR98_SENT_DHCP_OPT,            ATTR_INDEX_CREA, para_SentDhcpOpt,      DhcpClientSentOptObjGet, DhcpClientSentOptObjSet,DhcpClientSentOptObjAdd, DhcpClientSentOptObjDel,            NULL},
+-{TR98_REQ_DHCP_OPT,             ATTR_INDEX_CREA, para_ReqDhcpOpt,       DhcpClientReqOptObjGet,  DhcpClientReqOptObjSet, DhcpClientReqOptObjAdd, DhcpClientReqOptObjDel,            NULL},
+-{TR98_WAN_IP_PORT_MAP,          ATTR_INDEX_CREA,para_WANIpPortMap,      WANPortMappingObjGet,       WANPortMappingSet,      WANPortMappingAdd,WANPortMappingDel,WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},
+-{TR98_WAN_IP_CONN_STAT,         0,              para_WANIpConnStat,     WANConnStObjGet,         NULL,                   NULL,             NULL,            NULL},
++{TR98_WAN_IP_CONN,              ATTR_INDEX_CREA,para_WANIpConn,         WANIpConnObjGet,         WANIpConnObjSet,        WANIpConnObjAdd,  WANIpConnObjDel, WANIpConnObjNotify, WANIpConnObjAttrGet, WANIpConnObjAttrSet},
++{TR98_DHCP_CLIENT,              0,              para_DhcpClient,        DhcpClientObjGet,        NULL,                   NULL,             NULL, DhcpClientObjNotify, DhcpClientObjAttrGet, DhcpClientObjAttrSet},
++{TR98_SENT_DHCP_OPT,            ATTR_INDEX_CREA, para_SentDhcpOpt,      DhcpClientSentOptObjGet, DhcpClientSentOptObjSet, DhcpClientSentOptObjAdd, DhcpClientSentOptObjDel, DhcpClientOptObjNotify, DhcpClientSentOptObjAttrGet, DhcpClientSentOptObjAttrSet},
++{TR98_REQ_DHCP_OPT,             ATTR_INDEX_CREA, para_ReqDhcpOpt,       DhcpClientReqOptObjGet,  DhcpClientReqOptObjSet, DhcpClientReqOptObjAdd, DhcpClientReqOptObjDel, DhcpClientOptObjNotify, DhcpClientReqOptObjAttrGet, DhcpClientReqOptObjAttrSet},
++{TR98_WAN_IP_PORT_MAP,          ATTR_INDEX_CREA, para_WANIpPortMap,      WANPortMappingObjGet,       WANPortMappingSet,      WANPortMappingAdd, WANPortMappingDel, WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},
++{TR98_WAN_IP_CONN_STAT,         0,              para_WANIpConnStat,     WANConnStObjGet,         NULL,                   NULL,     NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_WAN_IP_CONN_IPV6ADDR,     ATTR_INDEX_CREA, para_WANIpv6Addr,      WANIpv6AddrObjGet,        WANIpv6AddrObjSet,     WANIpv6AddrObjAdd, WANIpv6AddrObjDel,            NULL},
+ {TR98_WAN_IP_CONN_IPV6PREFIX, 	ATTR_INDEX_CREA, para_WANIpv6Prefix, 	WANIpv6PrefixObjGet,	 WANIpv6PrefixObjSet,   WANIpv6PrefixObjAdd, WANIpv6PrefixObjDel,			NULL},
+@@ -323,7 +323,7 @@
+ #endif
+ {TR98_WAN_PPP_CONN,             ATTR_INDEX_CREA,para_WANPppConn,        WANPppConnObjGet,        WANPppConnObjSet,       WANPppConnObjAdd, WANPppConnObjDel, WANPppConnObjNotify, /*NULL, NULL*/ WANPppConnObjAttrGet, WANPppConnObjAttrSet},
+ {TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,       WANPortMappingSet,      WANPortMappingAdd,WANPortMappingDel,NULL},	
+-{TR98_WAN_PPP_CONN_STAT,        0,              para_WANPppConnStat,    WANConnStObjGet,         NULL,                   NULL,             NULL,            NULL},
++{TR98_WAN_PPP_CONN_STAT,        0,              para_WANPppConnStat,    WANConnStObjGet,         NULL,                   NULL,   NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_WAN_PPP_CONN_IPV6ADDR,    ATTR_INDEX_CREA, para_WANPppv6Addr,     WANPppv6AddrObjGet,        WANPppv6AddrObjSet,     WANPppv6AddrObjAdd, WANPppv6AddrObjDel,            NULL},
+ {TR98_WAN_PPP_CONN_IPV6PREFIX, 	ATTR_INDEX_CREA, para_WANPppv6Prefix,	WANPppv6PrefixObjGet,	 WANPppv6PrefixObjSet,   WANPppv6PrefixObjAdd, WANPppv6PrefixObjDel,			NULL},
+Index: libzcfg_fe_tr98-1.0/wanDev_api.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.h	2015-04-14 14:54:48.540603442 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.h	2015-04-14 14:54:48.572603442 +0800
+@@ -22,4 +22,5 @@
+ zcfgRet_t addDhcpObj(char *);
+ zcfgRet_t setDhcpObj(char *, bool);
+ zcfgRet_t ipaddrSet(char *, objIndex_t *, struct json_object **, const char *, struct json_object *);
++zcfgRet_t DhcpcIidGet(char *, objIndex_t *);
+ #endif
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/devInfo.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo.h	2015-04-14 14:54:47.728603426 +0800
++++ libzcfg_fe_tr98-1.0/devInfo.h	2015-04-14 14:54:48.572603442 +0800
+@@ -4,7 +4,7 @@
+ /*Handler Function*/
+ extern zcfgRet_t devInfoObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t devInfoObjSet(char *, int , struct json_object *, struct json_object *);
+-extern zcfgRet_t devInfoObjNotify(char *, struct json_object *, int, struct json_object **);
++extern zcfgRet_t devInfoObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int devInfoObjAttrGet(char *, int , char *);
+ extern zcfgRet_t devInfoObjAttrSet(char *, int , char *, int , struct json_object *);
+ 
+Index: libzcfg_fe_tr98-1.0/mgmtSrv.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/mgmtSrv.h	2015-04-14 14:54:47.740603426 +0800
++++ libzcfg_fe_tr98-1.0/mgmtSrv.h	2015-04-14 14:54:48.572603442 +0800
+@@ -5,7 +5,7 @@
+ /*Handler Function*/
+ extern zcfgRet_t mgmtSrvObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t mgmtSrvObjSet(char *, int, struct json_object *, struct json_object *);
+-extern zcfgRet_t mgmtSrvObjNotify(char *, struct json_object *, int, struct json_object **);
++extern zcfgRet_t mgmtSrvObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int mgmtSrvObjAttrGet(char *, int , char *);
+ extern zcfgRet_t mgmtSrvObjAttrSet(char *, int , char *, int , struct json_object *);
+ 
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2015-04-14 14:54:48.156603434 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2015-04-14 14:54:48.572603442 +0800
+@@ -41,10 +41,10 @@
+ extern zcfgRet_t zyExtLogCfgGpAccountObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtLogCfgGpAccountObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ extern zcfgRet_t zyExtLogCfgGpAccountObjAdd(char *tr98FullPathName, int *idx);
+-#endif
++#endif
+ 
+-extern zcfgRet_t zyExtLogSettingObjGet(char *, int, char *, int , struct json_object *);
+-extern zcfgRet_t zyExtLogSettingObjSet(char *, int, char *, int , struct json_object *);
+-extern zcfgRet_t zyExtLogClassifyObjGet(char *, int, char *, int , struct json_object *);
+-extern zcfgRet_t zyExtLogCategoryObjGet(char *, int, char *, int , struct json_object *);
+-extern zcfgRet_t zyExtLogCategoryObjSet(char *, int, char *, int , struct json_object *);
++extern zcfgRet_t zyExtLogSettingObjGet(char *, int , struct json_object **, bool );
++extern zcfgRet_t zyExtLogSettingObjSet(char *, int , struct json_object *, struct json_object *);
++extern zcfgRet_t zyExtLogClassifyObjGet(char *, int , struct json_object **, bool );
++extern zcfgRet_t zyExtLogCategoryObjGet(char *, int , struct json_object **, bool );
++extern zcfgRet_t zyExtLogCategoryObjSet(char *, int , struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/devInfo.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo.c	2015-04-14 14:54:47.944603430 +0800
++++ libzcfg_fe_tr98-1.0/devInfo.c	2015-04-14 14:54:23.502602100 +0800
+@@ -24,9 +24,11 @@
+ zcfgRet_t devInfoObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
++#if 0
+ 	char tr181Obj[128] = {0};
+ 	char mapObj[128] = {0};
+ 	uint32_t  devInfoOid = 0;
++#endif
+ 	objIndex_t devInfoIid;
+ 	struct json_object *devInfoObj = NULL;
+ 	struct json_object *paramValue = NULL;
+@@ -255,9 +257,10 @@
+ 
+ zcfgRet_t devInfoObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
+ {
+-	bool found = false;
+-	char tr98Notify[256] = "";
++	char tr98Notify[256] = {0};
+ 	tr98Parameter_t *paramList = NULL;
++	char paramName[100] = {0};
++	char *paramPtr = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+ 
+@@ -268,15 +271,22 @@
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		if(strcmp(tr181ParamName, paramList->name) == 0) {
+-			found = true;
+-			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			paramPtr = tr181ParamName;
+ 			break;
+ 		}
+ 
+ 		paramList++;
+ 	}
+ 
+-	if(found) {
++	if(!paramPtr) {
++		if(!strcmp(tr181ParamName, "FirmwareVersion")) {
++			strcpy(paramName, "ModemFirmwareVersion");
++			paramPtr = paramName;
++		}
++	}
++
++	if(paramPtr) {
++		sprintf(tr98Notify, "%s.%s", tr98ObjName, paramPtr);
+ 		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
+ 	}
+ 
+@@ -316,14 +326,23 @@
+ 
+ 		/*special case*/
+ 		if(strcmp(paramList->name, "SpecVersion") == 0){
++			attrValue = PARAMETER_ATTR_PASSIVENOTIFY;
++		}
++		else if(!strcmp(paramList->name, "EnabledOptions")) {
+ 			attrValue = 0;
+-			break;		
+ 		}
+-		
++		else if(!strcmp(paramList->name, "DeviceLog")) {
++			attrValue = 0;
++		}
++		else if(!strcmp(paramList->name, "ModemFirmwareVersion")) {
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_DSL_LINE, "FirmwareVersion");
++		}
++		else {
+ 		attrValue = zcfgFeParamAttrGetByName(devInfoOid, paramList->name);
++		}
++		
+ 		if(attrValue < 0 ) {
+ 			attrValue = 0;
+-			break;
+ 		}
+ 
+ 		break;
+@@ -335,13 +354,15 @@
+ /* InternetGatewayDevice.DeviceInfo *//* all use the batch set, only tr069 use this action*/
+ zcfgRet_t devInfoObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char tr181Obj[128] = {0};
+ 	char mapObj[128] = {0};
+ 	uint32_t  devInfoOid = 0;
+ 	objIndex_t devInfoIid;
+ 	int attrValue = 0;
+ 	tr98Parameter_t *paramList = NULL;
++	char attrParamName[100] = {0};
++	char *paramNamePtr = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+@@ -360,13 +381,25 @@
+ 			paramList++;
+ 			continue;
+ 		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
+ 		/*special case*/
+-		if(strcmp(paramList->name, "SpecVersion") == 0){
+-			ret = ZCFG_INVALID_ARGUMENTS;
+-			break;		
++		if((strcmp(paramName, "SpecVersion") == 0) || (!strcmp(paramName, "SoftwareVersion")) || (!strcmp(paramName, "EnabledOptions"))
++			|| (!strcmp(paramName, "ProvisioningCode")) || (!strcmp(paramName, "DeviceLog"))) {
++			return ZCFG_SUCCESS;
++		}
++		else if(!strcmp(paramName, "ModemFirmwareVersion")) {
++			strcpy(attrParamName, "FirmwareVersion");
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_DSL_LINE, attrParamName);
++			devInfoOid = RDM_OID_DSL_LINE;
++			paramNamePtr = attrParamName;
++		}
++		else {
++			attrValue = zcfgFeParamAttrGetByName(devInfoOid, paramName);
++			paramNamePtr = paramName;
+ 		}
+-		
+-		attrValue = zcfgFeParamAttrGetByName(devInfoOid, paramList->name);
+ 		if(attrValue < 0) {
+ 			ret = ZCFG_INVALID_ARGUMENTS;
+ 			break;
+@@ -374,9 +407,9 @@
+ 
+ 		/*Write new parameter attribute from tr98 object to tr181 objects*/
+ 		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
+-		if( (ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, paramList->name, attrValue)) != ZCFG_SUCCESS){
++		if( (ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, paramNamePtr, attrValue)) != ZCFG_SUCCESS){
+ 			
+-			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, devInfoOid, paramList->name);
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, devInfoOid, paramNamePtr);
+ 		}
+ 
+ 		break;
+Index: libzcfg_fe_tr98-1.0/devInfo_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo_parameter.h	2014-01-03 16:07:24.000000000 +0800
++++ libzcfg_fe_tr98-1.0/devInfo_parameter.h	2015-04-14 14:54:48.572603442 +0800
+@@ -5,17 +5,17 @@
+ 	{ "Description", PARAMETER_ATTR_READONLY, 257, json_type_string},
+ 	{ "ProductClass", PARAMETER_ATTR_READONLY, 65, json_type_string},
+ 	{ "SerialNumber", PARAMETER_ATTR_READONLY, 65, json_type_string},
+-	{ "HardwareVersion", PARAMETER_ATTR_READONLY, 65, json_type_string},
+-	{ "SoftwareVersion", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_ACTIVENOTIFY, 65, json_type_string},
++	{ "HardwareVersion", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_DISABLENOTIFY_REQUEST, 65, json_type_string},
++	{ "SoftwareVersion", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_DISABLENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST|PARAMETER_ATTR_ACTIVENOTIFY, 65, json_type_string},
+ 	{ "ModemFirmwareVersion", PARAMETER_ATTR_READONLY, 65, json_type_string},
+-	{ "EnabledOptions", PARAMETER_ATTR_READONLY, 1025, json_type_string},
+-	{ "UpTime", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "EnabledOptions", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 1025, json_type_string},
++	{ "UpTime", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
+ 	{ "AdditionalHardwareVersion", PARAMETER_ATTR_READONLY, 65, json_type_string},
+ 	{ "AdditionalSoftwareVersion", PARAMETER_ATTR_READONLY, 65, json_type_string},
+-	{ "SpecVersion", PARAMETER_ATTR_READONLY, 17, json_type_string},
+-	{ "ProvisioningCode", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_ACTIVENOTIFY, 65, json_type_string},
++	{ "SpecVersion", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_DISABLENOTIFY_REQUEST|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 17, json_type_string},
++	{ "ProvisioningCode", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DENY_DISABLENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST|PARAMETER_ATTR_ACTIVENOTIFY, 65, json_type_string},
+ 	{ "FirstUseDate", PARAMETER_ATTR_READONLY, 21, json_type_time},
+-	{ "DeviceLog", PARAMETER_ATTR_READONLY, 33, json_type_string},
++	{ "DeviceLog", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 33, json_type_string},
+ 	{ "VendorConfigFileNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+ };
+\ No newline at end of file

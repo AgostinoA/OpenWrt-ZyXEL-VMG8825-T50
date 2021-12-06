@@ -1,0 +1,1292 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-08-28 15:59:56.250653961 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-08-28 16:11:08.098671798 +0800
+@@ -1969,11 +1969,13 @@
+ 	zcfgRet_t ret;
+ 	char ipIface[32] = {0};
+ 	objIndex_t ipIfaceIid, vlanTermIid, ipv4AddrIid;
+-	objIndex_t dnsSrvIid;
++	objIndex_t dnsSrvIid, natIid, natSessionIid;
+ 	struct json_object *ipIfaceJobj = NULL, *ipAddrJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *dnsSrvJobj = NULL;
+ 	struct json_object *vlanTermJobj = NULL;
++	struct json_object *natJobj = NULL;
++	struct json_object *natSessionJobj = NULL;
+ #ifdef IPV6INTERFACE_PROFILE
+ 	objIndex_t dnsV6SrvIid;
+ 	objIndex_t rtIid;
+@@ -2022,6 +2024,18 @@
+ 			return ret;
+ 	}
+ 	
++	IID_INIT(natIid);
++	if((ret = feObjJsonGet(RDM_OID_NAT, &natIid, &natJobj, updateFlag)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get NAT Fail\n", __FUNCTION__);
++		return ret;
++	}
++	
++	IID_INIT(natSessionIid);
++	if((ret = feObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj, updateFlag)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get RDM_OID_NAT_SESSION_CTL Fail\n", __FUNCTION__);
++		return ret;
++	}
++	
+ #ifdef IPV6INTERFACE_PROFILE
+ 	IID_INIT(rtIid);
+ 	rtIid.level = 1;
+@@ -2109,11 +2123,6 @@
+ 			paramList++;
+ 			continue;
+ 		}
+-		else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")) {
+-			natInfoSet(ipIface, *tr98Jobj);
+-			paramList++;
+-			continue;
+-		}
+ 		else if(!strcmp(paramList->name, "DefaultGateway")) {
+ 			defaultGwInfoSet(ipIface, *tr98Jobj);
+ 			paramList++;
+@@ -2225,6 +2234,28 @@
+ 				}
+ 			}
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") ||
++				!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++				!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++			if(natJobj){
++				paramValue = json_object_object_get(natJobj, paramList->name);
++				if(paramValue != NULL) {
++					json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")){
++			if(natSessionJobj){
++				paramValue = json_object_object_get(natSessionJobj, "MaxSessionPerHost");
++				if(paramValue != NULL) {
++					json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++		}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 			paramValue = json_object_object_get(ipIfaceJobj, "IPv6Enable");
+@@ -2328,6 +2359,12 @@
+ 	if(vlanTermJobj){
+ 		json_object_put(vlanTermJobj);
+ 	}
++	if(natJobj){
++		json_object_put(natJobj);
++	}
++	if(natSessionJobj){
++		json_object_put(natSessionJobj);
++	}
+ #ifdef IPV6INTERFACE_PROFILE
+ 	if(dnsV6SrvJobj){
+ 		json_object_put(dnsV6SrvJobj);
+@@ -2348,13 +2385,14 @@
+ 	char ipIface[32] = {0};
+ 	char devIpIface[32] = {0};
+ 	objIndex_t ipIfaceIid;
+-	objIndex_t dnsSrvIid, dnsSrvV6Iid, dnsIid, igmpIid, vlanTermIid;
++	objIndex_t dnsSrvIid, dnsSrvV6Iid, dnsIid, igmpIid, vlanTermIid, natIid, natSessionIid;
+ 	struct json_object *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *paramValue2 = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+-	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL, *igmpJobj = NULL, *vlanTermJobj = NULL;
++	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL, *igmpJobj = NULL, 
++						*vlanTermJobj = NULL, *natJobj = NULL, *natSessionJobj = NULL;
+ 	const char *addrType = NULL, *connType = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ #if 0
+@@ -2399,6 +2437,14 @@
+ 		if((ret = zcfgFeObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj)) != ZCFG_SUCCESS)
+ 			return ret;
+ 	}
++	
++	IID_INIT(natIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &natIid, &natJobj)) != ZCFG_SUCCESS)
++		return ret;
++	
++	IID_INIT(natSessionIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj)) != ZCFG_SUCCESS)
++		return ret;
+ 
+ 	/*DNSServer*/
+ 	if(dnsInfoGetJobj(ipIface, &dnsSrvIid, (struct json_object **)&dnsSrvJobj, false, false) == ZCFG_SUCCESS) //dns v4
+@@ -2503,6 +2549,20 @@
+ 			json_object_put(tmpObj);
+ 		}
+ 		
++		if(natJobj){
++			tmpObj = natJobj;
++			natJobj = NULL;
++			natJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT, &natIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
++		
++		if(natSessionJobj){
++			tmpObj = natSessionJobj;
++			natSessionJobj = NULL;
++			natSessionJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_SESSION_CTL, &natSessionIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
++		
+ 		{
+ 			tmpObj = natIntfJobj;
+ 			natIntfJobj = NULL;
+@@ -2566,6 +2626,12 @@
+ 				paramList++;
+ 				continue;
+ 			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")){
++				const char *cmd = json_object_get_string(paramValue);
++				json_object_object_add(natIntfJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
+ 			else if(!strcmp(paramList->name, "DefaultGateway")){
+ 				const char *defaultRt = json_object_get_string(paramValue);
+ 				const char *defaultRtAddr = json_object_get_string(json_object_object_get(rtIpJobj, "GatewayIPAddress"));
+@@ -2685,6 +2751,22 @@
+ 					continue;
+ 				}
+ 			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") ||
++					!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++					!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++				if(natJobj){
++					json_object_object_add(natJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")){
++				if(natSessionJobj){
++					json_object_object_add(natSessionJobj, "MaxSessionPerHost", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 			else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 				json_object_object_add(ipIfaceJobj, "IPv6Enable", JSON_OBJ_COPY(paramValue));
+@@ -2808,6 +2890,26 @@
+ 			}
+ 			json_object_put(natIntfJobj);
+ 		}
++		
++		if(natJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_NAT, &natIid, natJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.NAT Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.NAT Success\n", __FUNCTION__);
++			}
++			json_object_put(natJobj);
++		}
++		
++		if(natSessionJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, natSessionJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.NAT.X_ZYXEL_SessionControl Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.NAT.X_ZYXEL_SessionControl Success\n", __FUNCTION__);
++			}
++			json_object_put(natSessionJobj);
++		}
+ 
+ 		if(defaultRtModify == true)	{
+ 			if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, rtIpJobj, NULL)) != ZCFG_SUCCESS ) {
+@@ -3437,6 +3539,9 @@
+ 		else if(!strcmp(paramList->name, "NATEnabled")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_INTF_SETTING, "Enable");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_INTF_SETTING, "X_ZYXEL_FullConeEnabled");
++		}
+ 		else if(!strcmp(paramList->name, "DefaultGateway")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, "GatewayIPAddress");
+ 		}
+@@ -3477,6 +3582,14 @@
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_VlanMuxID")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ETH_VLAN_TERM, "VLANID");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") || 
++				!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++				!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT, paramList->name);
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_SESSION_CTL, "MaxSessionPerHost");
++		}
+ 		else{
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_IP_IFACE, paramList->name);
+ 		}
+@@ -3548,6 +3661,10 @@
+ 			rdmOid = RDM_OID_NAT_INTF_SETTING;
+ 			strcpy(attrParamName, "Enable");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")){
++			rdmOid = RDM_OID_NAT_INTF_SETTING;
++			strcpy(attrParamName, "X_ZYXEL_FullConeEnabled");
++		}
+ 		else if(!strcmp(paramList->name, "DefaultGateway")){
+ 			rdmOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+ 			strcpy(attrParamName, "GatewayIPAddress");
+@@ -3596,6 +3713,16 @@
+ 					|| !strcmp(paramList->name, "PortMappingNumberOfEntries")){
+ 			return ZCFG_SUCCESS;
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") || 
++				!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++				!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++			rdmOid = RDM_OID_NAT;
++			strcpy(attrParamName, paramList->name);
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")){
++			rdmOid = RDM_OID_NAT_SESSION_CTL;
++			strcpy(attrParamName, "MaxSessionPerHost");
++		}
+ 		else {
+ 			rdmOid = RDM_OID_IP_IFACE;
+ 		}
+@@ -4381,11 +4508,13 @@
+ 	tr98Parameter_t *paramList = NULL;
+ 	uint32_t  pppConnOid = 0;
+ 	objIndex_t pppConnIid, ipIfaceIid, vlanTermIid;
+-	objIndex_t dnsSrvIid;
++	objIndex_t dnsSrvIid, natIid, natSessionIid;
+ 	struct json_object *pppConnJobj = NULL, *pppoeJobj = NULL, *ipcpJobj = NULL, *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *dnsSrvJobj = NULL;
+ 	struct json_object *vlanTermJobj = NULL;
++	struct json_object *natJobj = NULL;
++	struct json_object *natSessionJobj = NULL;
+ #ifdef IPV6INTERFACE_PROFILE
+ 	objIndex_t dnsV6SrvIid;
+ 	struct json_object *dnsV6SrvJobj = NULL;
+@@ -4423,6 +4552,18 @@
+ 		if((ret = feObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj, updateFlag)) != ZCFG_SUCCESS)
+ 			return ret;
+ 	}
++	
++	IID_INIT(natIid);
++	if((ret = feObjJsonGet(RDM_OID_NAT, &natIid, &natJobj, updateFlag)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get NAT Fail\n", __FUNCTION__);
++		return ret;
++	}
++	
++	IID_INIT(natSessionIid);
++	if((ret = feObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj, updateFlag)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get RDM_OID_NAT_SESSION_CTL Fail\n", __FUNCTION__);
++		return ret;
++	}
+ 
+ 	/*Get PPP.Interface.i.PPPoA(gnore now)*/
+ 
+@@ -4531,11 +4672,6 @@
+ 			paramList++;
+ 			continue;
+ 		}
+-		else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")) {
+-			natInfoSet(ipIface, *tr98Jobj);
+-			paramList++;
+-			continue;
+-		}
+ 		else if(!strcmp(paramList->name, "DefaultGateway")) {
+ 			defaultGwInfoSet(ipIface, *tr98Jobj);
+ 			paramList++;
+@@ -4614,6 +4750,28 @@
+ 				}
+ 			}
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") || 
++				!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++				!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++			if (natJobj){
++				paramValue = json_object_object_get(natJobj, paramList->name);
++				if(paramValue != NULL) {
++					json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")) {
++			if (natSessionJobj){
++				paramValue = json_object_object_get(natSessionJobj, "MaxSessionPerHost");
++				if(paramValue != NULL) {
++					json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++		}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 			paramValue = json_object_object_get(ipIfaceJobj, "IPv6Enable");
+@@ -4731,8 +4889,10 @@
+ 	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
+ 	bool isDnsObjExist = false, firstEnter = true;
+ 	const char *connType = NULL, *ipAddr = NULL, *snetMask = NULL;
+-	objIndex_t natIntfIid;
++	objIndex_t natIntfIid, natIid, natSessionIid;
+ 	struct json_object *natIntfJobj = NULL;
++	struct json_object *natJobj = NULL;
++	struct json_object *natSessionJobj = NULL;
+ 	char *lowerLayer = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO,"%s : Enter\n", __FUNCTION__);
+@@ -4776,6 +4936,14 @@
+ 		json_object_put(pppIfaceJobj);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
++	
++	IID_INIT(natIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &natIid, &natJobj)) != ZCFG_SUCCESS)
++		return ret;
++	
++	IID_INIT(natSessionIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj)) != ZCFG_SUCCESS)
++		return ret;
+ 
+ 	IID_INIT(natIntfIid);
+ 	if(natIntfGetJobj((const char *)ipIface, &natIntfIid, (struct json_object **)&natIntfJobj) != ZCFG_SUCCESS) {
+@@ -4863,6 +5031,18 @@
+ 			ipIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
++		if(natJobj){
++			tmpObj = natJobj;
++			natJobj = NULL;
++			natJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT, &natIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
++		if(natSessionJobj){
++			tmpObj = natSessionJobj;
++			natSessionJobj = NULL;
++			natSessionJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_SESSION_CTL, &natSessionIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 		{
+ 			tmpObj = natIntfJobj;
+ 			natIntfJobj = NULL;
+@@ -4906,6 +5086,11 @@
+ 				paramList++;
+ 				continue;
+ 			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")){
++				json_object_object_add(natIntfJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
+ 			else if(!strcmp(paramList->name, "ExternalIPAddress")){
+ 				ipAddr = json_object_get_string(paramValue);
+ 				paramList++;
+@@ -5009,6 +5194,22 @@
+ 					continue;
+ 				}
+ 			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") || 
++					!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++					!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++				if (natJobj){
++					json_object_object_add(natJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")){
++				if(natSessionJobj){
++					json_object_object_add(natSessionJobj, "MaxSessionPerHost", JSON_OBJ_COPY(paramValue));
++					paramList++;
++					continue;
++				}
++			}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 			else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 				json_object_object_add(ipIfaceJobj, "IPv6Enable", JSON_OBJ_COPY(paramValue));
+@@ -5088,6 +5289,26 @@
+ 			json_object_put(vlanTermJobj);
+ 		}
+ 		
++		if(natJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_NAT, &natIid, natJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.NAT Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.NAT Success\n", __FUNCTION__);
++			}
++			json_object_put(natJobj);
++		}
++		
++		if(natSessionJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, natSessionJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.NAT.X_ZYXEL_SessionControl Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.NAT.X_ZYXEL_SessionControl Success\n", __FUNCTION__);
++			}
++			json_object_put(natSessionJobj);
++		}
++		
+ 		if(pppIfaceJobj){
+ 			if((ret = zcfgFeObjJsonSet(RDM_OID_PPP_IFACE, &pppIfaceIid, pppIfaceJobj, NULL)) != ZCFG_SUCCESS ) {
+ 				printf("%s : Set PPP.Interface Fail\n", __FUNCTION__);
+@@ -5659,6 +5880,9 @@
+ 		else if(!strcmp(paramList->name, "NATEnabled")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_INTF_SETTING, "Enable");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_FullConeEnabled")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_INTF_SETTING, "X_ZYXEL_FullConeEnabled");
++		}
+ 		else if(!strcmp(paramList->name, "PPPoESessionID")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_PPP_IFACE_PPPOE, "SessionID");
+ 		}
+@@ -5711,6 +5935,14 @@
+ 		else if(!strcmp(paramList->name, "X_ZYXEL_VlanMuxID")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ETH_VLAN_TERM, "VLANID");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DMZHost") || !strcmp(paramList->name, "X_ZYXEL_NAT_ALG") || 
++				!strcmp(paramList->name, "X_ZYXEL_SIP_ALG") || !strcmp(paramList->name, "X_ZYXEL_RTSP_ALG") ||
++				!strcmp(paramList->name, "X_ZYXEL_PPTP_ALG") || !strcmp(paramList->name, "X_ZYXEL_IPSEC_ALG")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT, paramList->name);
++		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_MaxSessionPerHost")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_SESSION_CTL, "MaxSessionPerHost");
++		}
+ 		else{
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_PPP_IFACE, paramList->name);
+ 		}
+@@ -6129,6 +6361,352 @@
+ 	return ret;
+ }
+ 
++/*  
++ *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_AddrMapping.i
++ *                      InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_AddrMapping.i
++ *
++ *   Related object in TR181:
++ *   Device.NAT.X_ZYXEL_AddrMapping.i
++ */
++zcfgRet_t WANAddrMappingObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char natAddrMap[32] = {0};
++	objIndex_t objIid;
++	struct json_object *addrJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, natAddrMap)) != ZCFG_SUCCESS) {
++		/*  The instance number of X_ZYXEL_AddrMapping.i will be continuous because of the tr98 to tr181 mapping table. 
++		 *  Therefore, just return "ZCFG_NO_MORE_INSTANCE" when there is no related mapping of tr181 for
++		 *  this PortMapping object.
++		 */	
++		return ret;
++	}
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(natAddrMap, "NAT.X_ZYXEL_AddrMapping.%hhu", &objIid.idx[0]);
++
++	if((ret = feObjJsonGet(RDM_OID_NAT_ADDR_MAPPING, &objIid, &addrJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(addrJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}	
++
++	json_object_put(addrJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t WANAddrMappingSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *addrJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	char addrMapping[32] = {0};
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, addrMapping)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	printf("%s : addrMapping %s\n", __FUNCTION__, addrMapping);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(addrMapping, "NAT.X_ZYXEL_AddrMapping.%hhu", &objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_ADDR_MAPPING, &objIid, &addrJobj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = addrJobj;
++		addrJobj = NULL;
++		addrJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_ADDR_MAPPING, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/		
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(addrJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(addrJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;	
++	}
++
++	/*Set Device.NAT.X_ZYXEL_AddrMapping.i*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_NAT_ADDR_MAPPING, &objIid, addrJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(addrJobj);
++			return ret;
++		}
++		json_object_put(addrJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t WANAddrMappingAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	char tr98ConnName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char iface[32] = {0};
++	char *ptr = NULL;
++	rdm_IpIface_t *ipIface = NULL;
++	rdm_NatAddrMapping_t *natAddrMappingObj = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	strcpy(tr98ConnName, tr98FullPathName);
++	ptr = strstr(tr98ConnName, ".X_ZYXEL_AddrMapping");
++	*ptr = '\0';
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98ConnName, iface)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	printf("iface = %s\n", iface);
++	// PPP.Interface
++	if(strstr(iface, "PPP")){
++		printf("PPP case\n");
++		IID_INIT(objIid);
++		while((ret = zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&ipIface)) == ZCFG_SUCCESS) {
++			if(strcmp(ipIface->LowerLayers, iface) == 0) {
++				memset(iface, '\0', sizeof(iface));
++				snprintf(iface, sizeof(iface), "IP.Interface.%d",  objIid.idx[0]);
++				printf("match! new iface = %s\n", iface);
++				zcfgFeObjStructFree(ipIface);
++				break;
++			}
++			zcfgFeObjStructFree(ipIface);
++		}
++	}else{
++		//IP.Interface
++		IID_INIT(objIid);
++		sscanf(iface, "IP.Interface.%hhu", &objIid.idx[0]);
++	}
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_NAT_ADDR_MAPPING, &objIid, NULL)) != ZCFG_SUCCESS) {
++		printf("%s : Add NAT.X_ZYXEL_AddrMapping Fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	if(zcfgFeObjStructGet(RDM_OID_NAT_ADDR_MAPPING, &objIid, (void **)&natAddrMappingObj) == ZCFG_SUCCESS) {
++		strcpy(natAddrMappingObj->Interface, iface);
++		ret = zcfgFeObjStructSet(RDM_OID_NAT_ADDR_MAPPING, &objIid, (void *)natAddrMappingObj, NULL);
++		if((ret != ZCFG_DELAY_APPLY) && (ret != ZCFG_SUCCESS))
++		{
++			printf("%s : Set NAT.X_ZYXEL_AddrMapping Fail.\n", __FUNCTION__);
++		}
++        printf("%s: Set X_ZYXEL_AddrMapping complete\n", __FUNCTION__);
++		zcfgFeObjStructFree(natAddrMappingObj);
++
++#ifdef ZCFG_DYNAMIC_NAMEMAPPING
++		if((ret == ZCFG_DELAY_APPLY) || (ret == ZCFG_SUCCESS)){
++			zcfg_name_t nameSeqNum = 0;
++			objIndex_t tr98ObjIid;
++			char tr181PathName[64] = {0};
++
++			sprintf(tr181PathName, "NAT.X_ZYXEL_AddrMapping.%d", objIid.idx[0] );
++		
++			IID_INIT(tr98ObjIid);
++			zcfgFe98To181ObjMappingNameAdd((const char *)tr98FullPathName, (const char *)tr181PathName, &nameSeqNum, &tr98ObjIid);
++		
++			if(IS_SEQNUM_RIGHT(nameSeqNum)) {
++				printf("Added X_ZYXEL_AddrMapping %d\n", tr98ObjIid.idx[3]);
++				*idx = tr98ObjIid.idx[3];
++			}
++		}
++#endif
++		return ret;
++	}
++	else {
++		printf("%s : Get NAT.X_ZYXEL_AddrMapping Fail.\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;	
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t WANAddrMappingDel(char *tr98FullPathName)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	char addrMapping[32] = {0};
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, addrMapping)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(addrMapping, "NAT.X_ZYXEL_AddrMapping.%hhu", &objIid.idx[0]);
++
++	ret = zcfgFeObjStructDel(RDM_OID_NAT_ADDR_MAPPING, &objIid, NULL);
++	if((ret != ZCFG_DELAY_APPLY) && (ret != ZCFG_SUCCESS))
++	{
++		printf("%s : Delete NAT.X_ZYXEL_AddrMapping Fail\n", __FUNCTION__);
++	}
++
++	return ret;
++}
++
++zcfgRet_t WANAddrMappingNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int WANAddrMappingAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  devInfoOid = 0;
++	objIndex_t devInfoIid;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(devInfoIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	devInfoOid = zcfgFeObjNameToObjId(tr181Obj, &devInfoIid);
++	
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		
++		attrValue = zcfgFeParamAttrGetByName(devInfoOid, paramList->name);
++		
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t WANAddrMappingAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  devInfoOid = 0;
++	objIndex_t devInfoIid;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(devInfoIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	devInfoOid = zcfgFeObjNameToObjId(tr181Obj, &devInfoIid);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++		
++		attrValue = zcfgFeParamAttrGetByName(devInfoOid, paramList->name);
++		
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		ret = zcfgFeMultiParamAttrAppend(devInfoOid, multiAttrJobj, paramList->name, attrValue);
++		
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, devInfoOid, paramList->name);
++		}
++		break;
++	}
++	return ret;
++}
++
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_PortTriggering.i
+  *                      InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_PortTriggering.i
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2015-08-28 15:59:56.206653959 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2015-08-28 16:11:28.798672348 +0800
+@@ -20,6 +20,7 @@
+ extern tr98Parameter_t para_WANIpConnMld[];
+ extern tr98Parameter_t para_WANIpPortMap[];
+ extern tr98Parameter_t para_WANIpPortTrigger[];
++extern tr98Parameter_t para_WANIpAddrMapping[];
+ extern tr98Parameter_t para_WANIpConnStat[];
+ #ifdef IPV6INTERFACE_PROFILE
+ extern tr98Parameter_t para_WANIpv6Addr[];
+@@ -35,6 +36,7 @@
+ extern tr98Parameter_t para_WANPppConn[];
+ extern tr98Parameter_t para_WANPppPortMap[];
+ extern tr98Parameter_t para_WANPppPortTrigger[];
++extern tr98Parameter_t para_WANPppAddrMapping[];
+ extern tr98Parameter_t para_WANPppConnStat[];
+ extern tr98Parameter_t para_WANPppConnMld[];
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -156,6 +158,16 @@
+ extern int WANPortTriggerAttrGet(char *, int, char *);
+ extern zcfgRet_t WANPortTriggerAttrSet(char *, int, char *, int , struct json_object *);
+ 
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_AddrMapping.i */
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_AddrMapping.i */
++extern zcfgRet_t WANAddrMappingObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t WANAddrMappingSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t WANAddrMappingAdd(char *, int *);
++extern zcfgRet_t WANAddrMappingDel(char *);
++extern zcfgRet_t WANAddrMappingNotify(char *, char *, struct json_object *, int, struct json_object **);
++extern int WANAddrMappingAttrGet(char *, int, char *);
++extern zcfgRet_t WANAddrMappingAttrSet(char *, int, char *, int , struct json_object *);
++
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.Stats */
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.Stats */
+ extern zcfgRet_t WANConnStObjGet(char *, int, struct json_object **, bool);
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2015-08-28 15:59:56.030653955 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2015-08-28 16:11:42.782672719 +0800
+@@ -61,7 +61,7 @@
+ 	while(zcfgFeObjStructGetNextWithoutUpdate(RDM_OID_NAT_INTF_SETTING, &natIntfIid, (void **)&natIntfObj) == ZCFG_SUCCESS) {
+ 		if(!strcmp(natIntfObj->Interface, ipIface)) {
+ 			json_object_object_add(tr98Jobj, "NATEnabled", json_object_new_boolean(natIntfObj->Enable));
+-			json_object_object_add(tr98Jobj, "X_ZYXEL_FullConeEnabled", json_object_new_boolean(natIntfObj->X_ZYXEL_FullConeEnabled));	//@@			
++			json_object_object_add(tr98Jobj, "X_ZYXEL_FullConeEnabled", json_object_new_boolean(natIntfObj->X_ZYXEL_FullConeEnabled));			
+ 			zcfgFeObjStructFree(natIntfObj);
+ 			return ZCFG_SUCCESS;
+ 		}
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2015-08-28 15:59:56.206653959 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2015-08-28 16:12:10.558673456 +0800
+@@ -420,6 +420,13 @@
+ 	{ "X_ZYXEL_VlanMux8021p", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "X_ZYXEL_VlanMuxID", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "X_ZYXEL_FullConeEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_DMZHost", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "X_ZYXEL_NAT_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_SIP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_RTSP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_PPTP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_IPSEC_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_MaxSessionPerHost", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ #ifdef IPV6RD_PROFILE
+ #ifndef SUNRISE_TR98_CUSTOMIZATION // Sunrise
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+@@ -514,6 +521,20 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_WANIpAddrMapping[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Type", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "LocalStartIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "LocalEndIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "GlobalStartIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "GlobalEndIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "MappingSet", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "Description", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "WANIntfName", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Interface", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WANIpConnStat[] = {
+ 	{ "EthernetBytesSent", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
+ 	{ "EthernetBytesReceived", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST, 0, json_type_uint32},
+@@ -643,6 +664,13 @@
+ 	{ "X_ZYXEL_VlanMux8021p", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "X_ZYXEL_VlanMuxID", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ "X_ZYXEL_FullConeEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_DMZHost", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "X_ZYXEL_NAT_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_SIP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_RTSP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_PPTP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_IPSEC_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_MaxSessionPerHost", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ #ifdef IPV6RD_PROFILE
+ #ifndef SUNRISE_TR98_CUSTOMIZATION // Sunrise
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+@@ -697,6 +725,20 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_WANPppAddrMapping[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Type", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "LocalStartIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "LocalEndIP", PARAMETER_ATTR_READONLY, 17, json_type_string},
++	{ "GlobalStartIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "GlobalEndIP", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "MappingSet", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "Description", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "WANIntfName", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WANPppConnStat[] = {
+ #if 0
+ 	{ "EthernetBytesSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-08-28 15:59:56.294653962 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-08-28 16:12:46.658674415 +0800
+@@ -190,6 +190,7 @@
+ {e_TR98_REQ_DHCP_OPT            , &tr98Obj[e_TR98_REQ_DHCP_OPT            -e_TR98_START]},
+ {e_TR98_WAN_IP_PORT_MAP         , &tr98Obj[e_TR98_WAN_IP_PORT_MAP         -e_TR98_START]},
+ {e_TR98_WAN_IP_PORT_TRIGGER     , &tr98Obj[e_TR98_WAN_IP_PORT_TRIGGER     -e_TR98_START]},
++{e_TR98_WAN_IP_ADDR_MAPPING     , &tr98Obj[e_TR98_WAN_IP_ADDR_MAPPING     -e_TR98_START]},
+ {e_TR98_WAN_IP_CONN_STAT        , &tr98Obj[e_TR98_WAN_IP_CONN_STAT        -e_TR98_START]},
+ #ifdef IPV6INTERFACE_PROFILE
+ {e_TR98_WAN_IP_CONN_IPV6ADDR    , &tr98Obj[e_TR98_WAN_IP_CONN_IPV6ADDR    -e_TR98_START]},
+@@ -204,6 +205,7 @@
+ {e_TR98_WAN_PPP_CONN            , &tr98Obj[e_TR98_WAN_PPP_CONN            -e_TR98_START]},
+ {e_TR98_WAN_PPP_PORT_MAP        , &tr98Obj[e_TR98_WAN_PPP_PORT_MAP        -e_TR98_START]},
+ {e_TR98_WAN_PPP_PORT_TRIGGER    , &tr98Obj[e_TR98_WAN_PPP_PORT_TRIGGER    -e_TR98_START]},
++{e_TR98_WAN_PPP_ADDR_MAPPING    , &tr98Obj[e_TR98_WAN_PPP_ADDR_MAPPING    -e_TR98_START]},
+ {e_TR98_WAN_PPP_CONN_STAT       , &tr98Obj[e_TR98_WAN_PPP_CONN_STAT       -e_TR98_START]},
+ {e_TR98_WAN_PPP_CONN_MLD        , &tr98Obj[e_TR98_WAN_PPP_CONN_MLD        -e_TR98_START]},
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -237,6 +239,7 @@
+ {e_TR98_REMO_MGMT               , &tr98Obj[e_TR98_REMO_MGMT               -e_TR98_START]},
+ {e_TR98_REMO_SRV                , &tr98Obj[e_TR98_REMO_SRV                -e_TR98_START]},
+ {e_TR98_IEEE8021AG              , &tr98Obj[e_TR98_IEEE8021AG              -e_TR98_START]},
++{e_TR98_SAMBA		            , &tr98Obj[e_TR98_SAMBA		              -e_TR98_START]},
+ #ifdef SOL_TR69_TRUSTDOMAIN
+ {e_TR98_REMO_TRUSTDOMAIN        , &tr98Obj[e_TR98_REMO_TRUSTDOMAIN        -e_TR98_START]},
+ #endif
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-08-28 15:59:56.258653961 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-08-28 16:13:44.138675941 +0800
+@@ -147,6 +147,7 @@
+ #define TR98_REQ_DHCP_OPT             "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.DHCPClient.ReqDHCPOption.i"
+ #define TR98_WAN_IP_PORT_MAP          "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.PortMapping.i"
+ #define TR98_WAN_IP_PORT_TRIGGER      "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_PortTriggering.i"
++#define TR98_WAN_IP_ADDR_MAPPING      "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_AddrMapping.i"
+ #define TR98_WAN_IP_CONN_STAT         "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.Stats"
+ #define TR98_WAN_IP_CONN_MLD		  "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_MLD"
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -162,6 +163,7 @@
+ #define TR98_WAN_PPP_CONN             "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i"
+ #define TR98_WAN_PPP_PORT_MAP         "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.PortMapping.i"
+ #define TR98_WAN_PPP_PORT_TRIGGER     "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_PortTriggering.i"
++#define TR98_WAN_PPP_ADDR_MAPPING     "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_AddrMapping.i"
+ #define TR98_WAN_PPP_CONN_STAT        "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.Stats"
+ #define TR98_WAN_PPP_CONN_MLD		  "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_MLD"
+ #ifdef IPV6INTERFACE_PROFILE
+@@ -189,6 +191,7 @@
+ #define TR98_REMO_MGMT                "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement"
+ #define TR98_REMO_SRV                 "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.Service.i"
+ #define TR98_IEEE8021AG               "InternetGatewayDevice.X_ZYXEL_EXT.IEEE8021ag"
++#define TR98_SAMBA		              "InternetGatewayDevice.X_ZYXEL_EXT.SAMBA"
+ #ifdef SOL_TR69_TRUSTDOMAIN
+ #define TR98_REMO_TRUSTDOMAIN		"InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.i"
+ #endif
+@@ -383,6 +386,7 @@
+ {TR98_REQ_DHCP_OPT,             ATTR_INDEX_CREA, para_ReqDhcpOpt,       DhcpClientReqOptObjGet,  DhcpClientReqOptObjSet, DhcpClientReqOptObjAdd, DhcpClientReqOptObjDel, DhcpClientOptObjNotify, DhcpClientReqOptObjAttrGet, DhcpClientReqOptObjAttrSet},
+ {TR98_WAN_IP_PORT_MAP,          ATTR_INDEX_CREA, para_WANIpPortMap,      WANPortMappingObjGet,       WANPortMappingSet,      WANPortMappingAdd, WANPortMappingDel, WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},
+ {TR98_WAN_IP_PORT_TRIGGER,      ATTR_INDEX_CREA, para_WANIpPortTrigger, WANPortTriggerObjGet,    WANPortTriggerSet,      WANPortTriggerAdd, WANPortTriggerDel, WANPortTriggerNotify, WANPortTriggerAttrGet, WANPortTriggerAttrSet},
++{TR98_WAN_IP_ADDR_MAPPING,      ATTR_INDEX_CREA, para_WANIpAddrMapping, WANAddrMappingObjGet,    WANAddrMappingSet,      WANAddrMappingAdd, WANAddrMappingDel, WANAddrMappingNotify, WANAddrMappingAttrGet, WANAddrMappingAttrSet},
+ {TR98_WAN_IP_CONN_STAT,         0,              para_WANIpConnStat,     WANConnStObjGet,         NULL,                   NULL,     NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_WAN_IP_CONN_IPV6ADDR,     ATTR_INDEX_CREA, para_WANIpv6Addr,      WANIpv6AddrObjGet,        WANIpv6AddrObjSet,     WANIpv6AddrObjAdd, WANIpv6AddrObjDel,            NULL},
+@@ -397,8 +401,9 @@
+ {TR98_WAN_PPP_CONN,             ATTR_INDEX_CREA,para_WANPppConn,        WANPppConnObjGet,        WANPppConnObjSet,       WANPppConnObjAdd, WANPppConnObjDel, WANPppConnObjNotify, WANPppConnObjAttrGet, WANIpPppConnObjAttrSet},
+ {TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,    WANPortMappingSet,      WANPortMappingAdd, WANPortMappingDel, WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},	
+ {TR98_WAN_PPP_PORT_TRIGGER,     ATTR_INDEX_CREA,para_WANPppPortTrigger, WANPortTriggerObjGet,    WANPortTriggerSet,      WANPortTriggerAdd, WANPortTriggerDel, WANPortTriggerNotify, WANPortTriggerAttrGet, WANPortTriggerAttrSet},
++{TR98_WAN_PPP_ADDR_MAPPING,     ATTR_INDEX_CREA,para_WANPppAddrMapping, WANAddrMappingObjGet,    WANAddrMappingSet,      WANAddrMappingAdd, WANAddrMappingDel, WANAddrMappingNotify, WANAddrMappingAttrGet, WANAddrMappingAttrSet},
+ {TR98_WAN_PPP_CONN_STAT,        0,              para_WANPppConnStat,    WANConnStObjGet,         NULL,                   NULL,   NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+-{TR98_WAN_PPP_CONN_MLD,	        0,              para_WANPppConnMld,      WANConnMldObjGet,        WANConnMldObjSet,       NULL, 			   NULL, 			WANConnMldObjNotify, WANConnMldObjAttrGet, WANConnMldObjAttrSet},
++{TR98_WAN_PPP_CONN_MLD,	        0,              para_WANPppConnMld,     WANConnMldObjGet,        WANConnMldObjSet,       NULL, 			   NULL, 			WANConnMldObjNotify, WANConnMldObjAttrGet, WANConnMldObjAttrSet},
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_WAN_PPP_CONN_IPV6ADDR,    ATTR_INDEX_CREA, para_WANPppv6Addr,     WANPppv6AddrObjGet,        WANPppv6AddrObjSet,     WANPppv6AddrObjAdd, WANPppv6AddrObjDel,            NULL},
+ {TR98_WAN_PPP_CONN_IPV6PREFIX, 	ATTR_INDEX_CREA, para_WANPppv6Prefix,	WANPppv6PrefixObjGet,	 WANPppv6PrefixObjSet,   WANPppv6PrefixObjAdd, WANPppv6PrefixObjDel,			NULL},
+@@ -430,6 +435,7 @@
+ {TR98_REMO_MGMT,				0,				NULL,					NULL,					 NULL,					 NULL,				NULL,			NULL},
+ {TR98_REMO_SRV, 			    ATTR_INDEX_CREA,para_RemoSrv,		    zyExtRemoteMgmtSrvObjGet,		 zyExtRemoteMgmtSrvObjSet,		 zyExtRemoteMgmtSrvObjAdd, zyExtRemoteMgmtSrvObjDel, zyExtRemoteMgmtSrvObjNotify, zyExtRemoteMgmtSrvObjAttrGet, zyExtRemoteMgmtSrvObjAttrSet},
+ {TR98_IEEE8021AG,               0,              para_8021ag,	        zyExt8021agObjGet, 	     zyExt8021agObjSet,		NULL,             NULL,            zyExt8021agObjNotify, zyExt8021agObjAttrGet, zyExt8021agObjAttrSet},
++{TR98_SAMBA,         		    0,              para_Samba,	   		    zyExtSambaObjGet, 	     zyExtSambaObjSet,		NULL,             NULL,            zyExtSambaObjNotify, zyExtSambaObjAttrGet, zyExtSambaObjAttrSet},
+ #ifdef SOL_TR69_TRUSTDOMAIN
+ {TR98_REMO_TRUSTDOMAIN,         ATTR_INDEX_CREA,para_RemoTrustDomain,   zyExtRemoteMgmtTrustDomainObjGet,                    zyExtRemoteMgmtTrustDomainObjSet,                   zyExtRemoteMgmtTrustDomainObjAdd,            zyExtRemoteMgmtTrustDomainObjDel,            NULL},
+ #endif
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2015-08-28 15:59:56.234653960 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2015-08-28 16:14:07.994676574 +0800
+@@ -5455,6 +5455,218 @@
+ }
+ 
+ /*
++ *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_EXT.SAMBA
++ *
++ *   Related object in TR181:
++ *   Device.X_ZYXEL_SAMBA
++ */
++ zcfgRet_t zyExtSambaObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *sambaJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_ZY_SAMBA, &objIid, &sambaJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;	
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(sambaJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(sambaJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtSambaObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *sambaJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_SAMBA, &objIid, &sambaJobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = sambaJobj;
++		sambaJobj = NULL;
++		sambaJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_SAMBA, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(sambaJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(sambaJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA, &objIid, sambaJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(sambaJobj);
++			return ret;
++		}
++		json_object_put(sambaJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtSambaObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int zyExtSambaObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  sambaOid = 0;
++	objIndex_t sambaIid;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(sambaIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	sambaOid = zcfgFeObjNameToObjId(tr181Obj, &sambaIid);
++	
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		
++		/*special case*/
++
++		attrValue = zcfgFeParamAttrGetByName(sambaOid, paramList->name);
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t zyExtSambaObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  sambaOid = 0;
++	objIndex_t sambaIid;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(sambaIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	sambaOid = zcfgFeObjNameToObjId(tr181Obj, &sambaIid);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++		
++		attrValue = zcfgFeParamAttrGetByName(sambaOid, paramList->name);
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(sambaOid, multiAttrJobj, paramList->name, attrValue);
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, sambaOid, paramList->name);
++		}
++		break;
++	}
++	
++	return ret;
++}
++
++/*
+  *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_EXT.8021ag
+  *
+  *   Related object in TR181:
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2015-08-28 15:59:56.170653959 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2015-08-28 16:14:21.122676923 +0800
+@@ -28,6 +28,7 @@
+ extern tr98Parameter_t para_ParenCtlProf[];
+ extern tr98Parameter_t para_Sec[];
+ extern tr98Parameter_t para_SecCert[];
++extern tr98Parameter_t para_Samba[];
+ 
+ #ifdef ZyXEL_IPP_PRINTSERVER
+ extern tr98Parameter_t para_Ipp_PrintServer[];
+@@ -161,6 +162,13 @@
+ extern int zyExt8021agObjAttrGet(char *, int, char *);
+ extern zcfgRet_t zyExt8021agObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
++/*InternetGatewayDevice.X_ZYXEL_EXT.SAMBA*/
++extern zcfgRet_t zyExtSambaObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyExtSambaObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyExtSambaObjNotify(char *, char *, struct json_object *, int, struct json_object **);
++extern int zyExtSambaObjAttrGet(char *, int, char *);
++extern zcfgRet_t zyExtSambaObjAttrSet(char *, int, char *, int , struct json_object *);
++
+ /*InternetGatewayDevice.X_ZYXEL_EXT.Log_Setting*/
+ extern zcfgRet_t zyExtLogSettingObjGet(char *, int , struct json_object **, bool );
+ extern zcfgRet_t zyExtLogSettingObjSet(char *, int , struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2015-08-28 15:59:56.234653960 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2015-08-28 16:14:35.858677314 +0800
+@@ -276,3 +276,9 @@
+ 	{ "SignatureAlgorithm", PARAMETER_ATTR_WRITE, 257, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
++
++tr98Parameter_t para_Samba[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "PidFileName", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ NULL, 0, 0, 0}
++};

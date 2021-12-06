@@ -1,0 +1,69 @@
+Index: libzcfg_fe_dal-1.0/maintenance/useraccount/zcfg_fe_dal_user_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/useraccount/zcfg_fe_dal_user_account.c	2017-10-02 10:23:10.883595137 +0800
++++ libzcfg_fe_dal-1.0/maintenance/useraccount/zcfg_fe_dal_user_account.c	2017-10-02 10:59:39.116800000 +0800
+@@ -20,6 +20,8 @@
+ dal_param_t USER_ACCOUNT_param[] =  //RDM_OID_ZY_LOG_CFG_GP_ACCOUNT
+ {
+ 	{"Username",			dalType_string,  1, 	16,		NULL,	NULL,	dal_Add|dal_Edit|dal_Delete},
++    {"FirstIndex",			dalType_int,	 1, 	3,		NULL,	NULL,	dalcmd_Forbid}, // group index 
++    {"SecondIndex", 		dalType_int,	 1, 	4,		NULL,	NULL,	dalcmd_Forbid}, // account index
+ 	{"Enabled", 			dalType_boolean, 0, 	0,		NULL,	NULL,	0}, //default true
+ 	{"EnableQuickStart",	dalType_boolean, 0, 	0,		NULL,	NULL,	0}, //default value based on schema.json
+ 	{"oldPw",				dalType_string,  0, 	0,		NULL,	NULL,	dal_Add_ignore},
+@@ -344,24 +346,40 @@
+ 
+ 	if(getLoginUserInfo(Jobj, loginUserName, loginLevel) != ZCFG_SUCCESS){
+ 		dbg_printf("getLoginUserInfo Fail");
+-		if(replyMsg) strcpy(replyMsg, "Internal Error, can't get account information");
++		if(replyMsg) strcpy(replyMsg, "Internal Error, can't get login user information");
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
+-	username = Jgets(Jobj, "Username");
+-	if(!strcmp(username, loginUserName)){
+-		if(replyMsg) strcpy(replyMsg, "Can't delete yourself");
+-		return ZCFG_REQUEST_REJECT;
+-	}
+-	if(!getSpecificObj(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, "Username", json_type_string, username, &accountIid, &accountObj)){
+-		if(replyMsg) strcpy(replyMsg, "Request reject");
+-		return ZCFG_REQUEST_REJECT;
+-	}
+-	if(accountIid.idx[0] < mediumGpIdx || (!strcmp(loginLevel, "low") && accountIid.idx[0] < lowGpIdx)){
+-		if(replyMsg) strcpy(replyMsg, "Request reject");
+-		zcfgFeJsonObjFree(accountObj);
+-		return ZCFG_REQUEST_REJECT;
+-	}
++    if(Jget(Jobj, "Username") != NULL){ // from CLI
++    	username = Jgets(Jobj, "Username");
++    	if(!getSpecificObj(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, "Username", json_type_string, username, &accountIid, &accountObj)){
++    		if(replyMsg) strcpy(replyMsg, "Request reject");
++    		return ZCFG_REQUEST_REJECT;
++    	}
++    }
++    else{ // from GUI
++        IID_INIT(accountIid);
++        accountIid.level = 2;
++        accountIid.idx[0] = Jgeti(Jobj, "FirstIndex");
++        accountIid.idx[1] = Jgeti(Jobj, "SecondIndex");
++        if(zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, &accountObj) != ZCFG_SUCCESS){
++            dbg_printf("get target user info fail\n");
++            if(replyMsg) strcpy(replyMsg, "Internal Error, can't get target user information");
++            return ZCFG_INTERNAL_ERROR;
++        }
++        username = Jgets(accountObj, "Username");
++    }
++
++    if(!strcmp(username, loginUserName)){
++        if(replyMsg) strcpy(replyMsg, "Can't delete yourself");
++        return ZCFG_REQUEST_REJECT;
++    }
++
++    if(accountIid.idx[0] < mediumGpIdx || (!strcmp(loginLevel, "low") && accountIid.idx[0] < lowGpIdx)){
++        if(replyMsg) strcpy(replyMsg, "Request reject");
++        zcfgFeJsonObjFree(accountObj);
++        return ZCFG_REQUEST_REJECT;
++    }
+ 	
+ 	ret = zcfgFeObjJsonDel(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, NULL);
+ 	zcfgFeJsonObjFree(accountObj);

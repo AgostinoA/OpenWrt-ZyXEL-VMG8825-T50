@@ -1,0 +1,245 @@
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2017-11-10 20:23:29.480082047 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2017-11-10 20:27:35.124078482 +0800
+@@ -458,6 +458,9 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++
++#define MAX_CHUNK_SIZE 30000
++
+ /****************************************
+ * cg_http_packet_read_chunk
+ ****************************************/
+@@ -474,33 +477,55 @@
+ #endif
+ 	int tries = 0;
+ 	char *content = NULL;
++	BOOL complete = FALSE;
+ 	
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	memset(lineBuf, 0, lineBufSize);
+ 	/* Read chunk header */
+ 	readLen = cg_socket_readline(sock, lineBuf, lineBufSize);
+-	
++
+ 	//printf("!!!!!! dbg: read a line before parse: %d/%d <%s>\n", readLen, lineBufSize, lineBuf);
+ 
+ 	//char size_line[16] = {0};
+ 	char *ptr = NULL;
+ 
+-	if(!strcmp(lineBuf, "0\r\n"))
++	if(readLen == -1 || readLen == 0)
++		return -1;
++
++
++	if(lineBuf[0] == 13 && lineBuf[0] == 0x0a && readLen == 2)
++		return 0;
++
++	conLen = cg_strhex2long(lineBuf);
++	if(lineBuf[0] == '0' && conLen == 0)
+ 	{
+ 		//End chunk
++		printf("chunk 0\n");
+ 		readLen = 0;
+ 		conLen = 0;
++		complete = TRUE;
+ 	}
+-	else if((ptr = strstr(lineBuf, "\r\n")) && readLen < 7)
++	else if(conLen > 0 && conLen < MAX_CHUNK_SIZE)
+ 	{
+ 		//this line maybe a chunk header or need to append to the trail of last chunk reading
+-		*ptr = 0;
+-		//printf("check chunk size line <%s>\n", lineBuf);
+-		conLen = cg_strhex2long(lineBuf);
++		//*ptr = 0;
++
++		printf("check chunk size line %l\n", conLen);
+ 		readLen -= 2;
+ 	}
+-	else
++	else{
+ 		conLen = 0;
++		if(conLen >= MAX_CHUNK_SIZE)
++			return -1;
++		if(!httpPkt->content){
++			return 0;
++		}
++
++		printf("receive chunk data fail\n");
++
++		return -1;
++	}
+ 
+ 	//printf("@@@@@@ dbg: chunk get line buf:%d-%d <%s>\n", conLen, readLen, lineBuf);
+ 
+@@ -521,7 +546,7 @@
+ 		return 0;
+ 	}
+ 		
+-	content[conLen] = 0;
++	memset(content, 0, conLen+1);
+ 	
+ 	readLen = 0;
+ 	/* Read content until conLen is reached, or tired of trying */
+@@ -546,7 +571,7 @@
+ #ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
+ 	if(fp)
+ 		fwrite(content, readLen, 1, fp);
+-	else
++	else if(readLen)
+ 		cg_http_packet_appendncontent(httpPkt, content, readLen);
+ #else
+ 	cg_http_packet_appendncontent(httpPkt, content, readLen);
+@@ -564,12 +589,13 @@
+ #endif
+ 		//printf("Ending line check %d <%s>\n", lineBufSize, lineBuf);
+ 	}
+-	
++
+ exit:
+ 	//printf("###### dbg: done chunk read %d %d %d <%s>\n", readLen, conLen, httpPkt->content->valueSize, httpPkt->content->value);
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+-	return readLen;
++
++	return (complete == TRUE) ? -1 : readLen;
+ }
+ 
+ /****************************************
+@@ -588,21 +614,24 @@
+ 	int tries = 0;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+-
++	memset(readBuf, 0, sizeof(readBuf));
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
+ 	if(memory_check(conLen, cg_socket_getremoteaddress(sock)) == FALSE){
++		printf("%s: memory fail, content len %d\n", __FUNCTION__, conLen);
+ 		return FALSE;
+ 	}	
+ 	content = NULL;
+ 	if (0 < conLen) {
++		//printf("%s: content len %d\n", __FUNCTION__, conLen);
+ 		content = (char *)malloc(conLen+1);
+ 		if (content == NULL)
+ 		{
++			printf("%s: memory allocat fail, content len %d\n", __FUNCTION__, conLen);
+ 			cg_log_debug_s("Memory allocation problem!\n");
+ 			return FALSE;
+ 		}
+ 		
+-		content[0] = '\0';
++		memset(content, 0, conLen+1);
+ 		readLen = 0;
+ 		
+ 		/* Read content until conLen is reached, or tired of trying */
+@@ -619,6 +648,7 @@
+ 			}
+ 		}
+ 		if((tries >= CG_HTTP_CWMP_SEND_RECV_TRY_COUNT) || (readLen < conLen)){
++			printf("%s: recv fail, content len %d\n", __FUNCTION__, conLen);
+ 			free(content);
+ 			return FALSE;
+ 		}
+@@ -632,8 +662,11 @@
+ 		}
+ #endif
+ 		
+-		if (readLen <= 0)
++		if (readLen <= 0){
++			printf("%s: recv nothing, content len %d\n", __FUNCTION__, conLen);
++			free(content);
+ 			return TRUE;
++		}
+ 		content[readLen] = '\0';
+ 		cg_http_packet_setcontentpointer(httpPkt, content, readLen);
+ 	}
+@@ -653,8 +686,8 @@
+ #else
+ 				readLen = cg_http_packet_read_chunk(httpPkt, sock, lineBuf, lineBufSize);
+ #endif
+-				conLen += readLen;
+-			} while (readLen > 0);
++				if(readLen > 0) conLen += readLen;
++			} while (readLen >= 0);
+ 			
+ 			cg_http_packet_setcontentlength(httpPkt,conLen);
+ 		} else {
+@@ -1233,6 +1266,8 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++
++	memset(lineBuf, 0, lineBufSize);
+ 	cg_http_packet_clear(httpPkt);
+ 	cg_http_packet_read_headers(httpPkt, sock, lineBuf, lineBufSize);
+ 	
+@@ -1241,6 +1276,8 @@
+ 	if (onlyHeader)
+ 		return TRUE;
+ #ifdef ZYXEL_PATCH  /*support save content to file, by ZyXEL charisse*/
++	memset(lineBuf, 0, lineBufSize);
++
+ 	if(savedFile == NULL)
+ 		return cg_http_packet_read_body(httpPkt, sock, lineBuf, lineBufSize);
+ 	else
+Index: clinkc/src/cybergarage/http/chttp_response.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_response.c	2017-11-10 20:23:29.208082051 +0800
++++ clinkc/src/cybergarage/http/chttp_response.c	2017-11-10 20:23:29.496082047 +0800
+@@ -62,6 +62,8 @@
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	if(!httpRes)
++		return;
+ 	cg_http_packet_clean((CgHttpPacket *)httpRes);
+ 	cg_string_delete(httpRes->version);
+ 	cg_string_delete(httpRes->reasonPhrase);
+@@ -186,7 +188,8 @@
+ BOOL cg_http_response_read(CgHttpResponse *httpRes, CgSocket *sock, BOOL onlyHeader)
+ #endif
+ {
+-	char lineBuf[CG_HTTP_READLINE_BUFSIZE];
++
++	char lineBuf[CG_HTTP_READLINE_BUFSIZE] = {0};
+ 	CgStringTokenizer *strTok;
+ 	char *token;
+ 	int readLen;
+@@ -195,10 +198,20 @@
+ 
+ 	cg_http_response_clear(httpRes);
+ 
++	memset(lineBuf, 0, sizeof(lineBuf));
+ 	readLen = cg_socket_readline(sock, lineBuf, sizeof(lineBuf));
+ 	if (readLen <= 0)
+ 		return FALSE;
+ 
++	while(readLen == 2 && lineBuf[0] == 13 && lineBuf[1] == 0x0a){
++		memset(lineBuf, 0, sizeof(lineBuf));
++		readLen = cg_socket_readline(sock, lineBuf, sizeof(lineBuf));
++		if (readLen <= 0)
++			return FALSE;
++	}
++
++	//printf("%s: len=%d, HTTP/1.1 ?: %s\n", __FUNCTION__, readLen, lineBuf);
++
+ 	strTok = cg_string_tokenizer_new(lineBuf, CG_HTTP_STATUSLINE_DELIM);
+ 	if (cg_string_tokenizer_hasmoretoken(strTok) == TRUE)
+ 		cg_http_response_setversion(httpRes, cg_string_tokenizer_nexttoken(strTok));
+@@ -214,9 +227,11 @@
+ 	/* if receiving status code 204, the phrase of which is "NO Content", then just read header only. In case that 
+ 	    header field, "Content Length" is missing in HTTP 204 packet. */
+ #if 1 /* ZyXEL, John*/
+-	if(cg_http_response_getstatuscode(httpRes) == 204){
++	unsigned int statuscode = 0;
++	if((statuscode = cg_http_response_getstatuscode(httpRes)) == 204){
+ 		onlyHeader = TRUE;
+ 	}
++	printf("%s: status code: %u\n", __FUNCTION__, statuscode);
+ #endif
+ 
+ #ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/

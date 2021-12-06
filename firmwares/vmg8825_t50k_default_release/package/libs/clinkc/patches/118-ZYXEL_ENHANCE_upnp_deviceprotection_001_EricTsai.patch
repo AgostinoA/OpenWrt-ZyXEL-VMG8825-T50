@@ -1,0 +1,705 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2018-10-22 19:02:54.256145105 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2018-10-22 19:02:54.316145104 +0800
+@@ -139,6 +139,7 @@
+ #define CG_HTTP_CONTENT_RANGE "Content-Range"
+ 	#define CG_HTTP_CONTENT_RANGE_BYTES "bytes" 
+ #define CG_HTTP_LOCATION "Location"
++#define CG_HTTP_SECURELOCATION "SECURELOCATION.UPNP.ORG"
+ #define CG_HTTP_SERVER "Server"
+ #define CG_HTTP_RANGE "Range"
+ #define CG_HTTP_TRANSFER_ENCODING "Transfer-Encoding"
+@@ -558,13 +559,13 @@
+ #define cg_http_request_getuserdata(httpReq) (httpReq->userData)
+ 
+ #ifdef ZYXEL_PATCH
+-#define cg_http_request_setcookiedata(httpRes, data) (httpRes->cookieData = (void *)data)
+-#define cg_http_request_getcookiedata(httpRes) (httpRes->cookieData)
++#define cg_http_response_setcookiedata(httpRes, data) (httpRes->cookieData = (void *)data)
++#define cg_http_response_getcookiedata(httpRes) (httpRes->cookieData)
+ #define cg_http_request_sethttpserver(httpReq, svr) (httpReq->httpServer = (void *)svr)
+ #define cg_http_request_retrievehttpserver(httpReq) (httpReq->httpServer)
+ #else
+-#define cg_http_request_setcookiedata(httpRes, data) do{}while(0)
+-#define cg_http_request_getcookiedata(httpRes) NULL
++#define cg_http_response_setcookiedata(httpRes, data) do{}while(0)
++#define cg_http_response_getcookiedata(httpRes) NULL
+ #define cg_http_request_sethttpserver(httpReq, svr) { }
+ #define cg_http_request_retrievehttpserver(httpReq) NULL
+ #endif
+@@ -755,7 +756,8 @@
+ #define cg_http_serverlist_add(httpServerList, httpServer) cg_list_add((CgList *)httpServerList, (CgList *)httpServer)
+ 
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013, charisse*/
+-BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port, BOOL isSecure, void *ctxdata);
++//BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port, BOOL isSecure, void *ctxdata);
++BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port);
+ #else
+ BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port);
+ #endif
+@@ -765,6 +767,11 @@
+ void cg_http_serverlist_setlistener(CgHttpServerList *httpServerList, CG_HTTP_LISTENER listener);
+ void cg_http_serverlist_setuserdata(CgHttpServerList *httpServerList, void *value);
+ 
++#ifdef ZYXEL_PATCH
++#define cg_http_serverlist_setctxdata(httpServerList, ctx) (httpServerList->ctxdata = ctx)
++#define cg_http_serverlist_retrieve_ctx(httpServerList) (httpServerList->ctxdata)
++#endif
++
+ /****************************************
+ * Function (Date)
+ ****************************************/
+Index: clinkc/include/cybergarage/upnp/cdevice.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/cdevice.h	2018-10-22 19:02:54.284145104 +0800
++++ clinkc/include/cybergarage/upnp/cdevice.h	2018-10-22 19:02:54.316145104 +0800
+@@ -174,6 +174,8 @@
+   CgMutex *mutex;
+   /** List of HTTP servers */
+   CgHttpServerList *httpServerList;
++  // List of HTTPS servers
++  CgHttpServerList *httpsServerList;
+   /** List of SSDP servers */
+   CgUpnpSSDPServer *ssdpServerList;
+   /** Device advertiser thread */
+@@ -188,6 +190,8 @@
+   CgSysTime leaseTime;
+   /** HTTP Port to listen to */
+   int httpPort;
++  // HTTPS server port
++  int httpsSvrPort;
+   /** This device's SSDP packet */
+   CgUpnpSSDPPacket *ssdpPkt;
+   /** User data used to pass miscellaneous data */
+@@ -200,6 +204,9 @@
+ 	CG_UPNP_SERVICE_PERFORMLISTNER performListner;
+ #endif
+ 
++  void *cookieList;
++  void (*cookieListRelease)(void *);
++
+   CgString *stdHeadLine;
+ 
+ } CgUpnpDevice, CgUpnpDeviceList;
+@@ -731,12 +738,30 @@
+ #define cg_upnp_device_geturlbase(dev) cg_xml_node_getchildnodevalue(cg_upnp_device_getrootnode(cg_upnp_device_getrootdevice(dev)), CG_UPNP_DEVICE_URLBASE_NAME)
+ 
+ 
++int cg_upnp_device_serverlist_running(char *protocol, CgUpnpDevice *dev, char *host);
++
+ /*****************************************************************************
+  * Device std
+  ******************************************************************************/
+ void cg_upnp_device_add_stdheadline(CgUpnpDevice *dev, char *std);
+ char *cg_upnp_device_retrieve_stdheadline(CgUpnpDevice *dev);
+ 
++char *cg_upnp_device_retrieve_http_protocol(CgUpnpDevice *dev);
++
++
++/*****************************************************************************
++ * DeviceProtection
++ ******************************************************************************/
++char *cg_upnp_device_retrieve_securelocationurl(CgUpnpDevice *dev, char *host, char *buf, int bufLen);
++
++
++/*****************************************************************************
++ * Device Cookie List
++ ******************************************************************************/
++#define cg_upnp_device_retrieve_cookielist(dev) (dev->cookieList)
++#define cg_upnp_device_set_cookielist(dev, list) (dev->cookieList=list)
++
++#define cg_upnp_device_set_cookielist_release_rout(dev, rout) (dev->cookieListRelease)
+ 
+ /*****************************************************************************
+  * Start/Stop
+@@ -1360,6 +1385,9 @@
+  */
+ #define cg_upnp_device_sethttpport(dev,value) (dev->httpPort = value)
+ 
++// https server port
++#define cg_upnp_device_sethttpsport(dev, port) (dev->httpsSvrPort = port)
++
+ /**
+  * Get the device's HTTP port
+  * 
+@@ -1368,6 +1396,9 @@
+  */
+ #define cg_upnp_device_gethttpport(dev) (dev->httpPort)
+ 
++// https server port
++#define cg_upnp_device_retrievehttpsport(dev) (dev->httpsSvrPort)
++
+ /**
+  * Set an HTTP listener function to the device
+  * 
+@@ -1393,6 +1424,10 @@
+  */
+ #define cg_upnp_device_gethttpserverlist(dev) (dev->httpServerList)
+ 	
++
++#define cg_upnp_device_gethttpsserverlist(dev) (dev->httpsServerList)
++
++
+ /**
+  * Handler function for a received HTTP request. Delegates GET and POST requests
+  * to their respective handlers, or treats as a BAD REQUEST, when appropriate.
+Index: clinkc/src/cybergarage/upnp/cdevice.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cdevice.c	2018-10-22 19:02:54.284145104 +0800
++++ clinkc/src/cybergarage/upnp/cdevice.c	2018-10-22 19:19:20.514420700 +0800
+@@ -109,6 +109,8 @@
+ 		dev->mutex = cg_mutex_new();
+ 		
+ 		dev->httpServerList = cg_http_serverlist_new();
++		dev->httpsServerList = cg_http_serverlist_new();
++
+ 		dev->ssdpServerList = cg_upnp_ssdp_serverlist_new();
+ 		
+ 		dev->advertiser = cg_thread_new();
+@@ -159,12 +161,16 @@
+ 	cg_mutex_delete(dev->mutex);
+ 	
+ 	cg_http_serverlist_delete(dev->httpServerList);
++	cg_http_serverlist_delete(dev->httpsServerList);
+ 	cg_upnp_ssdp_serverlist_delete(dev->ssdpServerList);
+ 	cg_thread_delete(dev->advertiser);
+ 	
+ 	cg_string_delete(dev->descriptionURI);
+ 	cg_string_delete(dev->stdHeadLine);
+ 
++	if(dev->cookieList && dev->cookieListRelease)
++		dev->cookieListRelease(dev->cookieList);
++
+ 	cg_upnp_ssdp_packet_delete(dev->ssdpPkt);
+ 	
+ 	free(dev);
+@@ -216,6 +222,10 @@
+ 	if(!dev || !std)
+ 		return;
+ 
++	if(!cg_upnp_device_isrootdevice(dev)){
++		return;
++	}
++
+ 	stdheadline = dev->stdHeadLine;
+ 	if(!stdheadline){
+ 		stdheadline = cg_string_new();
+@@ -235,6 +245,18 @@
+ 
+ }
+ 
++#define http_protocol "http"
++#define https_protocol "https"
++char *cg_upnp_device_retrieve_http_protocol(CgUpnpDevice *dev)
++{
++	char *stdHeadLine = cg_upnp_device_retrieve_stdheadline(dev);
++	// CMS:TLS
++	if(stdHeadLine && strstr(stdHeadLine, "TLS"))
++		return https_protocol;
++	else
++		return http_protocol;
++}
++
+ /****************************************
+ * cg_upnp_device_getrootdevice
+ ****************************************/
+@@ -959,6 +981,7 @@
+ 		 * "sethttpport" - (rosfran.borges) */
+ 		cg_upnp_device_setdescriptionuri(childDev, cg_upnp_device_getdescriptionuri(dev));
+ 		cg_upnp_device_sethttpport(childDev, cg_upnp_device_gethttpport(dev));		
++		cg_upnp_device_sethttpsport(childDev, cg_upnp_device_retrievehttpsport(dev));
+ 		cg_upnp_device_setdevicenode(childDev, childNode);
+ 		cg_upnp_devicelist_add(dev->deviceList, childDev);
+ 		cg_upnp_device_setparentdevice(childDev, dev);
+@@ -1162,11 +1185,16 @@
+ 
+ char *cg_upnp_device_getlocationurl(CgUpnpDevice *dev, char *host, char *buf, int bufSize)
+ {
++	char *protocol;
++
+ 	cg_log_debug_l4("Entering...\n");
+ 
++	int port = cg_upnp_device_gethttpport(dev);
++
+ 	return cg_net_gethosturl(
++					"http",
+ 					host,
+-					cg_upnp_device_gethttpport(dev),
++					port,
+ 					cg_upnp_device_getdescriptionuri(dev),
+ 					buf,
+ 					bufSize);
+@@ -1174,6 +1202,52 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
++
++char *cg_upnp_device_retrieve_securelocationurl(CgUpnpDevice *dev, char *host, char *buf, int bufLen)
++{
++	int port = cg_upnp_device_retrievehttpsport(dev);
++
++	return cg_net_gethosturl("https", host, port, cg_upnp_device_getdescriptionuri(dev), buf, bufLen);
++
++}
++
++int cg_upnp_device_serverlist_running(char *protocol, CgUpnpDevice *dev, char *host)
++{
++	CgHttpServerList *serverList = NULL;
++
++	//(!protocol || !dev || !host)
++
++	serverList = (strcmp(protocol, "http") == 0) ? cg_upnp_device_gethttpserverlist(dev) : \
++				((strcmp(protocol, "https") == 0) ? cg_upnp_device_gethttpsserverlist(dev) : NULL);
++
++	if(!serverList)
++		return 0;
++
++	int serverPort = (strcmp(protocol, "http") == 0) ? cg_upnp_device_gethttpport(dev) : \
++			((strcmp(protocol, "https") == 0) ? cg_upnp_device_retrievehttpsport(dev) : 0);
++
++	CgHttpServer *httpServer = cg_http_serverlist_gets(serverList);
++	CgSocket *sock;
++	char *ipaddr;
++	int port;
++	int running = httpServer ? 1 : 0;
++
++	while(running){
++
++		sock = cg_http_server_getsocket(httpServer);
++		ipaddr = sock ? cg_socket_getaddress(sock) : NULL;
++		port = sock ? cg_socket_getport(sock) : 0;
++
++		if(ipaddr && !strcmp(host, ipaddr) && serverPort == port)
++			return 1;
++
++		httpServer = cg_http_server_next(httpServer);
++		running = httpServer ? 1 : 0;
++	}
++
++	return 0;
++}
++
+ /****************************************
+ * cg_upnp_device_getnotifydevicent
+ ****************************************/
+@@ -1289,7 +1363,12 @@
+ 	
+ 	cg_upnp_ssdprequest_setserver(ssdpReq, cg_upnp_getservername(ssdpLineBuf, sizeof(ssdpLineBuf)));
+ 	cg_upnp_ssdprequest_setleasetime(ssdpReq, cg_upnp_device_getleasetime(dev));
+-	cg_upnp_ssdprequest_setlocation(ssdpReq, cg_upnp_device_getlocationurl(dev, bindAddr, ssdpLineBuf, sizeof(ssdpLineBuf)));
++	if(cg_upnp_device_serverlist_running("http", dev, bindAddr))
++		cg_upnp_ssdprequest_setlocation(ssdpReq, cg_upnp_device_getlocationurl(dev, bindAddr, ssdpLineBuf, sizeof(ssdpLineBuf)));
++
++	if(cg_upnp_device_serverlist_running("https", dev, bindAddr))
++		cg_upnp_ssdprequest_set_securelocation(ssdpReq, cg_upnp_device_retrieve_securelocationurl(dev, bindAddr, ssdpLineBuf, sizeof(ssdpLineBuf)));
++
+ 	cg_upnp_ssdprequest_setnts(ssdpReq, CG_UPNP_SSDP_NTS_ALIVE);
+ 	zcfgLogPrefix(ZCFG_LOG_NOTICE, ZCFG_LOGPRE_UPNP, "ssdp:alive\n");
+ 	
+@@ -1513,7 +1592,11 @@
+ 	cg_upnp_ssdpresponse_setserver(ssdpRes, serverBuf);
+ 
+ 	cg_upnp_ssdpresponse_setusn(ssdpRes, usn);
+-	cg_upnp_ssdpresponse_setlocation(ssdpRes, rootDevLocation);
++	if(cg_upnp_device_serverlist_running("http", rootDev, localAddr))
++		cg_upnp_ssdpresponse_setlocation(ssdpRes, rootDevLocation);
++
++	if(cg_upnp_device_serverlist_running("https", rootDev, localAddr))
++		cg_upnp_ssdprequest_set_securelocation(ssdpRes, cg_upnp_device_retrieve_securelocationurl(rootDev, localAddr, rootDevLocation, sizeof(rootDevLocation)));
+ 
+ 	remoteAddr = cg_upnp_ssdp_packet_getremoteaddress(ssdpPkt);
+ 	remotePort = cg_upnp_ssdp_packet_getremoteport(ssdpPkt);
+@@ -1549,7 +1632,6 @@
+ BOOL cg_upnp_device_start(CgUpnpDevice *dev)
+ {
+ 	CG_HTTP_LISTENER httpListener;
+-	int httpPort;
+ 	
+ 	cg_log_debug_l4("Entering...\n");
+ 
+@@ -1560,24 +1642,50 @@
+ 		dev->ifCache = cg_net_interfacelist_new();
+ 	cg_net_gethostinterfaces(dev->ifCache);
+ 	
+-	/**** HTTP Server ****/
+-	httpPort = cg_upnp_device_gethttpport(dev);
+-	/* Opening HTTP server may fail, so try many ports */
++	httpListener = cg_upnp_device_gethttplistener(dev);
++	if (httpListener == NULL)
++		httpListener = cg_upnp_device_httprequestrecieved;
++
++	char *stdHeadLine = cg_upnp_device_retrieve_stdheadline(dev);
++	if(!stdHeadLine){
++		// default
++		cg_upnp_device_add_stdheadline(dev, "HTTP");
++		stdHeadLine = cg_upnp_device_retrieve_stdheadline(dev);
++	}
++
++#ifdef ZYXEL_PATCH
++	void *ctx = cg_http_serverlist_retrieve_ctx((dev->httpsServerList));
++	if((stdHeadLine && strstr(stdHeadLine, "TLS")) || ctx){
++		int httpsSvrPort;
++		httpsSvrPort = cg_upnp_device_retrievehttpsport(dev);
++
++		while(cg_http_serverlist_open(dev->httpsServerList, httpsSvrPort) == FALSE){
++			cg_upnp_device_sethttpsport(dev, httpsSvrPort + 1);
++			httpsSvrPort = cg_upnp_device_retrievehttpsport(dev);
++		}
++		cg_http_serverlist_setuserdata(dev->httpsServerList, dev);
++		cg_http_serverlist_setlistener(dev->httpsServerList, httpListener);
++		cg_http_serverlist_start(dev->httpsServerList);
++	}
++#endif
++	if(stdHeadLine && strstr(stdHeadLine, "HTTP")){
++		int httpPort;
++		/**** HTTP Server ****/
++		httpPort = cg_upnp_device_gethttpport(dev);
++		/* Opening HTTP server may fail, so try many ports */
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013, charisse*/
+-	while(cg_http_serverlist_open(dev->httpServerList, httpPort, 0, NULL) == FALSE)
++		while(cg_http_serverlist_open(dev->httpServerList, httpPort) == FALSE)
+ #else
+-	while(cg_http_serverlist_open(dev->httpServerList, httpPort) == FALSE)
++		while(cg_http_serverlist_open(dev->httpServerList, httpPort) == FALSE)
+ #endif
+-	{
+-		cg_upnp_device_sethttpport(dev, httpPort + 1);
+-		httpPort = cg_upnp_device_gethttpport(dev);
++		{
++			cg_upnp_device_sethttpport(dev, httpPort + 1);
++			httpPort = cg_upnp_device_gethttpport(dev);
++		}
++		cg_http_serverlist_setuserdata(dev->httpServerList, dev);
++		cg_http_serverlist_setlistener(dev->httpServerList, httpListener);
++		cg_http_serverlist_start(dev->httpServerList);
+ 	}
+-	cg_http_serverlist_setuserdata(dev->httpServerList, dev);
+-	httpListener = cg_upnp_device_gethttplistener(dev);
+-	if (httpListener == NULL)
+-		httpListener = cg_upnp_device_httprequestrecieved;
+-	cg_http_serverlist_setlistener(dev->httpServerList, httpListener);
+-	cg_http_serverlist_start(dev->httpServerList);
+ 
+ 	/**** SSDP Server ****/
+ 	if (cg_upnp_ssdp_serverlist_open(dev->ssdpServerList) == FALSE)
+@@ -1631,6 +1739,12 @@
+ 		cg_http_serverlist_clear(dev->httpServerList);
+ 	}
+ 	
++	if(cg_http_headerlist_size(dev->httpsServerList) > 0){
++		cg_http_serverlist_stop(dev->httpsServerList);
++		cg_http_serverlist_close(dev->httpsServerList);
++		cg_http_serverlist_clear(dev->httpsServerList);
++	}
++
+ 	/**** SSDP Server ****/
+ 	if (0 < cg_upnp_ssdp_serverlist_size(dev->ssdpServerList)) {
+ 		cg_upnp_ssdp_serverlist_stop(dev->ssdpServerList);
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2018-10-22 19:02:54.276145105 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2018-10-22 19:02:54.316145104 +0800
+@@ -96,6 +96,10 @@
+ 
+ 	if (httpServer->mutex)
+ 		cg_mutex_delete(httpServer->mutex);
++#ifdef ZYXEL_PATCH
++	if(httpServer->ctxdata)
++		free(httpServer->ctxdata);
++#endif
+ 
+ 	cg_list_remove((CgList *)httpServer);
+ 
+Index: clinkc/src/cybergarage/http/chttp_server_list.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server_list.c	2018-10-22 19:02:53.504145127 +0800
++++ clinkc/src/cybergarage/http/chttp_server_list.c	2018-10-22 19:02:54.316145104 +0800
+@@ -45,6 +45,9 @@
+ 		httpServerList->listener = NULL;
+ 		httpServerList->userData = NULL;
+ 		httpServerList->mutex = NULL;
++#ifdef ZYXEL_PATCH
++		httpServerList->ctxdata = NULL;
++#endif
+ 	}
+ 	
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -70,7 +73,8 @@
+ * cg_http_serverlist_open
+ ****************************************/
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013, charisse*/
+-BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port, BOOL isSecure, void *ctxdata)
++//BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port, BOOL isSecure, void *ctxdata)
++BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port)
+ #else
+ BOOL cg_http_serverlist_open(CgHttpServerList *httpServerList, int port)
+ #endif
+@@ -84,6 +88,10 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	netIfList = cg_net_interfacelist_new();
++#ifdef ZYXEL_PATCH
++	void *ctxdata = cg_http_serverlist_retrieve_ctx(httpServerList);
++	BOOL isSecure = ctxdata ? TRUE : FALSE;
++#endif
+ #ifndef CG_NET_USE_ANYADDR
+ 	cg_net_gethostinterfaces(netIfList);
+ #else
+Index: clinkc/src/cybergarage/upnp/ccontrolpoint.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/ccontrolpoint.c	2018-10-22 19:02:53.840145117 +0800
++++ clinkc/src/cybergarage/upnp/ccontrolpoint.c	2018-10-22 19:02:54.316145104 +0800
+@@ -86,7 +86,7 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	/**** Thanks for Theo Beisch (2005/08/25) ****/
+-	return cg_net_getmodifierhosturl(ifaddr, cg_upnp_controlpoint_geteventport(ctrlPoint), cg_upnp_controlpoint_geteventsuburi(ctrlPoint), buf, bufLen, "<", ">");
++	return cg_net_getmodifierhosturl("http", ifaddr, cg_upnp_controlpoint_geteventport(ctrlPoint), cg_upnp_controlpoint_geteventsuburi(ctrlPoint), buf, bufLen, "<", ">");
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+@@ -220,7 +220,8 @@
+ 	httpServerList = cg_upnp_controlpoint_gethttpserverlist(ctrlPoint);
+ 	/* Opening HTTP server may fail, so try many ports */
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013, charisse*/
+-	while(cg_http_serverlist_open(httpServerList, httpEventPort, 0, NULL) == FALSE) {
++	//while(cg_http_serverlist_open(httpServerList, httpEventPort, 0, NULL) == FALSE) {
++	while(cg_http_serverlist_open(httpServerList, httpEventPort) == FALSE) {
+ #else
+ 	while(cg_http_serverlist_open(httpServerList, httpEventPort) == FALSE) {
+ #endif
+Index: clinkc/src/cybergarage/upnp/cdevice_http_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cdevice_http_server.c	2018-10-22 19:02:54.284145104 +0800
++++ clinkc/src/cybergarage/upnp/cdevice_http_server.c	2018-10-22 19:02:54.316145104 +0800
+@@ -142,10 +142,13 @@
+ static void cg_upnp_device_updateurlbase(CgUpnpDevice *dev, char *host)
+ {
+ 	char urlBase[CG_UPNP_DEVICE_URLBASE_MAXLEN];
++	char *protocol;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+ 
+-	cg_net_gethosturl(host, cg_upnp_device_gethttpport(dev), "", urlBase, sizeof(urlBase));
++	protocol = cg_upnp_device_retrieve_http_protocol(dev);
++
++	cg_net_gethosturl(protocol, host, ((protocol && !strcmp(protocol, "https")) ? cg_upnp_device_retrievehttpsport(dev) : cg_upnp_device_gethttpport(dev)), "", urlBase, sizeof(urlBase));
+ 	cg_upnp_device_seturlbase(dev, urlBase);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -154,12 +157,14 @@
+ static char *cg_upnp_device_getdescription(CgUpnpDevice *dev, char *ifAddr, CgString *descStr)
+ {
+ 	CgXmlNode *rootNode;
++	char *stdHeadLine = cg_upnp_device_retrieve_stdheadline(dev);
+ 	
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	cg_upnp_device_lock(dev);
+ 	
+-	if (cg_upnp_isnmprmode() == FALSE)
++	printf("%s: %s\n", __FUNCTION__, stdHeadLine ? stdHeadLine : "headline empty");
++	if (cg_upnp_isnmprmode() == FALSE && (!stdHeadLine || (stdHeadLine && !strstr(stdHeadLine, "CMS2"))))
+ 		cg_upnp_device_updateurlbase(dev, ifAddr);
+ 	
+ 	rootNode = cg_upnp_device_getrootnode(dev);
+@@ -348,6 +353,11 @@
+ 			action = cg_upnp_service_getactionbyname(service, actionName);
+ 			if(actionName)
+ 				free(actionName);
++			if(!action){
++				cg_upnp_device_invalidcontrolrecieved(soapReq, CG_UPNP_CODE_ACTION_NOT_AUTH);
++				cg_upnp_control_action_request_delete(actionReq);
++				return;
++			}
+ 			cg_upnp_control_action_request_setuserdata(actionReq, action);
+ 		}
+ 
+Index: clinkc/src/cybergarage/net/curl.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/curl.c	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/src/cybergarage/net/curl.c	2018-10-22 19:02:54.316145104 +0800
+@@ -35,7 +35,7 @@
+ * cg_net_getmodifierhosturl
+ ****************************************/
+ 
+-char *cg_net_getmodifierhosturl(char *host, int port, char *uri, char *buf, int bufSize, char *begin, char *end)
++char *cg_net_getmodifierhosturl(char *protocol, char *host, int port, char *uri, char *buf, int bufSize, char *begin, char *end)
+ {
+ 	BOOL isIPv6Host;
+ 	
+@@ -48,8 +48,9 @@
+ #else
+ 	sprintf(buf,
+ #endif
+-		"%shttp://%s%s%s:%d%s%s",
++		"%s%s://%s%s%s:%d%s%s",
+ 		begin,
++		protocol ? protocol : "http",
+ 		((isIPv6Host == TRUE) ? "[" : ""),
+ 		host,
+ 		((isIPv6Host == TRUE) ? "]" : ""),
+@@ -66,11 +67,11 @@
+ * cg_net_gethosturl
+ ****************************************/
+ 
+-char *cg_net_gethosturl(char *host, int port, char *uri, char *buf, int bufSize)
++char *cg_net_gethosturl(char *protocol, char *host, int port, char *uri, char *buf, int bufSize)
+ {
+ 	cg_log_debug_l4("Entering...\n");
+ 
+-	return cg_net_getmodifierhosturl(host, port, uri, buf, bufSize, "", "");
++	return cg_net_getmodifierhosturl(protocol, host, port, uri, buf, bufSize, "", "");
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+Index: clinkc/include/cybergarage/net/curl.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/curl.h	2018-10-22 19:02:53.448145129 +0800
++++ clinkc/include/cybergarage/net/curl.h	2018-10-22 19:02:54.316145104 +0800
+@@ -94,8 +94,8 @@
+ 
+ #define cg_net_url_getupnpbasepath(urip) cg_net_uri_getupnpbasepath(urip);
+ 
+-char *cg_net_gethosturl(char *host, int port, char *uri, char *buf, int bufSize);
+-char *cg_net_getmodifierhosturl(char *host, int port, char *uri, char *buf, int bufSize, char *begin, char *end);
++char *cg_net_gethosturl(char *protocol, char *host, int port, char *uri, char *buf, int bufSize);
++char *cg_net_getmodifierhosturl(char *protocol, char *host, int port, char *uri, char *buf, int bufSize, char *begin, char *end);
+ 
+ #define cg_net_url_getquerydictionary(urip) cg_net_uri_getquerydictionary(urip);
+ 
+Index: clinkc/src/cybergarage/upnp/cservice.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cservice.c	2018-10-22 19:02:54.284145104 +0800
++++ clinkc/src/cybergarage/upnp/cservice.c	2018-10-22 19:02:54.316145104 +0800
+@@ -827,7 +827,12 @@
+ 	ssdpReq = cg_upnp_ssdprequest_new();
+ 	cg_upnp_ssdprequest_setserver(ssdpReq, cg_upnp_getservername(ssdpLineBuf, sizeof(ssdpLineBuf)));
+ 	cg_upnp_ssdprequest_setleasetime(ssdpReq, cg_upnp_device_getleasetime(dev));
+-	cg_upnp_ssdprequest_setlocation(ssdpReq, cg_upnp_device_getlocationurl(rootDev, bindAddr, ssdpLineBuf, sizeof(ssdpLineBuf)));
++	if(cg_upnp_device_serverlist_running("http", rootDev, bindAddr))
++		cg_upnp_ssdprequest_setlocation(ssdpReq, cg_upnp_device_getlocationurl(rootDev, bindAddr, ssdpLineBuf, sizeof(ssdpLineBuf)));
++
++	if(cg_upnp_device_serverlist_running("https", rootDev, bindAddr))
++		cg_upnp_ssdprequest_set_securelocation(ssdpReq, cg_upnp_device_retrieve_securelocationurl(rootDev, bindAddr, ssdpLineBuf, sizeof(ssdpLineBuf)));
++
+ 	cg_upnp_ssdprequest_setnts(ssdpReq, CG_UPNP_SSDP_NTS_ALIVE);
+ 	zcfgLogPrefix(ZCFG_LOG_NOTICE, ZCFG_LOGPRE_UPNP, "ssdp:alive\n");
+ 	cg_upnp_ssdprequest_setnt(ssdpReq, cg_upnp_service_getnotifyservicetypent(service, ssdpLineBuf, sizeof(ssdpLineBuf)));
+Index: clinkc/include/cybergarage/upnp/ssdp/cssdp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/ssdp/cssdp.h	2011-02-08 01:29:11.000000000 +0800
++++ clinkc/include/cybergarage/upnp/ssdp/cssdp.h	2018-10-22 19:02:54.316145104 +0800
+@@ -141,6 +141,10 @@
+ #define cg_upnp_ssdprequest_setlocation(ssdpReq,value) cg_http_packet_setheadervalue((CgHttpPacket*)ssdpReq, CG_HTTP_LOCATION, value)
+ #define cg_upnp_ssdprequest_getlocation(ssdpReq) cg_http_packet_getheadervalue((CgHttpPacket*)ssdpReq,CG_HTTP_LOCATION)
+ 
++// SECURELOCATION
++#define cg_upnp_ssdprequest_set_securelocation(ssdpReq,value) cg_http_packet_setheadervalue((CgHttpPacket *)ssdpReq, CG_HTTP_SECURELOCATION, value)
++#define cg_upnp_ssdprequeset_retrieve_securelocationurl(ssdpReq) cg_http_packet_getheadervalue((CgHttpPacket *)ssdpReq, CG_HTTP_SECURELOCATION)
++
+ /**** USN ****/
+ #define cg_upnp_ssdprequest_setusn(ssdpReq,value) cg_http_packet_setheadervalue((CgHttpPacket*)ssdpReq, CG_UPNP_SSDP_USN, value)
+ #define cg_upnp_ssdprequest_getusn(ssdpReq) cg_http_packet_getheadervalue((CgHttpPacket*)ssdpReq,CG_UPNP_SSDP_USN)
+Index: clinkc/include/cybergarage/upnp/cupnp_status.h
+===================================================================
+--- clinkc.orig/include/cybergarage/upnp/cupnp_status.h	2018-10-22 19:02:54.284145104 +0800
++++ clinkc/include/cybergarage/upnp/cupnp_status.h	2018-10-22 19:02:54.316145104 +0800
+@@ -86,6 +86,11 @@
+ #define CG_UPNP_STATUS_SESSION_ID_EXPIRE 899
+ #endif
+ 
++// DeviceProtection
++#define CG_UPNP_CODE_ACTION_NOT_AUTH	606
++#define CG_UPNP_CODE_AUTH_FAIL	701
++
++
+ // TR-064 U2 CMS2
+ #define CG_UPNP_CODE_INVALID_XML_ARGUMENT 702
+ #define CG_UPNP_CODE_NO_SUCH_NAME 703
+Index: clinkc/include/cybergarage/xml/cxml.h
+===================================================================
+--- clinkc.orig/include/cybergarage/xml/cxml.h	2018-10-22 19:02:54.288145104 +0800
++++ clinkc/include/cybergarage/xml/cxml.h	2018-10-22 19:02:54.316145104 +0800
+@@ -94,6 +94,8 @@
+ CgXmlAttribute *cg_xml_attribute_new();
+ void cg_xml_attribute_delete(CgXmlAttribute *attr);
+ 
++CgXmlNode *cg_xml_node_dup(CgXmlNode *node);
++
+ #define cg_xml_attribute_next(attr) (CgXmlAttribute *)cg_list_next((CgList *)attr)
+ #define cg_xml_attribute_remove(attr) cg_list_remove((CgList *)attr)
+ 
+Index: clinkc/src/cybergarage/http/chttp_response.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_response.c	2018-10-22 19:02:54.132145109 +0800
++++ clinkc/src/cybergarage/http/chttp_response.c	2018-10-22 19:02:54.316145104 +0800
+@@ -44,7 +44,7 @@
+ 		cg_http_response_setstatuscode(httpRes, CG_HTTP_STATUS_BAD_REQUEST);
+ 		cg_http_response_setuserdata(httpRes, NULL);
+ 
+-		cg_http_request_setcookiedata(httpRes, NULL);
++		cg_http_response_setcookiedata(httpRes, NULL);
+ 
+ 		cg_http_response_settimeout(httpRes, CG_HTTP_CONN_TIMEOUT);
+ 	}
+@@ -67,7 +67,7 @@
+ 	cg_http_packet_clean((CgHttpPacket *)httpRes);
+ 	cg_string_delete(httpRes->version);
+ 	cg_string_delete(httpRes->reasonPhrase);
+-	void *cookieData = cg_http_request_getcookiedata(httpRes);
++	void *cookieData = cg_http_response_getcookiedata(httpRes);
+ 	if(cookieData)
+ 		free(cookieData);
+ 
+@@ -90,10 +90,10 @@
+ 	cg_http_response_setreasonphrase(httpRes, NULL);
+ 	cg_http_response_setuserdata(httpRes, NULL);
+ 
+-	void *cookieData = cg_http_request_getcookiedata(httpRes);
++	void *cookieData = cg_http_response_getcookiedata(httpRes);
+ 	if(cookieData)
+ 		free(cookieData);
+-	cg_http_request_setcookiedata(httpRes, NULL);
++	cg_http_response_setcookiedata(httpRes, NULL);
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+Index: clinkc/src/cybergarage/upnp/cupnp_status.c
+===================================================================
+--- clinkc.orig/src/cybergarage/upnp/cupnp_status.c	2018-10-22 19:02:54.284145104 +0800
++++ clinkc/src/cybergarage/upnp/cupnp_status.c	2018-10-22 19:02:54.316145104 +0800
+@@ -93,6 +93,9 @@
+ 
+ 	if(!(rst = cg_upnp_status_basic_code2string(code))){
+ 		switch(code){
++		case CG_UPNP_CODE_ACTION_NOT_AUTH: return "Action not Auth";
++		case CG_UPNP_CODE_AUTH_FAIL: return "Auth Fail";
++
+ 		case CG_UPNP_CODE_INVALID_XML_ARGUMENT: return "Invalid XML Argument";
+ 		case CG_UPNP_CODE_NO_SUCH_NAME: return "No Such Name";
+ 		case CG_UPNP_CODE_INVALID_VALUE_TYPE: return "Invalid Value Type";
+Index: clinkc/src/cybergarage/xml/cxml_node.c
+===================================================================
+--- clinkc.orig/src/cybergarage/xml/cxml_node.c	2018-10-22 19:02:54.288145104 +0800
++++ clinkc/src/cybergarage/xml/cxml_node.c	2018-10-22 19:02:54.316145104 +0800
+@@ -58,6 +58,18 @@
+ 	return node;
+ }
+ 
++CgXmlNode *cg_xml_node_dup(CgXmlNode *node)
++{
++	CgXmlNode *dup;
++
++	if(!node)
++		return NULL;
++
++	dup = cg_xml_node_new();
++	cg_xml_node_copy(dup, node);
++	return dup;
++}
++
+ /****************************************
+ * cg_xml_node_delete
+ ****************************************/

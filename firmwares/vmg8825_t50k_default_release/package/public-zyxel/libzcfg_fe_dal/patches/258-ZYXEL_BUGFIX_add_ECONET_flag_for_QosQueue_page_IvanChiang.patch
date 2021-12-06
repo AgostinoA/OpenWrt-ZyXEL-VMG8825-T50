@@ -1,0 +1,165 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-07-14 14:47:35.263958510 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-07-14 14:49:36.803440700 +0800
+@@ -95,6 +95,10 @@
+ CFLAGS += -DZYXEL_ZyXEL_WEB_GUI_SHOW_PON
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_WEB_GUI_ECONET_QoS_STYLE),y)
++CFLAGS += -DZYXEL_WEB_GUI_ECONET_QoS_STYLE
++endif
++
+ #iskon
+ ifeq ($(CONFIG_ISKON_CUSTOMIZATION),y)
+ CFLAGS += -DISKON_CUSTOMIZATION
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosQueue.c	2017-07-14 14:47:35.475958506 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c	2017-07-14 14:49:07.226440700 +0800
+@@ -42,11 +42,11 @@
+ 	{"Index",				dalType_int, 		0,	0,			NULL,	NULL,	dal_Edit|dal_Delete},
+ 	{"Enable",				dalType_boolean, 	0,	0,			NULL,	NULL,	dal_Add},
+ 	{"Name",				dalType_string, 	0,	0,			NULL,	NULL,	dal_Add},
+-	{"Interface",			dalType_string, 	0,	0,			NULL,	NULL,	dal_Add},
++	{"Interface",			dalType_string, 	0,	0,			NULL,	"WAN",	dal_Add},
+ 	{"SchedulerAlgorithm",	dalType_string, 	0,	0,			NULL,	NULL,	dalcmd_Forbid},
+ 	{"Priority",			dalType_int, 		1,	8,			NULL,	NULL,	dal_Add},
+ 	{"Weight",				dalType_int, 		1,	8,			NULL,	NULL,	dal_Add},
+-	{"DropAlgorithm",		dalType_string, 	0,	0,			NULL,	NULL,	dal_Add},
++	{"DropAlgorithm",		dalType_string, 	0,	0,			NULL,	"DT",	dal_Add},
+ 	{"ShapingRate",			dalType_int, 		-1,	1024000,	NULL,	NULL,	NULL},
+ 	{NULL,					0,					0,	0,			NULL,	NULL,	NULL},	
+ };
+@@ -72,12 +72,12 @@
+ 
+ void getQosQueueBasicInfo(struct json_object *Jobj, s_QosQueue *QosQueue_Info) {
+ 	
+-#if(QOS_DAL_DEBUG == 1)			
+-	printf("getQosQueueBasicInfo\n");
+-#endif	
+-	
++#ifdef ZYXEL_WEB_GUI_ECONET_QoS_STYLE
++	QosQueue_Info->Index = (json_object_get_int(json_object_object_get(Jobj, "Index")));
++#else
+ 	//decrease default queue column
+ 	QosQueue_Info->Index = (json_object_get_int(json_object_object_get(Jobj, "Index")))-1;
++#endif
+ 	if(json_object_object_get(Jobj, "Enable")!= NULL)
+ 		QosQueue_Info->Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+ 	if(json_object_object_get(Jobj, "Name") != NULL)
+@@ -123,9 +123,6 @@
+ void getQosQueueDelKey(struct json_object *Jobj, s_QosQueueDel *QosQueueDel_Info) {
+ 	//decrease default queue column
+ 	QosQueueDel_Info->Index = (json_object_get_int(json_object_object_get(Jobj, "Index")))-1;
+-#if(QOS_DAL_DEBUG == 1)			
+-	printf("getQosQueueDelKey key: %d\n", QosQueueDel_Info->Index);
+-#endif
+ 	return;
+ }
+ 
+@@ -140,12 +137,7 @@
+ 		QosQueueIidMappingTable.size += 1;
+ 		zcfgFeJsonObjFree(queueObj);
+ 	}
+-#if(QOS_DAL_DEBUG == 1)			
+-	printf("updateQosQueueInfo\n");
+-	for(i=0; i<QosQueueIidMappingTable.size; i++){
+-		printf("idx[%d] iid %d\n", i, QosQueueIidMappingTable.iid[i]);
+-	}
+-#endif	
++
+ 	return;
+ }
+ 
+@@ -156,9 +148,6 @@
+ 	json_object *classObj = NULL;
+ 	objIndex_t classIid = {0};
+ 	
+-#if(QOS_DAL_DEBUG == 1)			
+-	printf("remove_related_qos %s\n", TrafficClasses);
+-#endif	
+ 	TrafficClasses_single_str = strtok_r(TrafficClasses, ",", &rest_str);
+ 	while(TrafficClasses_single_str != NULL) {
+ 		TrafficClass = StrToIntConv(TrafficClasses_single_str);
+@@ -187,9 +176,11 @@
+ 	}	
+ 	printf("%-7s %-12s %-20s %-12s %-12s %-12s %-20s %-12s \n",		    
+ 		"Index", "Enable", "Name", "Interface", "Priority", "Weight", "Buffer Management", "Rate Limit");
++#ifndef ZYXEL_WEB_GUI_ECONET_QoS_STYLE
+ 	//default queue
+ 	printf("%-7s %-12s %-20s %-12s %-12s %-12s %-20s %-12s \n",		    
+ 		"1", "1", "default queue", "WAN", "8", "1", "DT", "-1");
++#endif
+ 	len = json_object_array_length(Jarray);	
+ 	for(i=0;i<len;i++){		
+ 		obj = json_object_array_get_idx(Jarray, i);		
+@@ -213,8 +204,11 @@
+ 	struct json_object *pramJobj = NULL;
+ 	struct json_object *queueObj = NULL;
+ 	objIndex_t queueIid = {0};
++#ifdef ZYXEL_WEB_GUI_ECONET_QoS_STYLE
++	int count = 1;
++#else
+ 	int count = 2;
+-	
++#endif
+ 	IID_INIT(queueIid);
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_QUE, &queueIid , &queueObj) == ZCFG_SUCCESS){
+ 		pramJobj = json_object_new_object();
+@@ -236,6 +230,10 @@
+ zcfgRet_t zcfgFeDalQosQueueAdd(struct json_object *Jobj, char *replyMsg) {
+ 	
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++#ifdef ZYXEL_WEB_GUI_ECONET_QoS_STYLE
++	printf("ECONET not support add function.\n");
++	return ret;
++#endif
+ 	int len = 0;
+ 	s_QosQueue QosQueue_Info;
+ 	json_object *queueObj = NULL;
+@@ -248,7 +246,7 @@
+ 	len = json_object_array_length(Jarray);	
+ 	if(len == 7){
+ 		printf("Maximum Qos Queue rule entries for WAN port has been reached. Unable to create more Qos Queue entries.\n");
+-		return ZCFG_INVALID_PARAM_VALUE;;
++		return ZCFG_INVALID_PARAM_VALUE;
+ 	}
+ 	
+ 	QueueInfoInit(&QosQueue_Info);
+@@ -297,12 +295,12 @@
+ 
+ 	QueueInfoInit(&QosQueue_Info);
+ 	getQosQueueBasicInfo(Jobj, &QosQueue_Info);
+-
++#ifndef ZYXEL_WEB_GUI_ECONET_QoS_STYLE
+ 	if(QosQueue_Info.Index == 0){
+ 		printf("Default queue data can not be modified.\n");
+-		return ZCFG_INVALID_PARAM_VALUE;;
++		return ZCFG_INVALID_PARAM_VALUE;
+ 	}
+-	
++#endif
+ 	zcfg_offset_t oid;	
+ 	oid = RDM_OID_QOS_QUE;	
+ 	ret = convertIndextoIid(QosQueue_Info.Index, &queueIid, oid, NULL, NULL, replyMsg);	
+@@ -333,6 +331,10 @@
+ 
+ zcfgRet_t zcfgFeDalQosQueueDelete(struct json_object *Jobj, char *replyMsg) {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++#ifdef ZYXEL_WEB_GUI_ECONET_QoS_STYLE
++	printf("ECONET not support delete function.\n");
++	return ret;
++#endif
+ 	s_QosQueueDel QosQueueDel_Info;
+ 	char *TrafficClasses = NULL;
+ 	json_object *queueObj = NULL;
+@@ -344,7 +346,7 @@
+ 
+ 	if(QosQueueDel_Info.Index == 0){
+ 		printf("Default queue data can not be deleted.\n");
+-		return ZCFG_INVALID_PARAM_VALUE;;
++		return ZCFG_INVALID_PARAM_VALUE;
+ 	}	
+ 	
+ 	zcfg_offset_t oid;	

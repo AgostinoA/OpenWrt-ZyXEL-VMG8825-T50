@@ -1,0 +1,93 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_wmm.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_wmm.c	2017-10-25 14:50:18.062286029 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_wmm.c	2017-10-25 14:54:53.054296348 +0800
+@@ -179,6 +179,17 @@
+ 	int idx = 0;
+ 	bool mainUapsdEnable = true;
+ 	int mainWmmEnable = 0;
++
++	// forceWMMEnable related
++	objIndex_t ssidIid;
++	objIndex_t radioIid;
++	uint8_t tmpRadioIdx;
++	struct json_object *ssidObj = NULL;
++	struct json_object *radioObj = NULL;
++	char* lowerLayer = NULL; // e.g. WiFi.Radio.2
++	char* wlMode = NULL; // e.g. 11anac
++	bool forceEnableWMM = false;
++	bool printForceEnableMsg = false;
+ 		
+ 	wmmEnableArray = json_object_object_get(Jobj, "WMMEnable");
+ 	iidArray = json_object_object_get(Jobj, "startidxarray");
+@@ -186,13 +197,55 @@
+ 	len = json_object_array_length(iidArray);
+ 	mainWmmEnable = json_object_get_int( json_object_array_get_idx(wmmEnableArray, 0));
+ 		
++	// Check if need forceWMMEnable
++	IID_INIT(ssidIid);
++	ssidIid.level = 1;
++	ssidIid.idx[0] = json_object_get_int( json_object_array_get_idx(iidArray, 0));
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_SSID, &ssidIid, &ssidObj)) == ZCFG_SUCCESS){
++		lowerLayer = json_object_get_string(json_object_object_get(ssidObj, "LowerLayers"));
++		sscanf(lowerLayer, "WiFi.Radio.%hhu", &tmpRadioIdx);
++		json_object_put(ssidObj);
++	}
++	else{
++		dbg_printf("%s : Get RDM_OID_WIFI_SSID fail, ret = %d\n",__FUNCTION__,ret);
++		return ret;
++	}
++	IID_INIT(radioIid);
++	radioIid.level = 1;
++	radioIid.idx[0] = tmpRadioIdx;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_RADIO, &radioIid, &radioObj)) == ZCFG_SUCCESS){
++		wlMode = json_object_get_string(json_object_object_get(radioObj, "X_ZYXEL_Wireless_Mode"));
++		if(wlMode == NULL){
++			printf("%s : Get wireless mode error.\n",__FUNCTION__);
++			json_object_put(radioObj);
++			return ZCFG_NO_SUCH_PARAMETER;
++		}
++		else if((strchr(wlMode, 'n') != NULL) || (strstr(wlMode, "ac") != NULL)) {
++			forceEnableWMM = true;
++		}
++		json_object_put(radioObj);
++	}
++	else{
++		dbg_printf("%s : Get RDM_OID_WIFI_RADIO fail, ret = %d\n",__FUNCTION__,ret);
++		return ret;
++	}
++
++	// printf warning message
++	for(iidIdx = 0; iidIdx < len; iidIdx++){
++		if(forceEnableWMM && !(json_object_get_int(json_object_array_get_idx(wmmEnableArray, iidIdx))))
++			printForceEnableMsg = true;
++	}
++	if(printForceEnableMsg) 
++		printf("WMM is mandatory to be enabled if 802.11 mode includes 802.11n or 802.11ac\n");
++
++	// Edit Guest SSIDs
+ 	for(iidIdx = 1; iidIdx < len; iidIdx++){
+ 		WMMEnable = json_object_get_int( json_object_array_get_idx(wmmEnableArray, iidIdx));
+ 		idx = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+ 		objIid.level = 1;
+ 		objIid.idx[0] = idx;
+ 		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT, &objIid, &WifiApWmmJobj) == ZCFG_SUCCESS){
+-		if(WMMEnable == 1)
++		if((WMMEnable == 1) || forceEnableWMM)
+ 			json_object_object_add(WifiApWmmJobj, "WMMEnable", json_object_new_boolean(true));
+ 		else
+ 			json_object_object_add(WifiApWmmJobj, "WMMEnable", json_object_new_boolean(false));
+@@ -207,11 +260,12 @@
+ 		}
+ 	}
+ 	
++	// Edit Main SSID
+ 	IID_INIT(objIid);
+ 	objIid.level = 1;
+ 	objIid.idx[0] = json_object_get_int( json_object_array_get_idx(iidArray, 0));
+ 	if(zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT, &objIid, &WifiApWmmJobj) == ZCFG_SUCCESS){
+-	if(mainWmmEnable == 1)
++	if((mainWmmEnable == 1) || forceEnableWMM)
+ 		json_object_object_add(WifiApWmmJobj, "WMMEnable", json_object_new_boolean(true));
+ 	else
+ 		json_object_object_add(WifiApWmmJobj, "WMMEnable", json_object_new_boolean(false));

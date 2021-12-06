@@ -1,0 +1,73 @@
+diff -urN net-snmp-5.8.org/agent/snmpd.c net-snmp-5.8/agent/snmpd.c
+--- net-snmp-5.8.org/agent/snmpd.c	2019-04-11 14:13:10.769166200 +0800
++++ net-snmp-5.8/agent/snmpd.c	2019-04-11 14:15:21.973153718 +0800
+@@ -455,6 +455,7 @@
+ #endif
+ #if ZYXEL_SNMP_WARMSTART_FEATURE
+   unsigned char coldstart = 0;
++  unsigned char startwithdelay = 0;
+ #endif
+ 
+     SOCK_STARTUP;
+@@ -843,21 +844,29 @@
+             break;
+ #if ZYXEL_SNMP_WARMSTART_FEATURE
+         case 'w': //ColdStart
+-        /*-w 1 ---- WarmStart     *
+-        *-w 0 ---- ColdStart     */
+-          if(optarg != NULL){
++        /*bit mesk:                      *
++              * MSB         [1][0]  LSB       *
++              * [1]:delay runing              *
++              * [0]:WarmStart                 *
++              *Ex:
++              *-w 1 ---- WarmStart            *
++              *-w 0 ---- ColdStart            *
++              *-w 3 ---- WarmStart with delay *
++              *-w 2 ---- ColdStart with delay */
++        if(optarg != NULL){
+             char           *warmecp;
+             int             warmvalue;
+ 
+             warmvalue = strtoul(optarg, &warmecp, 10);
+ 
+             if(*warmecp){ //Parsing not complete, data error
+-
+-              fprintf(stderr, "Bad WarmStart Option: %s\n", optarg);
+-              exit(1);
++                fprintf(stderr, "Bad WarmStart Option: %s\n", optarg);
++                exit(1);
+             }
+-            coldstart = !warmvalue;
+-          }
++
++            coldstart = !(warmvalue & 0x01);
++            startwithdelay = (warmvalue & 0x02)>>1;
++        }
+         break;
+ #endif
+ 
+@@ -1125,11 +1134,19 @@
+      * Send coldstart trap if possible.  
+      */
+ #if ZYXEL_SNMP_WARMSTART_FEATURE
+-  if(!coldstart)
+-    send_easy_trap(1, 0);
+-  else
+-#endif
++    if(startwithdelay){
++        sleep(30); //sleep 30 second to wait Lan up
++    }
++ 
++    if(!coldstart){
++        send_easy_trap(1, 0);
++    }else{
++        send_easy_trap(0, 0);
++    }
++
++#else
+     send_easy_trap(0, 0);
++#endif
+     /*
+      * We're up, log our version number.  
+      */

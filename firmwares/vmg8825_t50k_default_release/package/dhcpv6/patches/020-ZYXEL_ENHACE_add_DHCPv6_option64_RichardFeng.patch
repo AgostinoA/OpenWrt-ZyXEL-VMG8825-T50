@@ -1,0 +1,227 @@
+Index: wide-dhcpv6-20080615/cfparse.y
+===================================================================
+--- wide-dhcpv6-20080615.orig/cfparse.y	2007-03-21 17:52:55.000000000 +0800
++++ wide-dhcpv6-20080615/cfparse.y	2019-05-15 18:38:14.979657600 +0800
+@@ -107,7 +107,7 @@
+ %token ADDRESS
+ %token REQUEST SEND ALLOW PREFERENCE
+ %token HOST HOSTNAME DUID
+-%token OPTION RAPID_COMMIT DNS_SERVERS DNS_NAME NTP_SERVERS REFRESHTIME
++%token OPTION RAPID_COMMIT DNS_SERVERS DNS_NAME DSLITE_NAME NTP_SERVERS REFRESHTIME
+ %token SIP_SERVERS SIP_NAME
+ %token NIS_SERVERS NIS_NAME
+ %token NISP_SERVERS NISP_NAME
+@@ -680,6 +680,14 @@
+ 			/* currently no value */
+ 			$$ = l;
+ 		}
++	|	DSLITE_NAME
++		{
++			struct cf_list *l;
++
++			MAKE_CFLIST(l, DHCPOPT_DSLITENAME, NULL, NULL);
++			/* currently no value */
++			$$ = l;
++		}
+ 	|	NTP_SERVERS
+ 		{
+ 			struct cf_list *l;
+Index: wide-dhcpv6-20080615/cftoken.l
+===================================================================
+--- wide-dhcpv6-20080615.orig/cftoken.l	2019-07-02 17:05:30.848339262 +0800
++++ wide-dhcpv6-20080615/cftoken.l	2019-05-15 18:38:22.259525400 +0800
+@@ -196,6 +196,7 @@
+ <S_CNF>ia-na { DECHO; return (IA_NA); }
+ <S_CNF>domain-name-servers { DECHO; return (DNS_SERVERS); }
+ <S_CNF>domain-name { DECHO; return (DNS_NAME); }
++<S_CNF>dslite-name { DECHO; return (DSLITE_NAME); }
+ <S_CNF>sip-server-address { DECHO; return (SIP_SERVERS); }
+ <S_CNF>sip-server-domain-name { DECHO; return (SIP_NAME); }
+ <S_CNF>ntp-servers { DECHO; return (NTP_SERVERS); }
+Index: wide-dhcpv6-20080615/common.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.c	2019-07-02 17:05:30.912339260 +0800
++++ wide-dhcpv6-20080615/common.c	2019-07-08 10:50:39.947660100 +0800
+@@ -1429,6 +1429,9 @@
+ 	TAILQ_INIT(&optinfo->nispname_list);
+ 	TAILQ_INIT(&optinfo->bcmcs_list);
+ 	TAILQ_INIT(&optinfo->bcmcsname_list);
++#if 1//def ZYXEL_DHCPV6_OPTION64
++	TAILQ_INIT(&optinfo->dslitename_list);
++#endif
+ 
+ 	optinfo->authproto = DHCP6_AUTHPROTO_UNDEF;
+ 	optinfo->authalgorithm = DHCP6_AUTHALG_UNDEF;
+@@ -1590,6 +1593,10 @@
+ 	struct dhcp6_ia ia;
+ 	struct dhcp6_list sublist;
+ 	int authinfolen;
++#if 1//def ZYXEL_DHCPV6_OPTION64
++	struct dhcp6_vbuf vb;
++	char dslitename[MAXDNAME + 1];
++#endif
+ 
+ 	bp = (char *)p;
+ 	for (; p + 1 <= ep; p = np) {
+@@ -1999,6 +2006,14 @@
+ 			dhcp6_clear_list(&sublist);
+ 
+ 			break;
++#if 1//def ZYXEL_DHCPV6_OPTION64		//dslite
++					case DH6OPT_DS_LITE_NAME:
++						if (dhcp6_get_domain(optlen, cp, opt,&optinfo->dslitename_list) == -1) {			
++							goto fail;
++						}			
++						break;
++#endif	
++
+ 		default:
+ 			/* no option specific behavior */
+ 			dprintf(LOG_INFO, FNAME,
+Index: wide-dhcpv6-20080615/config.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/config.c	2019-07-02 17:05:30.908339260 +0800
++++ wide-dhcpv6-20080615/config.c	2019-07-08 10:54:31.887122300 +0800
+@@ -1660,6 +1660,10 @@
+ 		case DHCPOPT_BCMCS:
+ 		case DHCPOPT_BCMCSNAME:
+ 		case DHCPOPT_REFRESHTIME:
++#if 1//def ZYXEL_DHCPV6_OPTION64
++		case DHCPOPT_DSLITENAME:
++#endif
++
+ 			switch (cfl->type) {
+ 			case DHCPOPT_SIP:
+ 				opttype = DH6OPT_SIP_SERVER_A;
+@@ -1697,6 +1701,12 @@
+ 			case DHCPOPT_REFRESHTIME:
+ 				opttype = DH6OPT_REFRESHTIME;
+ 				break;
++#if 1//def ZYXEL_DHCPV6_OPTION64
++			case DHCPOPT_DSLITENAME:
++				 opttype = DH6OPT_DS_LITE_NAME;
++				 break;
++#endif
++
+ 			}
+ 			switch(opcode) {
+ 			case DHCPOPTCODE_REQUEST:
+Index: wide-dhcpv6-20080615/config.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/config.h	2019-07-02 17:05:30.892339260 +0800
++++ wide-dhcpv6-20080615/config.h	2019-07-08 10:54:44.212222700 +0800
+@@ -280,6 +280,9 @@
+        IFPARAM_SLA_ID, IFPARAM_SLA_LEN,
+        DHCPOPT_RAPID_COMMIT, DHCPOPT_AUTHINFO,
+        DHCPOPT_DNS, DHCPOPT_DNSNAME,
++#if 1//def ZYXEL_DHCPV6_OPTION64
++	   DHCPOPT_DSLITENAME,
++#endif
+        DHCPOPT_IA_PD, DHCPOPT_IA_NA, DHCPOPT_NTP,
+        DHCPOPT_REFRESHTIME,
+        DHCPOPT_NIS, DHCPOPT_NISNAME, 
+Index: wide-dhcpv6-20080615/dhcp6.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6.h	2019-07-02 17:05:30.892339260 +0800
++++ wide-dhcpv6-20080615/dhcp6.h	2019-07-08 10:55:25.545648300 +0800
+@@ -247,6 +247,10 @@
+ #define reconfigauth_type authinfo.aiu_reconfig.type
+ #define reconfigauth_offset authinfo.aiu_reconfig.offset
+ #define reconfigauth_val authinfo.aiu_reconfig.val
++#if 1//def ZYXEL_DHCPV6_OPTION64
++	struct dhcp6_list dslitename_list; /*ds-lite name list */
++#endif
++
+ };
+ 
+ struct dhcp6_optinfo_extra {
+@@ -333,6 +337,11 @@
+ #define DH6OPT_SOL_MAX_RT 82
+ /* The followings are KAME specific. */
+ 
++#if 1//def ZYXEL_DHCPV6_OPTION64
++//draft-ietf-softwire-ds-lite-tunnel-option
++#define DH6OPT_DS_LITE_NAME 64  /*RFC6334 DH6OPT_AFTR_NAME*/
++#endif
++
+ struct dhcp6opt {
+ 	u_int16_t dh6opt_type;
+ 	u_int16_t dh6opt_len;
+Index: wide-dhcpv6-20080615/dhcp6c_script.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c_script.c	2007-03-21 17:52:55.000000000 +0800
++++ wide-dhcpv6-20080615/dhcp6c_script.c	2019-07-08 10:17:28.348485000 +0800
+@@ -71,6 +71,9 @@
+ static char nispname_str[] = "new_nisp_name";
+ static char bcmcsserver_str[] = "new_bcmcs_servers";
+ static char bcmcsname_str[] = "new_bcmcs_name";
++#if 1//def ZYXEL_DHCPV6_OPTION64
++static char dslitename_str[] = "dslite_name";
++#endif
+ 
+ int
+ client6_script(scriptpath, state, optinfo)
+@@ -83,6 +86,9 @@
+ 	int nisservers, nisnamelen;
+ 	int nispservers, nispnamelen;
+ 	int bcmcsservers, bcmcsnamelen;
++#if 1//def ZYXEL_DHCPV6_OPTION64
++	int dslitenames = 0, dslitenamelen = 0;
++#endif
+ 	char **envp, *s;
+ 	char reason[] = "REASON=NBI";
+ 	struct dhcp6_listval *v;
+@@ -153,6 +159,14 @@
+ 		bcmcsnamelen += v->val_vbuf.dv_len;
+ 	}
+ 	envc += bcmcsnamelen ? 1 : 0;
++#if 1//def ZYXEL_DHCPV6_OPTION64
++		for (v = TAILQ_FIRST(&optinfo->dslitename_list); v; v = TAILQ_NEXT(v, link)) {
++			dslitenamelen += v->val_vbuf.dv_len;
++			dprintf(LOG_NOTICE, FNAME,
++				"get dslite name");
++		}
++		envc += dslitenamelen ? 1 : 0;
++#endif
+ 
+ 	/* allocate an environments array */
+ 	if ((envp = malloc(sizeof (char *) * envc)) == NULL) {
+@@ -379,6 +393,25 @@
+ 			strlcat(s, " ", elen);
+ 		}
+ 	}
++#if 1//def ZYXEL_DHCPV6_OPTION64
++		if (dslitenamelen) {
++			elen = sizeof (dslitename_str) + dslitenamelen + 1;
++			if ((s = envp[i++] = malloc(elen)) == NULL) {
++				dprintf(LOG_NOTICE, FNAME,
++					"failed to allocate strings for DNS name");
++				ret = -1;
++				goto clean;
++			}
++			memset(s, 0, elen);
++			snprintf(s, elen, "%s=", dslitename_str);
++			for (v = TAILQ_FIRST(&optinfo->dslitename_list); v;
++				v = TAILQ_NEXT(v, link)) {
++				strlcat(s, v->val_vbuf.dv_buf, elen);
++				strlcat(s, " ", elen);
++			}
++	
++		}
++#endif
+ 
+ 	/* launch the script */
+ 	pid = fork();
+@@ -404,7 +437,12 @@
+ 		int fd;
+ 
+ 		argv[0] = scriptpath;
++#if 1////def ZYXEL_DHCPV6_OPTION64
++		argv[1] = "/var/run/dhcpv6DSlite.info";
++		//argv[2] = NULL;
++#else
+ 		argv[1] = NULL;
++#endif
+ 
+ 		if (safefile(scriptpath)) {
+ 			dprintf(LOG_ERR, FNAME,

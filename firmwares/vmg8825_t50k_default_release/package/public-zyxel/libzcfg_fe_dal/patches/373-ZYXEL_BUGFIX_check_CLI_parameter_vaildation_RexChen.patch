@@ -1,0 +1,930 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-11-10 16:11:50.954519546 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-11-10 16:10:39.823284600 +0800
+@@ -635,13 +635,15 @@
+ zcfgRet_t getWifiSsidList(struct json_object **Jarray){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t iid;
+-	struct json_object *ssidObj = NULL;
++	struct json_object *ssidObj = NULL, *obj = NULL;
+ 	char *ssid = NULL;
+-	
+ 	*Jarray = json_object_new_array();
++	IID_INIT(iid);
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_WIFI_SSID, &iid, &ssidObj) == ZCFG_SUCCESS){
++		obj = json_object_new_object();
+ 		ssid = json_object_get_string(json_object_object_get(ssidObj,"SSID"));
+-		json_object_array_add(*Jarray, json_object_new_string(ssid));
++		json_object_object_add(obj, "SSID", json_object_new_string(ssid));
++		json_object_array_add(*Jarray, obj);
+ 		json_object_put(ssidObj);
+ 	}
+ 
+@@ -1174,8 +1176,8 @@
+ 		//sprintf(boundList,"Device.Services.VoiceService.1.VoiceProfile.%d.Line.%d",voipIid.idx[1],voipIid.idx[2]);
+ 		sprintf(voipline,"Device.Services.VoiceService.1.VoiceProfile.%d.Line.%d",voipIid.idx[1],voipIid.idx[2]);
+ 		sprintf(boundList,"VoiceProfile.%d.Line.%d",voipIid.idx[1],voipIid.idx[2]);
+-		sprintf(sipnumber,"%d.SIP%d",count,count);
+-		//sprintf(sipnumber,"SIP%d",count);
++		//sprintf(sipnumber,"%d.SIP%d",count,count);
++		sprintf(sipnumber,"SIP%d",count);
+ 		json_object_object_add(obj, "SIP", json_object_new_string(sip));
+ 		json_object_object_add(obj, "VoipLine", json_object_new_string(voipline));
+ 		json_object_object_add(obj, "BoundList", json_object_new_string(boundList));
+@@ -1202,8 +1204,8 @@
+ 		obj = json_object_new_object();
+ 		name = json_object_get_string(json_object_object_get(voipProviderObj, "Name"));
+ 		sprintf(voipspname,"%d.%s",count,name);
+-		json_object_object_add(obj, "VoipServiceProvider", json_object_new_string(voipspname));
+-		//json_object_object_add(obj, "VoipServiceProvider", json_object_new_string(name));
++		//json_object_object_add(obj, "VoipServiceProvider", json_object_new_string(voipspname));
++		json_object_object_add(obj, "VoipServiceProvider", json_object_new_string(name));
+ 		json_object_array_add(*VoipProviderObj, obj);
+ 		json_object_put(voipProviderObj);
+ 		count++;
+@@ -1396,22 +1398,17 @@
+ 	struct json_object *wifissidObj = NULL;
+ 	struct json_object *obj = NULL;
+ 	objIndex_t wifissidIid = {0};
+-	int count = 1;
+-	char buf[32] = {0};
+ 	const char *ssid = NULL;
+ 
+ 	*ssidObj = json_object_new_array();
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &wifissidIid, &wifissidObj) == ZCFG_SUCCESS){
+-		buf[0] = '\0';
+ 		obj = json_object_new_object();
+ 		ssid = json_object_get_string(json_object_object_get(wifissidObj, "SSID"));
+-		sprintf(buf,"%d.%s",count,ssid);
+-		json_object_object_add(obj, "SSID", json_object_new_string(buf));
++		json_object_object_add(obj, "SSID", json_object_new_string(ssid));
+ 		json_object_object_add(obj, "idx", json_object_new_int(wifissidIid.idx[0]));
+ 		json_object_array_add(*ssidObj, obj);
+ 		json_object_put(wifissidObj);
+ 		wifissidObj = NULL;
+-		count++;
+ 	}
+ 	return ZCFG_SUCCESS;
+ }
+@@ -1956,18 +1953,43 @@
+ 	return false;
+ }
+ 
++//support only for char
++bool checkValidateParameter (char *ptr, struct json_object **obj, char *key) {
++	int len = 0, i;
++	struct json_object *tmpObj = NULL;
++	char *param = NULL;
++	bool found = false;
++	
++	len = json_object_array_length(*obj);
++	for (i=0; i<len; i++){
++		tmpObj = json_object_array_get_idx(*obj, i);
++		param = json_object_get_string(json_object_object_get(tmpObj, key));
++		if(!strcmp(ptr, param)){
++			found = true;
++			break;
++		}
++	}
++	if(found)
++		return true;
++	else
++		return false;
++}
++
+ bool parseValidateParameter(struct json_object *Jobj, char *method, dal_param_t *paramList, char *invalidParm){
+ 	int i, j, k;
+ 	struct json_object *pramJobj = NULL;
+ 	struct json_object *WanLanListJarray = NULL, *WanLanObj = NULL, *RouteIntfJarray = NULL, *intfObj = NULL, *LanPortListJarray = NULL, *QueueListJarray = NULL, *VoipList = NULL, *certListJarray = NULL;
+-	struct json_object *obj = NULL, *obj_tmp = NULL;
+-	const char *stringPtr = NULL, *IpIfacePath = NULL, *Name = NULL, *Type = NULL, *LinkType = NULL, *ConnectionType = NULL, *Group_WAN_IpIface, *Interface = NULL, *BindToIntfGrp = NULL, *LanPortObj = NULL, *IntfPath = NULL, *BrPortPath = NULL, *VoipName = NULL, *timezone = NULL, *timezonevalue = NULL;
++	struct json_object *obj = NULL, *obj_tmp = NULL, *newObj = NULL;
++	const char *stringPtr = NULL, *IpIfacePath = NULL, *Name = NULL, *Type = NULL, *LinkType = NULL, *ConnectionType = NULL, *Group_WAN_IpIface, *Interface = NULL, *BindToIntfGrp = NULL, *LanPortObj = NULL, *IntfPath = NULL, *BrPortPath = NULL, *VoipName = NULL, *timezone = NULL, *timezonevalue = NULL, *Policer = NULL;
+ 	char *ptr = NULL, *ptr_buf = NULL, *tmp_ptr = NULL, *nameList = NULL, *intfName = NULL, *tmp = NULL, *LANName = NULL, *sipname = NULL, *account = NULL, *mode = NULL;
+ 	char buf[64] = {0}, parenCtlServiceList[1024] = {0}, parenCtlService[128], tr181PathList[256] = {0}, route[32] = {0}, duplicateName[128] = {0}, brPath[32] = {0}, intfList[256] = {0}, queue[32] = {0}, voipList[1024] = {0}, usnAccount[256] = {0}, wlmode[16] = {0}, buff[128] = {0};
+ 	int intValue = 0, len = 0, valid = 0, count = 0, len1 = 0, Num = 0, CLIidx = 0, icmptye = 0, icmptypecode = 0, def = 0;
+ 	bool ret = true, changetype = false, foundIntf = false, RtWanWWANDefault = false;
+-	bool AtmUsed = false, PtmUsed = false, EthUsed = false, PonUsed = false, UsbUsed = false, ReUsed = false, wanIntf = false;
++	bool AtmUsed = false, PtmUsed = false, EthUsed = false, PonUsed = false, UsbUsed = false, ReUsed = false, wanIntf = false, found = false;
+ 	char *macAddrDelim = NULL; // MAC address delimiter
++	char allDays[] = "Mon,Tue,Wed,Thu,Fri,Sat,Sun";
++	int startHour, startMin, stopHour, stopMin;
++	char Days[32] = {0};
+ 	unsigned char brIndex;
+ 
+ 	if(Jobj == NULL || paramList == NULL)
+@@ -1994,8 +2016,10 @@
+ 						stringPtr = json_object_get_string(pramJobj);
+ 						len = strlen(stringPtr);
+ 						if(paramList[i].min || paramList[i].max){ // if min ==0 and max ==0, skip
+-							if(len<paramList[i].min || len>paramList[i].max)
++							if(len<paramList[i].min || len>paramList[i].max){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								return false;
++							}
+ 						}
+ 						break;
+ 					case dalType_int:
+@@ -2009,19 +2033,22 @@
+ 
+ 						if(paramList[i].enumeration != NULL){
+ 							sprintf(buf, "%d", intValue);
+-							if(findInList(paramList[i].enumeration, buf, "|") == false)
++							if(findInList(paramList[i].enumeration, buf, "|") == false){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								return false;
++							}
+ 						}
+ 						else if(paramList[i].min || paramList[i].max){
+-							if(intValue<paramList[i].min || intValue>paramList[i].max)
++							if(intValue<paramList[i].min || intValue>paramList[i].max){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								return false;
++							}
+ 						}
+ 						if(changetype){
+ 							json_object_object_del(Jobj, paramList[i].paraName);
+ 							json_object_object_add(Jobj, paramList[i].paraName, json_object_new_int(intValue));
+ 							changetype = false;
+ 						}
+-						
+ 						break;
+ 					case dalType_boolean:
+ 						if(json_object_get_type(pramJobj) == 9){
+@@ -2052,8 +2079,10 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateIPv4(stringPtr) == false)
++						if(validateIPv4(stringPtr) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 					case dalType_v4Mask:
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2064,8 +2093,10 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateIPv4mask(stringPtr) == false)
++						if(validateIPv4mask(stringPtr) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 					case dalType_v6Addr:
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2076,8 +2107,10 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateIPv6(stringPtr) == false)
++						if(validateIPv6(stringPtr) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 					case dalType_v6AddrPrefix: //ex. 2001:123::11:22:33/64
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2088,15 +2121,18 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						
+ 						strcpy(buf, stringPtr);
+ 						ptr = strchr(buf, '/');
+ 						*ptr = '\0';
+ 						intValue = atoi(ptr+1);
+-						if(intValue<0 || intValue>128)
++						if(intValue<0 || intValue>128){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
+-						if(validateIPv6(buf) == false)
++						}
++						if(validateIPv6(buf) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 					case dalType_v4v6Addr:
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2107,8 +2143,10 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateIPv4(stringPtr) == false && validateIPv6(stringPtr) == false)
++						if(validateIPv4(stringPtr) == false && validateIPv6(stringPtr) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 					case dalType_v4v6AddrDomainName:
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2119,8 +2157,73 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateIPv4(stringPtr) == false && validateIPv6(stringPtr) == false && validateServerName(stringPtr) == false)
++						if(validateIPv4(stringPtr) == false && validateIPv6(stringPtr) == false && validateServerName(stringPtr) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
++						break;
++					case dalType_PortRange:
++						stringPtr = json_object_get_string(pramJobj);
++						if(json_object_object_get(Jobj, "cmdtype")){
++							if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "cmdtype")),"GUI")){
++								json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++								break;
++							}
++						}
++						if(paramList[i].enumeration != NULL){
++							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
++								break;
++						}
++						else{
++							int startPort, endPort;
++							ptr_buf = strdup(stringPtr);
++							ptr = strchr(ptr_buf, ':');
++							if(ptr != NULL){
++								*ptr = '\0';
++								if(!strcmp(ptr_buf, "") || (strcmp(ptr_buf, "-1") && !isDigitString(ptr_buf))){
++									printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++									free(ptr_buf);
++									return false;
++								}
++								if(!strcmp(ptr+1, "") || (strcmp(ptr+1, "-1") && !isDigitString(ptr+1))){
++									printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++									free(ptr_buf);
++									return false;
++								}
++								sscanf(stringPtr, "%d:%d", &startPort, &endPort);
++								if(startPort == -1){
++									endPort = -1;
++								}
++							}
++							else{
++								if(!strcmp(ptr_buf, "") || (strcmp(ptr_buf, "-1") && !isDigitString(ptr_buf))){
++									printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++									free(ptr_buf);
++									return false;
++								}
++								startPort = atoi(stringPtr);
++								endPort = -1;
++							}
++							free(ptr_buf);
++							if(startPort == -1){
++								//pass case, do nothing
++							}
++							else if(startPort < -1 || startPort > 65535){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								printf("Start port must between -1 and 65535\n");
++								return false;
++							}
++							else if(endPort < -1 || endPort > 65535){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								printf("End port must between -1 and 65535\n");
++								return false;
++							}
++							else if(endPort != -1 && (startPort >= endPort)){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								printf("End port must larger than start port\n");
++								return false;
++							}
++						}
+ 						break;
+ 					case dalType_vpivci:
+ 						valid = 1;
+@@ -2146,17 +2249,17 @@
+ 							}
+ 						}
+ 						free(ptr_buf);
+-						if(!valid)
++						if(!valid){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 						case dalType_IPPrefix:
+ 							stringPtr = json_object_get_string(pramJobj);
+ 							if(paramList[i].enumeration != NULL){
+-								if(findInList(dalHandler->parameter[j].enumeration, stringPtr, "|") == true){
+-									json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++								if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 									break;
+ 								}
+-							}
+ 							ptr_buf = strdup(stringPtr);
+ 							ptr = strchr(ptr_buf, '/');
+ 							if(ptr == NULL || !strcmp(ptr+1, "") || !isDigitString(ptr+1)){
+@@ -2181,7 +2284,6 @@
+ 								}
+ 							}
+ 							free(ptr_buf);
+-							json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 							break;
+ 					case dalType_emailAddr:
+ 					case dalType_emailList:
+@@ -2193,8 +2295,10 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateEmailAddr(stringPtr) == false)
++						if(validateEmailAddr(stringPtr) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
++						}
+ 						break;
+ 					case dalType_MacAddr:
+ 						macAddrDelim = ":";
+@@ -2208,8 +2312,10 @@
+ 							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+ 								break;
+ 						}
+-						if(validateMacAddr1(stringPtr, macAddrDelim) == false)
++						if(validateMacAddr1(stringPtr, macAddrDelim) == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;						
++						}
+ 						break;
+ 					case dalType_MacAddrList:
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2224,6 +2330,7 @@
+ 						ptr = strtok_r(ptr_buf, ",", &tmp_ptr);
+ 						while(ptr != NULL){
+ 							if(validateMacAddr1(ptr, ":") == false){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								free(ptr_buf);
+ 								return false;
+ 							}
+@@ -2232,9 +2339,83 @@
+ 						}
+ 						free(ptr_buf);
+ 						if(paramList[i].min || paramList[i].max){
+-							if((count > paramList[i].max) || (count < paramList[i].min))
++							if((count > paramList[i].max) || (count < paramList[i].min)){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								return false;
++							}							
++						}
++						break;
++					case dalType_DayofWeek:
++						Days[0] = '\0';
++						stringPtr = json_object_get_string(pramJobj);
++						if(json_object_object_get(Jobj, "cmdtype")){
++							if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "cmdtype")),"GUI")){
++								json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++								break;
++							}
++						}
++						if(paramList[i].enumeration != NULL){
++							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
++								break;
++						}
++						ptr_buf = strdup(stringPtr);
++						count = 0;
++						ptr = strtok_r(ptr_buf, ",", &tmp_ptr);
++						while(ptr != NULL){
++							if(findInList(allDays, ptr, ",") == false){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								free(ptr_buf);
++								return false;
++							}
++							if(findInList(Days, ptr, ",") == false){ //prevent duplicate case
++								count++;
++								strcat(Days, ptr);
++								strcat(Days, ",");
++							}
++							ptr = strtok_r(NULL, ",", &tmp_ptr);
++						}
++						free(ptr_buf);
++						if(count == 0){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++							return false;
++						}
++						Days[strlen(Days)-1]='\0';
++						break;
++					case dalType_TimeRangeList:
++						stringPtr = json_object_get_string(pramJobj);
++						if(json_object_object_get(Jobj, "cmdtype")){
++							if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "cmdtype")),"GUI")){
++								json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++								break;
++							}
++						}
++						if(paramList[i].enumeration != NULL){
++							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
++								break;
++						}
++						ptr_buf = strdup(stringPtr);
++						count = 0;
++						ptr = strtok_r(ptr_buf, ",", &tmp_ptr);
++						while(ptr != NULL){
++							if(parseTimeRange(ptr, &startHour, &startMin, &stopHour, &stopMin) == false){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								free(ptr_buf);
++								return false;
++							}
++							count++;
++							ptr = strtok_r(NULL, ",", &tmp_ptr);
++						}
++						free(ptr_buf);
++						if(paramList[i].min || paramList[i].max){
++							if((count > paramList[i].max) || (count < paramList[i].min)){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								printf("The number of time range must between %d and %d\n", paramList[i].min, paramList[i].max);
++								return false;
++							}
++						}
++						else if(count == 0){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								return false;
+-							
+ 						}
+ 						break;
+ 					case dalType_URLFilterList:
+@@ -2247,8 +2428,10 @@
+ 						}
+ 						len = strlen(stringPtr);
+ 						if(paramList[i].min || paramList[i].max){ // if min ==0 and max ==0, skip
+-							if(len<paramList[i].min || len>paramList[i].max)
++							if(len<paramList[i].min || len>paramList[i].max){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								return false;
++							}						
+ 						}						
+ 						break;
+ 					case dalType_ParenCtlServiceList:
+@@ -2271,6 +2454,7 @@
+ 						ptr = strtok_r(ptr_buf, "/", &tmp_ptr);
+ 						while(ptr != NULL){
+ 							if(parseParenService(ptr, parenCtlService) == false){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								free(ptr_buf);
+ 								return false;
+ 							}
+@@ -2287,10 +2471,12 @@
+ 						free(ptr_buf);	
+ 						if(paramList[i].max || paramList[i].min){
+ 							if(count > paramList[i].max || count < paramList[i].min){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 								return false;
+ 							}
+ 						}
+ 						else if(count == 0){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return false;
+ 						}
+ 						break;
+@@ -2617,8 +2803,10 @@
+ 							if(tr181PathList[len-1] == ',')
+ 								tr181PathList[len-1] = '\0';
+ 						}
+-						if(!ret)
++						if(!ret){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return ret;
++						}
+ 						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(tr181PathList));
+ 						break;
+ 					case dalType_LanPortListBr0NoWiFi:
+@@ -2638,7 +2826,7 @@
+ 						nameList = strtok_r(ptr_buf, ",", &tmp_ptr);
+ 						while(nameList != NULL){
+ 							tmp = strtok_r(nameList, ".", &LANName);
+-							strcat(intfList, LANName);
++							strcat(intfList, nameList);
+ 							strcat(intfList, ",");
+ 							nameList = strtok_r(tmp_ptr, ",", &tmp_ptr);
+ 						}
+@@ -2688,14 +2876,36 @@
+ 						free(intfName);
+ 						json_object_put(LanPortListJarray);
+ 						LanPortListJarray = NULL;
+-						if(!ret)
++						if(!ret){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
+ 							return ret;
++						}
+ 						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(tr181PathList));
+ 						break;
+ 					case dalType_ClassList:
+ 						stringPtr = json_object_get_string(pramJobj);
++						if(json_object_object_get(Jobj, "cmdtype")){
++							if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "cmdtype")),"GUI")){
+ 						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 						break;
++							}
++						}
++						getClassList(&obj);
++						newObj = json_object_new_array();
++						len = json_object_array_length(obj);
++						for(k=0;k<len;k++){
++							obj_tmp = json_object_array_get_idx(obj, k);
++							Policer= json_object_get_string(json_object_object_get(obj_tmp, "Policer"));
++							if(!strcmp(Policer, "")){
++								json_object_array_add(newObj, obj_tmp);
++							}
++						}
++						if(checkValidateParameter(stringPtr, &newObj, "Name") == false){
++								printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++								json_object_put(obj);
++								ret = false;
++							}
++						break;
+ 					case dalType_QueueList:
+ 						stringPtr = json_object_get_string(pramJobj);
+ 						if(json_object_object_get(Jobj, "cmdtype")){
+@@ -2753,10 +2963,18 @@
+ 							}
+ 						}
+ 						for(j = 0; dalVoipRegion[j].Region != NULL; j++){
+-							if(!strcmp(dalVoipRegion[j].Region,stringPtr))
++							if(!strcmp(dalVoipRegion[j].Region,stringPtr)){
+ 								Name = dalVoipRegion[j].simplifyRegion;
++								found = true;
++								break;
++							}
+ 						}
++						if(found)
+ 						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(Name));
++						else{
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++							return false;
++						}
+ 						break;
+ 					case dalType_VoipLine:
+ 					case dalType_MultiVoipLine:
+@@ -2771,14 +2989,13 @@
+ 						ptr_buf = strdup(stringPtr);
+ 						getVoipMultiObj(&VoipList);
+ 						len = json_object_array_length(VoipList);
+-						
++						nameList = strtok_r(ptr_buf, ",", &tmp_ptr);
+ 						if(paramList[i].type == dalType_VoipLine){
+ 							if(strcmp(tmp_ptr,"")){
+ 								printf("Too many input parameter of %s\n", paramList[i].paraName);
+ 								return false;
+ 							}
+ 						}
+-						nameList = strtok_r(ptr_buf, ",", &tmp_ptr);
+ 						while(nameList != NULL){
+ 							for(j=0;j<len;j++){
+ 								obj = json_object_array_get_idx(VoipList, j);
+@@ -2796,14 +3013,20 @@
+ 							}
+ 							nameList = strtok_r(tmp_ptr, ",", &tmp_ptr);
+ 						}
++
++						if(voipList[strlen(voipList) - 1] == ',')
++							voipList[strlen(voipList) - 1] = '\0';
+ 						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(voipList));
+ 						break;
+ 					case dalType_VoipProvider:
+ 						stringPtr = json_object_get_string(pramJobj);
+-						ptr_buf = strdup(stringPtr);
+-						tmp = strtok_r(ptr_buf, ".", &sipname);
+-						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(sipname));
+-						free(ptr_buf);
++						getVoipProviderObj(&VoipList);
++						if(checkValidateParameter(stringPtr, &VoipList, "VoipServiceProvider") == false){
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++							json_object_put(VoipList);
++							return NULL;
++						}
++						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 						break;
+ 					case dalType_ICMPv6:
+ 						stringPtr = json_object_get_string(pramJobj);
+@@ -2856,15 +3079,24 @@
+ 							if(!strcmp(dalTimeZone[k].timezoneCLI,stringPtr)){
+ 								timezone= dalTimeZone[k].timezone;
+ 								timezonevalue = dalTimeZone[k].timezonevalue;
++								found = true;
++								break;
+ 							}
+ 						}
++						if(found){
+ 						json_object_object_add(Jobj, "X_ZYXEL_TimeZone", json_object_new_string(timezonevalue));
+ 						json_object_object_add(Jobj, "X_ZYXEL_Location", json_object_new_string(timezone));
++						}
++						else{
++							printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++							return false;
++						}
++						
+ 						break;
+ 					case dalType_HourMin:
+ 						stringPtr = json_object_get_string(pramJobj);
+-						if(dalHandler->parameter[i].enumeration != NULL){
+-							if(findInList(dalHandler->parameter[i].enumeration, stringPtr, "|") == true){
++						if(paramList[i].enumeration != NULL){
++							if(findInList(paramList[i].enumeration, stringPtr, "|") == true){
+ 								json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 								break;
+ 							}
+@@ -2877,8 +3109,8 @@
+ 						break;
+ 					case dalType_serveraddr:
+ 						stringPtr = json_object_get_string(pramJobj);
+-						if(dalHandler->parameter[i].enumeration != NULL){
+-							if(findInList(dalHandler->parameter[i].enumeration, stringPtr, "|") == true){
++						if(paramList[i].enumeration != NULL){
++							if(findInList(paramList[i].enumeration, stringPtr, "|") == true){
+ 								json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 								break;
+ 							}
+@@ -2925,8 +3157,7 @@
+ 							}
+ 						}
+ 						ptr_buf = strdup(stringPtr);
+-						tmp_ptr = strtok_r(ptr_buf, ".",&tmp);
+-						strcpy(buff, tmp);
++						strcpy(buff, ptr_buf);
+ 						if(strstr(&buff[6],"/")){
+ 							strcat(wlmode, "11");
+ 							mode = strtok_r(&buff[6], "/",&tmp);
+@@ -2954,281 +3185,6 @@
+ 	return true;
+ }
+ 
+-//bool validateParam(struct json_object *Jobj, dal_param_t *paramList) //return invalidParm to gui
+-/*bool validateParam(struct json_object *Jobj, dal_param_t *paramList, char *invalidParm)
+-{
+-	int i;
+-	struct json_object *pramJobj = NULL;
+-	const char *stringPtr = NULL;
+-	char *ptr = NULL, *ptr_buf = NULL, *tmp_ptr = NULL;
+-	char buf[64] = {0}, parenCtlServiceList[1024] = {0}, parenCtlService[128];
+-	int intValue = 0, len, valid = 0, count = 0;
+-	bool ret = false;
+-	char *macAddrDelim = NULL; // MAC address delimiter
+-
+-	if(Jobj == NULL || paramList == NULL)
+-		return true;
+-
+-	printf("Jobj=%s\n", json_object_to_json_string(Jobj));
+-	
+-	for(i=0;paramList[i].paraName;i++){
+-	printf("%s %s %d \n",paramList[i].paraName,__func__,__LINE__);
+-        if(invalidParm != NULL)
+-        {   strcpy(invalidParm, paramList[i].paraName);   }
+-
+-        if((pramJobj = json_object_object_get(Jobj, paramList[i].paraName)) != NULL){
+-			printf("o_type=%d\n", json_object_get_type(pramJobj));
+-			if(paramList[i].validate != NULL){
+-				ret = paramList[i].validate(paramList[i].type);
+-				return ret;
+-			}
+-			else{
+-				switch(paramList[i].type){
+-					case dalType_string:
+-						stringPtr = json_object_get_string(pramJobj);
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						len = strlen(stringPtr);
+-						if(paramList[i].min || paramList[i].max){ // if min ==0 and max ==0, skip
+-							if(len<paramList[i].min || len>paramList[i].max)
+-								return false;
+-						}
+-						break;
+-					case dalType_int:
+-						intValue = json_object_get_int(pramJobj);
+-						printf("%s\t\t%d\n",  paramList[i].paraName, intValue);
+-
+-						if(paramList[i].enumeration != NULL){
+-							sprintf(buf, "%d", intValue);
+-							if(findInList(paramList[i].enumeration, buf, "|") == false)
+-								return false;
+-						}
+-						else if(paramList[i].min || paramList[i].max){
+-							if(intValue<paramList[i].min || intValue>paramList[i].max)
+-								return false;
+-						}
+-						break;
+-					case dalType_boolean:
+-						intValue = json_object_get_boolean(pramJobj);
+-						printf("%s\t\t%d\n",  paramList[i].paraName, intValue);
+-						break;
+-					case dalType_v4Addr:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateIPv4(stringPtr) == false)
+-							return false;
+-						break;
+-					case dalType_v4Mask:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateIPv4mask(stringPtr) == false)
+-							return false;
+-						break;
+-					case dalType_v6Addr:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateIPv6(stringPtr) == false)
+-							return false;
+-						break;
+-					case dalType_v6AddrPrefix: //ex. 2001:123::11:22:33/64
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						
+-						strcpy(buf, stringPtr);
+-						ptr = strchr(buf, '/');
+-						*ptr = '\0';
+-						intValue = atoi(ptr+1);
+-						printf("v6addr=%s, prefix=%d\n", buf, intValue);
+-						if(intValue<0 || intValue>128)
+-							return false;
+-						if(validateIPv6(buf) == false)
+-							return false;
+-						break;
+-					case dalType_v4v6Addr:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateIPv4(stringPtr) == false && validateIPv6(stringPtr) == false)
+-							return false;
+-						break;
+-					case dalType_v4v6AddrDomainName:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateIPv4(stringPtr) == false && validateIPv6(stringPtr) == false && validateServerName(stringPtr) == false)
+-							return false;
+-						break;
+-					case dalType_vpivci:
+-						valid = 1;
+-						stringPtr = json_object_get_string(pramJobj);
+-						ptr_buf = strdup(stringPtr);
+-						ptr = strchr(ptr_buf, '/');
+-						if(ptr == NULL){
+-							valid = 0;
+-						}
+-
+-						if(ptr){
+-							int vpi, vci;
+-							*ptr = '\0';
+-							if(!strcmp(ptr_buf, "") || !isDigitString(ptr_buf)){
+-								valid = 0;
+-							}
+-							if(!strcmp(ptr+1, "") || !isDigitString(ptr+1)){
+-								valid = 0;
+-							}
+-							sscanf(stringPtr, "%d/%d", &vpi, &vci);
+-							if(vpi<0 || vpi>255 || vci<32 || vci>65535){
+-								valid = 0;
+-							}
+-						}
+-						free(ptr_buf);
+-						if(!valid)
+-							return false;
+-						break;
+-					case dalType_emailAddr:
+-					case dalType_emailList:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateEmailAddr(stringPtr) == false)
+-							return false;
+-						break;
+-					case dalType_MacAddr:
+-						macAddrDelim = ":";
+-					case dalType_MacAddrHyphen:
+-						macAddrDelim = "-";
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						if(validateMacAddr1(stringPtr, macAddrDelim) == false)
+-							return false;						
+-						break;
+-					case dalType_MacAddrList:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						ptr_buf = strdup(stringPtr);
+-						count = 0;
+-						ptr = strtok_r(ptr_buf, ",", &tmp_ptr);
+-						while(ptr != NULL){
+-							if(validateMacAddr1(ptr, ":") == false){
+-								free(ptr_buf);
+-								return false;
+-							}
+-							count++;
+-							ptr = strtok_r(NULL, ",", &tmp_ptr);
+-						}
+-						free(ptr_buf);
+-						if(paramList[i].min || paramList[i].max){
+-							if((count > paramList[i].max) || (count < paramList[i].min))
+-								return false;
+-							
+-						}
+-						break;
+-					case dalType_ParenCtlServiceList:
+-						stringPtr = json_object_get_string(pramJobj);
+-						if(stringPtr == NULL || !strcmp(stringPtr, ""))
+-							break;
+-						printf("%s\t\t%s\n",  paramList[i].paraName, stringPtr);
+-						if(paramList[i].enumeration != NULL){
+-							if(findInList(paramList[i].enumeration, stringPtr, "|") == true)
+-								break;
+-						}
+-						ptr_buf = strdup(stringPtr);
+-						count = 0;
+-						memset(parenCtlServiceList, 0, sizeof(parenCtlServiceList));
+-						ptr = strtok_r(ptr_buf, "/", &tmp_ptr);
+-						while(ptr != NULL){
+-							if(parseParenService(ptr, parenCtlService) == false){
+-								free(ptr_buf);
+-								return false;
+-							}
+-							else{
+-								json_object_object_del(Jobj, "NetworkServiceList");
+-								json_object_object_add(Jobj, "NetworkServiceList", json_object_new_string(parenCtlService));
+-							}
+-							
+-							count++;
+-							if(count>paramList[i].max)
+-								break;
+-							ptr = strtok_r(NULL, "/", &tmp_ptr);
+-						}
+-						free(ptr_buf);	
+-						if(paramList[i].max || paramList[i].min){
+-							if(count > paramList[i].max || count < paramList[i].min){
+-								return false;
+-							}
+-						}
+-						else if(count == 0){
+-							return false;
+-						}
+-						break;
+-					default:
+-						break;
+-				}
+-			}
+-		}
+-	}
+-
+-	return true;
+-}*/
+-
+ /*
+  * input:handlerName,  method, Jobj
+  * output: Jarray, replyMsg

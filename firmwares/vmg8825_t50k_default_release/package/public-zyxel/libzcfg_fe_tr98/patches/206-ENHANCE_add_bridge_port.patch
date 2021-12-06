@@ -1,0 +1,227 @@
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2015-08-27 21:52:57.265278622 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2015-08-27 21:53:34.809742300 +0800
+@@ -1568,7 +1568,30 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#define ETHWAN_IFNAME "eth4.0"
++#define MAX_ETH_INTF_NUM   4
++#define MAX_LAN_INTF_NUM 12
+ #define MAX_INTERFACEKEY  20
++
++#define	setIfName(ifName, interfaceKey) { \
++	if(interfaceKey == 5) \
++		sprintf(ifName, "wl0"); \
++	else if(interfaceKey == 6) \
++		sprintf(ifName, "wl0.1"); \
++	else if(interfaceKey == 7) \
++		sprintf(ifName, "wl0.2"); \
++	else if(interfaceKey == 8) \
++		sprintf(ifName, "wl0.3"); \
++	else if(interfaceKey == 9) \
++		sprintf(ifName, "wl1"); \
++	else if(interfaceKey == 10) \
++		sprintf(ifName, "wl1.1"); \
++	else if(interfaceKey == 11) \
++		sprintf(ifName, "wl1.2"); \
++	else if(interfaceKey == 12) \
++		sprintf(ifName, "wl1.3"); \
++}
++			
+ /*
+ 
+   InternetGatewayDevice.Layer2Bridging.Bridge.{i}.Port.{i}.        Bridging.Bridge.{i}.Port.{i}.
+@@ -1577,9 +1600,9 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t brBdgPtIid;
+-	struct json_object *brBdgPtObj = NULL, *tmpObj = NULL;
++	struct json_object *brBdgPtObj = NULL;
+ 	char mappingPathName[MAX_TR181_PATHNAME] = {0};
+-	struct json_object *paramValue, *tr181ParamValue;
++	struct json_object *paramValue, *tr181ParamValue, *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 
+ 	printf("%s\n", __FUNCTION__);
+@@ -1634,7 +1657,9 @@
+ 		if(strstr(paramList->name, "PortInterface") != NULL){
+ 			const char *portIntf = json_object_get_string(paramValue);
+ 			char *endptr = NULL;
++			char ifName[15] = {0}, trIntfName[20] = {0};
+ 			long int interfaceKey = strtol(portIntf, &endptr, 10);
++
+ 			errno = 0;
+ 			if((errno == ERANGE && (interfaceKey == LONG_MAX || interfaceKey == LONG_MIN)) || (errno != 0 && interfaceKey == 0)
+ 				|| (interfaceKey > MAX_INTERFACEKEY)) {			
+@@ -1644,7 +1669,30 @@
+ 
+ 				return ZCFG_INVALID_PARAM_VALUE;
+ 			}
++			if(interfaceKey == 0) {
++				sprintf(ifName, ETHWAN_IFNAME);
++			}
++			else if((interfaceKey > 0) && (interfaceKey <= MAX_ETH_INTF_NUM)) {
++				sprintf(trIntfName, "Ethernet.Interface.%hhu", (int)interfaceKey);
++				sprintf(ifName, "eth%d.0", (int)(interfaceKey-1));
++			}
++			else if((interfaceKey > MAX_ETH_INTF_NUM) && (interfaceKey <= MAX_LAN_INTF_NUM)) {
++				sprintf(trIntfName, "WiFi.SSID.%hhu", (int)(interfaceKey-MAX_ETH_INTF_NUM));
++				setIfName(ifName, interfaceKey);
++			}
++			else {
++				if(!multiJobj)
++					json_object_put(brBdgPtObj);
++
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
+ 			json_object_object_add(brBdgPtObj, "X_ZYXEL_AvailableInterfaceKey", json_object_new_int((int)interfaceKey));
++			json_object_object_add(brBdgPtObj, "LowerLayers", json_object_new_string(trIntfName));
++
++			json_object_object_add(brBdgPtObj, "Enable", json_object_new_boolean(true));
++			json_object_object_add(brBdgPtObj, "X_ZYXEL_InterfaceType", json_object_new_string("LANInterface"));
++			json_object_object_add(brBdgPtObj, "X_ZYXEL_IfName", json_object_new_string(ifName));
++
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -1658,7 +1706,7 @@
+ 		zcfgLog(ZCFG_LOG_INFO, "%s: Deliver multiObj\n", __FUNCTION__);
+ 	}
+ 	else{
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_BRIDGING_BR, &brBdgPtIid, brBdgPtObj, NULL)) != ZCFG_SUCCESS ){
++		if((ret = zcfgFeObjJsonSet(RDM_OID_BRIDGING_BR_PORT, &brBdgPtIid, brBdgPtObj, NULL)) != ZCFG_SUCCESS ){
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.Bridging.Bridge.i.Port.i Fail\n", __FUNCTION__);
+ 			json_object_put(brBdgPtObj);
+ 			return ret;
+@@ -1676,7 +1724,7 @@
+ zcfgRet_t l2BrPortObjAdd(char *tr98FullPathName, int *idx)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t objIid;
++	objIndex_t objIid, mgmtObjIid;
+ 	rdm_BridgingBrPort_t *brBdgPtObj = NULL;
+ 	char mappingPathName[MAX_TR181_PATHNAME] = {0};
+ 	char tr98TmpName[MAX_TR181_PATHNAME] = {0};
+@@ -1710,6 +1758,23 @@
+ 		zcfgFeObjStructFree(brBdgPtObj);
+ 	}
+ 
++	memcpy(&mgmtObjIid, &objIid, sizeof(objIndex_t));
++	mgmtObjIid.idx[1] = 1;
++	mgmtObjIid.level = 1;
++	if((ret = zcfgFeObjStructGet(RDM_OID_BRIDGING_BR_PORT, &mgmtObjIid, (void **)&brBdgPtObj)) == ZCFG_SUCCESS){
++		char bridgingPortName[30] = {0};
++		sprintf(bridgingPortName, ",Bridging.Bridge.%hhu.Port.%hhu", objIid.idx[0], objIid.idx[1]);
++		if(strlen(brBdgPtObj->LowerLayers))
++			strcat(brBdgPtObj->LowerLayers, bridgingPortName);
++		else
++			strcpy(brBdgPtObj->LowerLayers, bridgingPortName+1);
++
++		if((ret = zcfgFeObjStructSet(RDM_OID_BRIDGING_BR_PORT, &mgmtObjIid, (void *)brBdgPtObj, NULL)) != ZCFG_SUCCESS)
++			printf("%s: Set Bridge Mgmt Port Object Fail\n", __FUNCTION__);
++
++		zcfgFeObjStructFree(brBdgPtObj);
++	}
++
+ 	//add mapping
+ #ifndef ZCFG_DYNAMIC_NAMEMAPPING
+ 	*idx = objIid.idx[0];
+@@ -1736,8 +1801,9 @@
+ zcfgRet_t l2BrPortObjDel(char *tr98FullPathName)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t objIid;
++	objIndex_t objIid, mgmtObjIid;
+ 	char mappingPathName[MAX_TR181_PATHNAME] = {0};
++	rdm_BridgingBrPort_t *brBdgPtObj = NULL;
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+ 		zcfgLog(ZCFG_LOG_INFO, "%s: Mapping query fail\n", __FUNCTION__);
+@@ -1757,6 +1823,26 @@
+ 		printf("%s: Delete Bridging.Bridge.Port fail\n", __FUNCTION__);
+ 
+ 	return ret;
++
++	IID_INIT(mgmtObjIid);
++	memcpy(&mgmtObjIid, &objIid, sizeof(objIndex_t));
++	mgmtObjIid.idx[1] = 1;
++	if((ret = zcfgFeObjStructGet(RDM_OID_BRIDGING_BR_PORT, &mgmtObjIid, (void **)&brBdgPtObj)) == ZCFG_SUCCESS){
++		char bridgingPortName[30] = {0};
++		char *modifiedLowerLayers = NULL;
++		sprintf(bridgingPortName, "Bridging.Bridge.%hhu.Port.%hhu", objIid.idx[0], objIid.idx[1]);
++		if((modifiedLowerLayers = csvStringStripTerm((const char *)brBdgPtObj->LowerLayers, (const char *)bridgingPortName))) {
++			strcpy(brBdgPtObj->LowerLayers, modifiedLowerLayers);
++			free(modifiedLowerLayers);
++		}
++
++		if((ret = zcfgFeObjStructSet(RDM_OID_BRIDGING_BR_PORT, &mgmtObjIid, (void *)brBdgPtObj, NULL)) != ZCFG_SUCCESS)
++			printf("%s: Set Bridge Mgmt Port Object Fail\n", __FUNCTION__);
++
++		zcfgFeObjStructFree(brBdgPtObj);
++	}
++
++	return ret;
+ }
+ 
+ zcfgRet_t l2BrVlanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-08-27 21:52:57.173278620 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-08-27 21:53:41.983653300 +0800
+@@ -1020,6 +1020,42 @@
+ }
+ #endif
+ 
++// Delete a term in csv string
++char *csvStringStripTerm(const char *csv, const char *term)
++{
++	char *new_Csv = NULL;
++	char *str_1 = NULL, *str_2 = NULL;
++	int csvLen = strlen(csv);
++
++	if(!csv || !term || (csvLen <= 0))
++		return NULL;
++
++	str_1 = strstr(csv, term);
++	if(!str_1) {
++		return NULL;
++	}
++
++	new_Csv = malloc(csvLen);
++	memset(new_Csv, 0, csvLen);
++
++	if(str_1 == csv) {
++		str_2 = str_1 + strlen(term);
++		if(str_2[0] != '\0') {
++			str_2++;
++			strcpy(new_Csv, str_2);
++		}
++	}
++	else {
++		str_2 = str_1 + strlen(term);
++		strncpy(new_Csv, csv, (str_1-csv)-1);
++		if(str_2[0] != '\0') {
++			strcat(new_Csv, str_2);
++		}
++	}
++
++	return new_Csv;
++}
++
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *tr98ObjName, struct json_object **value)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2015-08-27 21:52:56.937278615 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2015-08-27 21:53:47.313330000 +0800
+@@ -98,6 +98,7 @@
+ zcfgRet_t zcfgFe98NameToSeqnum(const char *tr98PathName, zcfg_name_t *seqnum, objIndex_t *tr98ObjIid);
+ zcfgRet_t zcfgFe98SeqnumToName(zcfg_name_t seqnum, objIndex_t *objIid, char *tr98PathName);
+ zcfgRet_t zcfgFe98ParmMappingToName(const char *notifyName, char *tr98NotifyName);
++char *csvStringStripTerm(const char *csv, const char *term);
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );
+ zcfgRet_t zcfgFeTr98ObjNameObjGet(char *, struct json_object **);
+ zcfgRet_t zcfgFeTr98ObjParamSet(char *, uint32_t , struct json_object *, char *);

@@ -1,0 +1,81 @@
+Index: wide-dhcpv6-20080615/common.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.c	2018-02-02 11:50:32.855252978 +0800
++++ wide-dhcpv6-20080615/common.c	2018-02-02 11:52:56.261420137 +0800
+@@ -3635,6 +3635,40 @@
+ 	return (0);
+ }
+ 
++#ifdef ZYXEL_DHCPV6C_OPTION
++u_int32_t
++dhcp6_get_pd_iaid_from_rdm ()
++{
++	rdm_Dhcpv6ClientSentOpt_t *sentOptObj = NULL;
++	objIndex_t optIid;
++	objIndex_t dhcpIid;
++	zcfgRet_t ret;
++
++	IID_INIT(dhcpIid);
++	dhcpIid.level = 1;
++	dhcpIid.idx[0] = 1;
++
++	IID_INIT(optIid);
++	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &dhcpIid, &optIid, (void **)&sentOptObj)) == ZCFG_SUCCESS) {
++		if ( (sentOptObj->Enable) && (sentOptObj->Tag == DH6OPT_IA_PD) ) {
++			dhcp6_ia_t *ia_new;
++			uint8_t hexDump[257] = {0};
++
++			dhcp6_tran_str_to_hex (sentOptObj->Value, hexDump);
++
++			ia_new = (dhcp6_ia_t *) (hexDump);
++
++			zcfgFeObjStructFree(sentOptObj);
++
++			return ia_new->iaid;
++		}
++
++		zcfgFeObjStructFree(sentOptObj);
++	}
++
++	return 0;
++}
++
+ int
+ dhcp6_set_sent_options_from_rdm(optinfo)
+ 	struct dhcp6_optinfo *optinfo;
+@@ -3782,6 +3816,7 @@
+ 
+ 	return (0);
+ }
++#endif /* ZYXEL_DHCPV6C_OPTION */
+ 
+ int
+ dhcp6_set_options(type, optbp, optep, optinfo)
+Index: wide-dhcpv6-20080615/dhcp6c.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c.c	2018-02-02 11:50:32.855252978 +0800
++++ wide-dhcpv6-20080615/dhcp6c.c	2018-02-02 12:14:56.367275617 +0800
+@@ -1256,6 +1256,7 @@
+    		} else if (IATYPE_NA == iac->type) {
+    			type = 3;
+    		}
++
+    		// merge
+ 		iac->iaid += mac[2] << 24;
+ 		iac->iaid += mac[3] << 16;
+@@ -1263,10 +1264,14 @@
+ 		iac->iaid += mac[5];
+ 		iac->iaid += type;
+ 		
+-		
+ 		iaparam.iaid = iac->iaid;
+ 		switch (iac->type) {
+ 		case IATYPE_PD:
++#ifdef ZYXEL_DHCPV6C_OPTION
++			iac->iaid = dhcp6_get_pd_iaid_from_rdm();
++			iaparam.iaid = iac->iaid;
++#endif /* ZYXEL_DHCPV6C_OPTION */
++
+ 			ial = NULL;
+ 			if ((ial = malloc(sizeof(*ial))) == NULL)
+ 				goto fail;

@@ -1,0 +1,565 @@
+Index: linux-3.18.21/arch/mips/econet/Makefile
+===================================================================
+--- linux-3.18.21.orig/arch/mips/econet/Makefile	2018-06-20 23:00:10.164982099 +0800
++++ linux-3.18.21/arch/mips/econet/Makefile	2018-06-20 23:00:14.324982099 +0800
+@@ -24,4 +24,6 @@
+ obj-$(TCSUPPORT_KPROFILE)	+= kprofile_hook.o
+ ifneq ($(strip $(RTP_RX_SHORTCUT)),)
+ obj-$(TCSUPPORT_VOIP)	+= voip_hook.o
+-endif
+\ No newline at end of file
++endif
++
++obj-$(ZYXEL_SUPPORT_USB_PROTECTION_CIRCUIT) += usb_oc_protect.o
+Index: linux-3.18.21/arch/mips/econet/usb_oc_protect.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/arch/mips/econet/usb_oc_protect.c	2018-06-21 10:01:32.093129876 +0800
+@@ -0,0 +1,547 @@
++/************************************************************************
++ *
++ *	20150702, TimLiu, using for control/detect the additional power switch
++ *				for USB. It prevent USB to facing over current.
++ *
++ *************************************************************************/
++
++#include <linux/kernel.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/signal.h>
++#include <linux/sched.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/timer.h>
++#include <linux/proc_fs.h>
++#include <linux/version.h>
++#include <asm/addrspace.h>
++#include <asm/tc3162/tc3162.h>
++#include <asm/tc3162/ledcetrl.h>
++
++static int g_debug_flag = 0;
++#define DBG_MSG(F, B...)	{ \
++								if(g_debug_flag) 	\
++									printk("[%d] " F, (uint)jiffies, ##B) ; \
++							}
++
++// When power switch send out event flag to notify, it also disable the output power.
++// Basically, no need software to disable power switch by ENABLE pin.
++//#define SOFTWARE_DISABLE_USB_POWER_WHEN_EVENT_TRIGGER
++
++// The power switch have 2 signal connect to SoC`s GPIO.
++#define _POWERSWITCH_ENABLE_GPIO	ZYXEL_USB_OC_ENABLE_GPIO
++#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++#define _USB_OVERCURRENT_FLAG_GPIO	ZYXEL_USB_OC_FLAG_GPIO
++#endif
++
++#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++// The 2nd power switch have 2 signal connect to SoC`s GPIO.
++#define _2ND_POWERSWITCH_ENABLE_GPIO	ZYXEL_2ND_USB_OC_ENABLE_GPIO
++#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++#define _2ND_USB_OVERCURRENT_FLAG_GPIO	ZYXEL_2ND_USB_OC_FLAG_GPIO
++#endif
++#endif
++
++struct proc_dir_entry *usb_oc_proc_dir=NULL, *usb_oc_proc_debug=NULL, *_1st_usb_oc_proc_enable=NULL;
++#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++struct proc_dir_entry *_1st_usb_oc_proc_flag=NULL;
++#endif
++
++#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++struct proc_dir_entry *_2nd_usb_oc_proc_enable=NULL;
++#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++struct proc_dir_entry *_2nd_usb_oc_proc_flag=NULL;
++#endif
++#endif
++
++#ifdef SOFTWARE_DISABLE_USB_POWER_WHEN_EVENT_TRIGGER
++#define USB_OC_TIMMER_INTERVAL	(HZ/10)
++#define USB_OC_TIMEOUT			10
++static struct timer_list usb_timer;
++static int RESET_STATE=0;
++static int _1ST_OC_FLG=0;
++#endif
++
++
++//using for set/get GPIO 0~63
++#define SET_GPIO_LOW(x)		do {	\
++								if(x > 31) {	\
++									regWrite32(CR_GPIO_DATA1,regRead32(CR_GPIO_DATA1)& ~(1<<(x-32)));	\
++								}else{	\
++									regWrite32(CR_GPIO_DATA,regRead32(CR_GPIO_DATA)& ~(1<<x));	\
++								}\
++							} while(0)
++#define SET_GPIO_HIGH(x)	do {	\
++								if(x > 31) {	\
++									regWrite32(CR_GPIO_DATA1,regRead32(CR_GPIO_DATA1)|(1<<(x-32)));	\
++								}else{	\
++									regWrite32(CR_GPIO_DATA,regRead32(CR_GPIO_DATA)|(1<<x));	\
++								}\
++							} while(0)
++static int GET_GPIO(int x) {
++	if(x > 31)
++		return (regRead32(CR_GPIO_DATA1)|(1<<(x-32)));
++	else
++		return (regRead32(CR_GPIO_DATA)&(1<<x));
++	return 0;
++}
++/* set input/output mode for gpio 0~63 */
++#define SET_GPIO_IN(x)	do { 	\
++			if(x > 31){							\
++				if(x > 47)						\
++					regWrite32(CR_GPIO_CTRL3,regRead32(CR_GPIO_CTRL3)&~(0x00000003 << ((x-48)* 2)));	\
++				else							\
++					regWrite32(CR_GPIO_CTRL2,regRead32(CR_GPIO_CTRL2)&~(0x00000003 << ((x-32)* 2)));	\
++				regWrite32(CR_GPIO_ODRAIN1,regRead32(CR_GPIO_ODRAIN1)&~(0x00000001 << (x-32)));	\
++			}									\
++			else{								\
++				if(x > 15)						\
++					regWrite32(CR_GPIO_CTRL1,regRead32(CR_GPIO_CTRL1)&~(0x00000003 << ((x-16)* 2)));	\
++				else							\
++					regWrite32(CR_GPIO_CTRL,regRead32(CR_GPIO_CTRL)&~(0x00000003 << (x* 2)));	\
++				regWrite32(CR_GPIO_ODRAIN,regRead32(CR_GPIO_ODRAIN)&~(0x00000001 << x));	\
++			}	\
++		} while(0)
++#define SET_GPIO_OUT(x)	do { 	\
++			if(x > 31){							\
++				if(x > 47){						\
++					regWrite32(CR_GPIO_CTRL3,regRead32(CR_GPIO_CTRL3)&~(3<<((x-48)*2))|(1<<((x-48)*2)));	\
++				}else{							\
++					regWrite32(CR_GPIO_CTRL2,regRead32(CR_GPIO_CTRL2)&~(3<<((x-32)*2))|(1<<((x-32)*2)));	\
++				}								\
++				regWrite32(CR_GPIO_ODRAIN1,regRead32(CR_GPIO_ODRAIN1)|(1<<(x-32)));	\
++			}									\
++			else{								\
++				if(x > 15){						\
++					regWrite32(CR_GPIO_CTRL1,regRead32(CR_GPIO_CTRL1)&~(3<<((x-16)*2))|(1<<((x-16)*2)));	\
++				}else{							\
++					regWrite32(CR_GPIO_CTRL,regRead32(CR_GPIO_CTRL)&~(3<<(x*2))|(1<<(x*2)));	\
++				}								\
++				regWrite32(CR_GPIO_ODRAIN,regRead32(CR_GPIO_ODRAIN)|(1<<(x)));	\
++			}	\
++		} while(0)
++static int IS_GPIO_OUT(int gpio_num) {
++	int val=0;
++	if(gpio_num > 31){
++		if(gpio_num > 47){
++			val = (regRead32(CR_GPIO_CTRL3)&(0x00000003<<((gpio_num-48)*2)));
++		}else{
++			val = (regRead32(CR_GPIO_CTRL2)&(0x00000003<<((gpio_num-32)*2)));
++		}
++	}
++	else{
++		if(gpio_num > 15){
++			val = (regRead32(CR_GPIO_CTRL1)&(0x00000003<<((gpio_num-16)*2)));
++		}else{
++			val = (regRead32(CR_GPIO_CTRL)&(0x00000003<<(gpio_num*2)));
++		}
++	}
++	DBG_MSG("IS_GPIO_OUT(%d)=%x\n", gpio_num, val);
++	if(val) return 1;
++	return 0;
++}
++
++static int _enable_1st_usb_power(int enable) {
++#ifndef ZYXEL_USB_OC_ENABLE_GPIO_ACTIVE_LOW
++	// Active HIGH
++	if(enable)
++		SET_GPIO_HIGH(_POWERSWITCH_ENABLE_GPIO);
++	else
++		SET_GPIO_LOW(_POWERSWITCH_ENABLE_GPIO);
++#else
++	// Active HIGH
++	if(enable)
++		SET_GPIO_LOW(_POWERSWITCH_ENABLE_GPIO);
++	else
++		SET_GPIO_HIGH(_POWERSWITCH_ENABLE_GPIO);
++#endif
++	return 0;
++}
++
++static int _is_1st_usb_power_enabled(void) {
++#ifndef ZYXEL_USB_OC_ENABLE_GPIO_ACTIVE_LOW
++	// Active HIGH
++	if(GET_GPIO(_POWERSWITCH_ENABLE_GPIO) == 1)
++		return 1;
++	else
++		return 0;
++#else
++	// Active LOW
++	// Active HIGH
++	if(GET_GPIO(_POWERSWITCH_ENABLE_GPIO) == 0)
++		return 1;
++	else
++		return 0;
++#endif
++}
++
++#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++static int _is_1st_usb_flag_triggered(void) {
++	// Assume USB FLAG is Active LOW
++	if(GET_GPIO(_USB_OVERCURRENT_FLAG_GPIO) == 0)
++		return 1;
++	else
++		return 0;
++}
++#endif
++
++#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++static int _enable_2nd_usb_power(int enable) {
++#ifndef ZYXEL_2ND_USB_OC_ENABLE_GPIO_ACTIVE_LOW
++	// Active HIGH
++	if(enable)
++		SET_GPIO_HIGH(_2ND_POWERSWITCH_ENABLE_GPIO);
++	else
++		SET_GPIO_LOW(_2ND_POWERSWITCH_ENABLE_GPIO);
++#else
++	// Active HIGH
++	if(enable)
++		SET_GPIO_LOW(_2ND_POWERSWITCH_ENABLE_GPIO);
++	else
++		SET_GPIO_HIGH(_2ND_POWERSWITCH_ENABLE_GPIO);
++#endif
++	return 0;
++}
++
++static int _is_2nd_usb_power_enabled(void) {
++#ifndef ZYXEL_USB_OC_ENABLE_GPIO_ACTIVE_LOW
++	// Active HIGH
++	if(GET_GPIO(_2ND_POWERSWITCH_ENABLE_GPIO) == 1)
++		return 1;
++	else
++		return 0;
++#else
++	// Active LOW
++	// Active HIGH
++	if(GET_GPIO(_2ND_POWERSWITCH_ENABLE_GPIO) == 0)
++		return 1;
++	else
++		return 0;
++#endif
++}
++
++#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++static int _is_2nd_usb_flag_triggered(void) {
++	// Assume USB FLAG is Active LOW
++	if(GET_GPIO(_2ND_USB_OVERCURRENT_FLAG_GPIO) == 0)
++		return 1;
++	else
++		return 0;
++}
++#endif
++
++#endif
++
++#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++//basically, the FLAG is active LOW.
++static int _1st_flag_read_proc(char *page, char **start, off_t off,
++		int count, int *eof, void *data){
++
++	int len;
++
++	len = sprintf(page, "%d\n", _is_1st_usb_flag_triggered());
++	len -= off;
++	*start = page + off;
++
++	if (len > count)
++		len = count;
++	else
++		*eof = 1;
++
++	if (len < 0)
++		len = 0;
++
++	return len;
++}
++#endif
++static int _1st_enable_read_proc(char *page, char **start, off_t off,
++		int count, int *eof, void *data){
++
++	int len;
++
++	len = sprintf(page, "%d\n", _is_1st_usb_power_enabled());
++	len -= off;
++	*start = page + off;
++
++	if (len > count)
++		len = count;
++	else
++		*eof = 1;
++
++	if (len < 0)
++		len = 0;
++
++	return len;
++}
++static int _1st_enable_write_proc(struct file *file, const char *buffer,
++	unsigned long count, void *data){
++	char val_string[3];
++	uint enable;
++
++	if (count > sizeof(val_string) - 1)
++		return -EINVAL;
++
++	if (copy_from_user(val_string, buffer, count))
++		return -EFAULT;
++
++	val_string[count] = '\0';
++
++	sscanf(val_string, "%d", &enable) ;
++
++	if((enable != 0) && (enable != 1)){
++		printk("Input parameter error!\n");
++	}
++	else{
++		_enable_1st_usb_power(enable);
++	}
++
++	return count;
++}
++
++#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++//basically, the FLAG is active LOW.
++static int _2nd_flag_read_proc(char *page, char **start, off_t off,
++		int count, int *eof, void *data){
++
++	int len;
++
++	len = sprintf(page, "%d\n", _is_2nd_usb_flag_triggered());
++	len -= off;
++	*start = page + off;
++
++	if (len > count)
++		len = count;
++	else
++		*eof = 1;
++
++	if (len < 0)
++		len = 0;
++
++	return len;
++}
++#endif
++static int _2nd_enable_read_proc(char *page, char **start, off_t off,
++		int count, int *eof, void *data){
++
++	int len;
++
++	len = sprintf(page, "%d\n", _is_2nd_usb_power_enabled());
++	len -= off;
++	*start = page + off;
++
++	if (len > count)
++		len = count;
++	else
++		*eof = 1;
++
++	if (len < 0)
++		len = 0;
++
++	return len;
++}
++static int _2nd_enable_write_proc(struct file *file, const char *buffer,
++	unsigned long count, void *data){
++	char val_string[3];
++	uint enable;
++
++	if (count > sizeof(val_string) - 1)
++		return -EINVAL;
++
++	if (copy_from_user(val_string, buffer, count))
++		return -EFAULT;
++
++	val_string[count] = '\0';
++
++	sscanf(val_string, "%d", &enable) ;
++
++	if((enable != 0) && (enable != 1)){
++		printk("Input parameter error!\n");
++	}
++	else{
++		_enable_2nd_usb_power(enable);
++	}
++
++	return count;
++}
++#endif  //ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++
++static int debug_write_proc(struct file *file, const char *buffer,
++	unsigned long count, void *data){
++	char val_string[3];
++	uint debug;
++
++	if (count > sizeof(val_string) - 1)
++		return -EINVAL;
++
++	if (copy_from_user(val_string, buffer, count))
++		return -EFAULT;
++	val_string[count] = '\0';
++
++	sscanf(val_string, "%d", &debug) ;
++
++	if((debug != 0) && (debug != 1)){
++		printk("Input parameter error!\n");
++	}
++	else{
++		g_debug_flag = debug;
++		printk("set debug flag to %d\n", g_debug_flag);
++	}
++
++	return count;
++}
++
++void gpioModeChk(void)
++{
++	// make sure 1st Power Switch Enable pin is output
++	if(!IS_GPIO_OUT(_POWERSWITCH_ENABLE_GPIO)) {
++		SET_GPIO_OUT(_POWERSWITCH_ENABLE_GPIO);
++		DBG_MSG("set GPIO %d to output\n", _POWERSWITCH_ENABLE_GPIO);
++	}
++	#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++	// make sure 1st Over Current Flag pin is input
++	if(IS_GPIO_OUT(_USB_OVERCURRENT_FLAG_GPIO)) {
++		SET_GPIO_IN(_USB_OVERCURRENT_FLAG_GPIO);
++		DBG_MSG("set GPIO %d to input\n", _USB_OVERCURRENT_FLAG_GPIO);
++	}
++	DBG_MSG("GPIO %d mode is %x\n", _USB_OVERCURRENT_FLAG_GPIO, (regRead32(CR_GPIO_CTRL)&(0x00000003 << (_USB_OVERCURRENT_FLAG_GPIO* 2))) );
++	#endif
++	DBG_MSG("GPIO %d mode is %x\n", _POWERSWITCH_ENABLE_GPIO, (regRead32(CR_GPIO_CTRL)&(0x00000003 << (_POWERSWITCH_ENABLE_GPIO* 2))) );
++#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++	// make sure 2nd Power Switch Enable pin is output
++	if(!IS_GPIO_OUT(_2ND_POWERSWITCH_ENABLE_GPIO)) {
++		SET_GPIO_OUT(_2ND_POWERSWITCH_ENABLE_GPIO);
++		DBG_MSG("set GPIO %d to output\n", _2ND_POWERSWITCH_ENABLE_GPIO);
++	}
++	#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++	// make sure 2nd Over Current Flag pin is input
++	if(IS_GPIO_OUT(_2ND_USB_OVERCURRENT_FLAG_GPIO)) {
++		SET_GPIO_IN(_2ND_USB_OVERCURRENT_FLAG_GPIO);
++		DBG_MSG("set GPIO %d to input\n", _2ND_USB_OVERCURRENT_FLAG_GPIO);
++	}
++	DBG_MSG("GPIO %d mode is %x\n", _2ND_USB_OVERCURRENT_FLAG_GPIO, (regRead32(CR_GPIO_CTRL)&(0x00000003 << (_2ND_USB_OVERCURRENT_FLAG_GPIO* 2))) );
++	#endif
++	DBG_MSG("GPIO %d mode is %x\n", _2ND_POWERSWITCH_ENABLE_GPIO, (regRead32(CR_GPIO_CTRL)&(0x00000003 << (_2ND_POWERSWITCH_ENABLE_GPIO* 2))) );
++#endif
++}
++
++#ifdef SOFTWARE_DISABLE_USB_POWER_WHEN_EVENT_TRIGGER
++void usbTimer(void)
++{
++	gpioModeChk();
++
++	if(RESET_STATE == 2) {
++		//Disable USB power for step 1 to reset power switch
++		_enable_1st_usb_power(0);
++		DBG_MSG("Enter reset %d, _POWERSWITCH_ENABLE_GPIO is %d\n", RESET_STATE, GET_GPIO(_POWERSWITCH_ENABLE_GPIO)?1:0);
++		RESET_STATE=1;
++	}else if(RESET_STATE == 1) {
++		//re-enable the power switch
++		_enable_1st_usb_power(1);
++		DBG_MSG("Enter reset %d, _POWERSWITCH_ENABLE_GPIO is %d\n", RESET_STATE, GET_GPIO(_POWERSWITCH_ENABLE_GPIO)?1:0);
++		RESET_STATE=0;
++		_1ST_OC_FLG=0;
++	}
++	#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++	else {
++		if(_is_1st_usb_flag_triggered()) {
++			_1ST_OC_FLG++;
++			if(_1ST_OC_FLG >= USB_OC_TIMEOUT) {
++				RESET_STATE=2;
++				printk("Occur usb over current event!!\n");
++			}
++		}else
++			_1ST_OC_FLG=0;
++	}
++	DBG_MSG("GET_GPIO(_USB_OVERCURRENT_FLAG_GPIO)=%d, _1ST_OC_FLG=%d\n", GET_GPIO(_USB_OVERCURRENT_FLAG_GPIO)?1:0, _1ST_OC_FLG);
++    #endif
++	mod_timer(&usb_timer, jiffies + USB_OC_TIMMER_INTERVAL);
++
++}
++#endif
++
++static int __init usb_oc_protect_init(void)
++{
++	gpioModeChk();
++	//pull high to enable power switch
++	_enable_1st_usb_power(1);
++#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++	_enable_2nd_usb_power(1);
++#endif
++
++#ifdef SOFTWARE_DISABLE_USB_POWER_WHEN_EVENT_TRIGGER
++	_1ST_OC_FLG = 0;
++
++	init_timer(&usb_timer);
++	usb_timer.expires = jiffies + USB_OC_TIMMER_INTERVAL;
++	usb_timer.function = usbTimer;
++	add_timer(&usb_timer);
++#endif
++
++	/* create proc node */
++	usb_oc_proc_dir = proc_mkdir("usb_oc", NULL);
++
++	if(usb_oc_proc_dir) {
++		_1st_usb_oc_proc_enable = create_proc_entry("enable", 0, usb_oc_proc_dir);
++		_1st_usb_oc_proc_enable->read_proc = _1st_enable_read_proc;
++		_1st_usb_oc_proc_enable->write_proc = _1st_enable_write_proc;
++		#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++		_1st_usb_oc_proc_flag = create_proc_entry("flag", 0, usb_oc_proc_dir);
++		_1st_usb_oc_proc_flag->read_proc = _1st_flag_read_proc;
++		_1st_usb_oc_proc_flag->write_proc = NULL;
++		#endif
++		#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++		_2nd_usb_oc_proc_enable = create_proc_entry("enable2", 0, usb_oc_proc_dir);
++		_2nd_usb_oc_proc_enable->read_proc = _2nd_enable_read_proc;
++		_2nd_usb_oc_proc_enable->write_proc = _2nd_enable_write_proc;
++		#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++		_2nd_usb_oc_proc_flag = create_proc_entry("flag2", 0, usb_oc_proc_dir);
++		_2nd_usb_oc_proc_flag->read_proc = _2nd_flag_read_proc;
++		_2nd_usb_oc_proc_flag->write_proc = NULL;
++		#endif  //ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++		#endif  //ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++		usb_oc_proc_debug = create_proc_entry("debug", 0, usb_oc_proc_dir);
++		usb_oc_proc_debug->read_proc = NULL;
++		usb_oc_proc_debug->write_proc = debug_write_proc;
++	}
++	printk("USB overcurrent protection.\n");
++
++	return 0;
++}
++
++static void __exit usb_oc_protect_exit(void)
++{
++#ifdef SOFTWARE_DISABLE_USB_POWER_WHEN_EVENT_TRIGGER
++	del_timer_sync(&usb_timer);
++#endif
++
++	if(_1st_usb_oc_proc_enable){
++		remove_proc_entry("enable", _1st_usb_oc_proc_enable);
++	}
++	#ifdef ZYXEL_USB_OC_FLAG_SUPPORT
++	if(_1st_usb_oc_proc_flag){
++		remove_proc_entry("flag", _1st_usb_oc_proc_flag);
++	}
++	#endif
++	#ifdef ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++	if(_2nd_usb_oc_proc_enable){
++		remove_proc_entry("enable2", _2nd_usb_oc_proc_enable);
++	}
++	#ifdef ZYXEL_2ND_USB_OC_FLAG_SUPPORT
++	if(_2nd_usb_oc_proc_flag){
++		remove_proc_entry("flag2", _2nd_usb_oc_proc_flag);
++	}
++	#endif  //ZYXEL_USB_OC_FLAG_SUPPORT
++	#endif  //ZYXEL_SUPPORT_2ND_USB_PROTECTION_CIRCUIT
++	if(usb_oc_proc_debug){
++		remove_proc_entry("debug", usb_oc_proc_debug);
++	}
++	if(usb_oc_proc_dir){
++		remove_proc_entry("usb_oc", usb_oc_proc_dir);
++	}
++}
++
++module_init(usb_oc_protect_init);
++module_exit(usb_oc_protect_exit);

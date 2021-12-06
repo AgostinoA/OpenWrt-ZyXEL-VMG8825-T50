@@ -1,0 +1,141 @@
+Index: libzcfg_fe_tr98-1.0/voice.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.c	2015-06-04 16:02:19.044827479 +0800
++++ libzcfg_fe_tr98-1.0/voice.c	2015-06-04 16:11:54.474949793 +0800
+@@ -365,30 +365,80 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t profIid;
+-	char *parameterName;
++	struct json_object *profObj = NULL;
++	struct json_object *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++	struct json_object *paramValue = NULL;
++	char *value = NULL;
++	char new_string[128]={0};
+ 	
+ 	IID_INIT(profIid);
+ 	profIid.level = 2;
+ 	sscanf(tr98FullPathName, "InternetGatewayDevice.Services.VoiceService.%hhu.VoiceProfile.%hhu", 
+ 		&profIid.idx[0], &profIid.idx[1]);
+-
+-	char * str = json_object_get_string(json_object_object_get(tr98Jobj,"Enable"));
+-
+-	if(!strcmp(str, "Enabled") || !strcmp(str, "Disabled") )
+-    {
+-		zcfgLog(ZCFG_LOG_INFO,"%s: VoiceProfObj->Enable : (%s) \n",__FUNCTION__,str);
+-    }else{
+-        zcfgLog(ZCFG_LOG_ERR, "%s:VoiceProfObj->Enable only support Disabled and Enabled\n", __FUNCTION__);
+-		strcpy(paramfault,"Enable");
+-
+-    	return ZCFG_NO_SUCH_PARAMETER;  
+-    }
+-
+-	if((ret = setVoiceConfig(RDM_OID_VOICE_PROF, &profIid, handler, tr98Jobj, multiJobj)) != ZCFG_SUCCESS){
+-		zcfgLog(ZCFG_LOG_ERR, "%s: fail to set config to tr181 for object RDM_OID_VOICE_PROF with ret=%d", __FUNCTION__, ret);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_VOICE_PROF, &profIid, &profObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get voice prof object ret=%d\n", __FUNCTION__, ret);
+ 		return ret;
+ 	}
+ 
++	/* set(update) value to target object */
++	if(profObj){
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name){
++			/* get parameter value from tr098 */
++			paramValue = json_object_object_get(tr98Jobj, paramList->name);
++			value = json_object_get_string(paramValue);
++
++			/* write it to tr181 json object */
++			if(paramValue != NULL) {
++				/* special case */
++				if(!strcmp(paramList->name, "X_ZyXEL_COM_FaxMode")){
++					if(!strcmp(value, "Disable")){
++						strcpy(new_string,"Disable");
++						json_object_object_add(profObj, "ModemPassThrough", json_object_new_string("Disable"));
++						json_object_object_add(profObj, "FAXPassThrough", json_object_new_string("Disable"));
++					}else if(!strcmp(value, "G711PassThrough")){
++						strcpy(new_string,"G711PassThrough");
++						json_object_object_add(profObj, "ModemPassThrough", json_object_new_string("Auto"));
++						json_object_object_add(profObj, "FAXPassThrough", json_object_new_string("Auto"));
++					}else if(!strcmp(value, "T38Relay")){
++						strcpy(new_string,"T38Relay");
++						json_object_object_add(profObj, "ModemPassThrough", json_object_new_string("Auto"));
++						json_object_object_add(profObj, "FAXPassThrough", json_object_new_string("Auto"));
++					}else{
++						strcpy(paramfault,"X_ZyXEL_COM_FaxMode");
++						zcfgFeJsonObjFree(profObj);
++				    	return ZCFG_NO_SUCH_PARAMETER;  
++					}
++					json_object_object_add(profObj, paramList->name, json_object_new_string(new_string));
++				}else{
++					json_object_object_add(profObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				}
++			}
++
++			paramList++;
++			continue;
++		}
++
++		if(multiJobj) {
++			tmpObj = profObj;
++			profObj = NULL;
++			profObj = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_PROF, &profIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}else {
++			ret = zcfgFeObjJsonSet(RDM_OID_VOICE_PROF, &profIid, profObj, NULL);
++			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set VOICE_PROFs Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set VOICE_PROF Success\n", __FUNCTION__);
++			}
++			zcfgFeJsonObjFree(profObj);
++		}
++	
++	}
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+@@ -552,17 +602,18 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t lineIid;
++	char *enable = NULL;
+ 
+ 	IID_INIT(lineIid);
+ 	lineIid.level = 3;
+ 	sscanf(tr98FullPathName, "InternetGatewayDevice.Services.VoiceService.%hhu.VoiceProfile.%hhu.Line.%hhu", 
+ 		&lineIid.idx[0], &lineIid.idx[1], &lineIid.idx[2]);
+ 
+-	char * str = json_object_get_string(json_object_object_get(tr98Jobj,"Enable"));
++	enable = json_object_get_string(json_object_object_get(tr98Jobj,"Enable"));
+ 
+-	if(!strcmp(str, "Enabled") || !strcmp(str, "Disabled") )
++	if(!strcmp(enable, "Enabled") || !strcmp(enable, "Disabled") )
+     {
+-		zcfgLog(ZCFG_LOG_INFO,"%s: VoiceLineObj->Enable : (%s) \n",__FUNCTION__,str);
++		zcfgLog(ZCFG_LOG_INFO,"%s: VoiceLineObj->Enable : (%s) \n",__FUNCTION__,enable);
+     }else{
+         zcfgLog(ZCFG_LOG_ERR, "%s:VoiceLineObj->Enable only support Disabled and Enabled\n", __FUNCTION__);
+ 		strcpy(paramfault,"Enable");
+Index: libzcfg_fe_tr98-1.0/voice.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.h	2015-06-04 16:02:19.044827479 +0800
++++ libzcfg_fe_tr98-1.0/voice.h	2015-06-04 16:04:43.733850100 +0800
+@@ -97,9 +97,10 @@
+ 	{ "NonVoiceBandwidthReservedUpstream", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "NonVoiceBandwidthReservedDownstream", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "PSTNFailOver", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "FAXPassThrough", PARAMETER_ATTR_WRITE, 33, json_type_string},
+-	{ "X_ZyXEL_COM_FaxPassthroughPCMA", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "ModemPassThrough", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	//{ "FAXPassThrough", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	//{ "X_ZyXEL_COM_FaxPassthroughPCMA", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	//{ "ModemPassThrough", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "X_ZyXEL_COM_FaxMode", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	//{ "X_ZyXEL_COM_LogServer", PARAMETER_ATTR_WRITE, 65, json_type_string},
+ 	//{ "X_ZyXEL_LogServerPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	//{ "X_ZyXEL_COM_SPNum", PARAMETER_ATTR_WRITE, 0, json_type_uint32},

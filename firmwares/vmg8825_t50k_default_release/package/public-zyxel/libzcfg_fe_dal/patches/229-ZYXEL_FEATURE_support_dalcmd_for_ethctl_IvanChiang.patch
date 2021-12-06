@@ -1,0 +1,220 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-06-23 13:21:11.648112753 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-06-23 13:27:44.946638700 +0800
+@@ -17,6 +17,7 @@
+ NETWORK_QOS_PATH = ./network/qos
+ NETWORK_USBSERVICE_PATH = ./network/usbService
+ NETWORK_HOME_CONNECITIVY_PATH = ./network/homeConnectivity
++NETWORK_ETHCTL_PATH = ./network/ethctl
+ MAINTENANCE_MGMT = ./maintenance/mgmt
+ MAINTENANCE_DIAGNOSTIC_PATH = ./maintenance/diagnostic
+ MAINTENANCE_EMAIL_PATH = ./maintenance/mail
+@@ -45,6 +46,7 @@
+ SOURCES += $(wildcard $(NETWORK_QOS_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_USBSERVICE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_HOME_CONNECITIVY_PATH)/*.c)
++SOURCES += $(wildcard $(NETWORK_ETHCTL_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_MGMT)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_DIAGNOSTIC_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_USER_ACCOUNT_PATH)/*.c)
+Index: libzcfg_fe_dal-1.0/network/ethctl/zcfg_fe_dal_ethctl.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/ethctl/zcfg_fe_dal_ethctl.c	2017-06-22 17:39:55.244556800 +0800
+@@ -0,0 +1,158 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++#include <string.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t ETH_CTL_param[] = 
++{
++	{"intf",		dalType_string,       0, 0, NULL,		"eth0|eth1|eth2|eth3",		dal_Edit},
++	{"media-type",	dalType_string,       0, 0, NULL,		"Auto|100FD|100HD|10FD|10HD", 	NULL},
++	{"enable",		dalType_boolean,   	  0, 0, NULL, 	     NULL,					        NULL},
++	{NULL,						  0,	  0, 0, NULL, 	     NULL,					        NULL}
++};
++
++
++void zcfgFeDalShowEthCtl(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-15s %-15s %-15s %-15s \n","Interface","Duplex","Speed","Enable");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("%-15s %-15s %-15s %-15d \n",
++			json_object_get_string(json_object_object_get(obj, "intf")),
++			json_object_get_string(json_object_object_get(obj, "duplex")),
++			json_object_get_string(json_object_object_get(obj, "speed")),
++			json_object_get_boolean(json_object_object_get(obj, "enable")));
++
++	}
++}
++
++zcfgRet_t zcfgFeDalEthCtlGet(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *ethObj = NULL;
++	struct json_object *paramJobj = NULL;
++	objIndex_t ethIid = {0};
++
++	while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &ethIid, &ethObj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "intf", JSON_OBJ_COPY(json_object_object_get(ethObj, "Name")));
++		json_object_object_add(paramJobj, "duplex", JSON_OBJ_COPY(json_object_object_get(ethObj, "DuplexMode")));
++		json_object_object_add(paramJobj, "speed", JSON_OBJ_COPY(json_object_object_get(ethObj, "MaxBitRate")));
++		json_object_object_add(paramJobj, "enable", JSON_OBJ_COPY(json_object_object_get(ethObj, "Enable")));
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(ethObj);
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalEthCtlEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret= ZCFG_SUCCESS;
++	struct json_object *ethObj = NULL;
++	objIndex_t ethIid = {0};
++	const char *targetName = NULL;
++	const char *name = NULL;
++	const char *duplex = NULL;
++	const char * media_type = NULL;
++	int speed = 0;
++	int index = 0;
++	bool newEnable = false;
++	bool curEnable = false;
++	bool found = false;
++	targetName = json_object_get_string(json_object_object_get(Jobj, "intf"));
++	sscanf(targetName, "eth%d", &index);
++	
++	IID_INIT(ethIid);
++	ethIid.level = 1;
++	ethIid.idx[0] = index+1;
++	
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_IFACE, &ethIid, &ethObj) == ZCFG_SUCCESS) {
++		name = json_object_get_string(json_object_object_get(ethObj, "Name"));
++		if((targetName != NULL) && !strcmp(targetName,name)){
++			curEnable  =  json_object_get_boolean(json_object_object_get(ethObj, "Enable"));
++			found = true;
++		}
++	}
++
++	if(found) {
++		if((json_object_object_get(Jobj, "media-type") == NULL) && (json_object_object_get(Jobj, "enable") == NULL) ){
++			strcpy(replyMsg, "Invalid parameters! Please enter --intf  <interface> --media-type <Auto|100FD|100HD|10FD|10HD>  or --enable <1|0>");
++			return ZCFG_REQUEST_REJECT;
++		}else{
++			//Enable/disable
++			if(json_object_object_get(Jobj, "enable") != NULL){
++				newEnable = json_object_get_int(json_object_object_get(Jobj, "enable"));
++				json_object_object_add(ethObj, "Enable", json_object_new_boolean(newEnable));
++			}
++		
++			//If disable, ignore
++			if(json_object_object_get(Jobj, "media-type") != NULL){
++				if(!curEnable && !newEnable){
++					strcpy(replyMsg, "The port is disable.");
++					return ZCFG_REQUEST_REJECT;
++				}
++				//media-type
++				media_type = json_object_get_string(json_object_object_get(Jobj, "media-type"));
++				 if(!strcmp(media_type,"Auto")){
++					json_object_object_add(ethObj, "DuplexMode", json_object_new_string(media_type));
++					json_object_object_add(ethObj, "MaxBitRate", json_object_new_int(-1));
++				}else if(!strcmp(media_type,"100FD")){
++					json_object_object_add(ethObj, "DuplexMode", json_object_new_string("Full"));
++					json_object_object_add(ethObj, "MaxBitRate", json_object_new_int(100));
++				}else if(!strcmp(media_type,"100HD")){
++					json_object_object_add(ethObj, "DuplexMode", json_object_new_string("Half"));
++					json_object_object_add(ethObj, "MaxBitRate", json_object_new_int(100));
++				}else if(!strcmp(media_type,"10FD")){
++					json_object_object_add(ethObj, "DuplexMode", json_object_new_string("Full"));
++					json_object_object_add(ethObj, "MaxBitRate", json_object_new_int(10));
++				}else if(!strcmp(media_type,"10HD")){
++					json_object_object_add(ethObj, "DuplexMode", json_object_new_string("Half"));
++					json_object_object_add(ethObj, "MaxBitRate", json_object_new_int(10));
++				}else{
++					strcpy(replyMsg, "Duplex should be Full, Half or Auto. Speed should be 10 or 100.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
++
++			ret = zcfgFeObjJsonSet(RDM_OID_ETH_IFACE, &ethIid, ethObj, NULL);
++		}
++	}
++	else{
++		return ZCFG_NOT_FOUND;
++	}
++
++	zcfgFeJsonObjFree(ethObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalEthCtl(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) 
++		ret = zcfgFeDalEthCtlEdit(Jobj, replyMsg);
++
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDalEthCtlGet(Jobj, replyMsg);
++	else 
++		printf("Unknown method:%s\n", method);
++	return ret;
++}
+\ No newline at end of file
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-23 13:21:11.820112750 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-23 13:27:20.028165400 +0800
+@@ -14,6 +14,7 @@
+ extern dal_param_t ETHWANLAN_param[];
+ extern dal_param_t ADVANCE_param[];
+ extern dal_param_t WWANBACKUP_param[];
++extern dal_param_t ETH_CTL_param[];
+ extern dal_param_t DNS_ENTRY_param[];
+ extern dal_param_t D_DNS_param[];
+ extern dal_param_t STATICROUTE_param[];
+@@ -93,6 +94,7 @@
+ extern zcfgRet_t zcfgFeDalEthWanLan(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWanAdvance(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWwanBackup(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalEthCtl(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalStaticRoute(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsRoute(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalPolicyRoute(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -168,6 +170,7 @@
+ extern void zcfgFeDalShowMgmtSrv(struct json_object *Jarray);
+ extern void zcfgFeDalShowPortFwd(struct json_object *Jarray);
+ extern void zcfgFeDalShowNetworkMAP(struct json_object *Jarray);
++extern void zcfgFeDalShowEthCtl(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallACL(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiGeneral(struct json_object *Jarray);
+ extern void zcfgFeDalShowWan(struct json_object *Jarray);
+@@ -212,6 +215,7 @@
+ {"ddns",			D_DNS_param,		zcfgFeDalDDns,			zcfgFeDalShowDDns,			"get|edit",			"DNS"},
+ {"ADVANCE",			ADVANCE_param,		zcfgFeDalWanAdvance,	zcfgFeDalShowWanAdvance,	"get|edit",				"Broadband"}, //Broadband
+ {"WWANBACKUP", 		WWANBACKUP_param,	zcfgFeDalWwanBackup,	NULL,						"edit",				""}, //Broadband
++{"ethctl",			ETH_CTL_param,		zcfgFeDalEthCtl,		zcfgFeDalShowEthCtl,		"get|edit",				"ethctl"}, //ETHCTL command
+ {"static_route", 	STATICROUTE_param,	zcfgFeDalStaticRoute,	zcfgFeDalShowStaticRoute,	"get|add|edit|delete",	"Routing"},
+ {"dns_route", 		DNSROUTE_param,		zcfgFeDalDnsRoute,		zcfgFeDalShowDnsRoute,		"get|add|edit|delete",	"Routing"}, //Routing
+ {"policy_route", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute,	zcfgFeDalShowPolicyRoute,	"get|add|edit|delete",	"Routing"}, //Routing

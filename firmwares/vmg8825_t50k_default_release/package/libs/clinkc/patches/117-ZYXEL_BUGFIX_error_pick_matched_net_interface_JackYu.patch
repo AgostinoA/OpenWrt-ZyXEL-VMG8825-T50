@@ -1,0 +1,88 @@
+Index: clinkc/src/cybergarage/net/cinterface_function.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/cinterface_function.c	2018-09-27 13:04:24.946794000 +0800
++++ clinkc/src/cybergarage/net/cinterface_function.c	2018-09-27 13:28:11.807145901 +0800
+@@ -466,6 +466,7 @@
+ 	int s;
+ 	char buffer[256+1];
+ 	char ifaddr[20+1];
++	char ifmask[20+1] = {0};
+ 	char *ifname;
+ 	char *sep;
+ 	
+@@ -498,9 +499,20 @@
+ 		if (ioctl(s, SIOCGIFADDR, &req) < 0)
+ 			continue;
+ 		strncpy(ifaddr, inet_ntoa(((struct sockaddr_in*)&req.ifr_addr)->sin_addr), sizeof(ifaddr)-1);
++
++	    if (ioctl(s, SIOCGIFNETMASK, &req) < 0) {
++	        cg_log_error("Nooooooooo!!! ioctl SIOCGIFNETMASK error to <%s>!!!\n", ifname);
++	    }
++	    else
++	    {
++	    	strncpy(ifmask, inet_ntoa(((struct sockaddr_in*)&req.ifr_addr)->sin_addr), sizeof(ifmask)-1);
++	    	cg_log_debug_s("%s check netmask for %s: %s\n", __FUNCTION__, ifname, ifmask);
++	    }
++
+ 		netIf = cg_net_interface_new();
+ 		cg_net_interface_setname(netIf, ifname);
+ 		cg_net_interface_setaddress(netIf, ifaddr);
++		if(strlen(ifmask)) cg_net_interface_setnetmask(netIf, ifmask);
+ 		cg_net_interfacelist_add(netIfList, netIf);
+ 		cg_log_debug("Interface name: %s, address: %s\n", ifname, ifaddr);
+ 		//cout << ifname << ", " << ifaddr << endl;
+@@ -634,7 +646,7 @@
+ char *cg_net_selectaddr(struct sockaddr *remoteaddr)
+ {
+ 	CgNetworkInterfaceList *netIfList;
+-	CgNetworkInterface *netIf;
++	CgNetworkInterface *netIf, *lanbrIf = NULL;
+ 	CgNetworkInterface *selectNetIf;
+ 	char *selectNetIfAddr;
+ 	u_long laddr, lmask, raddr;
+@@ -653,12 +665,19 @@
+ 
+ 	raddr = ntohl(((struct sockaddr_in *)remoteaddr)->sin_addr.s_addr);
+ 
++	cg_log_debug_s("%s debug %d: %x\n", __FILE__, __LINE__, raddr);
+ 	memset(&hints, 0, sizeof(hints));
+ 	hints.ai_flags= AI_NUMERICHOST | AI_PASSIVE;
+ 
+ 	selectNetIf = NULL;
+ 	if (1 <= cg_net_gethostinterfaces(netIfList)) {
+ 		for (netIf=cg_net_interfacelist_gets(netIfList); netIf; netIf = cg_net_interface_next(netIf)) {
++
++			cg_log_debug_s("%s debug %d: ifname: <%s> <%s> <%s>\n", __FILE__, __LINE__, netIf->name->value, netIf->ipaddr->value, netIf->netmask->value);
++
++			if (!strcmp(netIf->name->value, "br0"))
++				lanbrIf = netIf;
++
+ 			if (getaddrinfo(cg_net_interface_getaddress(netIf), NULL, &hints, &netIfAddrInfo) != 0) 
+ 				continue;
+ 			if (getaddrinfo(cg_net_interface_getnetmask(netIf), NULL, &hints, &netMaskAddrInfo) != 0) {
+@@ -667,8 +686,12 @@
+ 			}
+ 			laddr = ntohl(((struct sockaddr_in *)netIfAddrInfo->ai_addr)->sin_addr.s_addr);
+ 			lmask = ntohl(((struct sockaddr_in *)netMaskAddrInfo->ai_addr)->sin_addr.s_addr);
+-			if ( ( laddr & lmask ) == ( raddr & lmask ) ) 
++
++			cg_log_debug_s("%s debug %d: laddr: %x lmask: %x\n", __FILE__, __LINE__, laddr, lmask);
++
++			if ( ( laddr & lmask ) == ( raddr & lmask ) )
+ 				selectNetIf = netIf;
++
+ 			freeaddrinfo(netIfAddrInfo);
+ 			freeaddrinfo(netMaskAddrInfo);
+ 			if (selectNetIf)
+@@ -676,8 +699,10 @@
+ 		}
+ 	}
+ 
++	//Jack: if not found, use br0 first
++	//but it should be br0
+ 	if (!selectNetIf)
+-		selectNetIf = cg_net_interfacelist_gets(netIfList);
++		selectNetIf = lanbrIf;
+ 
+ 	selectNetIfAddr = cg_strdup(cg_net_interface_getaddress(selectNetIf));
+ 

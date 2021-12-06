@@ -1,0 +1,112 @@
+Index: libzcfg_fe_dal-1.0/security/certificate/zcfg_fe_dal_localCertificates.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/certificate/zcfg_fe_dal_localCertificates.c	2018-11-27 14:39:52.860512951 +0800
++++ libzcfg_fe_dal-1.0/security/certificate/zcfg_fe_dal_localCertificates.c	2018-11-27 14:48:40.948532500 +0800
+@@ -35,6 +35,24 @@
+ 	{NULL,		0,	0,	0,	NULL}
+ };
+ 
++bool isCertNameDuplicate(const char *name, objIndex_t *objIid)
++{
++	objIndex_t certIid = {0};
++	struct json_object *certJobj = NULL;
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_DEV_SEC_CERT, &certIid, &certJobj) == ZCFG_SUCCESS) {
++		if((objIid == NULL || objIid->idx[0] != certIid.idx[0])
++			&& strcmp(name, json_object_get_string(json_object_object_get(certJobj, "X_ZYXEL_Name"))) == 0) {
++			zcfgFeJsonObjFree(certJobj);
++			return true;
++		}
++
++		zcfgFeJsonObjFree(certJobj);
++	}
++
++	return false;
++}
++
+ zcfgRet_t zcfgFeDalDevSecCertAdd(struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -42,14 +60,28 @@
+ 	objIndex_t objIid;
+ 	struct json_object *DevSecCertJobj = NULL;
+ 	int n=0;
+-	paraName = (const char *)DEV_SEC_CERT_param[n++].paraName;
++
++	paraName = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Name"));
++	if(paraName == NULL) {
++		if(replyMsg != NULL)
++			strcpy(replyMsg, "missing parameters");
++		return ZCFG_REQUEST_REJECT;
++	}
++	else if(isCertNameDuplicate(paraName, NULL)) {
++		if(replyMsg != NULL)
++			strcpy(replyMsg, "duplicate name");
++		Jadds(Jobj, "__multi_lang_replyMsg", "zylang.Certificates.Local.Warning.same_name");
++		return ZCFG_REQUEST_REJECT;
++	}
+ 
+ 	IID_INIT(objIid);
+ 	zcfgFeObjJsonAdd(RDM_OID_DEV_SEC_CERT, &objIid, NULL);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_DEV_SEC_CERT, &objIid, &DevSecCertJobj)) != ZCFG_SUCCESS) {
+ 		printf("%s: Object retrieve fail\n", __FUNCTION__);
+ 		return ret;
+-	}	
++	}
++
++	paraName = (const char *)DEV_SEC_CERT_param[n++].paraName;
+ 	while(paraName){
+ 		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+ 		if(!paramValue) {
+@@ -79,7 +111,7 @@
+ 	int paramModified = 0, n = 0;
+ 	struct json_object *iidArray = NULL;
+ 	uint8_t iidIdx =0;
+-	paraName = (const char *)DEV_SEC_CERT_param[n++].paraName;
++	
+ 	
+ 	//IID_INIT(objIid);
+ 	iidArray = json_object_object_get(Jobj, "Iid");
+@@ -88,9 +120,25 @@
+ 		if(objIid.idx[iidIdx] != 0)
+ 			objIid.level = iidIdx+1;
+ 	}
++
++	paraName = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Name"));
++	if(paraName == NULL) {
++		if(replyMsg != NULL)
++			strcpy(replyMsg, "missing parameters");
++		return ZCFG_REQUEST_REJECT;
++	}
++	else if(isCertNameDuplicate(paraName, &objIid)) {
++		if(replyMsg != NULL)
++			strcpy(replyMsg, "duplicate name");
++		Jadds(Jobj, "__multi_lang_replyMsg", "zylang.Certificates.Local.Warning.same_name");
++		return ZCFG_REQUEST_REJECT;
++	}
++
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_DEV_SEC_CERT, &objIid, &DevSecCertJobj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
++
++	paraName = (const char *)DEV_SEC_CERT_param[n++].paraName;
+ 	while(paraName){
+ 		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+ 		if(!paramValue) {
+@@ -193,13 +241,13 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalDevSecCertEdit(Jobj, NULL);
++		ret = zcfgFeDalDevSecCertEdit(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalDevSecCertAdd(Jobj, NULL);
++		ret = zcfgFeDalDevSecCertAdd(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+-		ret = zcfgFeDalDevSecCertDelete(Jobj, NULL);
++		ret = zcfgFeDalDevSecCertDelete(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "GET")) {
+ 		ret = zcfgFeDalDevSecCertGet(Jobj, Jarray, replyMsg);

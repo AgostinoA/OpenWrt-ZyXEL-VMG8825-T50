@@ -1,0 +1,300 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2015-08-03 21:43:46.145491397 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2015-08-03 21:43:46.161491398 +0800
+@@ -1,3 +1,6 @@
++
++#include <netinet/in.h>
++#include <arpa/inet.h>
+ #include <json/json.h>
+ 
+ #include "zcfg_common.h"
+@@ -60,6 +63,8 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
++#define MAX_IFACE_LENGTH (256+1)
+ /*
+  *   TR98 Object Name : InternetGatewayDevice.Layer3Forwarding.Forwarding.i
+  *
+@@ -69,24 +74,24 @@
+ zcfgRet_t l3fwdFwdTbObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+-	uint8_t idx = 0;
+ 	objIndex_t objIid, ipifaceIid;
+ 	struct json_object *ipv4FwdObj = NULL, *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char iface[40] = {0};
+-	char lowerLayer[32] = {0};
+-	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char iface[MAX_IFACE_LENGTH] = {0};
++	char lowerLayer[MAX_IFACE_LENGTH] = {0};
++	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0}, tr181ObjName[MAX_TR181_PATHNAME] = {0};
+ 
+-	//printf("%s : Enter\n", __FUNCTION__);
++	printf("%s : Enter\n", __FUNCTION__);
+ 
+-	sscanf(tr98FullPathName, "InternetGatewayDevice.Layer3Forwarding.Forwarding.%hhu", &idx);
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, tr181ObjName)) != ZCFG_SUCCESS) {
++		return ret;
++	}
+ 
+ 	/*mapping InternetGatewayDevice.Layer3Forwarding to Device.Routing.Router.1*/
+ 	IID_INIT(objIid);
+ 	objIid.level = 2;
+-	objIid.idx[0] = 1;
+-	objIid.idx[1] = idx;
++	sscanf(tr181ObjName, "Routing.Router.%hhu.IPv4Forwarding.%hhu.", &objIid.idx[0], &objIid.idx[1]);
+ 
+ 	if((ret = feObjJsonGet(RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid, &ipv4FwdObj, updateFlag)) != ZCFG_SUCCESS)
+ 		return ret;
+@@ -97,7 +102,7 @@
+ 		/*special case*/
+ 		if(!strcmp(paramList->name, "Interface")) {
+ 			paramValue = json_object_object_get(ipv4FwdObj, paramList->name);
+-			strcpy(iface, json_object_get_string(paramValue));
++			strncpy(iface, json_object_get_string(paramValue), sizeof(iface));
+ 
+ 			IID_INIT(ipifaceIid);
+ 			ipifaceIid.level = 1;
+@@ -107,7 +112,7 @@
+ 				printf("%s : Get IP.Interface Fail\n", __FUNCTION__);
+ 			}
+ 			else {
+-				strcpy(lowerLayer, json_object_get_string(json_object_object_get(ipIfaceJobj, "LowerLayers")));
++				strncpy(lowerLayer, json_object_get_string(json_object_object_get(ipIfaceJobj, "LowerLayers")), sizeof(lowerLayer));
+ 
+ 				if(strstr(lowerLayer, "PPP.I") != NULL) {
+ 					strcpy(iface, lowerLayer);
+@@ -131,8 +136,17 @@
+ 		}
+ 
+ 		/*special case*/
+-		if(!strcmp(paramList->name, "SourceIPAddress") || !strcmp(paramList->name, "SourceSubnetMask")) {
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++		if(!strcmp(paramList->name, "SourceIPAddress")) {
++			if((paramValue = json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceIpAddress")))
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "SourceSubnetMask")) {
++			if((paramValue = json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceSubnetMask")))
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -164,26 +178,27 @@
+ zcfgRet_t l3fwdFwdTbObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+-	uint8_t idx = 0;
+ 	objIndex_t objIid;
+ 	struct json_object *ipv4FwdObj = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char iface[40] = {0};
+-	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char higherLayer[32] = {0};
++	char iface[MAX_IFACE_LENGTH] = {0};
++	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0}, tr181ObjName[MAX_TR181_PATHNAME] = {0};
++	char higherLayer[MAX_IFACE_LENGTH] = {0};
++	bool wrongParamValue = false;
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+-	sscanf(tr98FullPathName, "InternetGatewayDevice.Layer3Forwarding.Forwarding.%hhu", &idx);
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, tr181ObjName)) != ZCFG_SUCCESS) {
++		return ret;
++	}
+ 
+ 	/*mapping InternetGatewayDevice.Layer3Forwarding to Device.Routing.Router.1*/
+ 	IID_INIT(objIid);
+ 	objIid.level = 2;
+-	objIid.idx[0] = 1;
+-	objIid.idx[1] = idx;
++	sscanf(tr181ObjName, "Routing.Router.%hhu.IPv4Forwarding.%hhu", &objIid.idx[0], &objIid.idx[1]);
+ 
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid, &ipv4FwdObj)) != ZCFG_SUCCESS) {
+ 		return ret;
+@@ -193,6 +208,7 @@
+ 		tmpObj = ipv4FwdObj;
+ 		ipv4FwdObj = NULL;
+ 		ipv4FwdObj = zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
+ 	}
+ 
+ 	paramList = tr98Obj[handler].parameter;
+@@ -200,15 +216,22 @@
+ 		/*Write new parameter value from tr98 object to tr181 objects*/		
+ 		if(!strcmp(paramList->name, "Interface")) {
+ 			paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-			if(paramValue != NULL) {
+-				strcpy(tr98ConnObjName, json_object_get_string(paramValue));
++			if(paramValue != NULL)
++				strncpy(tr98ConnObjName, json_object_get_string(paramValue), sizeof(tr98ConnObjName));
++			if(strlen(tr98ConnObjName) > 0) {
++				if(!strstr(tr98ConnObjName, "IPConnection") && !strstr(tr98ConnObjName, "PPPConnection")) {
++					wrongParamValue = true;
++					break;
++				}
++
+ 				if(zcfgFe98To181MappingNameGet(tr98ConnObjName, iface) != ZCFG_SUCCESS) {
+-					json_object_object_add(ipv4FwdObj, paramList->name, json_object_new_string(""));
++					wrongParamValue = true;
++					break;
+ 				}
+ 				else {
+ 					if(strstr(iface, "PPP.Interface") != NULL) {
+ 						zcfgFeTr181IfaceStackHigherLayerGet(iface, higherLayer);
+-						strcpy(iface, higherLayer);
++						strncpy(iface, higherLayer, sizeof(iface));
+ 					}
+ 					
+ 					json_object_object_add(ipv4FwdObj, paramList->name, json_object_new_string(iface));
+@@ -217,9 +240,23 @@
+ 			paramList++;
+ 			continue;
+ 		}
+-
++		else if(!strcmp(paramList->name, "SourceIPAddress"))
++			paramValue = json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceIpAddress");
++		else if(!strcmp(paramList->name, "SourceSubnetMask"))
++			paramValue = json_object_object_get(ipv4FwdObj, "X_ZYXEL_SourceSubnetMask");
++		else 
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++
+ 		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "GatewayIPAddress") || !strcmp(paramList->name, "DestIPAddress") ||
++				!strcmp(paramList->name, "SourceIPAddress")) {
++				const char *ipAddress = (const char *)json_object_get_string(paramValue);
++				if(ipAddress && (strlen(ipAddress) > 0) && (inet_addr((const char *)ipAddress) < 0)) {
++					wrongParamValue = true;
++					break;
++				}
++			}
++
+ 			tr181ParamValue = json_object_object_get(ipv4FwdObj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+ 				json_object_object_add(ipv4FwdObj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -233,9 +270,16 @@
+ 		paramList++;	
+ 	}
+ 
++	if(wrongParamValue == true) {
++		if(!multiJobj)
++			json_object_put(ipv4FwdObj);
++
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++
+ 	/*Set Device.Routing.Router.1.IPv4Forwarding.i*/
+ 	if(multiJobj){
+-		json_object_put(tmpObj);
++		//json_object_put(tmpObj);
+ 	}
+ 	else{
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid, ipv4FwdObj, NULL)) != ZCFG_SUCCESS ) {
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-08-03 21:43:46.145491397 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-08-03 21:44:25.772923600 +0800
+@@ -3408,7 +3408,6 @@
+ 	return attrValue;
+ }
+ 
+-#if 0
+ zcfgRet_t WANIpConnObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -3545,83 +3544,6 @@
+ 
+ 	return ret;
+ }
+-#endif
+-
+-zcfgRet_t WANIpConnObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+-{
+-	zcfgFeSetParmAttr_t *setParmAttr = NULL;
+-	uint32_t seqnum = 0;
+-	objIndex_t tr98ObjIid, tr181ObjIid;
+-	uint32_t attr = 0;
+-	struct json_object *jobj = NULL;
+-	char ipIfaceName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-
+-	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+-
+-	printf("%s: parm %s\n", __FUNCTION__, paramName);
+-
+-	if(zcfgFe98NameToSeqnum((const char *)tr98FullPathName, &seqnum, &tr98ObjIid) != ZCFG_SUCCESS)
+-		return ZCFG_NO_SUCH_OBJECT;
+-
+-	IID_INIT(tr181ObjIid);
+-
+-	// DNSEnabled, DNSServers, X_ZYXEL_IPv6DNSEnabled, X_ZYXEL_IPv6DNSServers, DefaultGateway
+-	if(zcfgFe98To181MappingNameGet(tr98FullPathName, ipIfaceName) != ZCFG_SUCCESS)
+-		return ZCFG_NO_SUCH_OBJECT;
+-
+-	printf("%s: ipIfaceName %s\n", __FUNCTION__, ipIfaceName);
+-
+-	if(!strcmp(paramName, "DNSEnabled") || !strcmp(paramName, "X_ZYXEL_IPv6DNSEnabled")) {
+-		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
+-			return ZCFG_NO_SUCH_OBJECT;
+-
+-		json_object_put(jobj);
+-		attr = PARAMETER_ATTR_SET_TR98(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-		attr = PARAMETER_ATTR_SET_TR181(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, "Enable", seqnum, &tr98ObjIid, paramName, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-	}
+-	else if(!strcmp(paramName, "DNSServers") || !strcmp(paramName, "X_ZYXEL_IPv6DNSServers")) {
+-		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
+-			return ZCFG_NO_SUCH_OBJECT;
+-
+-		json_object_put(jobj);
+-		attr = PARAMETER_ATTR_SET_TR98(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-		attr = PARAMETER_ATTR_SET_TR181(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, "DNSServer", seqnum, &tr98ObjIid, paramName, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-	}
+-	else if(!strcmp(paramName, "X_ZYXEL_IGMPProxyEnable")) {
+-		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_ZY_IGMP, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
+-			return ZCFG_NO_SUCH_OBJECT;
+-
+-		json_object_put(jobj);
+-		attr = PARAMETER_ATTR_SET_TR98(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-		attr = PARAMETER_ATTR_SET_TR181(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_ZY_IGMP, &tr181ObjIid, "Interface", seqnum, &tr98ObjIid, paramName, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-	}
+-	else if(!strcmp(paramName, "DefaultGateway")) {
+-		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
+-			return ZCFG_NO_SUCH_OBJECT;
+-
+-		json_object_put(jobj);
+-		attr = PARAMETER_ATTR_SET_TR98(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-		attr = PARAMETER_ATTR_SET_TR181(newNotify);
+-		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, "GatewayIPAddress", seqnum, &tr98ObjIid, paramName, attr);
+-		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-	}
+-
+-	return ZCFG_SUCCESS;
+-}
+ 
+ /*
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.DHCPClient

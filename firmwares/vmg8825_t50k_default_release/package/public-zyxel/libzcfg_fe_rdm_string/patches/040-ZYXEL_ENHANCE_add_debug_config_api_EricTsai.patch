@@ -1,0 +1,126 @@
+Index: libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.c
+===================================================================
+--- libzcfg_fe_rdm_string-1.0.orig/zcfg_fe_rdm_string.c	2017-08-17 19:38:49.978821525 +0800
++++ libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.c	2017-08-17 19:38:49.994821525 +0800
+@@ -15,6 +15,8 @@
+ extern int schemaShmSize;
+ extern int myEid;
+ 
++
++#include "zcfg_rdm_oid.h"
+ /*
+  *  Function Name: zcfgFeObjNameToObjId
+  *  Description: Translate the object name to object id
+@@ -448,6 +450,80 @@
+ 
+ 	return rst;
+ }
++
++#ifdef ZCFG_LOG_USE_DEBUGCFG
++struct json_object *zcfgFeDebugCfgRetrieve(const char *name, objIndex_t *debugCfgObjIid)
++{
++	struct json_object *obj = NULL;
++	objIndex_t objIid;
++	zcfgMsg_t debugCfgMsg;
++
++
++	if(!name || !strlen(name) || !debugCfgObjIid)
++		return obj;
++
++	if(!strcmp(name, "zcmd")){
++		return NULL;
++	}
++
++	IID_INIT(objIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_LOG_CATEGORY, &objIid, &obj) == ZCFG_SUCCESS){
++		const char *objName = json_object_get_string(json_object_object_get(obj, "Name"));
++		if(objName && !strcmp(objName, name)){
++			memcpy(debugCfgObjIid, &objIid, sizeof(objIndex_t));
++			return obj;
++		}
++
++		json_object_put(obj);
++		obj = NULL;
++	}
++
++	return obj;
++}
++
++zcfgRet_t zcfgFeDebugCfgObjInit(const char *name)
++{
++	struct json_object *debugCfgObj = NULL, *rdmLogSetObj;
++	objIndex_t logSetObjIid, debugCfgObjIid;
++	bool myDebugCfgEnable, rdmLogSetEnable, rdmLogSetZcfgEnable;
++
++	IID_INIT(logSetObjIid);
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_LOG_SETTING, &logSetObjIid, &rdmLogSetObj) == ZCFG_SUCCESS){
++		rdmLogSetEnable = json_object_get_boolean(json_object_object_get(rdmLogSetObj, "Enable"));
++		rdmLogSetZcfgEnable = json_object_get_boolean(json_object_object_get(rdmLogSetObj, "ZCFG_LOG_Enable"));
++		json_object_put(rdmLogSetObj);
++	}else{
++		return ZCFG_EMPTY_OBJECT;
++	}
++
++	debugCfgObj = zcfgFeDebugCfgRetrieve(name, &debugCfgObjIid);
++	if(debugCfgObj){
++		if(myDebugCfgObj)
++			json_object_put(myDebugCfgObj);
++
++		myDebugCfgObj = debugCfgObj;
++		myDebugCfgEnable = json_object_get_boolean(json_object_object_get(debugCfgObj, "Enable"));
++		if((debugCfgObjIid.idx[0] == 3 && rdmLogSetEnable && rdmLogSetZcfgEnable) ||
++				(debugCfgObjIid.idx[0] != 3 && rdmLogSetEnable)){
++				myDebugCfgObjLevel = (myDebugCfgEnable == true) ? json_object_get_int(json_object_object_get(debugCfgObj, "Level")) : 0;
++		}
++		printf("%s: utility %s\n", __FUNCTION__, name);
++		return ZCFG_SUCCESS;
++	}else
++		return ZCFG_EMPTY_OBJECT;
++}
++#else
++struct json_object *zcfgFeDebugCfgRetrieve(const char *name, objIndex_t *debugCfgObjIid)
++{
++	return NULL;
++}
++
++zcfgRet_t zcfgFeDebugCfgObjInit(const char *name)
++{
++	return ZCFG_EMPTY_OBJECT;
++}
++#endif
++
+ /*
+  *  Function Name: zcfgFeJsonObjParamSet
+  *  Description: Set the parameter value in a json object
+Index: libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.h
+===================================================================
+--- libzcfg_fe_rdm_string-1.0.orig/zcfg_fe_rdm_string.h	2017-08-17 19:38:49.978821525 +0800
++++ libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.h	2017-08-17 19:38:49.994821525 +0800
+@@ -39,6 +39,10 @@
+ 
+ zcfgRet_t zcfgFeObjJsonQueryExist(zcfg_offset_t , objIndex_t *);
+ 
++
++struct json_object *zcfgFeDebugCfgRetrieve(const char *, objIndex_t *);
++zcfgRet_t zcfgFeDebugCfgObjInit(const char *);
++
+ #define zcfgFeJsonObjNew() json_object_new_object()
+ #define zcfgFeJsonObjFree(jobj) do{json_object_put(jobj); jobj = NULL;}while(0)
+ #define zcfgFeParamValForEach(obj, key) char *key; \
+Index: libzcfg_fe_rdm_string-1.0/Makefile
+===================================================================
+--- libzcfg_fe_rdm_string-1.0.orig/Makefile	2017-08-17 19:38:49.806821522 +0800
++++ libzcfg_fe_rdm_string-1.0/Makefile	2017-08-17 19:40:07.490823012 +0800
+@@ -6,6 +6,12 @@
+ LDFLAGS += $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -DZCFG_TR98_SUPPORT -std=gnu99
+
++
++
++ifeq ($(CONFIG_ZCFG_LOG_USE_DEBUGCFG),y)
++CFLAGS += -DZCFG_LOG_USE_DEBUGCFG
++endif
++
+ .PHONY : libzcfg_fe_rdm_string
+ 
+ all: clean libzcfg_fe_rdm_string

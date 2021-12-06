@@ -1,0 +1,93 @@
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2017-12-05 15:29:23.782226648 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2017-12-06 15:06:06.105995100 +0800
+@@ -1581,8 +1581,11 @@
+ int do_connect(int *sock, char *host, char *port)
+ {
+   struct sockaddr_in address;
++  int flag;
+   int len;
+   int result;
++  fd_set wfds;
++  struct timeval tv;
+   struct hostent *hostinfo;
+   struct servent *servinfo;
+ 
+@@ -1595,6 +1598,22 @@
+     }
+     return(-1);
+   }
++
++  // set socket to non-blocking mode
++  if((flag = fcntl(*sock, F_GETFL, 0)) < 0)
++  {
++    perror("fcntl");
++    close(*sock);
++    return(-1);
++  }
++
++  if(fcntl(*sock, F_SETFL, flag | O_NONBLOCK) < 0)
++  {
++    perror("fcntl");
++    close(*sock);
++    return(-1);
++  }
++
+   address.sin_family = AF_INET;
+ 
+   // get the host address
+@@ -1625,10 +1644,51 @@
+   len = sizeof(address);
+   if((result=connect(*sock, (struct sockaddr *)&address, len)) == -1) 
+   {
+-    if(!(options & OPT_QUIET))
++    if(errno != EINPROGRESS)
++    {
++      if(!(options & OPT_QUIET))
++      {
++        perror("connect");
++      }
++      close(*sock);
++      return(-1);
++    }
++
++    // wait 'timeout' secs for socket connecting
++    FD_ZERO(&wfds);
++    FD_SET(*sock, &wfds);
++    memcpy(&tv, &timeout, sizeof(struct timeval));
++    if((result = select(*sock + 1, NULL, &wfds, NULL, &tv)) <= 0)
++    {
++      if(result == 0)
++      {
++        errno = ETIMEDOUT;
++      }
++      perror("select");
++      close(*sock);
++      return(-1);
++    }
++
++    // check the socket is ready
++    result = 0;
++    if(!FD_ISSET(*sock, &wfds) 
++        || getsockopt(*sock, SOL_SOCKET, SO_ERROR, &result, &len) < 0
++        || result != 0)
+     {
+-      perror("connect");
++      if(result != 0)
++      {
++        errno = result;
++      }
++      perror("error");
++      close(*sock);
++      return(-1);
+     }
++  }
++
++  // restore socket to blocking mode
++  if(fcntl(*sock, F_SETFL, flag) < 0)
++  {
++    perror("fcntl");
+     close(*sock);
+     return(-1);
+   }

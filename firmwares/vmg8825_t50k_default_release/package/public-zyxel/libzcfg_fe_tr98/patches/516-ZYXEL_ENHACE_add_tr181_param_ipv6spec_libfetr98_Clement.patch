@@ -1,0 +1,4050 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-10-26 17:36:37.104331400 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-10-26 17:56:03.135088000 +0800
+@@ -3,7 +3,7 @@
+ LIB_PATH = -L$(USRLIBDIR) -L$(INSTALL_DIR)/lib/public -L$(INSTALL_DIR)/lib/private
+ LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+-OBJ_FILES = wanDev.o wanDev_api.o zyExt.o diag.o devInfo.o devTime.o root.o mgmtSrv.o lanDev.o l2bridge.o l3fwd.o lanConfSec.o firewall.o schedule.o qos.o voice.o
++OBJ_FILES = wanDev.o wanDev_api.o zyExt.o diag.o devInfo.o devTime.o root.o mgmtSrv.o lanDev.o l2bridge.o l3fwd.o lanConfSec.o firewall.o schedule.o qos.o voice.o ipv6Spec.o
+ 
+ SSL_LIBS = -lssl -lcrypto
+ LINK_LIBS += $(SSL_LIBS)
+@@ -216,6 +216,11 @@
+ CFLAGS += -DZYXEL_WLAN_MAXBITRATE
+ endif
+ 
++#Support tr98 Ipv6 Specific
++ifeq ($(CONFIG_ZYXEL_TR98_IPV6SPECIFIC),y)
++CFLAGS += -DZYXEL_IPV6SPEC
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98
+Index: libzcfg_fe_tr98-1.0/ipv6Spec.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/ipv6Spec.c	2017-10-26 16:34:37.743106400 +0800
+@@ -0,0 +1,3438 @@
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcmd_schema.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_msg.h"
++#include "zcfg_net.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_tr98.h"
++#include "ipv6Spec_parameter.h"
++
++extern tr98Object_t tr98Obj[];
++
++zcfgRet_t zyIpv6PppObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *pppObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_PPP, &objIid, &pppObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/	
++		if(!strcmp(paramList->name, "SupportedNCPs")) {
++			json_object_object_add(*tr98Jobj, "SupportedNCPs", json_object_new_string("IPCP,IPv6CP"));
++			paramList++;
++			continue;
++		}
++		
++		paramValue = json_object_object_get(pppObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(pppObj);
++	return ZCFG_SUCCESS;	
++}
++
++zcfgRet_t zyIpv6PppIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *pppIntfObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.PPP.Interface.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_PPP_IFACE, &objIid, &pppIntfObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ppp intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(pppIntfObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(pppIntfObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6PppIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *pppIntfObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.PPP.Interface.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_PPP_IFACE, &objIid, &pppIntfObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ppp intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = pppIntfObj;
++		pppIntfObj = NULL;
++		pppIntfObj = zcfgFeJsonMultiObjAppend(RDM_OID_PPP_IFACE, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(pppIntfObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(pppIntfObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_PPP_IFACE, &objIid, pppIntfObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(pppIntfObj);
++			return ret;
++		}
++		json_object_put(pppIntfObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6PppIntfObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	ret = zcfgFeObjStructAdd(RDM_OID_PPP_IFACE, &objIid, NULL);
++	*idx = objIid.idx[0];
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6PppIntfObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.PPP.Interface.%hhu", 
++		&objIid.idx[0]);
++
++	return zcfgFeObjStructDel(RDM_OID_IP_IFACE, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6PppIpv6cpObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *pppIpv6cpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.PPP.Interface.%hhu.IPv6CP", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_PPP_INTF_IPV6CP, &objIid, &pppIpv6cpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ppp ipv6cp obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(pppIpv6cpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(pppIpv6cpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *routerObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Routing.Router.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER, &objIid, &routerObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get router obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/
++		if(!strcmp(paramList->name, "IPv6ForwardingNumberOfEntries")) {
++			uint32_t  FWDNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_ROUTING_ROUTER_V6_FWD, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				if(ifsetIid.idx[0]==objIid.idx[0])
++					FWDNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "IPv6ForwardingNumberOfEntries", json_object_new_int(FWDNum));
++			paramList++;
++			continue;
++		}
++		
++		paramValue = json_object_object_get(routerObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(routerObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterIpv6FwdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipv6FwdObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Routing.Router.%hhu.IPv6Forwarding.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER_V6_FWD, &objIid, &ipv6FwdObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get router ipv6 fwd obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(ipv6FwdObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ipv6FwdObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterIpv6FwdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipv6FwdObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Routing.Router.%hhu.IPv6Forwarding.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER_V6_FWD, &objIid, &ipv6FwdObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get router v6 fwd obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ipv6FwdObj;
++		ipv6FwdObj = NULL;
++		ipv6FwdObj = zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER_V6_FWD, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(ipv6FwdObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ipv6FwdObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER_V6_FWD, &objIid, ipv6FwdObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ipv6FwdObj);
++			return ret;
++		}
++		json_object_put(ipv6FwdObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterIpv6FwdObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char AdrObjFormate[128] = "InternetGatewayDevice.IPv6Specific.Routing.Router.%hhu.IPv6Forwarding";
++	objIndex_t objIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, AdrObjFormate, &objIid.idx[0]) != 1) 
++		return ZCFG_INVALID_OBJECT;	
++
++	if((ret = zcfgFeObjStructAdd(RDM_OID_ROUTING_ROUTER_V6_FWD, &objIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add InternetGatewayDevice.IPv6Specific.Routing.Router.%hhu.IPv6Forwarding. Fail.\n", __FUNCTION__, objIid.idx[0]);
++		return ret;
++	}
++
++	*idx = objIid.idx[1];
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterIpv6FwdObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Routing.Router.%hhu.IPv6Forwarding.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	return zcfgFeObjStructDel(RDM_OID_ROUTING_ROUTER_V6_FWD, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6RouteInfoIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *routeInfoObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Routing.RouteInformation.InterfaceSetting.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_RT_INFO_INTF_SET, &objIid, &routeInfoObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get rt info obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/
++		if(!strcmp(paramList->name, "RouteLifetime"))
++		{
++			//time_t cur_time = time(NULL);
++			time_t life_time;
++			struct tm *nPtr=NULL;
++			char RouteLifeTimeStr[24];
++
++			paramValue = json_object_object_get(routeInfoObj, "X_ZYXEL_RouterLifetimeReal");
++			if(paramValue != NULL){
++				//printf("X_ZYXEL_RouterLifetimeReal=%d\n",json_object_get_int(paramValue));
++				life_time=json_object_get_int(paramValue);
++				nPtr = localtime(&life_time);
++				memset(RouteLifeTimeStr, 0, sizeof(RouteLifeTimeStr));
++				sprintf(RouteLifeTimeStr,"%u-%02u%02uT%02u:%02u:%02uZ",nPtr->tm_year + 1900,
++															nPtr->tm_mon + 1,
++															nPtr->tm_mday,
++															nPtr->tm_hour,
++															nPtr->tm_min,
++															nPtr->tm_sec);
++			}
++			else
++			{
++				memset(RouteLifeTimeStr, 0, sizeof(RouteLifeTimeStr));
++				sprintf(RouteLifeTimeStr,"0001-01-01T00:00:00Z");
++			}
++			//printf("RouteLifeTimeStr=%s\n",RouteLifeTimeStr);
++			/*change format*/
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(RouteLifeTimeStr));
++			paramList++;
++			continue;
++		}
++
++		paramValue = json_object_object_get(routeInfoObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(routeInfoObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6NDObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ndObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_NEIGHBOR_DISCOVERY, &objIid, &ndObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/
++		if(!strcmp(paramList->name, "InterfaceSettingNumberOfEntries")) {
++			uint32_t NDNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				NDNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "InterfaceSettingNumberOfEntries", json_object_new_int(NDNum));
++			paramList++;
++			continue;
++		}
++
++		paramValue = json_object_object_get(ndObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ndObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6NDObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ndObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NEIGHBOR_DISCOVERY, &objIid, &ndObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ndObj;
++		ndObj = NULL;
++		ndObj = zcfgFeJsonMultiObjAppend(RDM_OID_NEIGHBOR_DISCOVERY, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		if(!strcmp(paramList->name, "Enable")) {
++			objIndex_t ndIntfIid;
++			struct json_object *ndIntfObj = NULL;
++			IID_INIT(ndIntfIid);
++			while((ret = zcfgFeObjJsonGetNext(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &ndIntfIid, &ndIntfObj)) == ZCFG_SUCCESS) 
++			{
++				paramValue = json_object_object_get(tr98Jobj, paramList->name);
++				json_object_object_add(ndIntfObj, "X_ZYXEL_NDEnable", JSON_OBJ_COPY(paramValue));
++				ret = zcfgFeObjJsonSet(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &ndIntfIid, ndIntfObj, NULL);
++				if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++					json_object_put(ndIntfObj);
++					return ret;
++				}
++				json_object_put(ndIntfObj);
++			}
++		}
++
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(ndObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ndObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_NEIGHBOR_DISCOVERY, &objIid, ndObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ndObj);
++			return ret;
++		}
++		json_object_put(ndObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6NDIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ndIntfSvrObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.NeighborDiscovery.InterfaceSetting.%hhu", 
++		&objIid.idx[0]);
++
++	//printf("objIid.idx[0]=%d\n",objIid.idx[0]);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &objIid, &ndIntfSvrObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get nd intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		if(!strcmp(paramList->name, "Status")) {
++			bool enable = false;
++			paramValue = json_object_object_get(ndIntfSvrObj, "Enable");
++			if(paramValue != NULL)
++			{
++				enable = json_object_get_boolean(paramValue);
++			}
++			if(enable)
++				json_object_object_add(*tr98Jobj, "Status", json_object_new_string("Enabled"));
++			else
++				json_object_object_add(*tr98Jobj, "Status", json_object_new_string("Disable"));
++			paramList++;
++			continue;
++		}
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(ndIntfSvrObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ndIntfSvrObj);
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6NDIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ndIntfSvrObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.NeighborDiscovery.InterfaceSetting.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &objIid, &ndIntfSvrObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ip intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ndIntfSvrObj;
++		ndIntfSvrObj = NULL;
++		ndIntfSvrObj = zcfgFeJsonMultiObjAppend(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(ndIntfSvrObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ndIntfSvrObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_NEIGHBOR_DISCOVERY_INTF_SET, &objIid, ndIntfSvrObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ndIntfSvrObj);
++			return ret;
++		}
++		json_object_put(ndIntfSvrObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_IP, &objIid, &ipObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/	
++		if(!strcmp(paramList->name, "IPv6Capable")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(true));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "IPv6Status")) {
++			bool IPv6Enable = true;
++			paramValue = json_object_object_get(ipObj, "IPv6Enable");
++			if(paramValue != NULL)
++			{
++				IPv6Enable = json_object_get_boolean(paramValue);
++			}
++			printf("IPv6Enable=%d\n",IPv6Enable);
++			if(IPv6Enable)
++				json_object_object_add(*tr98Jobj, "IPv6Status", json_object_new_string("Enabled"));
++			else
++				json_object_object_add(*tr98Jobj, "IPv6Status", json_object_new_string("Disable"));
++			paramList++;
++			continue;
++		}
++		paramValue = json_object_object_get(ipObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ipObj);
++	return ZCFG_SUCCESS;	
++}
++
++zcfgRet_t zyIpv6IpObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP, &objIid, &ipObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ipObj;
++		ipObj = NULL;
++		ipObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			if(!strcmp(paramList->name, "IPv6Enable")) {
++				objIndex_t ipIntfIid;
++				struct json_object *ipIntfObj = NULL;
++				IID_INIT(ipIntfIid);
++				while((ret = zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ipIntfIid, &ipIntfObj)) == ZCFG_SUCCESS) 
++				{
++					paramValue = json_object_object_get(tr98Jobj, paramList->name);
++					//printf("X_ZYXEL_Global_IPv6Enable=%d\n",json_object_get_int(paramValue));
++					json_object_object_add(ipIntfObj, "X_ZYXEL_Global_IPv6Enable", JSON_OBJ_COPY(paramValue));
++					ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ipIntfIid, ipIntfObj, NULL);
++					if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++						json_object_put(ipIntfObj);
++						return ret;
++					}
++					json_object_put(ipIntfObj);
++				}
++			}
++			
++			tr181ParamValue = json_object_object_get(ipObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ipObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP, &objIid, ipObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ipObj);
++			return ret;
++		}
++		json_object_put(ipObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipIntfObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &objIid, &ipIntfObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ip intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(ipIntfObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ipIntfObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipIntfObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &objIid, &ipIntfObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ip intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ipIntfObj;
++		ipIntfObj = NULL;
++		ipIntfObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(ipIntfObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ipIntfObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &objIid, ipIntfObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ipIntfObj);
++			return ret;
++		}
++		json_object_put(ipIntfObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE, &objIid, NULL);
++	*idx = objIid.idx[0];
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6IpIntfObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu", 
++		&objIid.idx[0]);
++
++	return zcfgFeObjStructDel(RDM_OID_IP_IFACE, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6AddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipIntfAddrObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Address.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_ADDR, &objIid, &ipIntfAddrObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get ipv6 adrr obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		if(!strcmp(paramList->name, "IPAddressStatus")) {
++			int cur_time;
++			int prelife_time;
++			int valid_time;
++			int now_time;
++			char statStr[24]={0};
++
++			paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_PreferredLifetime");
++			prelife_time=json_object_get_int(paramValue);
++			paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_ValidLifetime");
++			valid_time=json_object_get_int(paramValue);
++			paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_CurrentTime");
++			cur_time=json_object_get_int(paramValue);
++			now_time=time(NULL);
++			//printf("prelife_time=%d, valid_time=%d, cur_time=%d, now_time=%d\n",prelife_time,valid_time,cur_time,now_time);
++
++			/*|--------Preferred-------|---Deprecated---|---Invalid----*/
++			/*|-----Preferred lifeTime---|----------------------------*/
++			/*|------------Valid lifeTime---------------|------------*/
++			if((prelife_time==0)||(valid_time==0)||(cur_time==0))
++			{
++				sprintf(statStr,"Invalid");
++			}
++			else if(now_time<=(cur_time+prelife_time))
++			{
++				sprintf(statStr,"Preferred");
++			}
++			else if(((cur_time+prelife_time)<now_time)&&(now_time<=(cur_time+valid_time)))
++			{
++				sprintf(statStr,"Deprecated");
++			}
++			else
++			{
++				sprintf(statStr,"Invalid");
++			}
++
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(statStr));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "PreferredLifetime")) {
++			time_t cur_time;
++			time_t life_time;
++			time_t show_time;
++			struct tm *nPtr=NULL;
++			char timeStr[24];
++
++			paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_PreferredLifetime");
++			//printf("X_ZYXEL_PreferredLifetime=%d\n",json_object_get_int(paramValue));
++			life_time=json_object_get_int(paramValue);
++			if(life_time==0)
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				sprintf(timeStr,"0001-01-01T00:00:00Z");
++			}
++			else
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_CurrentTime");
++				if(paramValue != NULL)
++				{
++					//printf("X_ZYXEL_CurrentTime=%d\n",json_object_get_int(paramValue));
++					cur_time=json_object_get_int(paramValue);
++					show_time=cur_time+life_time;
++					nPtr = localtime(&show_time);
++					sprintf(timeStr,"%u-%02u%02uT%02u:%02u:%02uZ",nPtr->tm_year + 1900,
++																nPtr->tm_mon + 1,
++																nPtr->tm_mday,
++																nPtr->tm_hour,
++																nPtr->tm_min,
++																nPtr->tm_sec);
++				}
++				else
++				{
++					memset(timeStr, 0, sizeof(timeStr));
++					sprintf(timeStr,"0001-01-01T00:00:00Z");
++				}
++			}
++			//printf("timeStr=%s\n",timeStr);
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(timeStr));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "ValidLifetime")) {
++			time_t cur_time;
++			time_t life_time;
++			time_t show_time;
++			struct tm *nPtr=NULL;
++			char timeStr[24];
++
++			paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_ValidLifetime");
++			//printf("X_ZYXEL_ValidLifetime=%d\n",json_object_get_int(paramValue));
++			life_time=json_object_get_int(paramValue);
++			if(life_time==0)
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				sprintf(timeStr,"0001-01-01T00:00:00Z");
++			}
++			else
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				paramValue = json_object_object_get(ipIntfAddrObj, "X_ZYXEL_CurrentTime");
++				if(paramValue != NULL)
++				{
++					//printf("X_ZYXEL_CurrentTime=%d\n",json_object_get_int(paramValue));
++					cur_time=json_object_get_int(paramValue);
++					show_time=cur_time+life_time;
++					nPtr = localtime(&show_time);
++					sprintf(timeStr,"%u-%02u%02uT%02u:%02u:%02uZ",nPtr->tm_year + 1900,
++																nPtr->tm_mon + 1,
++																nPtr->tm_mday,
++																nPtr->tm_hour,
++																nPtr->tm_min,
++																nPtr->tm_sec);
++				}
++				else
++				{
++					memset(timeStr, 0, sizeof(timeStr));
++					sprintf(timeStr,"0001-01-01T00:00:00Z");
++				}
++			}
++			//printf("timeStr=%s\n",timeStr);
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(timeStr));
++			paramList++;
++			continue;
++		}
++
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(ipIntfAddrObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ipIntfAddrObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6AddrObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipIntfAddrObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++	
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Address.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_ADDR, &objIid, &ipIntfAddrObj)) != ZCFG_SUCCESS){
++		printf("%s : return ret=%d\n", __FUNCTION__,ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ipIntfAddrObj;
++		ipIntfAddrObj = NULL;
++		ipIntfAddrObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE_V6_ADDR, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(ipIntfAddrObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ipIntfAddrObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V6_ADDR, &objIid, ipIntfAddrObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ipIntfAddrObj);
++			return ret;
++		}
++		json_object_put(ipIntfAddrObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6AddrObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char AdrObjFormate[128] = "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Address";
++	objIndex_t objIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, AdrObjFormate, &objIid.idx[0]) != 1) 
++		return ZCFG_INVALID_OBJECT;	
++
++	if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V6_ADDR, &objIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Address. Fail.\n", __FUNCTION__, objIid.idx[0]);
++		return ret;
++	}
++
++	*idx = objIid.idx[1];
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6AddrObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Address.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	return zcfgFeObjStructDel(RDM_OID_IP_IFACE_V6_ADDR, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6PrefixObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipIntfPrefixObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Prefix.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_PREFIX, &objIid, &ipIntfPrefixObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get rt adv intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		if(!strcmp(paramList->name, "PreferredLifetime")) {
++			time_t cur_time;
++			time_t life_time;
++			time_t show_time;
++			struct tm *nPtr=NULL;
++			char timeStr[24];
++
++			paramValue = json_object_object_get(ipIntfPrefixObj, "X_ZYXEL_PreferredLifetime");
++			//printf("X_ZYXEL_PreferredLifetime=%d\n",json_object_get_int(paramValue));
++			life_time=json_object_get_int(paramValue);
++			if(life_time==0)
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				sprintf(timeStr,"0001-01-01T00:00:00Z");
++			}
++			else
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				paramValue = json_object_object_get(ipIntfPrefixObj, "X_ZYXEL_CurrentTime");
++				if(paramValue != NULL)
++				{
++					//printf("X_ZYXEL_CurrentTime=%d\n",json_object_get_int(paramValue));
++					cur_time=json_object_get_int(paramValue);
++					show_time=cur_time+life_time;
++					nPtr = localtime(&show_time);
++					sprintf(timeStr,"%u-%02u%02uT%02u:%02u:%02uZ",nPtr->tm_year + 1900,
++																nPtr->tm_mon + 1,
++																nPtr->tm_mday,
++																nPtr->tm_hour,
++																nPtr->tm_min,
++																nPtr->tm_sec);
++				}
++				else
++				{
++					memset(timeStr, 0, sizeof(timeStr));
++					sprintf(timeStr,"0001-01-01T00:00:00Z");
++				}
++			}
++			//printf("timeStr=%s\n",timeStr);
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(timeStr));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "ValidLifetime")) {
++			time_t cur_time;
++			time_t life_time;
++			time_t show_time;
++			struct tm *nPtr=NULL;
++			char timeStr[24];
++
++			paramValue = json_object_object_get(ipIntfPrefixObj, "X_ZYXEL_ValidLifetime");
++			//printf("X_ZYXEL_ValidLifetime=%d\n",json_object_get_int(paramValue));
++			life_time=json_object_get_int(paramValue);
++			if(life_time==0)
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				sprintf(timeStr,"0001-01-01T00:00:00Z");
++			}
++			else
++			{
++				memset(timeStr, 0, sizeof(timeStr));
++				paramValue = json_object_object_get(ipIntfPrefixObj, "X_ZYXEL_CurrentTime");
++				if(paramValue != NULL)
++				{
++					//printf("X_ZYXEL_CurrentTime=%d\n",json_object_get_int(paramValue));
++					cur_time=json_object_get_int(paramValue);
++					show_time=cur_time+life_time;
++					nPtr = localtime(&show_time);
++					sprintf(timeStr,"%u-%02u%02uT%02u:%02u:%02uZ",nPtr->tm_year + 1900,
++																nPtr->tm_mon + 1,
++																nPtr->tm_mday,
++																nPtr->tm_hour,
++																nPtr->tm_min,
++																nPtr->tm_sec);
++				}
++				else
++				{
++					memset(timeStr, 0, sizeof(timeStr));
++					sprintf(timeStr,"0001-01-01T00:00:00Z");
++				}
++			}
++			//printf("timeStr=%s\n",timeStr);
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(timeStr));
++			paramList++;
++			continue;
++		}
++		
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(ipIntfPrefixObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(ipIntfPrefixObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6PrefixObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *ipIntfPrefixObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++	
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Prefix.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_PREFIX, &objIid, &ipIntfPrefixObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = ipIntfPrefixObj;
++		ipIntfPrefixObj = NULL;
++		ipIntfPrefixObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE_V6_PREFIX, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(ipIntfPrefixObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(ipIntfPrefixObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V6_PREFIX, &objIid, ipIntfPrefixObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(ipIntfPrefixObj);
++			return ret;
++		}
++		json_object_put(ipIntfPrefixObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6PrefixObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char PrefixObjFormate[128] = "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Prefix";
++	objIndex_t objIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, PrefixObjFormate, &objIid.idx[0]) != 1) 
++		return ZCFG_INVALID_OBJECT;	
++
++	if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V6_PREFIX, &objIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Prefix. Fail.\n", __FUNCTION__, objIid.idx[0]);
++		return ret;
++	}
++
++	*idx = objIid.idx[1];
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6IpIntfIpv6PrefixObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.IP.Interface.%hhu.IPv6Prefix.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	return zcfgFeObjStructDel(RDM_OID_IP_IFACE_V6_PREFIX, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6RouterAdverObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *rtAdvObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_RT_ADV, &objIid, &rtAdvObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/ 
++		if(!strcmp(paramList->name, "Enable")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(true));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "InterfaceSettingNumberOfEntries")) {
++			uint32_t  RANum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				RANum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "InterfaceSettingNumberOfEntries", json_object_new_int(RANum));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(rtAdvObj);
++	return ZCFG_SUCCESS;	
++}
++
++zcfgRet_t zyIpv6RouterAdverObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *rtAdvObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_RT_ADV, &objIid, &rtAdvObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = rtAdvObj;
++		rtAdvObj = NULL;
++		rtAdvObj = zcfgFeJsonMultiObjAppend(RDM_OID_RT_ADV, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(rtAdvObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(rtAdvObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_RT_ADV, &objIid, rtAdvObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(rtAdvObj);
++			return ret;
++		}
++		json_object_put(rtAdvObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++/*  
++ *   TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_RouterAdvertisement.
++ *
++ *   Related object in TR181:
++ *   Device.RouterAdvertisement.
++ *   Device.RouterAdvertisement.InterfaceSetting.i.
++ */
++zcfgRet_t zyIpv6RouterAdverIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t profIid;
++	struct json_object *getObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	IID_INIT(profIid);
++	profIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu", 
++		&profIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_RT_ADV_INTF_SET, &profIid, &getObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get rt adv intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(!strcmp(paramList->name, "OptionNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_RT_ADV_INTF_SET_OPT, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				if(ifsetIid.idx[0]==profIid.idx[0])
++					optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "OptionNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "Status")) {
++			bool enable = false;
++			paramValue = json_object_object_get(getObj, "Enable");
++			if(paramValue != NULL)
++			{
++				enable = json_object_get_boolean(paramValue);
++			}
++			if(enable)
++				json_object_object_add(*tr98Jobj, "Status", json_object_new_string("Enabled"));
++			else
++				json_object_object_add(*tr98Jobj, "Status", json_object_new_string("Disable"));
++			paramList++;
++			continue;
++		}
++		
++		paramValue = json_object_object_get(getObj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++		ztrdbg(ZTR_DL_INFO, "%s: Can't find parameter %s in TR181\n", __FUNCTION__, paramList->name);
++		paramList++;
++	}
++
++	json_object_put(getObj);
++	return ZCFG_SUCCESS;
++}
++
++/*  
++ *   TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_RouterAdvertisement.
++ *
++ *   Related object in TR181:
++ *   Device.RouterAdvertisement.
++ *   Device.RouterAdvertisement.InterfaceSetting.i.
++ */
++zcfgRet_t zyIpv6RouterAdverIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char ipIface[32] = {0};
++	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	objIndex_t ifsetIid;
++	struct json_object *ifsetJobj = NULL, *ipIfaceJobj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;	
++	tr98Parameter_t *paramList = NULL;
++	char *ptr = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++	IID_INIT(ifsetIid);
++	ifsetIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu", 
++		&ifsetIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, &ifsetJobj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get rt adv intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(ifsetJobj == NULL)
++		return ret;
++
++
++	if(multiJobj){
++		if(ifsetJobj){
++			tmpObj = ifsetJobj;
++			ifsetJobj = NULL;
++			ifsetJobj = zcfgFeJsonMultiObjAppend(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, multiJobj, tmpObj);
++		}
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/		
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			/*Write value from WANIPConnection to Device.IP.Interface.i*/
++			tr181ParamValue = json_object_object_get(ifsetJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(ifsetJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++
++			/*special case*/
++		}
++		paramList++;	
++	}
++
++
++	/*Set Device.IP.Interface.i*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, ifsetJobj, NULL)) != ZCFG_SUCCESS ) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.RouterAdvertisement.InterfaceSetting.%d Fail\n", __FUNCTION__, ifsetIid.idx[0]);
++			json_object_put(ifsetJobj);
++			return ret;
++		}
++		else {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.RouterAdvertisement.InterfaceSetting.%d Fail\n", __FUNCTION__, ifsetIid.idx[0]);
++		}
++		json_object_put(ifsetJobj);
++	}
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6RouterAdverOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t profIid, objIid;
++	struct json_object *getObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	IID_INIT(profIid);
++	profIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu.Option.%hhu", 
++		&profIid.idx[0], &profIid.idx[1]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_RT_ADV_INTF_SET_OPT, &profIid, &getObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get rt adv intf opt obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(getObj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++		ztrdbg(ZTR_DL_INFO, "%s: Can't find parameter %s in TR181\n", __FUNCTION__, paramList->name);
++		paramList++;
++	}
++
++	json_object_put(getObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterAdverOptObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char ipIface[32] = {0};
++	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	objIndex_t setIid;
++	struct json_object *ifsetJobj = NULL, *ipIfaceJobj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;	
++	tr98Parameter_t *paramList = NULL;
++	char *ptr = NULL;
++	char value[257];
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++	printf("%s : Enter\n", __FUNCTION__);
++	IID_INIT(setIid);
++	setIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu.Option.%hhu", 
++		&setIid.idx[0], &setIid.idx[1]);
++
++	//printf("setIid.idx[0]=%d, setIid.idx[1]=%d\n",setIid.idx[0],setIid.idx[1]);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_RT_ADV_INTF_SET_OPT, &setIid, &ifsetJobj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get rt adv intf opt obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(ifsetJobj == NULL)
++		return ret;
++
++	if(multiJobj){
++		if(ifsetJobj){
++			tmpObj = ifsetJobj;
++			ifsetJobj = NULL;
++			ifsetJobj = zcfgFeJsonMultiObjAppend(RDM_OID_RT_ADV_INTF_SET_OPT, &setIid, multiJobj, tmpObj);
++		}
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/		
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "Value")) {
++				int len=0, value_len=0;
++				memset(value, 0, sizeof(value));
++				strcpy(value, json_object_get_string(paramValue));
++				value_len = strlen(value);
++				len = ((value_len/2)+2)%8;
++				//printf("value_len=%d, len=%d\n",value_len,len);
++				if(len!=0 && value_len!=0)
++				{
++					//printf("error value length\n");
++					json_object_put(ifsetJobj);
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
++
++			tr181ParamValue = json_object_object_get(ifsetJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(ifsetJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++
++			/*special case*/
++		}
++		paramList++;	
++	}
++
++	/*Set Device.IP.Interface.i*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_RT_ADV_INTF_SET_OPT, &setIid, ifsetJobj, NULL)) != ZCFG_SUCCESS ) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.RouterAdvertisement.InterfaceSetting.%d.option.%d Fail\n", __FUNCTION__, setIid.idx[0], setIid.idx[1]);
++			json_object_put(ifsetJobj);
++			return ret;
++		}
++		else {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.RouterAdvertisement.InterfaceSetting.%d.option.%d Fail\n", __FUNCTION__, setIid.idx[0], setIid.idx[1]);
++		}
++		json_object_put(ifsetJobj);
++	}
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6RouterAdverOptObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char AdrObjFormate[128] = "InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu.Option";
++	objIndex_t objIid;
++	objIndex_t intfIid;
++	char inface[33];
++	struct json_object *getObj = NULL;
++	struct json_object *setObj = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	printf("Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, AdrObjFormate, &objIid.idx[0]) != 1) 
++		return ZCFG_INVALID_OBJECT;	
++
++	if((ret = zcfgFeObjStructAdd(RDM_OID_RT_ADV_INTF_SET_OPT, &objIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu.Option. Fail.\n", __FUNCTION__, objIid.idx[0]);
++		return ret;
++	}
++
++	*idx = objIid.idx[1];
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6RouterAdverOptObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.%hhu.Option.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	//printf("objIid.idx[0]=%d, objIid.idx[1]=%d\n",objIid.idx[0],objIid.idx[1]);
++
++	return zcfgFeObjStructDel(RDM_OID_RT_ADV_INTF_SET_OPT, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6HostsHostObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *hostObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	/*get hosts obj for update host*/
++	rdm_Hosts_t *hostsObj = NULL;
++	objIndex_t hostsIid;
++	IID_INIT(hostsIid);
++	if(zcfgFeObjStructGet(RDM_OID_HOSTS, &hostsIid, (void **)&hostsObj) == ZCFG_SUCCESS) {
++		zcfgFeObjStructFree(hostsObj);
++	}
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Hosts.Host.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_HOSTS_HOST, &objIid, &hostObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get host obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		if(!strcmp(paramList->name, "IPv6AddressNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_HOSTS_HOST_V6_ADDR, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				if(ifsetIid.idx[0]==objIid.idx[0])
++					optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "IPv6AddressNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++		
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(hostObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(hostObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6HostsHostObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	char tr98Notify[256] = {0};
++	tr98Parameter_t *paramList = NULL;
++	char *attrParamNamePtr = NULL;
++	
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, tr181ParamName)){
++			paramList++;
++			continue;
++		}
++		attrParamNamePtr = tr181ParamName;
++		break;
++	}
++
++	if(attrParamNamePtr && strlen(attrParamNamePtr) > 0) {
++		sprintf(tr98Notify, "%s.%s", tr98ObjName, attrParamNamePtr);
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int zyIpv6HostsHostObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char mapObj[128] = {0};
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_HOSTS_HOST, paramList->name);
++		
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t zyIpv6HostsHostObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	uint32_t oid = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++	
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if((ret = zcfgFeTr98ParamAttrChk(paramList->attr, newNotify)) != ZCFG_SUCCESS)
++			return ret;
++
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		break;
++	}
++
++	if(attrValue >= 0) {
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(oid, multiAttrJobj, paramList->name, attrValue);
++
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, oid, paramList->name);
++		}
++	}
++	else {
++		ret = ZCFG_INVALID_ARGUMENTS;
++	}
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6HostsHostIpv6AddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *hostIpv6AdrObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.Hosts.Host.%hhu.IPv6Address.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_HOSTS_HOST_V6_ADDR, &objIid, &hostIpv6AdrObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get host ipv6 adr obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(hostIpv6AdrObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(hostIpv6AdrObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6DnsSvrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dnsSvrObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DNS.Client.Server.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS_CLIENT_SRV, &objIid, &dnsSvrObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dns server obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(dnsSvrObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dnsSvrObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6DnsSvrObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dnsSvrObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DNS.Client.Server.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS_CLIENT_SRV, &objIid, &dnsSvrObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ip intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dnsSvrObj;
++		dnsSvrObj = NULL;
++		dnsSvrObj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS_CLIENT_SRV, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dnsSvrObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dnsSvrObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DNS_CLIENT_SRV, &objIid, dnsSvrObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dnsSvrObj);
++			return ret;
++		}
++		json_object_put(dnsSvrObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6DnsSvrObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	ret = zcfgFeObjStructAdd(RDM_OID_DNS_CLIENT_SRV, &objIid, NULL);
++	*idx = objIid.idx[0];
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6DnsSvrObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DNS.Client.Server.%hhu", 
++		&objIid.idx[0]);
++
++	return zcfgFeObjStructDel(RDM_OID_DNS_RELAY_FWD, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6DnsRlyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dnsRlyObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_DNS_RELAY, &objIid, &dnsRlyObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/			
++		paramValue = json_object_object_get(dnsRlyObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dnsRlyObj);
++	return ZCFG_SUCCESS;	
++}
++
++zcfgRet_t zyIpv6DnsRlyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dnsRlyObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS_RELAY, &objIid, &dnsRlyObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dnsRlyObj;
++		dnsRlyObj = NULL;
++		dnsRlyObj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS_RELAY, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/ 
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dnsRlyObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dnsRlyObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DNS_RELAY, &objIid, dnsRlyObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dnsRlyObj);
++			return ret;
++		}
++		json_object_put(dnsRlyObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6DnsRlyFwdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dnsRlyObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DNS.Relay.Forwarding.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS_RELAY_FWD, &objIid, &dnsRlyObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ns relay fwd obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(dnsRlyObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dnsRlyObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6DnsRlyFwdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dnsRlyObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DNS.Relay.Forwarding.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DNS_RELAY_FWD, &objIid, &dnsRlyObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get ip intf obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dnsRlyObj;
++		dnsRlyObj = NULL;
++		dnsRlyObj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS_RELAY_FWD, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dnsRlyObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dnsRlyObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DNS_RELAY_FWD, &objIid, dnsRlyObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dnsRlyObj);
++			return ret;
++		}
++		json_object_put(dnsRlyObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6DnsRlyFwdObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	//printf("zcfgFeObjStructAdd RDM_OID_DNS_RELAY_FWD\n");
++	IID_INIT(objIid);
++	ret = zcfgFeObjStructAdd(RDM_OID_DNS_RELAY_FWD, &objIid, NULL);
++	*idx = objIid.idx[0];
++	//printf("objIid->idx[0]=%d\n",objIid.idx[0]);
++
++	return ret;
++}
++
++zcfgRet_t zyIpv6DnsRlyFwdObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DNS.Relay.Forwarding.%hhu", 
++		&objIid.idx[0]);
++
++	return zcfgFeObjStructDel(RDM_OID_DNS_RELAY_FWD, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6Dhcpv6ObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_DHCPV6, &objIid, &dhcpObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		if(!strcmp(paramList->name, "ClientNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_DHCPV6_CLIENT, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "ClientNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;	
++}
++
++zcfgRet_t zyIpv6Dhcpv6ClientObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_CLIENT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 client obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/
++		if(!strcmp(paramList->name, "ServerNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_DHCPV6_CLIENT_SRV, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				if(ifsetIid.idx[0]==objIid.idx[0])
++					optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "ServerNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "SentOptionNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				if(ifsetIid.idx[0]==objIid.idx[0])
++					optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "SentOptionNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "ReceivedOptionNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_DHCPV6_CLIENT_RECEIVED_OPT, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				if(ifsetIid.idx[0]==objIid.idx[0])
++					optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "ReceivedOptionNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6ClientObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_CLIENT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 client obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dhcpObj;
++		dhcpObj = NULL;
++		dhcpObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV6_CLIENT, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dhcpObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dhcpObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV6_CLIENT, &objIid, dhcpObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dhcpObj);
++			return ret;
++		}
++		json_object_put(dhcpObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6CntSrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.Server.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_CLIENT_SRV, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 client srv obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6CntSentObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.SentOption.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 client sent obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6CntSentObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.SentOption.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 client obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dhcpObj;
++		dhcpObj = NULL;
++		dhcpObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dhcpObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dhcpObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &objIid, dhcpObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dhcpObj);
++			return ret;
++		}
++		json_object_put(dhcpObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6CntSentObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char AdrObjFormate[128] = "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.SentOption";
++	objIndex_t objIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, AdrObjFormate, &objIid.idx[0]) != 1) 
++		return ZCFG_INVALID_OBJECT;	
++
++	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &objIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.SentOption. Fail.\n", __FUNCTION__, objIid.idx[0]);
++		return ret;
++	}
++
++	*idx = objIid.idx[1];
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6CntSentObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.SentOption.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	return zcfgFeObjStructDel(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &objIid, NULL);
++}
++
++zcfgRet_t zyIpv6Dhcpv6CntRrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Client.%hhu.ReceivedOption.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_CLIENT_RECEIVED_OPT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 client rcv obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_DHCPV6_SRV, &objIid, &dhcpObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		if(!strcmp(paramList->name, "PoolNumberOfEntries")) {
++			uint32_t  optNum = 0;
++			objIndex_t ifsetIid;
++			struct json_object *ifsetJobj = NULL;
++			IID_INIT(ifsetIid);
++			while((ret = feObjJsonGetNext(RDM_OID_DHCPV6_SRV_POOL, &ifsetIid, &ifsetJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) 
++			{
++				optNum++;
++				json_object_put(ifsetJobj);
++			}
++			json_object_object_add(*tr98Jobj, "PoolNumberOfEntries", json_object_new_int(optNum));
++			paramList++;
++			continue;
++		}
++
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;	
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dhcpObj;
++		dhcpObj = NULL;
++		dhcpObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV6_SRV, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dhcpObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dhcpObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP, &objIid, dhcpObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dhcpObj);
++			return ret;
++		}
++		json_object_put(dhcpObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvPoolObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu", 
++		&objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 server pool obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++	
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvPoolObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu", 
++		&objIid.idx[0]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 client obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dhcpObj;
++		dhcpObj = NULL;
++		dhcpObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV6_SRV_POOL, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dhcpObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dhcpObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV6_SRV_POOL, &objIid, dhcpObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dhcpObj);
++			return ret;
++		}
++		json_object_put(dhcpObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvCntObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Client.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_CLIENT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 srv cnt obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvCntObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Client.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_CLIENT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 srv cnt obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dhcpObj;
++		dhcpObj = NULL;
++		dhcpObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV6_SRV_POOL_CLIENT, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dhcpObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dhcpObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV6_SRV_POOL_CLIENT, &objIid, dhcpObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dhcpObj);
++			return ret;
++		}
++		json_object_put(dhcpObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvCntV6AddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 3;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Client.%hhu.IPv6Address.%hhu", 
++		&objIid.idx[0], &objIid.idx[1], &objIid.idx[2]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_CLIENT_V6_ADDR, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 srv cnt v6addr obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvCntV6PrefixObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 3;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Client.%hhu.IPv6Prefix.%hhu", 
++		&objIid.idx[0], &objIid.idx[1], &objIid.idx[2]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_CLIENT_V6_PREFIX, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 srv cnt v6 prefix obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvCntOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 3;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Client.%hhu.Option.%hhu", 
++		&objIid.idx[0], &objIid.idx[1], &objIid.idx[2]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_CLIENT_OPT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 srv cnt opt obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	printf("%s enter\n",__FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Option.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_OPT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get dhcpv6 srv opt obj codec object ret=%d\n", __FUNCTION__, ret);
++		printf("%s : return ret\n", __FUNCTION__);
++		return ret;
++	}
++	printf("%s : aaa\n", __FUNCTION__);
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dhcpObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(dhcpObj);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvOptObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dhcpObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Option.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	/*Get related tr181 objects*/
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV6_SRV_POOL_OPT, &objIid, &dhcpObj)) != ZCFG_SUCCESS){
++		printf("%s: fail to get dhcpv6 srv opt obj codec object ret=%d\n", __FUNCTION__, ret);
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = dhcpObj;
++		dhcpObj = NULL;
++		dhcpObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV6_SRV_POOL_OPT, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(dhcpObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(dhcpObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV6_SRV_POOL_OPT, &objIid, dhcpObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(dhcpObj);
++			return ret;
++		}
++		json_object_put(dhcpObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvOptObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	char AdrObjFormate[128] = "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Option";
++	objIndex_t objIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, AdrObjFormate, &objIid.idx[0]) != 1) 
++		return ZCFG_INVALID_OBJECT;	
++
++	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV6_SRV_POOL_OPT, &objIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Option. Fail.\n", __FUNCTION__, objIid.idx[0]);
++		return ret;
++	}
++
++	*idx = objIid.idx[1];
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyIpv6Dhcpv6SrvOptObjDel(char *tr98FullPathName)
++{
++	objIndex_t objIid;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	objIid.level = 2;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.%hhu.Option.%hhu", 
++		&objIid.idx[0], &objIid.idx[1]);
++
++	return zcfgFeObjStructDel(RDM_OID_DHCPV6_SRV_POOL_OPT, &objIid, NULL);
++}
++
+Index: libzcfg_fe_tr98-1.0/ipv6Spec.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/ipv6Spec.h	2017-10-19 17:18:52.000000000 +0800
+@@ -0,0 +1,110 @@
++extern tr98Parameter_t para_Ipv6Ppp[];
++extern tr98Parameter_t para_Ipv6PppIntf[];
++extern tr98Parameter_t para_Ipv6PppIpv6cp[];
++extern tr98Parameter_t para_Ipv6Router[];
++extern tr98Parameter_t para_Ipv6RouterIpv6Fwd[];
++extern tr98Parameter_t para_Ipv6RouteInfoIntf[];
++extern tr98Parameter_t para_Ipv6ND[];
++extern tr98Parameter_t para_Ipv6NDIntf[];
++extern tr98Parameter_t para_Ipv6Ip[];
++extern tr98Parameter_t para_Ipv6IpIntf[];
++extern tr98Parameter_t para_Ipv6IpIntfIpv6Addr[];
++extern tr98Parameter_t para_Ipv6IpIntfIpv6Prefix[];
++extern tr98Parameter_t para_Ipv6RouterAdver[];
++extern tr98Parameter_t para_Ipv6RouterAdverIntf[];
++extern tr98Parameter_t para_Ipv6RouterAdverOpt[];
++extern tr98Parameter_t para_HostsHost[];
++extern tr98Parameter_t para_HostsHostIpv6Addr[];
++extern tr98Parameter_t para_Ipv6DnsSvr[];
++extern tr98Parameter_t para_Ipv6DnsRly[];
++extern tr98Parameter_t para_Ipv6DnsRlyFwd[];
++extern tr98Parameter_t para_Ipv6Dhcpv6[];
++extern tr98Parameter_t para_Ipv6Dhcpv6Client[];
++extern tr98Parameter_t para_Ipv6Dhcpv6CntSrvAddr[];
++extern tr98Parameter_t para_Ipv6Dhcpv6CntSentAddr[];
++extern tr98Parameter_t para_Ipv6Dhcpv6CntRrvAddr[];
++extern tr98Parameter_t para_Ipv6Dhcpv6Srv[];
++extern tr98Parameter_t para_Ipv6Dhcpv6SrvPool[];
++extern tr98Parameter_t para_Ipv6Dhcpv6SrvCnt[];
++extern tr98Parameter_t para_Ipv6Dhcpv6SrvCntV6Addr[];
++extern tr98Parameter_t para_Ipv6Dhcpv6SrvCntV6Prefix[];
++extern tr98Parameter_t para_Ipv6Dhcpv6SrvCntOpt[];
++extern tr98Parameter_t para_Ipv6Dhcpv6SrvOpt[];
++
++extern zcfgRet_t zyIpv6PppObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6PppIntfObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6PppIntfObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6PppIntfObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6PppIntfObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6PppIpv6cpObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6RouterObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6RouterIpv6FwdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6RouterIpv6FwdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6RouterIpv6FwdObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6RouterIpv6FwdObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6RouteInfoIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6NDObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6NDObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6NDIntfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6NDIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6IpObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6IpObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6IpIntfObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6IpIntfObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6IpIntfObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6IpIntfObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6IpIntfIpv6AddrObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6IpIntfIpv6AddrObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6IpIntfIpv6AddrObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6IpIntfIpv6AddrObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6IpIntfIpv6PrefixObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6IpIntfIpv6PrefixObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6IpIntfIpv6PrefixObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6IpIntfIpv6PrefixObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6RouterAdverObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6RouterAdverObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6RouterAdverIntfObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6RouterAdverIntfObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6RouterAdverOptObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t zyIpv6RouterAdverOptObjSet(char *, int, struct json_object *, struct json_object *);
++extern zcfgRet_t zyIpv6RouterAdverOptObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6RouterAdverOptObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6HostsHostObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6HostsHostObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo);
++extern int zyIpv6HostsHostObjAttrGet(char *tr98FullPathName, int handler, char *paramName);
++extern zcfgRet_t zyIpv6HostsHostObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj);
++extern zcfgRet_t zyIpv6HostsHostIpv6AddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6DnsSvrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6DnsSvrObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6DnsSvrObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6DnsSvrObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6DnsRlyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6DnsRlyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6DnsRlyFwdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6DnsRlyFwdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6DnsRlyFwdObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6DnsRlyFwdObjDel(char *tr98FullPathName);
++
++extern zcfgRet_t zyIpv6Dhcpv6ObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6ClientObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6ClientObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6Dhcpv6CntSrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6CntSentObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6CntSentObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6Dhcpv6CntSentObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6Dhcpv6CntSentObjDel(char *tr98FullPathName);
++extern zcfgRet_t zyIpv6Dhcpv6CntRrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6Dhcpv6SrvPoolObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvPoolObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6Dhcpv6SrvCntObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvCntObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6Dhcpv6SrvCntV6AddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvCntV6PrefixObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvCntOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyIpv6Dhcpv6SrvOptObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t zyIpv6Dhcpv6SrvOptObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyIpv6Dhcpv6SrvOptObjDel(char *tr98FullPathName);
++
+Index: libzcfg_fe_tr98-1.0/ipv6Spec_parameter.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/ipv6Spec_parameter.h	2017-10-19 17:18:52.000000000 +0800
+@@ -0,0 +1,304 @@
++
++tr98Parameter_t para_Ipv6Ppp[] = {
++	{ "SupportedNCPs", PARAMETER_ATTR_READONLY, 32, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6PppIntf[] = {
++	{ "IPv6CPEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6PppIpv6cp[] = {
++	{ "LocalInterfaceIdentifier", PARAMETER_ATTR_READONLY, 45, json_type_string},
++	{ "RemoteInterfaceIdentifier", PARAMETER_ATTR_READONLY, 45, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Router[] = {
++	{ "IPv6ForwardingNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6RouterIpv6Fwd[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "DestIPPrefix", PARAMETER_ATTR_WRITE, 50, json_type_string},
++	{ "ForwardingPolicy", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "NextHop", PARAMETER_ATTR_WRITE, 46, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Origin", PARAMETER_ATTR_READONLY, 16, json_type_string},
++	{ "ForwardingMetric", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "ExpirationTime", PARAMETER_ATTR_READONLY, 27, json_type_time},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6RouteInfoIntf[] = {
++	{ "Status", PARAMETER_ATTR_READONLY, 23, json_type_string},
++	{ "Interface", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "SourceRouter", PARAMETER_ATTR_READONLY, 46, json_type_string},
++	{ "PreferredRouteFlag", PARAMETER_ATTR_READONLY, 7, json_type_string},
++	{ "Prefix", PARAMETER_ATTR_READONLY, 50, json_type_string},
++	{ "RouteLifetime", PARAMETER_ATTR_READONLY, 27, json_type_time},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6ND[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "InterfaceSettingNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6RouterAdver[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "InterfaceSettingNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_int},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6RouterAdverIntf[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 19, json_type_string},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "ManualPrefixes", PARAMETER_ATTR_WRITE, 41, json_type_string},
++	{ "Prefixes", PARAMETER_ATTR_READONLY, 41, json_type_string},
++	{ "MaxRtrAdvInterval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "MinRtrAdvInterval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "AdvDefaultLifetime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "AdvManagedFlag", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "AdvOtherConfigFlag", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "AdvMobileAgentFlag", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "AdvPreferredRouterFlag", PARAMETER_ATTR_WRITE, 7, json_type_string},
++	{ "AdvNDProxyFlag", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "AdvLinkMTU", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "AdvReachableTime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "AdvRetransTimer", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "AdvCurHopLimit", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "OptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6RouterAdverOpt[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Tag", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "Value", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Ip[] = {
++	{ "IPv6Capable", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "IPv6Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IPv6Status", PARAMETER_ATTR_READONLY, 12, json_type_string},
++	{ "ULAPrefix", PARAMETER_ATTR_WRITE, 48, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6IpIntf[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "ULAEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IPv6AddressNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "IPv6PrefixNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6IpIntfIpv6Addr[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 24, json_type_string},
++	{ "IPAddressStatus", PARAMETER_ATTR_READONLY, 16, json_type_string},
++	{ "Alias", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "IPAddress", PARAMETER_ATTR_WRITE, 48, json_type_string},
++	{ "Origin", PARAMETER_ATTR_READONLY, 24, json_type_string},
++	{ "Prefix", PARAMETER_ATTR_WRITE, 128, json_type_string},
++	{ "PreferredLifetime", PARAMETER_ATTR_WRITE, 27, json_type_time},
++	{ "ValidLifetime", PARAMETER_ATTR_WRITE, 27, json_type_time},
++	{ "Anycast", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6IpIntfIpv6Prefix[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 24, json_type_string},
++	{ "PrefixStatus", PARAMETER_ATTR_READONLY, 16, json_type_string},
++	{ "Alias", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "Prefix", PARAMETER_ATTR_WRITE, 24, json_type_string},
++	{ "Origin", PARAMETER_ATTR_READONLY, 24, json_type_string},
++	{ "StaticType", PARAMETER_ATTR_WRITE, 24, json_type_string},
++	{ "ParentPrefix", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "ChildPrefixBits", PARAMETER_ATTR_WRITE, 24, json_type_string},
++	{ "OnLink", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Autonomous", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "PreferredLifetime", PARAMETER_ATTR_WRITE, 27, json_type_time},
++	{ "ValidLifetime", PARAMETER_ATTR_WRITE, 27, json_type_time},
++	{ NULL, 0, 0, 0}
++};
++
++
++tr98Parameter_t para_Ipv6NDIntf[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "RetransTimer", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "RtrSolicitationInterval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "MaxRtrSolicitations", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "NUDEnable", PARAMETER_ATTR_WRITE, 257, json_type_boolean},
++	{ "RSEnable", PARAMETER_ATTR_WRITE, 257, json_type_boolean},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_HostsHost[] = {
++	{ "IPAddress", PARAMETER_ATTR_READONLY, 46, json_type_string},
++	{ "AddressSource", PARAMETER_ATTR_READONLY, 7, json_type_string},
++	{ "DHCPClient", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "LeaseTimeRemaining", PARAMETER_ATTR_READONLY, 0, json_type_int},
++	{ "AssociatedDevice", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "VendorClassID", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "ClientID", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ "UserClassID", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ "IPv6AddressNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_HostsHostIpv6Addr[] = {
++	{ "IPAddress", PARAMETER_ATTR_READONLY, 46, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6DnsSvr[] = {
++	{ "DNSServer", PARAMETER_ATTR_WRITE, 46, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Type", PARAMETER_ATTR_READONLY, 20, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6DnsRly[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6DnsRlyFwd[] = {
++	{ "DNSServer", PARAMETER_ATTR_WRITE, 46, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Type", PARAMETER_ATTR_READONLY, 20, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6[] = {
++	{ "ClientNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6Client[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	{ "DUID", PARAMETER_ATTR_READONLY, 130, json_type_string},
++	{ "RequestAddresses", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "RequestPrefixes", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "RapidCommit", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Renew", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "SuggestedT1", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "SuggestedT2", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "SupportedOptions", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "RequestedOptions", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "ServerNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "SentOptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ReceivedOptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6CntSrvAddr[] = {
++	{ "SourceAddress", PARAMETER_ATTR_READONLY, 45, json_type_string},
++	{ "DUID", PARAMETER_ATTR_READONLY, 130, json_type_string},
++	{ "InformationRefreshTime", PARAMETER_ATTR_READONLY, 257, json_type_time},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6CntSentAddr[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Tag", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "Value", PARAMETER_ATTR_WRITE, 5, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6CntRrvAddr[] = {
++	{ "Tag", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "Value", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ "Server", PARAMETER_ATTR_READONLY, 41, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6Srv[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "PoolNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6SrvPool[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Order", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "DUID", PARAMETER_ATTR_WRITE, 130, json_type_string},
++	{ "DUIDExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "VendorClassID", PARAMETER_ATTR_WRITE, 5, json_type_string},
++	{ "VendorClassIDExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "UserClassID", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "UserClassIDExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "SourceAddress", PARAMETER_ATTR_WRITE, 45, json_type_string},
++	{ "SourceAddressMask", PARAMETER_ATTR_WRITE, 45, json_type_string},
++	{ "SourceAddressExclude", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IANAEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IANAManualPrefixes", PARAMETER_ATTR_WRITE, 321, json_type_string},
++	{ "IANAPrefixes", PARAMETER_ATTR_WRITE, 321, json_type_string},
++	{ "IAPDEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IAPDManualPrefixes", PARAMETER_ATTR_WRITE, 321, json_type_string},
++	{ "IAPDPrefixes", PARAMETER_ATTR_WRITE, 321, json_type_string},
++	{ "IAPDAddLength", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "ClientNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "OptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6SrvCnt[] = {
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "SourceAddress", PARAMETER_ATTR_READONLY, 45, json_type_string},
++	{ "Active", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "IPv6AddressNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "OptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6SrvCntV6Addr[] = {
++	{ "IPAddress", PARAMETER_ATTR_READONLY, 46, json_type_string},
++	{ "PreferredLifetime", PARAMETER_ATTR_READONLY, 27, json_type_time},
++	{ "ValidLifetime", PARAMETER_ATTR_READONLY, 27, json_type_time},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6SrvCntV6Prefix[] = {
++	{ "Prefix", PARAMETER_ATTR_READONLY, 50, json_type_string},
++	{ "PreferredLifetime", PARAMETER_ATTR_READONLY, 27, json_type_time},
++	{ "ValidLifetime", PARAMETER_ATTR_READONLY, 27, json_type_time},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6SrvCntOpt[] = {
++	{ "Tag", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "Value", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_Ipv6Dhcpv6SrvOpt[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Alias", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "Tag", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "Value", PARAMETER_ATTR_WRITE, 65536, json_type_string},
++	{ "PassthroughClient", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ NULL, 0, 0, 0}
++};
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-10-26 17:36:37.148332107 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-10-26 17:55:48.631088000 +0800
+@@ -19,6 +19,7 @@
+ #ifdef ONECONNECT
+ #include "oneConnect.h"
+ #endif
++#include "ipv6Spec.h"
+ 
+ #include "zcfg_fe_rdm_access.h"
+ #include "zcfg_fe_rdm_string.h"
+@@ -258,6 +259,46 @@
+ {e_TR98_FIREWALL_CHAIN_RULE     , &tr98Obj[e_TR98_FIREWALL_CHAIN_RULE     -e_TR98_START]},
+ {e_TR98_STD_UPNP				, &tr98Obj[e_TR98_STD_UPNP				  -e_TR98_START]},
+ {e_TR98_STD_UPNP_DEV			, &tr98Obj[e_TR98_STD_UPNP_DEV			  -e_TR98_START]},
++#ifdef ZYXEL_IPV6SPEC
++{e_TR98_IPV6SPEC				, &tr98Obj[e_TR98_IPV6SPEC				  -e_TR98_START]},
++{e_TR98_IPV6_PPP 				, &tr98Obj[e_TR98_IPV6_PPP				  -e_TR98_START]},
++{e_TR98_IPV6_PPP_INTF			, &tr98Obj[e_TR98_IPV6_PPP_INTF			  -e_TR98_START]},
++{e_TR98_IPV6_PPP_INTF_IPV6CP	, &tr98Obj[e_TR98_IPV6_PPP_INTF_IPV6CP	  -e_TR98_START]},
++{e_TR98_IPV6_IP					, &tr98Obj[e_TR98_IPV6_IP				  -e_TR98_START]},
++{e_TR98_IPV6_IP_INTF			, &tr98Obj[e_TR98_IPV6_IP_INTF			  -e_TR98_START]},
++{e_TR98_IPV6_IP_INTF_IPV6ADDR	, &tr98Obj[e_TR98_IPV6_IP_INTF_IPV6ADDR   -e_TR98_START]},
++{e_TR98_IPV6_IP_INTF_IPV6PREFIX	, &tr98Obj[e_TR98_IPV6_IP_INTF_IPV6PREFIX -e_TR98_START]},
++{e_TR98_ROUTING					, &tr98Obj[e_TR98_ROUTING 				  -e_TR98_START]},
++{e_TR98_ROUTER					, &tr98Obj[e_TR98_ROUTER 				  -e_TR98_START]},
++{e_TR98_ROUTER_IPV6FWD			, &tr98Obj[e_TR98_ROUTER_IPV6FWD 		  -e_TR98_START]},
++{e_TR98_ROUTEINFO				, &tr98Obj[e_TR98_ROUTEINFO 			  -e_TR98_START]},
++{e_TR98_ROUTEINFO_INTF			, &tr98Obj[e_TR98_ROUTEINFO_INTF 		  -e_TR98_START]},
++{e_TR98_ND						, &tr98Obj[e_TR98_ND		  			  -e_TR98_START]},
++{e_TR98_ND_INTF					, &tr98Obj[e_TR98_ND_INTF		  		  -e_TR98_START]},
++{e_TR98_RTADR					, &tr98Obj[e_TR98_RTADR 				  -e_TR98_START]},
++{e_TR98_RTADR_INTF				, &tr98Obj[e_TR98_RTADR_INTF			  -e_TR98_START]},
++{e_TR98_RTADR_INTF_OPT			, &tr98Obj[e_TR98_RTADR_INTF_OPT		  -e_TR98_START]},
++{e_TR98_IPV6_HOSTS				, &tr98Obj[e_TR98_IPV6_HOSTS			  -e_TR98_START]},
++{e_TR98_IPV6_HOSTS_HOST			, &tr98Obj[e_TR98_IPV6_HOSTS_HOST		  -e_TR98_START]},
++{e_TR98_IPV6_HOSTS_IPV6ADR		, &tr98Obj[e_TR98_IPV6_HOSTS_IPV6ADR	  -e_TR98_START]},
++{e_TR98_IPV6_DNS				, &tr98Obj[e_TR98_IPV6_DNS	  			  -e_TR98_START]},
++{e_TR98_IPV6_DNS_CLIENT			, &tr98Obj[e_TR98_IPV6_DNS_CLIENT	  	  -e_TR98_START]},
++{e_TR98_IPV6_DNS_SERVER			, &tr98Obj[e_TR98_IPV6_DNS_SERVER	      -e_TR98_START]},
++{e_TR98_IPV6_DNS_RELAY			, &tr98Obj[e_TR98_IPV6_DNS_RELAY	      -e_TR98_START]},
++{e_TR98_IPV6_DNS_RELAYFWD		, &tr98Obj[e_TR98_IPV6_DNS_RELAYFWD	      -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6				, &tr98Obj[e_TR98_IPV6_DHCPV6 	 		  -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_CLIENT		, &tr98Obj[e_TR98_IPV6_DHCPV6_CLIENT 	  -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_CLIENT_SRV	, &tr98Obj[e_TR98_IPV6_DHCPV6_CLIENT_SRV  -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_CLIENT_SENT	, &tr98Obj[e_TR98_IPV6_DHCPV6_CLIENT_SENT -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_CLIENT_RCV	, &tr98Obj[e_TR98_IPV6_DHCPV6_CLIENT_RCV  -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER		, &tr98Obj[e_TR98_IPV6_DHCPV6_SERVER 	  -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER_POOL	, &tr98Obj[e_TR98_IPV6_DHCPV6_SERVER_POOL -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER_CNT  , &tr98Obj[e_TR98_IPV6_DHCPV6_SERVER_CNT -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER_CNT_V6ADDR	,&tr98Obj[e_TR98_IPV6_DHCPV6_SERVER_CNT_V6ADDR -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER_CNT_V6PREFIX	,&tr98Obj[e_TR98_IPV6_DHCPV6_SERVER_CNT_V6PREFIX -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER_CNT_OPT	,&tr98Obj[e_TR98_IPV6_DHCPV6_SERVER_CNT_OPT -e_TR98_START]},
++{e_TR98_IPV6_DHCPV6_SERVER_OPT	, &tr98Obj[e_TR98_IPV6_DHCPV6_SERVER_OPT -e_TR98_START]},
++#endif
+ #if ZYXEL_EXT
+ {e_TR98_ZYXEL_EXT               , &tr98Obj[e_TR98_ZYXEL_EXT               -e_TR98_START]},
+ #ifdef ZYXEL_LANDING_PAGE_FEATURE
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2017-10-26 17:36:37.036330310 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2017-10-26 17:55:56.668088000 +0800
+@@ -293,6 +293,47 @@
+ #define TR98_ONESSID                  "InternetGatewayDevice.X_ZYXEL_EXT.X_ZYXEL_ONESSID"
+ #endif 
+ 
++#ifdef ZYXEL_IPV6SPEC
++#define TR98_IPV6SPEC					"InternetGatewayDevice.IPv6Specific"
++#define TR98_IPV6_PPP					"InternetGatewayDevice.IPv6Specific.PPP"
++#define TR98_IPV6_PPP_INTF				"InternetGatewayDevice.IPv6Specific.PPP.Interface.i"
++#define TR98_IPV6_PPP_INTF_IPV6CP		"InternetGatewayDevice.IPv6Specific.PPP.Interface.i.IPv6CP"
++#define TR98_IPV6_IP					"InternetGatewayDevice.IPv6Specific.IP"
++#define TR98_IPV6_IP_INTF				"InternetGatewayDevice.IPv6Specific.IP.Interface.i"
++#define TR98_IPV6_IP_INTF_IPV6ADDR		"InternetGatewayDevice.IPv6Specific.IP.Interface.i.IPv6Address.i"
++#define TR98_IPV6_IP_INTF_IPV6PREFIX	"InternetGatewayDevice.IPv6Specific.IP.Interface.i.IPv6Prefix.i"
++#define TR98_IPV6_ROUTING				"InternetGatewayDevice.IPv6Specific.Routing"
++#define TR98_IPV6_ROUTER				"InternetGatewayDevice.IPv6Specific.Routing.Router.i"
++#define TR98_IPV6_ROUTER_IPV6FWD		"InternetGatewayDevice.IPv6Specific.Routing.Router.i.IPv6Forwarding.i"
++#define TR98_IPV6_ROUTEINFO				"InternetGatewayDevice.IPv6Specific.Routing.RouteInformation"
++#define TR98_IPV6_ROUTEINFO_INTF		"InternetGatewayDevice.IPv6Specific.Routing.RouteInformation.InterfaceSetting.i"
++#define TR98_IPV6_ND					"InternetGatewayDevice.IPv6Specific.NeighborDiscovery"
++#define TR98_IPV6_ND_INTF				"InternetGatewayDevice.IPv6Specific.NeighborDiscovery.InterfaceSetting.i"
++#define TR98_IPV6_ROUTERADVER			"InternetGatewayDevice.IPv6Specific.RouterAdvertisement"
++#define TR98_IPV6_ROUTERADVER_INTF		"InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.i"
++#define TR98_IPV6_ROUTERADVER_OPT		"InternetGatewayDevice.IPv6Specific.RouterAdvertisement.Interface.i.Option.i"
++#define TR98_IPV6_HOSTS					"InternetGatewayDevice.IPv6Specific.Hosts"
++#define TR98_IPV6_HOSTS_HOST			"InternetGatewayDevice.IPv6Specific.Hosts.Host.i"
++#define TR98_IPV6_HOSTS_HOST_IPV6ADDR	"InternetGatewayDevice.IPv6Specific.Hosts.Host.i.IPv6Address.i"
++#define TR98_IPV6_DNS					"InternetGatewayDevice.IPv6Specific.DNS"
++#define TR98_IPV6_DNS_CLIENT			"InternetGatewayDevice.IPv6Specific.DNS.Client"
++#define TR98_IPV6_DNS_SERVER			"InternetGatewayDevice.IPv6Specific.DNS.Client.Server.i"
++#define TR98_IPV6_DNS_RELAY				"InternetGatewayDevice.IPv6Specific.DNS.Relay"
++#define TR98_IPV6_DNS_RELAYFWD			"InternetGatewayDevice.IPv6Specific.DNS.Relay.Forwarding.i"
++#define TR98_IPV6_DHCPV6				"InternetGatewayDevice.IPv6Specific.DHCPv6"
++#define TR98_IPV6_DHCPV6_CLIENT			"InternetGatewayDevice.IPv6Specific.DHCPv6.Client.i"
++#define TR98_IPV6_DHCPV6_CLIENT_SRV		"InternetGatewayDevice.IPv6Specific.DHCPv6.Client.i.Server.i"
++#define TR98_IPV6_DHCPV6_CLIENT_SENT	"InternetGatewayDevice.IPv6Specific.DHCPv6.Client.i.SentOption.i"
++#define TR98_IPV6_DHCPV6_CLIENT_RCV		"InternetGatewayDevice.IPv6Specific.DHCPv6.Client.i.ReceivedOption.i"
++#define TR98_IPV6_DHCPV6_SERVER			"InternetGatewayDevice.IPv6Specific.DHCPv6.Server"
++#define TR98_IPV6_DHCPV6_SERVER_POOL	"InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.i"
++#define TR98_IPV6_DHCPV6_SERVER_CNT		"InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.i.Client.i"
++#define TR98_IPV6_DHCPV6_SERVER_CNT_V6ADDR		"InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.i.Client.i.IPv6Address.i"
++#define TR98_IPV6_DHCPV6_SERVER_CNT_V6PREFIX	"InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.i.Client.i.IPv6Prefix.i"
++#define TR98_IPV6_DHCPV6_SERVER_CNT_OPT	"InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.i.Client.i.Option.i"
++#define TR98_IPV6_DHCPV6_SERVER_OPT		"InternetGatewayDevice.IPv6Specific.DHCPv6.Server.Pool.i.Option.i"
++#endif
++
+ #define OBSOLETED 1
+ //#define ZYXEL_EXT 1
+ 
+@@ -515,6 +556,46 @@
+ {TR98_FIREWALL_CHAIN_RULE,      ATTR_INDEX_CREA,para_FirewallChainRule, firewallRuleObjGet,      firewallRuleObjSet,     firewallRuleObjAdd,firewallRuleObjDel,firewallRuleObjNotify, firewallRuleObjAttrGet, firewallRuleObjAttrSet},
+ {TR98_STD_UPNP, 				0,				NULL,					NULL,					 NULL,					NULL,			  NULL, 	   NULL, NULL, NULL},
+ {TR98_STD_UPNP_DEV, 			0,				para_Upnp,				zyExtUPnPObjGet,		 zyExtUPnPObjSet,		NULL,			  NULL, 		   NULL, NULL, NULL},
++#ifdef ZYXEL_IPV6SPEC
++{TR98_IPV6SPEC,					0,				NULL,						NULL,					 NULL,					 NULL,				NULL,			NULL},
++{TR98_IPV6_PPP,					0,				para_Ipv6Ppp,				zyIpv6PppObjGet, 				NULL, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_PPP_INTF, 			ATTR_INDEX_CREA,para_Ipv6PppIntf,			zyIpv6PppIntfObjGet, 			zyIpv6PppIntfObjSet, zyIpv6PppIntfObjAdd,	zyIpv6PppIntfObjDel,	NULL,	NULL,	NULL},
++{TR98_IPV6_PPP_INTF_IPV6CP,		0,				para_Ipv6PppIpv6cp,			zyIpv6PppIpv6cpObjGet,			NULL, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_IP, 					0,				para_Ipv6Ip,				zyIpv6IpObjGet,  				zyIpv6IpObjSet, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_IP_INTF, 			ATTR_INDEX_CREA,para_Ipv6IpIntf,			zyIpv6IpIntfObjGet,  			zyIpv6IpIntfObjSet, 			zyIpv6IpIntfObjAdd,	zyIpv6IpIntfObjDel,	NULL},
++{TR98_IPV6_IP_INTF_IPV6ADDR,	ATTR_INDEX_CREA,para_Ipv6IpIntfIpv6Addr, 	zyIpv6IpIntfIpv6AddrObjGet, 	zyIpv6IpIntfIpv6AddrObjSet,	   	zyIpv6IpIntfIpv6AddrObjAdd, zyIpv6IpIntfIpv6AddrObjDel,			NULL},
++{TR98_IPV6_IP_INTF_IPV6PREFIX,	ATTR_INDEX_CREA,para_Ipv6IpIntfIpv6Prefix,	zyIpv6IpIntfIpv6PrefixObjGet, 	zyIpv6IpIntfIpv6PrefixObjSet,   zyIpv6IpIntfIpv6PrefixObjAdd, zyIpv6IpIntfIpv6PrefixObjDel,	NULL},
++{TR98_IPV6_ROUTING,				0,				NULL,						NULL,					 NULL,					 NULL,				NULL,			NULL},
++{TR98_IPV6_ROUTER,				0,				para_Ipv6Router,			zyIpv6RouterObjGet,		NULL, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_ROUTER_IPV6FWD,		ATTR_INDEX_CREA,para_Ipv6RouterIpv6Fwd,		zyIpv6RouterIpv6FwdObjGet,	zyIpv6RouterIpv6FwdObjSet, zyIpv6RouterIpv6FwdObjAdd,	zyIpv6RouterIpv6FwdObjDel,	NULL,	NULL,	NULL},
++{TR98_IPV6_ROUTEINFO, 			0,				NULL,						NULL,					 NULL,					 NULL,				NULL,			NULL},
++{TR98_IPV6_ROUTEINFO_INTF,		0,				para_Ipv6RouteInfoIntf,		zyIpv6RouteInfoIntfObjGet,	NULL, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_ND,					0,				para_Ipv6ND, 				zyIpv6NDObjGet,	zyIpv6NDObjSet, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_ND_INTF,				0,				para_Ipv6NDIntf,			zyIpv6NDIntfObjGet, zyIpv6NDIntfObjSet, NULL, NULL, NULL,	NULL,	NULL},
++{TR98_IPV6_ROUTERADVER,			0,				para_Ipv6RouterAdver,		zyIpv6RouterAdverObjGet,  NULL, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_ROUTERADVER_INTF,	0,				para_Ipv6RouterAdverIntf,	zyIpv6RouterAdverIntfObjGet,  zyIpv6RouterAdverIntfObjSet,	NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_ROUTERADVER_OPT,		ATTR_INDEX_CREA,para_Ipv6RouterAdverOpt,	zyIpv6RouterAdverOptObjGet,  zyIpv6RouterAdverOptObjSet,	zyIpv6RouterAdverOptObjAdd,	zyIpv6RouterAdverOptObjDel,	NULL},
++{TR98_IPV6_HOSTS,				0,				NULL,						NULL,					 NULL,					 NULL,				NULL,			NULL},
++{TR98_IPV6_HOSTS_HOST, 			ATTR_INDEXNODE, para_HostsHost,				zyIpv6HostsHostObjGet,	 NULL,			NULL,		NULL, 	zyIpv6HostsHostObjNotify, zyIpv6HostsHostObjAttrGet, zyIpv6HostsHostObjAttrSet},
++{TR98_IPV6_HOSTS_HOST_IPV6ADDR,	0,				para_HostsHostIpv6Addr, 	zyIpv6HostsHostIpv6AddrObjGet,	NULL, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DNS,					0,				NULL,						NULL,					 NULL,					 NULL,				NULL,			NULL},
++{TR98_IPV6_DNS_CLIENT, 			0,				NULL,						NULL,					 NULL,					 NULL,				NULL,			NULL},
++{TR98_IPV6_DNS_SERVER,			ATTR_INDEX_CREA,para_Ipv6DnsSvr,			zyIpv6DnsSvrObjGet,		zyIpv6DnsSvrObjSet, zyIpv6DnsSvrObjAdd,	zyIpv6DnsSvrObjDel,	NULL,	NULL,	NULL},
++{TR98_IPV6_DNS_RELAY, 			0,				para_Ipv6DnsRly,			zyIpv6DnsRlyObjGet,		zyIpv6DnsRlyObjSet,					 NULL,				NULL,			NULL},
++{TR98_IPV6_DNS_RELAYFWD,		ATTR_INDEX_CREA,para_Ipv6DnsRlyFwd,			zyIpv6DnsRlyFwdObjGet, 	zyIpv6DnsRlyFwdObjSet, zyIpv6DnsRlyFwdObjAdd,	zyIpv6DnsRlyFwdObjDel,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6,				0,				para_Ipv6Dhcpv6,			zyIpv6Dhcpv6ObjGet, 	NULL, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_CLIENT,		0,				para_Ipv6Dhcpv6Client,		zyIpv6Dhcpv6ClientObjGet,	zyIpv6Dhcpv6ClientObjSet, NULL,	NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_CLIENT_SRV,	0,				para_Ipv6Dhcpv6CntSrvAddr,	zyIpv6Dhcpv6CntSrvObjGet, 	NULL,    NULL, NULL,			NULL},
++{TR98_IPV6_DHCPV6_CLIENT_SENT,	ATTR_INDEX_CREA,para_Ipv6Dhcpv6CntSentAddr,	zyIpv6Dhcpv6CntSentObjGet, 	zyIpv6Dhcpv6CntSentObjSet, zyIpv6Dhcpv6CntSentObjAdd,	zyIpv6Dhcpv6CntSentObjDel,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_CLIENT_RCV,	0,				para_Ipv6Dhcpv6CntRrvAddr,	zyIpv6Dhcpv6CntRrvObjGet,	NULL,	 NULL, NULL,			NULL},
++{TR98_IPV6_DHCPV6_SERVER,		0,				para_Ipv6Dhcpv6Srv,			zyIpv6Dhcpv6SrvObjGet, 		zyIpv6Dhcpv6SrvObjSet, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_SERVER_POOL,	0,				para_Ipv6Dhcpv6SrvPool,		zyIpv6Dhcpv6SrvPoolObjGet,	zyIpv6Dhcpv6SrvPoolObjSet, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_SERVER_CNT,	0,				para_Ipv6Dhcpv6SrvCnt, 		zyIpv6Dhcpv6SrvCntObjGet,	zyIpv6Dhcpv6SrvCntObjSet, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_SERVER_CNT_V6ADDR,	0,		para_Ipv6Dhcpv6SrvCntV6Addr, 	zyIpv6Dhcpv6SrvCntV6AddrObjGet,	NULL, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_SERVER_CNT_V6PREFIX,	0,		para_Ipv6Dhcpv6SrvCntV6Prefix,	zyIpv6Dhcpv6SrvCntV6PrefixObjGet,	NULL, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_SERVER_CNT_OPT,		0,		para_Ipv6Dhcpv6SrvCntOpt,	zyIpv6Dhcpv6SrvCntOptObjGet, NULL, NULL, NULL,	NULL,	NULL,	NULL},
++{TR98_IPV6_DHCPV6_SERVER_OPT,	ATTR_INDEX_CREA,para_Ipv6Dhcpv6SrvOpt, 		zyIpv6Dhcpv6SrvOptObjGet,	zyIpv6Dhcpv6SrvOptObjSet, zyIpv6Dhcpv6SrvOptObjAdd, zyIpv6Dhcpv6SrvOptObjDel,	NULL,	NULL,	NULL},
++#endif
+ #if ZYXEL_EXT
+ {TR98_ZYXEL_EXT,             	0,				NULL,        			NULL,        			 NULL,       			 NULL, 				NULL,			NULL},
+ #ifdef ZYXEL_LANDING_PAGE_FEATURE

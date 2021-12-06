@@ -1,0 +1,127 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_msg.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_msg.c	2017-09-20 19:01:11.775128465 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_msg.c	2017-09-20 19:01:11.971128469 +0800
+@@ -277,6 +277,57 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeMsgObjQryInstances(uint32_t type, zcfg_name_t nameSeqNum, objIndex_t *queryObjIid, char **instances)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;
++	char *sendBuf = NULL, *recvBuf = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "%s\n", __FUNCTION__);
++
++	if(!queryObjIid || !instances)
++		return ZCFG_INTERNAL_ERROR;
++
++	sendBuf = (char *)malloc(sizeof(zcfgMsg_t));
++	memset(sendBuf, 0, sizeof(zcfgMsg_t));
++
++	sendMsgHdr = (zcfgMsg_t *)sendBuf;
++	//sendMsgHdr->type = REQUEST_QUERY_TR98_OBJ_INSTANCE_ARRAY;
++	sendMsgHdr->type = type;
++	sendMsgHdr->dstEid = ZCFG_EID_ZCMD;
++	sendMsgHdr->oid = nameSeqNum;
++	memcpy(sendMsgHdr->objIid, queryObjIid, sizeof(objIndex_t));
++
++	rst = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(rst != ZCFG_SUCCESS) {
++		return rst;
++	}
++
++	recvMsgHdr = (zcfgMsg_t*)recvBuf;
++	if ( recvMsgHdr->type == RESPONSE_FAIL ) {
++		free(recvBuf);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if( recvMsgHdr->length > 0 ) {
++		char *queriedData = (char *)malloc(recvMsgHdr->length + 1);
++		char *data = (char *)(recvBuf+sizeof(zcfgMsg_t));
++
++		memcpy(queriedData, data, recvMsgHdr->length);
++		*(queriedData+recvMsgHdr->length) = '\0';
++
++		*instances = queriedData;
++	}else{
++		rst = ZCFG_INTERNAL_ERROR;
++	}
++
++	free(recvBuf);
++
++	return rst;
++}
++
+ zcfgRet_t zcfgFeMultiParmAttrSet(zcfgFeSetParmAttrLst_t *setParmAttrLst)
+ {
+ 	zcfgFeSetParmAttr_t *setParmAttr = NULL;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_msg.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_msg.h	2017-09-20 19:01:11.759128465 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_msg.h	2017-09-20 19:01:11.971128469 +0800
+@@ -47,6 +47,7 @@
+ zcfgRet_t zcfgObjMappingGet(uint32_t msgType, uint32_t num_1, objIndex_t *objIdxData_1, uint32_t *num_2, objIndex_t *objIdxData_2);
+ zcfgRet_t zcfgFeMultiParmAttrSet(zcfgFeSetParmAttrLst_t *setParmAttrLst);
+ zcfgRet_t zcfgFeParmAttrQry(zcfg_name_t seqnum, objIndex_t *tr98ObjIid, const char *parmName, zcfg_offset_t *oid, objIndex_t *objIid, char *queriedParmName, uint32_t *attr);
++zcfgRet_t zcfgFeMsgObjQryInstances(uint32_t type, zcfg_name_t nameSeqNum, objIndex_t *queryObjIid, char **instances);
+ zcfgRet_t zcfgFeTr181ParmAttrQry(zcfg_offset_t , objIndex_t *, char *, zcfg_name_t *, objIndex_t *, const char *, uint32_t *);
+ zcfgRet_t zcfgFeObjParamAttrQry(uint32_t , objIndex_t *, struct json_object **, uint32_t );
+ #endif
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-09-20 19:01:11.935128468 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-09-20 19:01:11.971128469 +0800
+@@ -1956,6 +1956,36 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++// return 'n,n+1,n+2,..'
++char *zcfgFeTr98ObjQueryInstanceArray(const char *tr98PathName)
++{
++	char *instances = NULL;
++	zcfg_name_t nameSeqNum;
++	objIndex_t tr98ObjIid;
++
++	ztrdbg(ZTR_DL_DEBUG, "%s\n", __FUNCTION__);
++
++	if(!tr98PathName || strlen(tr98PathName) == 0)
++		return NULL;
++
++	ztrdbg(ZTR_DL_DEBUG,  "%s: *** query tr98PathName=%s\n", __FUNCTION__, tr98PathName);
++
++ 	IID_INIT(tr98ObjIid);
++	if(zcfgFe98NameToSeqnum(tr98PathName, &nameSeqNum, &tr98ObjIid) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: NameToSeqnum fail!\n", __FUNCTION__);
++		return NULL;
++	}
++
++	if(zcfgFeMsgObjQryInstances(REQUEST_QUERY_TR98_OBJ_INSTANCE_ARRAY, nameSeqNum, &tr98ObjIid, &instances) != ZCFG_SUCCESS) {
++		ztrdbg(ZTR_SL_DEBUG, "%s: query obj instances fail\n", __FUNCTION__);
++		return NULL;
++	}
++
++	ztrdbg(ZTR_DL_DEBUG,  "%s: 98mapqried instances: %s %s\n", __FUNCTION__, tr98PathName, instances);
++
++	return instances;
++}
++
+ zcfgRet_t zcfgTr98MapAddObjName()
+ {
+ 	struct json_object *zcfgTr98MapTable = NULL;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-09-20 19:01:11.891128467 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-09-20 19:01:11.971128469 +0800
+@@ -230,6 +230,7 @@
+ zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName);
+ zcfgRet_t zcfgFe98NameToSeqnum(const char *tr98PathName, zcfg_name_t *seqnum, objIndex_t *tr98ObjIid);
+ zcfgRet_t zcfgFe98SeqnumToName(zcfg_name_t seqnum, objIndex_t *objIid, char *tr98PathName);
++char *zcfgFeTr98ObjQueryInstanceArray(const char *tr98PathName);
+ zcfgRet_t zcfgFe98ParmMappingToName(const char *notifyName, char *tr98NotifyName);
+ zcfgRet_t zcfgTr98MapAddObjName();
+ zcfgRet_t zcfgTr181MapAddObjName();

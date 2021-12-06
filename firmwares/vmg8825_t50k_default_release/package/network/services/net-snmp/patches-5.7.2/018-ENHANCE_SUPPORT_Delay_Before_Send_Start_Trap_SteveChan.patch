@@ -1,0 +1,78 @@
+Index: net-snmp-5.7.2/agent/snmpd.c
+===================================================================
+--- net-snmp-5.7.2.orig/agent/snmpd.c	2017-02-09 18:35:20.775213944 +0800
++++ net-snmp-5.7.2/agent/snmpd.c	2017-02-09 18:39:15.243033077 +0800
+@@ -460,6 +460,7 @@
+ 
+ #if ZYXEL_SNMP_WARMSTART_FEATURE
+ 	unsigned char coldstart = 0;
++	unsigned char startwithdelay = 0;
+ #endif
+ 
+ #ifndef WIN32
+@@ -850,23 +851,31 @@
+             break;
+ 
+ #if ZYXEL_SNMP_WARMSTART_FEATURE
+-		case 'w': //ColdStart
+-			/*-w 1 ---- WarmStart     *
+-			 *-w 0 ---- ColdStart     */
+-			if(optarg != NULL){
+-				char           *warmecp;
++        case 'w': //ColdStart
++            /*bit mesk:                      *
++             * MSB         [1][0]  LSB       *
++             * [1]:delay runing              *
++             * [0]:WarmStart                 *
++             *Ex:
++             *-w 1 ---- WarmStart            *
++             *-w 0 ---- ColdStart            *
++             *-w 3 ---- WarmStart with delay *
++             *-w 2 ---- ColdStart with delay */
++            if(optarg != NULL){
++                char           *warmecp;
+                 int             warmvalue;
+ 
+                 warmvalue = strtoul(optarg, &warmecp, 10);
+ 
+-				if(*warmecp){ //Parsing not complete, data error
++                if(*warmecp){ //Parsing not complete, data error
+                     fprintf(stderr, "Bad WarmStart Option: %s\n", optarg);
+                     exit(1);
+-				}
++                }
+ 
+-				coldstart = !warmvalue;
+-			}
+-			break;
++                coldstart = !(warmvalue & 0x01);
++                startwithdelay = (warmvalue & 0x02)>>1;
++            }
++            break;
+ #endif
+ 
+         default:
+@@ -1131,11 +1140,19 @@
+      * Send coldstart trap if possible.  
+      */
+ #if ZYXEL_SNMP_WARMSTART_FEATURE
+-	if(!coldstart)
+-		send_easy_trap(1, 0);
+-	else
+-#endif
++    if(startwithdelay){
++        sleep(30); //sleep 30 second to wait Lan up
++    }
++
++    if(!coldstart){
++        send_easy_trap(1, 0);
++    }else{
++        send_easy_trap(0, 0);
++    }
++
++#else
+     send_easy_trap(0, 0);
++#endif
+ 
+     /*
+      * We're up, log our version number.  

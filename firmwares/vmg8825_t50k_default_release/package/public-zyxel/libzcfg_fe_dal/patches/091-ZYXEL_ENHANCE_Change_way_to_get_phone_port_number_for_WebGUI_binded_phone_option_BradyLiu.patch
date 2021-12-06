@@ -1,0 +1,135 @@
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_phone_device.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/phone/zcfg_fe_dal_phone_phone_device.c	2016-12-15 16:24:31.898473213 +0800
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_phone_device.c	2016-12-15 19:03:28.170220591 +0800
+@@ -40,6 +40,7 @@
+ struct json_object *guiCustObj;
+ struct json_object *accountObj;
+ struct json_object *dectObj;
++struct json_object *singlePhyobj;
+ 
+ objIndex_t phyIid = {0};
+ objIndex_t dectIid = {0};
+@@ -50,6 +51,7 @@
+ 	guiCustObj = NULL;
+ 	accountObj = NULL;
+ 	dectObj = NULL;
++	singlePhyobj = NULL;
+ 
+ 	return;
+ }
+@@ -60,6 +62,7 @@
+ 	if(guiCustObj) json_object_put(guiCustObj);
+ 	if(accountObj) json_object_put(accountObj);
+ 	if(dectObj) json_object_put(dectObj);
++	if(singlePhyobj) json_object_put(singlePhyobj);
+ 
+ 	return;
+ }
+@@ -78,7 +81,6 @@
+ }
+ 
+ void zcfgFeDalPhyCustomizationflagGet(){
+-	objIndex_t phyIid = {0};
+ 
+ 	IID_INIT(phyIid);
+ 	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_GUI_CUSTOMIZATION, &phyIid, &guiCustObj) == ZCFG_SUCCESS){
+@@ -86,7 +88,7 @@
+ 		zcfgFeJsonObjFree(guiCustObj);
+ 		return;
+ 	}
+-
++	zcfgFeJsonObjFree(guiCustObj);
+ 	return;
+ }
+ 
+@@ -286,6 +288,43 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalPhyItfObjGet(struct json_object *paserobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	X_ZYXEL_LineSelect = json_object_get_string(json_object_object_get(phyIntfObj, "X_ZYXEL_LineSelect"));
++	json_object_object_add(paserobj, "X_ZYXEL_LineSelect", json_object_new_string(X_ZYXEL_LineSelect));
++
++	return ret;
++
++}
++
++zcfgRet_t zcfgFeDalPhyItfGet(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	IID_INIT(phyIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_PHY_INTF, &phyIid, &phyIntfObj) == ZCFG_SUCCESS){
++		singlePhyobj = json_object_new_object();
++
++		if((ret = zcfgFeDalPhyItfObjGet(singlePhyobj)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to parse Phy ift Obj \n", __FUNCTION__);
++			goto exit;
++		}
++
++		if( ret == ZCFG_SUCCESS ){
++			json_object_array_add(Jobj, JSON_OBJ_COPY(singlePhyobj));
++		}
++
++		zcfgFeJsonObjFree(singlePhyobj);
++		zcfgFeJsonObjFree(phyIntfObj);
++	}
++
++	//printf("%s(): output --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	exit:
++	freeAllPhyIftObjects();
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalVoipPhoneDevice(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -293,11 +332,16 @@
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
++	zcfgFeDalPhyCustomizationflagGet();
++
+ 	if(!strcmp(method, "PUT")) {
+ 		if(!(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST & flag1)){
+ 			ret = zcfgFeDalVoipPhoneDeviceEdit(Jobj, NULL);
+ 		}
+ 	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDalPhyItfGet(Jobj, NULL);
++	}
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_account.c	2016-12-15 16:24:31.938473212 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2016-12-15 16:25:54.791796700 +0800
+@@ -1179,10 +1179,10 @@
+ 		if(lineObj != NULL){
+ 			singleLineobj = json_object_new_object();
+ 
+-			if((ret = zcfgFeDalparsePhyIntfObj(singleLineobj)) != ZCFG_SUCCESS){
++			/*if((ret = zcfgFeDalparsePhyIntfObj(singleLineobj)) != ZCFG_SUCCESS){
+ 				printf("%s:(ERROR) fail to parse single Line Obj \n", __FUNCTION__);
+ 				goto exit;
+-			}
++			}*/
+ 
+ 			if((ret = zcfgFeDalparseSingleLineObj(singleLineobj)) != ZCFG_SUCCESS){
+ 				printf("%s:(ERROR) fail to parse single Line Obj \n", __FUNCTION__);
+@@ -1219,9 +1219,9 @@
+ 
+ 			if( ret == ZCFG_SUCCESS ){
+ 				json_object_array_add(Jobj, JSON_OBJ_COPY(singleLineobj));
+-			}else{
+-				json_object_put(singleLineobj);
+ 			}
++
++			json_object_put(singleLineobj);
+ 			sipAccountIdx++;
+ 			zcfgFeJsonObjFree(lineObj);
+ 		}

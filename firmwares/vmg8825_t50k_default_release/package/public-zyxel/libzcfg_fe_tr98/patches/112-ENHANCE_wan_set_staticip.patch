@@ -1,0 +1,939 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-03-27 15:55:48.790107921 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-03-27 15:59:52.662028000 +0800
+@@ -2131,6 +2131,14 @@
+ 	char tmpbuf[256] = {0};
+ 	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
+ 	bool isDnsObjExist = false, firstEnter = true;
++	objIndex_t natIntfIid;
++	struct json_object *natIntfJobj = NULL;
++	objIndex_t rtIpIid;
++	struct json_object *rtIpJobj = NULL;
++	char *new_activeDefaultGt = NULL;
++	objIndex_t rtIid;
++	struct json_object *rtJobj = NULL;
++	bool defaultRtModify = false;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -2157,12 +2165,62 @@
+ #endif
+ 	if(isDnsObjExist){
+ 		IID_INIT(dnsIid);
+-		zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
++		if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++			json_object_put(ipIfaceJobj);
++			json_object_put(dnsSrvJobj);
++			return ret;
++		}
+ 	}
+ 
+ 	IID_INIT(igmpIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS) {
++		json_object_put(ipIfaceJobj);
++		if(isDnsObjExist == true) {
++			json_object_put(dnsSrvJobj);
++			json_object_put(dnsJobj);
++		}
++		return ret;
++	}
++
++	IID_INIT(natIntfIid);
++	if(natIntfGetJobj((const char *)ipIface, &natIntfIid, (struct json_object **)&natIntfJobj) != ZCFG_SUCCESS) {
++		printf("%s : Retrieve NAT interface setting fail\n", __FUNCTION__);
++		json_object_put(ipIfaceJobj);
++		json_object_put(igmpJobj);
++		if(isDnsObjExist == true) {
++			json_object_put(dnsSrvJobj);
++			json_object_put(dnsJobj);
++		}
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	IID_INIT(rtIid);
++	rtIid.level = 1;
++	rtIid.idx[0] = 1;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER, &rtIid, &rtJobj)) != ZCFG_SUCCESS) {
++		json_object_put(ipIfaceJobj);
++		if(isDnsObjExist == true) {
++			json_object_put(dnsSrvJobj);
++			json_object_put(dnsJobj);
++		}
++		json_object_put(igmpJobj);
++		json_object_put(natIntfJobj);
++
+ 		return ret;
++	}
++
++	IID_INIT(rtIpIid);
++	if(defaultRtGetObj((const char *)ipIface, &rtIpIid, (struct json_object **)&rtIpJobj) != ZCFG_SUCCESS) {
++		printf("%s : Retrieve routing ip fail\n", __FUNCTION__);
++		json_object_put(ipIfaceJobj);
++		json_object_put(igmpJobj);
++		if(isDnsObjExist == true) {
++			json_object_put(dnsSrvJobj);
++			json_object_put(dnsJobj);
++		}
++		json_object_put(natIntfJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
+ 
+ 	if(multiJobj){
+ 
+@@ -2194,10 +2252,10 @@
+ 			json_object_put(tmpObj);
+ 		}
+ 		
+-		if(ipIfaceJobj){
+-			tmpObj = ipIfaceJobj;
+-			ipIfaceJobj = NULL;
+-			ipIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, tmpObj);
++		{
++			tmpObj = natIntfJobj;
++			natIntfJobj = NULL;
++			natIntfJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_INTF_SETTING, &natIntfIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
+ 	}
+@@ -2208,6 +2266,21 @@
+ 	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
+ 	connType = json_object_get_string(paramValue);
+ 
++	if(!strcmp(connType, "IP_Routed")) {
++		/*Set IP Address*/
++		ret = ipaddrSet(ipIface, &ipIfaceIid, &ipIfaceJobj, addrType, tr98Jobj);
++		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++			printf("%s: ipaddrSet return %d\n", __FUNCTION__, ret);
++			json_object_put(ipIfaceJobj);
++			json_object_put(rtIpJobj);
++			json_object_put(rtJobj);
++			return ret;
++		}
++		else {
++			ret = ZCFG_SUCCESS;
++		}
++	}
++
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/		
+@@ -2237,6 +2310,35 @@
+ 				paramList++;
+ 				continue;
+ 			}
++			else if(!strcmp(paramList->name, "NATEnabled")){
++				json_object_object_add(natIntfJobj, "Enable", JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++			else if(!strcmp(paramList->name, "DefaultGateway")){
++				const char *defaultRt = json_object_get_string(paramValue);
++				const char *defaultRtAddr = json_object_get_string(json_object_object_get(rtIpJobj, "GatewayIPAddress"));
++				const char *activeDefaultGt = json_object_get_string(json_object_object_get(rtJobj, "X_ZYXEL_ActiveDefaultGateway"));
++				if(!strcmp(defaultRt, "") && strcmp(defaultRtAddr, "")) {
++					new_activeDefaultGt = activeDefaultGt_Strip(activeDefaultGt, ipIface);
++					json_object_object_add(rtIpJobj, "GatewayIPAddress", json_object_new_string(""));
++					json_object_object_add(rtIpJobj, "Enable", json_object_new_boolean(false));
++					defaultRtModify = true;
++				}
++				else if(strcmp(defaultRt, defaultRtAddr)) {
++					new_activeDefaultGt = activeDefaultGt_Add(activeDefaultGt, ipIface);
++					json_object_object_add(rtIpJobj, "DestIPAddress", json_object_new_string(""));
++					json_object_object_add(rtIpJobj, "DestSubnetMask", json_object_new_string(""));
++					json_object_object_add(rtIpJobj, "GatewayIPAddress", json_object_new_string(defaultRt));
++					json_object_object_add(rtIpJobj, "Enable", json_object_new_boolean(true));
++					defaultRtModify = true;
++				}
++				if(new_activeDefaultGt) {
++					json_object_object_add(rtJobj, "X_ZYXEL_ActiveDefaultGateway", json_object_new_string(new_activeDefaultGt));
++				}
++				paramList++;
++				continue;
++			}
+ 			else if(!strcmp(paramList->name, "DNSEnabled")){
+ 				if(dnsSrvJobj){
+ 					json_object_object_add(dnsSrvJobj, "Enable", JSON_OBJ_COPY(paramValue));
+@@ -2344,20 +2446,23 @@
+ 		paramList++;	
+ 	}
+ 
+-	if(!strcmp(connType, "IP_Routed")) {
+-		/*Set IP Address*/
+-		ret = ipaddrSet(devIpIface, &ipIfaceIid, addrType, tr98Jobj);
+-		if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-			printf("%s: ipaddrSet return %d\n", __FUNCTION__, ret);
+-			return ret;
+-		}
+-		else { 
+-			ret = ZCFG_SUCCESS;
+-		}
+-	}
+ 
+ 	/*Set Device.IP.Interface.i*/
+ 	if(multiJobj){
++		zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, ipIfaceJobj);
++		json_object_put(ipIfaceJobj);
++
++		if(defaultRtModify == true)	{
++			printf("%s: set default route is required\n", __FUNCTION__);
++			zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, multiJobj, rtIpJobj);
++		}
++		json_object_put(rtIpJobj);
++
++		if(new_activeDefaultGt) {
++			zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER, &rtIid, multiJobj, rtJobj);
++			free(new_activeDefaultGt);
++		}
++		json_object_put(rtJobj);
+ 	}
+ 	else{
+ 		if(dnsSrvJobj){
+@@ -2410,6 +2515,37 @@
+ 			json_object_put(ipIfaceJobj);
+ 		}
+ 		
++		if(natIntfJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_NAT_INTF_SETTING, &natIntfIid, natIntfJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.NAT.InterfaceSetting.i Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.NAT.InterfaceSetting.i Success\n", __FUNCTION__);
++			}
++			json_object_put(natIntfJobj);
++		}
++
++		if(defaultRtModify == true)	{
++			if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, rtIpJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.Router.Routing.i.IP.i Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.Router.Routing.i.IP.i Success\n", __FUNCTION__);
++			}
++		}
++		json_object_put(rtIpJobj);
++
++		if(new_activeDefaultGt) {
++			if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER, &rtIid, rtJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.Router.Routing. Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.Router.Routing Success\n", __FUNCTION__);
++			}
++			free(new_activeDefaultGt);
++		}
++		json_object_put(rtJobj);
++		
+ 	}
+ 
+ 	return ret;
+@@ -2788,7 +2924,7 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t vlanTermIid, etherLinkIid;
+-	struct json_objec *vlanTermObj = NULL;
++	struct json_object *vlanTermObj = NULL;
+ 	const char *lowerLayer = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+@@ -3755,14 +3891,6 @@
+ 		}
+ 		else if(!strcmp(paramList->name, "PortMappingNumberOfEntries")){
+ 			numOfEntries = portMappingNumGet(ipIface);
+-#if 0
+-			for(i = 1; i<=254; i++){
+-				snprintf(pmPath, sizeof(pmPath), "%s.PortMapping.%d", tr98FullPathName, i);
+-				if(zcfgFe98To181MappingNameGet(pmPath, tmp) == ZCFG_SUCCESS) {
+-					numOfEntries++;
+-				}
+-			}
+-#endif
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(numOfEntries));
+ 			paramList++;
+ 			continue;			
+@@ -3880,6 +4008,9 @@
+ 	char tmpbuf[256] = {0};
+ 	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
+ 	bool isDnsObjExist = false, firstEnter = true;
++	const char *connType = NULL, *ipAddr = NULL, *snetMask = NULL;
++	objIndex_t natIntfIid;
++	struct json_object *natIntfJobj = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO,"%s : Enter\n", __FUNCTION__);
+ 
+@@ -3909,6 +4040,14 @@
+ 	sscanf(ipIface, "IP.Interface.%hhu", &ipIfaceIid.idx[0]);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceJobj)) != ZCFG_SUCCESS) {
+ 		printf("%s : Get IP.Interface fail\n", __FUNCTION__);
++		json_object_put(pppIfaceJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	IID_INIT(natIntfIid);
++	if(natIntfGetJobj((const char *)ipIface, &natIntfIid, (struct json_object **)&natIntfJobj) != ZCFG_SUCCESS) {
++		printf("%s : Retrieve NAT interface setting fail\n", __FUNCTION__);
++		json_object_put(pppIfaceJobj);
+ 		json_object_put(ipIfaceJobj);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+@@ -3924,11 +4063,26 @@
+ 	if(isDnsObjExist){
+ 		IID_INIT(dnsIid);
+ 		zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
++		if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++			json_object_put(pppIfaceJobj);
++			json_object_put(ipIfaceJobj);
++			json_object_put(natIntfJobj);
++			json_object_put(dnsSrvJobj);
++			return ret;
++		}
+ 	}
+ 
+ 	IID_INIT(igmpIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS) {
++		json_object_put(pppIfaceJobj);
++		json_object_put(ipIfaceJobj);
++		json_object_put(natIntfJobj);
++		if(isDnsObjExist == true) {
++			json_object_put(dnsSrvJobj);
++			json_object_put(dnsJobj);
++		}
+ 		return ret;
++	}
+ 
+ 	if(multiJobj){
+ 		if(dnsSrvJobj){
+@@ -3970,8 +4124,17 @@
+ 			ipIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
++		{
++			tmpObj = natIntfJobj;
++			natIntfJobj = NULL;
++			natIntfJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_INTF_SETTING, &natIntfIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 	}
+ 
++	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
++	connType = json_object_get_string(paramValue);
++
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+@@ -3999,6 +4162,21 @@
+ 				paramList++;
+ 				continue;
+ 			}
++			else if(!strcmp(paramList->name, "NATEnabled")){
++				json_object_object_add(natIntfJobj, "Enable", JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++			else if(!strcmp(paramList->name, "ExternalIPAddress")){
++				ipAddr = json_object_get_string(paramValue);
++				paramList++;
++				continue;
++			}
++			else if(!strcmp(paramList->name, "SubnetMask")){
++				snetMask = json_object_get_string(paramValue);
++				paramList++;
++				continue;
++			}
+ 			else if(!strcmp(paramList->name, "DNSEnabled")){
+ 				if(dnsSrvJobj){
+ 					json_object_object_add(dnsSrvJobj, "Enable", JSON_OBJ_COPY(paramValue));
+@@ -4641,9 +4819,9 @@
+ 
+ int WANPppConnObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
+ {
+-	char tr181Obj[128] = {0};
+ 	char mapObj[128] = {0};
+ /*
++	char tr181Obj[128] = {0};
+ 	uint32_t  devInfoOid = 0, ipcpOid = 0;
+ 	objIndex_t devInfoIid, ipcpIid;
+ */
+@@ -5015,9 +5193,9 @@
+ 	objIndex_t objIid;
+ 	rdm_NatPortMapping_t *natPortMapObj = NULL;
+ 	char tr98ConnName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char tr98PortMapName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	//char tr98PortMapName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char iface[32] = {0};
+-	char portMap[32] = {0};
++	//char portMap[32] = {0};
+ 	char *ptr = NULL;
+ 	rdm_IpIface_t *ipIface = NULL;
+ 
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2015-03-27 15:55:48.766107921 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2015-03-27 16:04:52.067140000 +0800
+@@ -52,6 +52,186 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t natIntfGetJobj(const char *ipIface, objIndex_t *natIntfIid, struct json_object **natIntfJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *natObj = NULL, *emptyObj = NULL;
++	objIndex_t natIid, emptyIid;
++
++	if(!ipIface || !natIntfIid || !natIntfJobj) return ZCFG_INTERNAL_ERROR;
++
++	IID_INIT(natIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_NAT_INTF_SETTING, &natIid, (struct json_object **)&natObj) == ZCFG_SUCCESS) {
++		const char *natIntfName = json_object_get_string(json_object_object_get(natObj, "Interface"));
++		if(!strcmp(natIntfName, "")) {
++ 			if(!emptyObj) {
++				emptyObj = natObj;
++				natObj = NULL;
++				memcpy(&emptyIid, &natIid, sizeof(objIndex_t));
++				continue;
++			}
++		}
++		else if(!strcmp(natIntfName, ipIface)) {
++			*natIntfJobj = natObj;
++			memcpy(natIntfIid, &natIid, sizeof(objIndex_t));
++			if(emptyObj) {
++				json_object_put(emptyObj);
++			}
++			printf("%s: Nat interface retrieved\n", __FUNCTION__);
++			return ZCFG_SUCCESS;
++		}
++		json_object_put(natObj);
++	}
++
++	if(emptyObj) {
++		*natIntfJobj = emptyObj;
++		memcpy(natIntfIid, &emptyIid, sizeof(objIndex_t));
++		json_object_object_add(emptyObj, "Interface", json_object_new_string(ipIface));
++		return ZCFG_SUCCESS;
++	}
++
++	printf("%s: There is not empty nat interface! Add\n", __FUNCTION__);
++
++	IID_INIT(emptyIid);
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_NAT_INTF_SETTING, &emptyIid, NULL)) != ZCFG_SUCCESS) {
++		printf("%s: Add nat interface setting fail!\n", __FUNCTION__);
++		return ret;
++	}
++
++	natObj = NULL;
++	if(zcfgFeObjJsonGet(RDM_OID_NAT_INTF_SETTING, &emptyIid, (struct json_object **)&natObj) == ZCFG_SUCCESS) {
++		*natIntfJobj = natObj;
++		memcpy(natIntfIid, &emptyIid, sizeof(objIndex_t));
++		json_object_object_add(natObj, "Interface", json_object_new_string(ipIface));
++		return ZCFG_SUCCESS;
++	}
++
++	printf("%s: Retrieve nat interface setting fail!\n", __FUNCTION__);
++
++	return ZCFG_INTERNAL_ERROR;
++}
++
++zcfgRet_t defaultRtGetObj(const char *ipIface, objIndex_t *rtIpIid, struct json_object **rtIpObj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *rtObj = NULL, *emptyObj = NULL;
++	objIndex_t rtIid, emptyIid;
++
++	if(!ipIface || !rtIpIid || !rtIpObj) return ZCFG_INTERNAL_ERROR;
++
++	IID_INIT(rtIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIid, (struct json_object **)&rtObj) == ZCFG_SUCCESS) {
++		const char *rtIntfName = json_object_get_string(json_object_object_get(rtObj, "Interface"));
++		if(!strcmp(rtIntfName, "")) {
++ 			if(!emptyObj) {
++				emptyObj = rtObj;
++				rtObj = NULL;
++				memcpy(&emptyIid, &rtIid, sizeof(objIndex_t));
++				continue;
++			}
++		}
++		else if(!strcmp(rtIntfName, ipIface)) {
++			*rtIpObj = rtObj;
++			memcpy(rtIpIid, &rtIid, sizeof(objIndex_t));
++			if(emptyObj) {
++				json_object_put(emptyObj);
++			}
++			printf("%s: Ip route retrieved\n", __FUNCTION__);
++			return ZCFG_SUCCESS;
++		}
++		json_object_put(rtObj);
++	}
++
++	if(emptyObj) {
++		*rtIpObj = rtObj = emptyObj;
++	}
++	else {
++		printf("%s: There is not empty ip route! Add\n", __FUNCTION__);
++
++		IID_INIT(emptyIid);
++		emptyIid.idx[0] = 1;
++		emptyIid.level = 1;
++		if((ret = zcfgFeObjJsonAdd(RDM_OID_ROUTING_ROUTER_V4_FWD, &emptyIid, NULL)) != ZCFG_SUCCESS) {
++			printf("%s: Add ip route fail!\n", __FUNCTION__);
++			return ret;
++		}
++	
++		rtObj = NULL;
++		if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER_V4_FWD, &emptyIid, (struct json_object **)&rtObj)) != ZCFG_SUCCESS) {
++			printf("%s: Retrieve ip route fail!\n", __FUNCTION__);
++			return ret;
++		}
++
++		*rtIpObj = rtObj;
++	}
++
++	memcpy(rtIpIid, &emptyIid, sizeof(objIndex_t));
++	json_object_object_add(rtObj, "Interface", json_object_new_string(ipIface));
++	printf("%s: Ip route return\n", __FUNCTION__);
++
++	return ZCFG_SUCCESS;
++}
++
++char *activeDefaultGt_Strip(const char *activeDefaultGt, const char *ipIface)
++{
++	char *new_activeDefaultGt = NULL;
++	char *str_1 = NULL, *str_2 = NULL;
++	int activeDefaultGtLen = strlen(activeDefaultGt);
++
++	if(!activeDefaultGt || !ipIface || (activeDefaultGtLen <= 0))
++		return NULL;
++
++	str_1 = strstr(activeDefaultGt, ipIface);
++	if(!str_1) {
++		return NULL;
++	}
++
++	new_activeDefaultGt = malloc(activeDefaultGtLen);
++	memset(new_activeDefaultGt, 0, activeDefaultGtLen);
++
++	if(str_1 == activeDefaultGt) {
++		str_2 = str_1 + strlen(ipIface);
++		if(str_2[0] != '\0') {
++			str_2++;
++			strcpy(new_activeDefaultGt, str_2);
++		}
++	}
++	else {
++		str_2 = str_1 + strlen(ipIface);
++		strncpy(new_activeDefaultGt, activeDefaultGt, (str_1-activeDefaultGt)-1);
++		if(str_2[0] != '\0') {
++			strcat(new_activeDefaultGt, str_2);
++		}
++	}
++
++	return new_activeDefaultGt;
++}
++
++char *activeDefaultGt_Add(const char *activeDefaultGt, const char *ipIface)
++{
++	char *new_activeDefaultGt = NULL;
++	char *str_1 = NULL;
++	int activeDefaultGtLen = strlen(activeDefaultGt);
++
++	if(!activeDefaultGt || !ipIface || (activeDefaultGtLen <= 0))
++		return NULL;
++
++	str_1 = strstr(activeDefaultGt, ipIface);
++	if(str_1) {
++		return NULL;
++	}
++
++	activeDefaultGtLen += strlen(ipIface) + 1 + 1;
++	new_activeDefaultGt = malloc(activeDefaultGtLen);
++	memset(new_activeDefaultGt, 0, activeDefaultGtLen);
++
++	strcpy(new_activeDefaultGt, activeDefaultGt);
++	new_activeDefaultGt[strlen(activeDefaultGt)] = ',';
++	strcat(new_activeDefaultGt, ipIface);
++
++	return new_activeDefaultGt;
++}
++
+ zcfgRet_t defaultGwInfoSet(char *ipIface, struct json_object *tr98Jobj)
+ {
+ 	objIndex_t ipv4FwdIid;
+@@ -311,7 +491,7 @@
+ 	return ret;
+ }
+ 
+-void addDhcpObj(char *devIpIface)
++zcfgRet_t addDhcpObj(char *ipIface)
+ {
+ 	zcfgRet_t ret;
+         objIndex_t objIid;
+@@ -326,39 +506,47 @@
+ 		if(!strcmp(dhcpv4Obj->Interface, "")) {
+ 			found = true;
+ 			dhcpv4Obj->Enable = true;
+-			strcpy(dhcpv4Obj->Interface, devIpIface);
+-			if(zcfgFeObjStructSet(RDM_OID_DHCPV4_CLIENT, &objIid, (void *)dhcpv4Obj, NULL) != ZCFG_SUCCESS) {
+-				printf("Set DHCPv4.Clien Fail\n");
++			strcpy(dhcpv4Obj->Interface, ipIface);
++			ret = zcfgFeObjStructSet(RDM_OID_DHCPV4_CLIENT, &objIid, (void *)dhcpv4Obj, NULL);
++			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++				printf("Set DHCPv4.Client Fail\n");
+ 			}
+ 			zcfgFeObjStructFree(dhcpv4Obj);
+-			return;
++			return ret;
+ 		}
+ 	}
+ 
+-        IID_INIT(objIid);
+-        if(zcfgFeObjStructAdd(RDM_OID_DHCPV4_CLIENT, &objIid, NULL) == ZCFG_SUCCESS) {
+-                printf("Add DHCPv4 Client Success\n");
+-                if(zcfgFeObjStructGet(RDM_OID_DHCPV4_CLIENT, &objIid, (void **)&dhcpv4Obj) == ZCFG_SUCCESS) {
+-                        dhcpv4Obj->Enable = true;
+-                        strcpy(dhcpv4Obj->Interface, devIpIface);
+-                        if(zcfgFeObjStructSet(RDM_OID_DHCPV4_CLIENT, &objIid, (void *)dhcpv4Obj, NULL) == ZCFG_SUCCESS) {
+-                                printf("Set DHCPv4 Client Success\n");
+-                        }
+-                        else {
+-                                printf("Set DHCPv4 Client Fail\n");
+-                        }
+-                        zcfgFeObjStructFree(dhcpv4Obj);
+-                }
+-                else {
+-                        printf("Get DHCPv4 Client Fail\n");
+-                }
+-        }
+-        else {
+-                printf("Add DHCPv4 Client Fail\n");
+-        }
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV4_CLIENT, &objIid, NULL)) == ZCFG_SUCCESS) {
++		printf("Add DHCPv4 Client Success\n");
++		if((ret = zcfgFeObjStructGet(RDM_OID_DHCPV4_CLIENT, &objIid, (void **)&dhcpv4Obj)) == ZCFG_SUCCESS) {
++			dhcpv4Obj->Enable = true;
++			strcpy(dhcpv4Obj->Interface, ipIface);
++			ret = zcfgFeObjStructSet(RDM_OID_DHCPV4_CLIENT, &objIid, (void *)dhcpv4Obj, NULL);
++			if(ret == ZCFG_SUCCESS) {
++				printf("Set DHCPv4 Client Success\n");
++			}
++            else {
++				printf("Set DHCPv4 Client Fail\n");
++				if(ret != ZCFG_DELAY_APPLY)
++					return ret;
++			}
++			zcfgFeObjStructFree(dhcpv4Obj);
++		}
++		else {
++			printf("Get DHCPv4 Client Fail\n");
++			return ret;
++		}
++	}
++	else {
++		printf("Add DHCPv4 Client Fail\n");
++		return ret;
++	}
++
++	return ZCFG_SUCCESS;
+ }
+ 
+-zcfgRet_t setDhcpObj(char *devIpIface, bool enable)
++zcfgRet_t setDhcpObj(char *ipIface, bool enable)
+ {
+ 	zcfgRet_t ret;
+ 	objIndex_t dhcpcv4Iid;
+@@ -368,11 +556,11 @@
+ 
+ 	IID_INIT(dhcpcv4Iid);
+ 	while((ret = zcfgFeObjStructGetNext(RDM_OID_DHCPV4_CLIENT, &dhcpcv4Iid, (void **)&dhcpc4Obj)) == ZCFG_SUCCESS) {
+-		if(!strcmp(dhcpc4Obj->Interface, devIpIface)) {
++		if(!strcmp(dhcpc4Obj->Interface, ipIface)) {
+ 			dhcpc4Obj->Enable = enable;
+ 			ret = zcfgFeObjStructSet(RDM_OID_DHCPV4_CLIENT, &dhcpcv4Iid, (void *)dhcpc4Obj, NULL);
+ 			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-				printf("Set DHCPv4.Clien Fail\n");
++				printf("Set DHCPv4.Client Fail\n");
+ 			}
+ 			zcfgFeObjStructFree(dhcpc4Obj);
+ 			return ret;
+@@ -383,67 +571,91 @@
+ 	return ZCFG_NO_SUCH_OBJECT;
+ }
+ 
+-zcfgRet_t ipaddrSet(char *devIpIface, objIndex_t *ipIfIid, const char *addrType, struct json_object *tr98Jobj)
++zcfgRet_t ipaddrSet(char *ipIface, objIndex_t *ipIfIid, json_object **ipIfaceJobj, const char *addrType, struct json_object *tr98Jobj)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t v4AddrIid;
+ 	rdm_IpIfaceV4Addr_t *v4AddrObj = NULL;
+ 	struct json_object *paramValue = NULL;
++	bool ipv4Enabled = false, ipv4AddrAddDelete = false;
++	bool reqSetAddrObj = false;
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
++	printf("AddrType: %s\n", addrType);
++
+ 	IID_INIT(v4AddrIid);
+ 	if(zcfgFeSubInStructGetNext(RDM_OID_IP_IFACE_V4_ADDR, ipIfIid, &v4AddrIid, (void **)&v4AddrObj) == ZCFG_SUCCESS) {
++		reqSetAddrObj = false;
+ 		/*IPv4Address already exist*/
+ 		printf("%s : IPv4Address already exists\n", __FUNCTION__);
+-		if(!strcmp(v4AddrObj->AddressingType, "Static")) {
++		if(!strcmp(v4AddrObj->AddressingType, "Static") || !strcmp(v4AddrObj->AddressingType, "")) {
+ 			if(!strcmp(addrType, "DHCP")) {
+ 				/*Static to DHCP*/
+-				if(setDhcpObj(devIpIface, true) == ZCFG_NO_SUCH_OBJECT) {
+-					addDhcpObj(devIpIface);
++				if((ret = setDhcpObj(ipIface, true)) == ZCFG_NO_SUCH_OBJECT) {
++					ret = addDhcpObj(ipIface);
+ 				}
++				if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++					zcfgFeObjStructFree(v4AddrObj);
++					return ret;
+ 			}
+-			else {
++				v4AddrObj->Enable = true;
++				reqSetAddrObj = true;
++			}
++			else if(!strcmp(addrType, "Static")){
++				const char *addr = NULL, *nmask = NULL;
+ 				/*Static to Static*/
+ 				v4AddrObj->Enable = true;
+ 				paramValue = json_object_object_get(tr98Jobj, "ExternalIPAddress");
+-				if(paramValue != NULL) {
+-					strcpy(v4AddrObj->IPAddress, json_object_get_string(paramValue));
+-				}
+-
++				addr = json_object_get_string(paramValue);
+ 				paramValue = json_object_object_get(tr98Jobj, "SubnetMask");
+-				if(paramValue != NULL) {
+-					strcpy(v4AddrObj->SubnetMask, json_object_get_string(paramValue));
++				nmask = json_object_get_string(paramValue);
++				if(!addr || (strlen(addr) == 0)) {
++					v4AddrObj->Enable = false;
++				}
++				if(strcmp((const char *)v4AddrObj->IPAddress, addr) ||
++				    strcmp((const char *)v4AddrObj->SubnetMask, nmask)) {
++					reqSetAddrObj = true;
++				}
++				strcpy(v4AddrObj->IPAddress, addr);
++				strcpy(v4AddrObj->SubnetMask, nmask);
+ 				}
+ 
++			if(reqSetAddrObj == true) {
+ 				ret = zcfgFeObjStructSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void *)v4AddrObj, NULL);
+ 				if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+ 					printf("%s : Set IPv4Address Fail\n", __FUNCTION__);
+ 					zcfgFeObjStructFree(v4AddrObj);
+ 					return ret;
+ 				}
++				if(v4AddrObj->Enable == true)
++					ipv4Enabled = true;
+ 			}
+-
+ 			zcfgFeObjStructFree(v4AddrObj);
+ 		}
+ 		else if(!strcmp(v4AddrObj->AddressingType, "DHCP")){
+ 			if(!strcmp(addrType, "DHCP")) {
+ 				printf("%s : DHCP to DHCP\n", __FUNCTION__);
+ 			}
+-			else {
++			else if(!strcmp(addrType, "Static")){
+ 				/*DHCP to Static*/
+ 				/*Disable DHCP Client, the DHCP backend will delete IPv4Address automatically*/
+-				setDhcpObj(devIpIface, false);
++				setDhcpObj(ipIface, false);
+ 
+ 				/*Add IPv4Address*/
+ 				memcpy(&v4AddrIid, ipIfIid, sizeof(objIndex_t));
+-				if(zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, NULL) == ZCFG_SUCCESS) {
++				if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, NULL)) == ZCFG_SUCCESS) {
+ 					printf("%s : Add IPv4Address Success\n", __FUNCTION__);
+-					if(zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&v4AddrObj) == ZCFG_SUCCESS) {
++					if((ret = zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&v4AddrObj)) == ZCFG_SUCCESS) {
++						const char *addr = NULL;
+ 						v4AddrObj->Enable = true;
+ 						paramValue = json_object_object_get(tr98Jobj, "ExternalIPAddress");
+ 						if(paramValue != NULL) {
+-							strcpy(v4AddrObj->IPAddress, json_object_get_string(paramValue));
++							addr = json_object_get_string(paramValue);
++							strcpy(v4AddrObj->IPAddress, addr);
++						}
++						if(!addr || (strlen(addr) == 0)) {
++							v4AddrObj->Enable = false;
+ 						}
+ 
+ 						paramValue = json_object_object_get(tr98Jobj, "SubnetMask");
+@@ -451,17 +663,27 @@
+ 							strcpy(v4AddrObj->SubnetMask, json_object_get_string(paramValue));
+ 						}
+ 
+-						if(zcfgFeObjStructSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void *)v4AddrObj, NULL) != ZCFG_SUCCESS) {
++						ret = zcfgFeObjStructSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void *)v4AddrObj, NULL);
++						if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+ 							printf("%s : Set IPv4Address Fail\n", __FUNCTION__);
++							zcfgFeObjStructFree(v4AddrObj);
++							return ret;
+ 						}
++						ipv4AddrAddDelete = true;
++
++						if(v4AddrObj->Enable == true)
++							ipv4Enabled = true;
++
+ 						zcfgFeObjStructFree(v4AddrObj);
+ 					}
+ 					else {
+ 						printf("%s : Get IPv4Address Fail\n", __FUNCTION__);
++						return ret;
+ 					}
+ 				}
+ 				else {
+ 					printf("%s : Add IPv4Address Fail\n", __FUNCTION__);
++					return ret;
+ 				}
+ 			}
+ 		}
+@@ -472,46 +694,87 @@
+ 		zcfgFeObjStructFree(v4AddrObj);
+ 	}
+ 	else {
++		reqSetAddrObj = false;
+ 		printf("%s : IPv4Address does not exist\n", __FUNCTION__);
++		memcpy(&v4AddrIid, ipIfIid, sizeof(objIndex_t));
++		if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, NULL)) == ZCFG_SUCCESS) {
++			printf("%s : Add IPv4Address Success\n", __FUNCTION__);
++			if((ret = zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&v4AddrObj)) == ZCFG_SUCCESS) {
++				printf("%s : Get IPv4Address Success\n", __FUNCTION__);
++			}
++			else {
++				printf("%s : Get IPv4Address Fail\n", __FUNCTION__);
++				return ret;
++			}
++			ipv4AddrAddDelete = true;
++		}
++		else {
++			printf("%s : Add IPv4Address Fail\n", __FUNCTION__);
++			return ret;
++		}
++
+ 		if(!strcmp(addrType, "DHCP")) {
+-			if(setDhcpObj(devIpIface, true) == ZCFG_NO_SUCH_OBJECT) {
+-				addDhcpObj(devIpIface);
++			if((ret = setDhcpObj(ipIface, true)) == ZCFG_NO_SUCH_OBJECT) {
++				ret = addDhcpObj(ipIface);
+ 			}
++			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++				zcfgFeObjStructFree(v4AddrObj);
++				return ret;
++			}
++			reqSetAddrObj = true;
++			v4AddrObj->Enable = true;
+ 		}
+-		else if(!strcmp(addrType, "Static")){			
++		else if(!strcmp(addrType, "Static")) {
++			const char *addr = NULL, *nmask = NULL;
+ 			/*Add IPv4Address*/
+ 			printf("%s : Add Static IPv4Address\n", __FUNCTION__);
+-			memcpy(&v4AddrIid, ipIfIid, sizeof(objIndex_t));
+-			if(zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, NULL) == ZCFG_SUCCESS) {
+-				printf("%s : Add IPv4Address Success\n", __FUNCTION__);
+-				if(zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&v4AddrObj) == ZCFG_SUCCESS) {
+-					v4AddrObj->Enable = true;
+-					paramValue = json_object_object_get(tr98Jobj, "ExternalIPAddress");
+-					if(paramValue != NULL) {
+-						strcpy(v4AddrObj->IPAddress, json_object_get_string(paramValue));
+-					}
+ 
+-					paramValue = json_object_object_get(tr98Jobj, "SubnetMask");
+-					if(paramValue != NULL) {
+-						strcpy(v4AddrObj->SubnetMask, json_object_get_string(paramValue));
+-					}
++			paramValue = json_object_object_get(tr98Jobj, "ExternalIPAddress");
++			if(paramValue != NULL) {
++				addr = json_object_get_string(paramValue);
++				strcpy(v4AddrObj->IPAddress, addr);
++			}
+ 
+-					ret = zcfgFeObjStructSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void *)v4AddrObj, NULL);
+-					if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
+-						printf("%s : Set IPv4Address Fail\n", __FUNCTION__);
+-						zcfgFeObjStructFree(v4AddrObj);
+-						return ret;
+-					}
+-					zcfgFeObjStructFree(v4AddrObj);
+-				}
+-				else {
+-					printf("%s : Get IPv4Address Fail\n", __FUNCTION__);
+-				}
++			paramValue = json_object_object_get(tr98Jobj, "SubnetMask");
++			if(paramValue != NULL) {
++				nmask = json_object_get_string(paramValue);
++				strcpy(v4AddrObj->SubnetMask, nmask);
+ 			}
+-			else {
+-				printf("%s : Add IPv4Address Fail\n", __FUNCTION__);
++			v4AddrObj->Enable = true;
++			if(!addr || (strlen(addr) == 0)) {
++				v4AddrObj->Enable = false;
+ 			}
++			if(addr || nmask)
++				reqSetAddrObj = true;
+ 		}
++
++		if(reqSetAddrObj == true) {
++			ret = zcfgFeObjStructSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void *)v4AddrObj, NULL);
++			if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++				printf("%s : Set IPv4Address Fail\n", __FUNCTION__);
++				zcfgFeObjStructFree(v4AddrObj);
++				return ret;
++			}
++			printf("%s : Set IPv4Address Success\n", __FUNCTION__);
++			if(v4AddrObj->Enable == true)
++				ipv4Enabled = true;
++		}
++		zcfgFeObjStructFree(v4AddrObj);
++	}
++
++	if(ipv4AddrAddDelete == true) {
++		struct json_object *ipObj = NULL;
++		if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, ipIfIid, (struct json_object **)&ipObj)) != ZCFG_SUCCESS)
++			return ret;
++
++		json_object_put(*ipIfaceJobj);
++		*ipIfaceJobj = ipObj;
++	}
++
++	if(ipv4Enabled == true) {
++		bool objIpv4Enabled = json_object_get_boolean(json_object_object_get(*ipIfaceJobj, "IPv4Enable"));
++		if(objIpv4Enabled != true)
++			json_object_object_add(*ipIfaceJobj, "IPv4Enable", json_object_new_boolean(true));
+ 	}
+ 
+ 	return ret;
+Index: libzcfg_fe_tr98-1.0/wanDev_api.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.h	2015-03-27 15:55:48.546107917 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.h	2015-03-27 16:08:01.310140000 +0800
+@@ -3,6 +3,10 @@
+ 
+ int portMappingNumGet(char *);
+ zcfgRet_t natInfoSet(char *, struct json_object *);
++zcfgRet_t natIntfGetJobj(const char *, objIndex_t *, struct json_object **);
++zcfgRet_t defaultRtGetObj(const char *, objIndex_t *, struct json_object **);
++char *activeDefaultGt_Strip(const char *, const char *);
++char *activeDefaultGt_Add(const char *, const char *);
+ zcfgRet_t defaultGwInfoSet(char *, struct json_object *);
+ #if 0
+ zcfgRet_t dnsInfoSet(char *, struct json_object *);
+@@ -15,7 +19,7 @@
+ zcfgRet_t vlanTermAdd(char *vlanTermPathName, char *lowerLayer);
+ zcfgRet_t ipIfaceAdd(char *, char *);
+ zcfgRet_t pppIfaceAdd(char *, char *);
+-void addDhcpObj(char *);
++zcfgRet_t addDhcpObj(char *);
+ zcfgRet_t setDhcpObj(char *, bool);
+-zcfgRet_t ipaddrSet(char *, objIndex_t *, const char *, struct json_object *);
++zcfgRet_t ipaddrSet(char *, objIndex_t *, struct json_object **, const char *, struct json_object *);
+ #endif
+\ No newline at end of file

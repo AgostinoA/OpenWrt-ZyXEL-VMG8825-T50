@@ -1,0 +1,286 @@
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_dns_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_dns_route.c	2017-05-19 00:48:33.907752979 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_dns_route.c	2017-05-19 00:59:29.221445200 +0800
+@@ -10,10 +10,11 @@
+ 
+ dal_param_t DNSROUTE_param[] =
+ {
+-	{"Enable",								dalType_string,	0,	0,	NULL},
+-	{"DomainName",							dalType_string,	0,	0,	NULL},
+-	{"SubnetMask",							dalType_string,	0,	0,	NULL},
+-	{"Interface",							dalType_string,	0,	0,	NULL},
++	{"Index",								dalType_int,	0,	0,	NULL,	NULL,	dal_Edit|dal_Delete},
++	{"Enable",								dalType_boolean,	0,	0,	NULL,	NULL,	dal_Add},
++	{"DomainName",							dalType_string,	0,	0,	NULL,	NULL,	dal_Add},
++	{"SubnetMask",							dalType_v4Mask,	0,	0,	NULL,	NULL,	dal_Add},
++	{"Interface",							dalType_RtWanWWan,	0,	0,	NULL,	NULL,	dal_Add},
+ 	{NULL,									0,				0,	0,	NULL},
+ };
+ 
+@@ -28,6 +29,28 @@
+ const char* SubnetMask;
+ const char* Interface;
+ 
++void zcfgFeDalShowDnsRoute(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-10s %-10s %-30s %-15s %-10s \n","Index","Status","Domain Name","WAN Interface","Subnet Mask");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("%-10s %-10s %-30s %-15s %-10s \n",
++			json_object_get_string(json_object_object_get(obj, "count")),
++			json_object_get_string(json_object_object_get(obj, "Status")),
++			json_object_get_string(json_object_object_get(obj, "DomainName")),
++			json_object_get_string(json_object_object_get(obj, "Interface")),
++			json_object_get_string(json_object_object_get(obj, "SubnetMask")));
++
++	}
++}
++
++
+ void initDnsRouteGlobalObjects(){
+ 	dnsRTObj = NULL;
+ 	return;
+@@ -73,9 +96,13 @@
+ 	}
+ 
+ 	if(dnsRTObj != NULL){
++		if(json_object_object_get(Jobj, "Enable"))
+ 		json_object_object_add(dnsRTObj, "Enable", json_object_new_boolean(Enable));
++		if(json_object_object_get(Jobj, "DomainName"))
+ 		json_object_object_add(dnsRTObj, "DomainName", json_object_new_string(DomainName));
++		if(json_object_object_get(Jobj, "SubnetMask"))
+ 		json_object_object_add(dnsRTObj, "SubnetMask", json_object_new_string(SubnetMask));
++		if(json_object_object_get(Jobj, "Interface"))
+ 		json_object_object_add(dnsRTObj, "Interface", json_object_new_string(Interface));
+ 	}
+ 	return ret;
+@@ -83,12 +110,17 @@
+ 
+ zcfgRet_t zcfgFeDalDnsRouteEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	zcfg_offset_t targetOid;
+-	//printf("%s():--- Edit DnsRoute Input --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	int index = 0;
++	zcfg_offset_t oid;
++	IID_INIT(dnsRtIid);
++	
++	oid = RDM_OID_DNS_RT_ENTRY;
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	initDnsRouteGlobalObjects();
+ 	getDnsRouteBasicInfo(Jobj);
+-	zcfgFeDalDnsRouteObjIidGet(Jobj, "EditPath");
+-
++	ret = convertIndextoIid(index, &dnsRtIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;	
+ 	if((ret = zcfgFeDalDnsRouteObjEdit(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) fail to edit Dns Route \n", __FUNCTION__);
+ 		goto exit;
+@@ -105,12 +137,18 @@
+ 
+ zcfgRet_t zcfgFeDalDnsRouteAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_offset_t oid;
+ 	//printf("%s():--- Add DnsRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+ 	initDnsRouteGlobalObjects();
+ 	getDnsRouteBasicInfo(Jobj);
+ 
+ 	IID_INIT(dnsRtIid);
+ 
++	oid = RDM_OID_DNS_RT_ENTRY;
++	ret = dalcmdParamCheck(DomainName, oid, "DomainName", replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++
+ 	if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, NULL)) != ZCFG_SUCCESS){
+ 		printf("%s():(ERROR) zcfgFeObjJsonAdd add Dns Route \n ",__FUNCTION__);
+ 		goto exit;
+@@ -132,11 +170,17 @@
+ 
+ zcfgRet_t zcfgFeDalDnsRouteDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	initDnsRouteGlobalObjects();
+-	//printf("%s():--- Del DnsRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-	zcfgFeDalDnsRouteObjIidGet(Jobj, "DeletePath");
++	int index = 0;
++	zcfg_offset_t oid;
++	IID_INIT(dnsRtIid);
++	
++	oid = RDM_OID_DNS_RT_ENTRY;
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(index, &dnsRtIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 
+-	if((ret = zcfgFeObjJsonDel(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, NULL)) != ZCFG_SUCCESS){
++	if((ret = zcfgFeObjJsonDel(oid, &dnsRtIid, NULL)) != ZCFG_SUCCESS){
+ 		printf("%s: delete dns route obj fail \n", __FUNCTION__);
+ 		goto exit;
+ 	}
+@@ -146,6 +190,29 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalDnsRouteGet(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *dnsrouteObj = NULL;
++	struct json_object *paramJobj = NULL;
++	objIndex_t dnsrouteIid = {0};
++	int count = 1;
++	
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_DNS_RT_ENTRY, &dnsrouteIid, &dnsrouteObj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "count", json_object_new_int(count));
++		json_object_object_add(paramJobj, "Status", JSON_OBJ_COPY(json_object_object_get(dnsrouteObj, "Enable")));
++		json_object_object_add(paramJobj, "DomainName", JSON_OBJ_COPY(json_object_object_get(dnsrouteObj, "DomainName")));
++		json_object_object_add(paramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(dnsrouteObj, "Interface")));
++		json_object_object_add(paramJobj, "SubnetMask", JSON_OBJ_COPY(json_object_object_get(dnsrouteObj, "SubnetMask")));
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(dnsrouteObj);
++		count++;
++	}
++	return ret;
++
++}
++
++
+ zcfgRet_t zcfgFeDalDnsRoute(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -154,13 +221,17 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalDnsRouteEdit(Jobj, NULL);
++		ret = zcfgFeDalDnsRouteEdit(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "POST")) {
+ 		ret = zcfgFeDalDnsRouteAdd(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+-		ret = zcfgFeDalDnsRouteDelete(Jobj, NULL);
++		ret = zcfgFeDalDnsRouteDelete(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDalDnsRouteGet(Jobj, NULL);
++
+ 	}
+ 
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_policy_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_policy_route.c	2017-05-19 00:48:36.051752940 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_policy_route.c	2017-05-19 00:51:48.237334400 +0800
+@@ -245,8 +245,10 @@
+ 	zcfg_offset_t oid;
+ 
+ 	oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+-	index = json_object_get_int(json_object_object_get(Jobj, "Index"));	//Assume  index = 2
+-	convertIndextoIid(index, &policyRtIid, oid, "X_ZYXEL_PolicyRoute", true);
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));	
++	ret = convertIndextoIid(index, &policyRtIid, oid, "X_ZYXEL_PolicyRoute", true, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 	ret = zcfgFeObjJsonDel(RDM_OID_ROUTING_ROUTER_V4_FWD, &policyRtIid, NULL);
+ 
+ 	return ret;
+@@ -304,7 +306,7 @@
+ 		ret = zcfgFeDalPolicyRouteAdd(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+-		ret = zcfgFeDalPolicyRouteDelete(Jobj, NULL);
++		ret = zcfgFeDalPolicyRouteDelete(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "GET")){
+ 		ret = zcfgFeDalPolicyRouteGet(Jobj, NULL);
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-19 00:48:36.095752939 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-19 01:02:08.044445200 +0800
+@@ -187,6 +187,7 @@
+ extern void zcfgFeDalShowSNMP(struct json_object *Jarray);
+ extern void zcfgFeDalShowPolicyRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallDos(struct json_object *Jarray);
++extern void zcfgFeDalShowDnsRoute(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -197,7 +198,7 @@
+ {"ADVANCE",			ADVANCE_param,		zcfgFeDalWanAdvance,	zcfgFeDalShowWanAdvance,	"get|edit",				"Broadband"}, //Broadband
+ {"WWANBACKUP", 		WWANBACKUP_param,	zcfgFeDalWwanBackup,	NULL,						"edit",				""}, //Broadband
+ {"STATICROUTE", 	STATICROUTE_param,	zcfgFeDalStaticRoute,	zcfgFeDalShowStaticRoute,	"get|add|edit|delete",	"Routing"},
+-{"DNSROUTE", 		DNSROUTE_param,		zcfgFeDalDnsRoute,		NULL,						"add|edit|delete",	""}, //Routing
++{"DNSROUTE", 		DNSROUTE_param,		zcfgFeDalDnsRoute,		zcfgFeDalShowDnsRoute,		"get|add|edit|delete",	"Routing"}, //Routing
+ {"POLICYROUTE", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute,	zcfgFeDalShowPolicyRoute,	"get|add|edit|delete",	"Routing"}, //Routing
+ {"RIP", 			RIP_param,			zcfgFeDalRip,			NULL,						"edit",				""}, //Routing
+ {"NatPortFwd",		NatPortFwd_param,	zcfgFeDalNatPortMapping,zcfgFeDalShowPortFwd,		"get|add|edit|delete", "NAT"},
+@@ -299,10 +300,15 @@
+ 	return ret;
+ }
+ 
+-zcfgRet_t convertIndextoIid(int idx, objIndex_t *Iid, zcfg_offset_t oid, char *key, void *ptr){
++zcfgRet_t convertIndextoIid(int idx, objIndex_t *Iid, zcfg_offset_t oid, char *key, void *ptr, char *replyMsg){
+ 	struct json_object *obj = NULL;
+ 	struct json_object *paramObj = NULL;
+ 	int count = 1, type = 0;
++	bool getiid = false;
++	if(idx <= 0){
++		strcat(replyMsg, "Index error.");
++		return ZCFG_INVALID_PARAM_VALUE;
++	}		
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(oid, Iid, &obj) == ZCFG_SUCCESS){
+ 		if(key != NULL){	// for parameter contidional check
+ 			paramObj = json_object_object_get(obj, key);
+@@ -313,6 +319,7 @@
+ 					if(idx == count){
+ 						json_object_put(obj);
+ 						obj = NULL;
++						getiid = true;
+ 						break;
+ 					}
+ 					count++;
+@@ -324,6 +331,7 @@
+ 					if(idx == count){
+ 						json_object_put(obj);
+ 						obj = NULL;
++						getiid = true;
+ 						break;
+ 					}
+ 					count++;
+@@ -335,6 +343,7 @@
+ 					if(idx == count){
+ 						json_object_put(obj);
+ 						obj = NULL;
++						getiid = true;
+ 						break;
+ 					}
+ 					count++;
+@@ -345,6 +354,7 @@
+ 			if(idx == count){
+ 				json_object_put(obj);
+ 				obj = NULL;
++				getiid = true;
+ 				break;
+ 			}
+ 			count++;
+@@ -352,6 +362,13 @@
+ 		json_object_put(obj);
+ 		obj = NULL;
+ 	}
++	if(!getiid){
++		if(idx >= count){
++			strcat(replyMsg, "Index error.");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++	}
++	
+ 	return ZCFG_SUCCESS;
+ }
+ 

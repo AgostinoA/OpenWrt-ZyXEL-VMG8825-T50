@@ -1,0 +1,1304 @@
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/communication.c ebtables-brcm/communication.c
+--- ebtables-orig/ebtables-v2.0.10-4/communication.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/communication.c	2014-01-20 18:56:39.185290488 +0800
+@@ -282,7 +282,7 @@
+ 	}
+ close_file:
+ 	fclose(file);
+-	return 0;
++	return ret;
+ }
+ 
+ /* Gets executed after ebt_deliver_table. Delivers the counters to the kernel
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/ebtables.c ebtables-brcm/ebtables.c
+--- ebtables-orig/ebtables-v2.0.10-4/ebtables.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/ebtables.c	2014-01-20 18:56:39.189290488 +0800
+@@ -29,6 +29,9 @@
+ #include <signal.h>
+ #include "include/ebtables_u.h"
+ #include "include/ethernetdb.h"
++#include <unistd.h>
++#include <fcntl.h>
++
+ 
+ /* Checks whether a command has already been specified */
+ #define OPT_COMMANDS (replace->flags & OPT_COMMAND || replace->flags & OPT_ZERO)
+@@ -114,6 +117,60 @@
+ static struct ebt_u_entry *new_entry;
+ 
+ 
++#define MUTEX_FILE "/tmp/ebtables.lock"
++
++static struct multiprocess_lock_t {
++    int                 fd;
++    struct flock        lock_struct;
++} multiprocess_lock = {};
++
++/* These two are for inter-process locking */
++void get_global_mutex() {
++    int ret;
++
++    if (multiprocess_lock.fd != 0)
++    {
++        fprintf(stderr, "ebtables: tried to get lock twice.  ignoring second attempt...\n");
++        return;  // ok, this is bad, but not aborting -- attempting to make the best of it...
++    }
++
++    multiprocess_lock.fd = open(MUTEX_FILE, O_NONBLOCK | O_CREAT | O_WRONLY);
++    if (multiprocess_lock.fd == -1) {
++        fprintf(stderr, "could not open file %s\n", MUTEX_FILE);
++        exit(1);
++    }
++
++
++    memset(&multiprocess_lock.lock_struct, 0, sizeof(multiprocess_lock.lock_struct));
++    
++    multiprocess_lock.lock_struct.l_type = F_WRLCK;
++    multiprocess_lock.lock_struct.l_whence = SEEK_SET;
++    multiprocess_lock.lock_struct.l_start = 0;
++    multiprocess_lock.lock_struct.l_len = 0;
++    multiprocess_lock.lock_struct.l_pid = getpid();
++    
++    ret = fcntl(multiprocess_lock.fd, F_SETLKW, &multiprocess_lock.lock_struct);
++    if (ret == -1) {
++       fprintf(stderr, "could not lock file\n");
++       exit(1);
++    }
++    
++    return;
++     
++}
++
++void release_global_mutex() {
++    if(multiprocess_lock.fd != 0) {
++        multiprocess_lock.lock_struct.l_type = F_UNLCK;
++        fcntl(multiprocess_lock.fd, F_SETLK, &multiprocess_lock.lock_struct);
++
++        close(multiprocess_lock.fd);  
++
++        memset(&multiprocess_lock, 0, sizeof(multiprocess_lock));    
++    }
++}
++
++
+ static int global_option_offset;
+ #define OPTION_OFFSET 256
+ static struct option *merge_options(struct option *oldopts,
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/ebtablesd.c ebtables-brcm/ebtablesd.c
+--- ebtables-orig/ebtables-v2.0.10-4/ebtablesd.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/ebtablesd.c	2014-01-20 18:56:39.113290489 +0800
+@@ -47,6 +47,9 @@
+ 	strcpy(replace[2].name, "broute");
+ }
+ 
++extern void get_global_mutex();
++extern void release_global_mutex();
++
+ int main(int argc_, char *argv_[])
+ {
+ 	char *argv[EBTD_ARGC_MAX], *args[4], name[] = "mkdir",
+@@ -54,6 +57,8 @@
+ 	     cmdline[EBTD_CMDLINE_MAXLN];
+ 	int readfd, base = 0, offset = 0, n = 0, ret = 0, quotemode = 0;
+ 
++	get_global_mutex();
++
+ 	/* Make sure the pipe directory exists */
+ 	args[0] = name;
+ 	args[1] = mkdir_option;
+@@ -369,6 +374,7 @@
+ 	}
+ do_exit:
+ 	unlink(EBTD_PIPE);
+-	
++	release_global_mutex();
++    
+ 	return 0;
+ }
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/ebtables-restore.c ebtables-brcm/ebtables-restore.c
+--- ebtables-orig/ebtables-v2.0.10-4/ebtables-restore.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/ebtables-restore.c	2014-01-20 18:56:39.145290488 +0800
+@@ -36,6 +36,9 @@
+ 	strcpy(replace[2].name, "broute");
+ }
+ 
++extern void get_global_mutex();
++extern void release_global_mutex();
++
+ #define ebtrest_print_error(format, args...) do {fprintf(stderr, "ebtables-restore: "\
+                                              "line %d: "format".\n", line, ##args); exit(-1);} while (0)
+ int main(int argc_, char *argv_[])
+@@ -44,6 +47,8 @@
+ 	int i, offset, quotemode = 0, argc, table_nr = -1, line = 0, whitespace;
+ 	char ebtables_str[] = "ebtables";
+ 
++	get_global_mutex();
++
+ 	if (argc_ != 1)
+ 		ebtrest_print_error("options are not supported");
+ 	ebt_silent = 0;
+@@ -131,5 +136,8 @@
+ 		ebt_deliver_table(&replace[table_nr]);
+ 		ebt_deliver_counters(&replace[table_nr]);
+ 	}
++    
++	release_global_mutex();
++    
+ 	return 0;
+ }
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/ebtables-standalone.c ebtables-brcm/ebtables-standalone.c
+--- ebtables-orig/ebtables-v2.0.10-4/ebtables-standalone.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/ebtables-standalone.c	2014-01-20 18:56:39.185290488 +0800
+@@ -4,11 +4,17 @@
+ static struct ebt_u_replace replace;
+ void ebt_early_init_once();
+ 
++extern void get_global_mutex();
++extern void release_global_mutex();
++
++
+ int main(int argc, char *argv[])
+ {
++	get_global_mutex();
+ 	ebt_silent = 0;
+ 	ebt_early_init_once();
+ 	strcpy(replace.name, "filter");
+ 	do_command(argc, argv, EXEC_STYLE_PRG, &replace);
++	release_global_mutex();
+ 	return 0;
+ }
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/examples/ulog/test_ulog.c ebtables-brcm/examples/ulog/test_ulog.c
+--- ebtables-orig/ebtables-v2.0.10-4/examples/ulog/test_ulog.c	2011-12-16 04:00:34.000000000 +0800
++++ ebtables-brcm/examples/ulog/test_ulog.c	2014-01-20 18:56:39.145290488 +0800
+@@ -130,6 +130,10 @@
+ 	return msg;
+ }
+ 
++
++extern void get_global_mutex();
++extern void release_global_mutex();
++
+ int main(int argc, char **argv)
+ {
+ 	int i, curr_len, pktcnt = 0;
+@@ -142,6 +146,7 @@
+ 	struct icmphdr *icmph;
+ 	struct tm* ptm;
+ 	char time_str[40], *ctmp;
++	get_global_mutex();
+ 
+ 	if (argc == 2) {
+ 		i = strtoul(argv[1], &ctmp, 10);
+@@ -157,12 +162,14 @@
+ 	sfd = socket(PF_NETLINK, SOCK_RAW, NETLINK_NFLOG);
+ 	if (!sfd) {
+ 		perror("socket");
++		release_global_mutex();
+ 		exit(-1);
+ 	}
+ 
+ 	if (bind(sfd, (struct sockaddr *)(&sa_local), sizeof(sa_local)) ==
+ 	    -1) {
+ 		perror("bind");
++		release_global_mutex();
+ 		exit(-1);
+ 	}
+ 	i = setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbufsize,
+@@ -287,6 +294,7 @@
+ 		       "######END#OF##PACKET#DUMP######\n"
+ 		       "###############################\n");
+ 	}
++	release_global_mutex();
+ 
+ 	return 0;
+ }
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_ftos.c ebtables-brcm/extensions/ebt_ftos.c
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_ftos.c	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/extensions/ebt_ftos.c	2014-01-20 18:56:39.173290488 +0800
+@@ -0,0 +1,179 @@
++/* 
++ * Description: EBTables time extension module for userspace.
++ *  Authors:  Song Wang <songw@broadcom.com>, ported from FTOS patch netfilter/iptables
++ *           The following is the original disclaimer.
++ *
++ * Shared library add-on to iptables for FTOS
++ *
++ * (C) 2000 by Matthew G. Marsh <mgm@paktronix.com>
++ *
++ * This program is distributed under the terms of GNU GPL v2, 1991
++ *
++ * libipt_FTOS.c borrowed heavily from libipt_TOS.c  11/09/2000
++ *
++ */
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_ftos_t.h"
++
++static int ftos_supplied;
++
++#define FTOS_TRGT    '1'
++#define FTOS_SET     '2'
++#define FTOS_WMM     '4'
++#define FTOS_8021Q   '8'
++static struct option opts[] =
++{
++	{ "ftos-target" , required_argument, 0, FTOS_TRGT },
++	{ "set-ftos"    , required_argument, 0, FTOS_SET },
++	{ "wmm-ftos"    , no_argument      , 0, FTOS_WMM },
++	{ "8021q-ftos"  , no_argument      , 0, FTOS_8021Q },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"ftos target options:\n"
++	" --set-ftos value     : Set TOS byte in IP packet header \n"
++	"			 This value can be in decimal (ex: 32)\n"
++	"			 in hex (ex: 0x20)\n"
++	" --ftos-target target : ACCEPT, DROP, RETURN or CONTINUE\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_ftos_t_info *ftosinfo =
++	   (struct ebt_ftos_t_info *)target->data;
++
++	ftosinfo->target = EBT_CONTINUE;
++	ftosinfo->ftos = 0;
++	ftos_supplied = 0;
++}
++
++#define OPT_FTOS_TARGET       0x01
++#define OPT_FTOS_SETFTOS      0x02
++#define OPT_FTOS_WMMFTOS      0x04
++#define OPT_FTOS_8021QFTOS    0x08
++
++static int
++parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_ftos_t_info *ftosinfo =
++	   (struct ebt_ftos_t_info *)(*target)->data;
++	char *end;
++
++	switch (c) {
++	case FTOS_TRGT:
++		ebt_check_option2(flags, FTOS_TRGT);
++		if (FILL_TARGET(optarg, ftosinfo->target))
++			ebt_print_error("Illegal --ftos-target target");
++		break;
++	case FTOS_SET:
++		ebt_check_option2(flags, FTOS_SET);
++		ftosinfo->ftos = (u_int8_t)strtoul(optarg, &end, 0);
++        ftosinfo->ftos_set = OPT_FTOS_SETFTOS;
++		if (*end != '\0' || end == optarg)
++			ebt_print_error("Bad FTOS value '%s'", optarg);
++		ftos_supplied = 1;
++                break;
++    case FTOS_WMM:
++        ebt_check_option2(flags, OPT_FTOS_SETFTOS);
++        ftosinfo->ftos_set = FTOS_WMM;
++        //printf("LEON DEBUG: wmm-ftos..........\n");
++        ftos_supplied = 1;
++        break;
++    case FTOS_8021Q:
++        ebt_check_option2(flags, OPT_FTOS_8021QFTOS);
++        ftosinfo->ftos_set = FTOS_8021Q;
++        //printf("LEON DEBUG: 8021q-ftos..........\n");
++        ftos_supplied = 1;
++        break;
++	 default:
++		return 0;
++	}
++	return 1;
++}
++
++static void
++final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	struct ebt_ftos_t_info *ftosinfo = (struct ebt_ftos_t_info *)target->data;
++
++	if (time == 0 && ftos_supplied == 0)
++		ebt_print_error("No ftos value supplied");
++	if (BASE_CHAIN && ftosinfo->target == EBT_RETURN)
++		ebt_print_error("--ftos-target RETURN not allowed on base chain");
++}
++
++
++/* Prints out the targinfo. */
++static void 
++print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	const struct ebt_ftos_t_info *ftosinfo = (const struct ebt_ftos_t_info*)target->data;
++    if(ftosinfo->ftos_set == FTOS_WMM)
++        printf("WMM mapping to Tos");
++    else if(ftosinfo->ftos_set == FTOS_8021Q)
++        printf("802.1Q mapping to Tos");
++    else
++	printf("TOS set 0x%x", ftosinfo->ftos);
++
++	if (ftosinfo->target == EBT_ACCEPT)
++		return;
++	printf(" --ftos-target %s", TARGET_NAME(ftosinfo->target));
++}
++
++static int 
++compare(const struct ebt_entry_target *t1,
++  	 const struct ebt_entry_target *t2)
++{
++	struct ebt_ftos_t_info *ftosinfo1 =
++	   (struct ebt_ftos_t_info *)t1->data;
++	struct ebt_ftos_t_info *ftosinfo2 =
++	   (struct ebt_ftos_t_info *)t2->data;
++
++	return ftosinfo1->target == ftosinfo2->target &&
++	   ftosinfo1->ftos == ftosinfo2->ftos &&
++	   ftosinfo1->ftos_set == ftosinfo2->ftos_set;
++}
++
++#if 0
++/* Saves the union ipt_targinfo in parsable form to stdout. */
++static void
++save(const struct ipt_ip *ip, const struct ipt_entry_target *target)
++{
++	const struct ipt_FTOS_info *finfo =
++		(const struct ipt_FTOS_info *)target->data;
++
++	printf("--set-ftos 0x%02x ", finfo->ftos);
++}
++#endif
++
++static
++struct  ebt_u_target ftos_target = 
++{
++    EBT_FTOS_TARGET,
++    sizeof(struct ebt_ftos_t_info),
++    print_help,
++    init,
++    parse,
++    final_check,
++    print,
++    compare,
++    opts
++};
++
++void _init(void)
++{
++	ebt_register_target(&ftos_target);
++}
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_ip.c ebtables-brcm/extensions/ebt_ip.c
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_ip.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/extensions/ebt_ip.c	2014-01-20 18:56:39.185290488 +0800
+@@ -16,7 +16,7 @@
+ #include <getopt.h>
+ #include <netdb.h>
+ #include "../include/ebtables_u.h"
+-#include <linux/netfilter_bridge/ebt_ip.h>
++#include "../include/linux/netfilter_bridge/ebt_ip.h"
+ 
+ #define IP_SOURCE '1'
+ #define IP_DEST   '2'
+@@ -24,6 +24,7 @@
+ #define IP_PROTO  '4'
+ #define IP_SPORT  '5'
+ #define IP_DPORT  '6'
++#define IP_myDSCP '7' /* brcm */
+ 
+ static struct option opts[] =
+ {
+@@ -38,6 +39,7 @@
+ 	{ "ip-sport"            , required_argument, 0, IP_SPORT  },
+ 	{ "ip-destination-port" , required_argument, 0, IP_DPORT  },
+ 	{ "ip-dport"            , required_argument, 0, IP_DPORT  },
++	{ "ip-dscp"             , required_argument, 0, IP_myDSCP }, /* brcm */
+ 	{ 0 }
+ };
+ 
+@@ -103,6 +105,7 @@
+ "--ip-src    [!] address[/mask]: ip source specification\n"
+ "--ip-dst    [!] address[/mask]: ip destination specification\n"
+ "--ip-tos    [!] tos           : ip tos specification\n"
++"--ip-dscp   [!] dscp          : ip dscp specification\n"
+ "--ip-proto  [!] protocol      : ip protocol specification\n"
+ "--ip-sport  [!] port[:port]   : tcp/udp source port or port range\n"
+ "--ip-dport  [!] port[:port]   : tcp/udp destination port or port range\n");
+@@ -122,6 +125,8 @@
+ #define OPT_PROTO  0x08
+ #define OPT_SPORT  0x10
+ #define OPT_DPORT  0x20
++#define OPT_DSCP   0x40 /* brcm */
++
+ static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
+    unsigned int *flags, struct ebt_entry_match **match)
+ {
+@@ -181,6 +186,17 @@
+ 		ipinfo->bitmask |= EBT_IP_TOS;
+ 		break;
+ 
++	case IP_myDSCP:   /* brcm */
++		ebt_check_option2(flags, OPT_DSCP);
++		if (ebt_check_inverse2(optarg))
++			ipinfo->invflags |= EBT_IP_DSCP;
++		i = strtol(optarg, &end, 16);
++		if (i < 0 || i > 255 || (i & 0x3) || *end != '\0')
++			ebt_print_error("Problem with specified IP dscp");
++		ipinfo->dscp = i;
++		ipinfo->bitmask |= EBT_IP_DSCP;
++		break;
++
+ 	case IP_PROTO:
+ 		ebt_check_option2(flags, OPT_PROTO);
+ 		if (ebt_check_inverse2(optarg))
+@@ -280,6 +296,13 @@
+ 			printf("! ");
+ 		print_port_range(ipinfo->dport);
+ 	}
++   /* brcm */
++	if (ipinfo->bitmask & EBT_IP_DSCP) {
++		printf("--ip-dscp ");
++		if (ipinfo->invflags & EBT_IP_DSCP)
++			printf("! ");
++		printf("0x%02X ", ipinfo->dscp);
++	}
+ }
+ 
+ static int compare(const struct ebt_entry_match *m1,
+@@ -322,6 +345,11 @@
+ 		   ipinfo1->dport[1] != ipinfo2->dport[1])
+ 			return 0;
+ 	}
++   /* brcm */
++	if (ipinfo1->bitmask & EBT_IP_DSCP) {
++		if (ipinfo1->dscp != ipinfo2->dscp)
++			return 0;
++	}
+ 	return 1;
+ }
+ 
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_mark.c ebtables-brcm/extensions/ebt_mark.c
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_mark.c	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/extensions/ebt_mark.c	2014-01-20 18:56:39.173290488 +0800
+@@ -11,7 +11,7 @@
+ #include <string.h>
+ #include <getopt.h>
+ #include "../include/ebtables_u.h"
+-#include <linux/netfilter_bridge/ebt_mark_t.h>
++#include "../include/linux/netfilter_bridge/ebt_mark_t.h"
+ 
+ static int mark_supplied;
+ 
+@@ -20,6 +20,8 @@
+ #define MARK_ORMARK  '3'
+ #define MARK_ANDMARK '4'
+ #define MARK_XORMARK '5'
++#define MARK_SETVTAG '6'
++
+ static struct option opts[] =
+ {
+ 	{ "mark-target" , required_argument, 0, MARK_TARGET },
+@@ -30,6 +32,7 @@
+ 	{ "mark-or"     , required_argument, 0, MARK_ORMARK  },
+ 	{ "mark-and"    , required_argument, 0, MARK_ANDMARK },
+ 	{ "mark-xor"    , required_argument, 0, MARK_XORMARK },
++	{ "vtag-set"    , required_argument, 0, MARK_SETVTAG },
+ 	{ 0 }
+ };
+ 
+@@ -41,6 +44,7 @@
+ 	" --mark-or  value     : Or nfmark with value (nfmark |= value)\n"
+ 	" --mark-and value     : And nfmark with value (nfmark &= value)\n"
+ 	" --mark-xor value     : Xor nfmark with value (nfmark ^= value)\n"
++	" --vtag-set value     : Set vlan tag value\n"
+ 	" --mark-target target : ACCEPT, DROP, RETURN or CONTINUE\n");
+ }
+ 
+@@ -59,6 +63,7 @@
+ #define OPT_MARK_ORMARK   0x04
+ #define OPT_MARK_ANDMARK  0x08
+ #define OPT_MARK_XORMARK  0x10
++#define OPT_MARK_SETVTAG  0x20
+ static int parse(int c, char **argv, int argc,
+    const struct ebt_u_entry *entry, unsigned int *flags,
+    struct ebt_entry_target **target)
+@@ -100,6 +105,10 @@
+ 			ebt_print_error2("--mark-xor cannot be used together with specific --mark option");
+ 		markinfo->target = (markinfo->target & EBT_VERDICT_BITS) | MARK_XOR_VALUE;
+                 break;
++	case MARK_SETVTAG:
++		ebt_check_option2(flags, OPT_MARK_SETVTAG);
++		markinfo->target = (markinfo->target & EBT_VERDICT_BITS) | VTAG_SET_VALUE;
++		break;
+ 	 default:
+ 		return 0;
+ 	}
+@@ -140,6 +149,8 @@
+ 		printf("--mark-xor");
+ 	else if (tmp == MARK_AND_VALUE)
+ 		printf("--mark-and");
++	else if (tmp == VTAG_SET_VALUE)
++		printf("--vtag-set");
+ 	else
+ 		ebt_print_error("oops, unknown mark action, try a later version of ebtables");
+ 	printf(" 0x%lx", markinfo->mark);
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_skiplog.c ebtables-brcm/extensions/ebt_skiplog.c
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_skiplog.c	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/extensions/ebt_skiplog.c	2014-01-20 18:56:39.169290488 +0800
+@@ -0,0 +1,62 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++
++static struct option opts[] =
++{
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"skiplog target takes no options:\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++}
++
++static int parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++}
++
++static int compare(const struct ebt_entry_target *t1,
++   const struct ebt_entry_target *t2)
++{
++	return 1;
++}
++
++static struct ebt_u_target skiplog_target =
++{
++    "SKIPLOG",
++    0,
++    print_help,
++    init,
++    parse,
++    final_check,
++    print,
++    compare,
++    opts
++};
++
++void _init(void)
++{
++	ebt_register_target(&skiplog_target);
++}
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_time.c ebtables-brcm/extensions/ebt_time.c
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_time.c	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/extensions/ebt_time.c	2014-01-20 18:56:39.169290488 +0800
+@@ -0,0 +1,351 @@
++/*
++  Description: EBTables time extension module for userspace.
++  Authors:  Song Wang <songw@broadcom.com>, ported from netfilter/iptables
++            The following is the original disclaimer.
++
++ Shared library add-on to iptables to add TIME matching support. 
++*/
++#include <stdio.h>
++#include <netdb.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++#include <errno.h>
++
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_time.h"
++#include <time.h>
++
++static int globaldays;
++
++/* Function which prints out usage message. */
++static void
++help(void)
++{
++	printf(
++"time options:\n"
++" --timestart value --timestop value --days listofdays\n"
++"          timestart value : HH:MM\n"
++"          timestop  value : HH:MM\n"
++"          listofdays value: a list of days to apply -> ie. Mon,Tue,Wed,Thu,Fri. Case sensitive\n");
++}
++
++static struct option opts[] = {
++	{ "timestart", required_argument, 0, '1' },
++	{ "timestop", required_argument, 0, '2' },
++	{ "days", required_argument, 0, '3'},
++	{0}
++};
++
++/* Initialize the match. */
++static void
++init(struct ebt_entry_match *m)
++{
++	globaldays = 0;
++}
++
++static int
++string_to_number(const char *s, unsigned int min, unsigned int max,
++                 unsigned int *ret)
++{
++        long number;
++        char *end;
++
++        /* Handle hex, octal, etc. */
++        errno = 0;
++        number = strtol(s, &end, 0);
++        if (*end == '\0' && end != s) {
++                /* we parsed a number, let's see if we want this */
++                if (errno != ERANGE && min <= number && number <= max) {
++                        *ret = number;
++                        return 0;
++                }
++        }
++        return -1;
++}
++
++/**
++ * param: part1, a pointer on a string 2 chars maximum long string, that will contain the hours.
++ * param: part2, a pointer on a string 2 chars maximum long string, that will contain the minutes.
++ * param: str_2_parse, the string to parse.
++ * return: 1 if ok, 0 if error.
++ */
++static int
++split_time(char **part1, char **part2, const char *str_2_parse)
++{
++	unsigned short int i,j=0;
++	char *rpart1 = *part1;
++	char *rpart2 = *part2;
++	unsigned char found_column = 0;
++
++	/* Check the length of the string */
++	if (strlen(str_2_parse) > 5)
++		return 0;
++	/* parse the first part until the ':' */
++	for (i=0; i<2; i++)
++	{
++		if (str_2_parse[i] == ':')
++			found_column = 1;
++		else
++			rpart1[i] = str_2_parse[i];
++	}
++	if (!found_column)
++		i++;
++	j=i;
++	/* parse the second part */
++	for (; i<strlen(str_2_parse); i++)
++	{
++		rpart2[i-j] = str_2_parse[i];
++	}
++	/* if we are here, format should be ok. */
++	return 1;
++}
++
++static void
++parse_time_string(unsigned int *hour, unsigned int *minute, const char *time)
++{
++	char *hours;
++	char *minutes;
++
++	hours = (char *)malloc(3);
++	minutes = (char *)malloc(3);
++	bzero((void *)hours, 3);
++	bzero((void *)minutes, 3);
++
++	if (split_time(&hours, &minutes, time) == 1)
++	{
++                /* if the number starts with 0, replace it with a space else
++                   this string_to_number will interpret it as octal !! */
++                if ((hours[0] == '0') && (hours[1] != '\0'))
++			hours[0] = ' ';
++		if ((minutes[0] == '0') && (minutes[1] != '\0'))
++			minutes[0] = ' ';
++
++		if((string_to_number(hours, 0, 23, hour) == -1) ||
++			(string_to_number(minutes, 0, 59, minute) == -1)) {
++			*hour = *minute = (-1);
++		}
++	}
++	if ((*hour != (-1)) && (*minute != (-1))) {
++		free(hours);
++		free(minutes);
++		return;
++	}
++
++	/* If we are here, there was a problem ..*/
++	ebt_print_error("invalid time %s specified, should be HH:MM format", time);
++}
++
++/* return 1->ok, return 0->error */
++static int
++parse_day(int *days, int from, int to, const char *string)
++{
++	char *dayread;
++	char *days_str[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
++	unsigned short int days_of_week[7] = {64, 32, 16, 8, 4, 2, 1};
++	unsigned int i;
++
++	dayread = (char *)malloc(4);
++	bzero(dayread, 4);
++	if ((to-from) != 3) {
++		free(dayread);
++		return 0;
++	}
++	for (i=from; i<to; i++)
++		dayread[i-from] = string[i];
++	for (i=0; i<7; i++)
++		if (strcmp(dayread, days_str[i]) == 0)
++		{
++			*days |= days_of_week[i];
++			free(dayread);
++			return 1;
++		}
++	/* if we are here, we didn't read a valid day */
++	free(dayread);
++	return 0;
++}
++
++static void
++parse_days_string(int *days, const char *daystring)
++{
++	int len;
++	int i=0;
++	//char *err = "invalid days specified, should be Sun,Mon,Tue... format";
++
++	len = strlen(daystring);
++	if (len < 3)
++		ebt_print_error("invalid days specified, should be Sun,Mon,Tue... format");	
++	while(i<len)
++	{
++		if (parse_day(days, i, i+3, daystring) == 0)
++			ebt_print_error("invalid days specified, should be Sun,Mon,Tue... format");
++		i += 4;
++	}
++}
++
++#define EBT_TIME_START 0x01
++#define EBT_TIME_STOP  0x02
++#define EBT_TIME_DAYS  0x04
++
++
++/* Function which parses command options; returns true if it
++   ate an option */
++static int
++parse(int c, char **argv, int argc,
++      const struct ebt_u_entry *entry,
++      unsigned int *flags, struct ebt_entry_match **match)
++{
++	struct ebt_time_info *timeinfo = (struct ebt_time_info *)(*match)->data;
++	unsigned int hours, minutes;
++
++	switch (c) /* c is the return value of getopt_long */
++	{
++		/* timestart */
++	case '1':
++		if (*flags & EBT_TIME_START)
++                        ebt_print_error("Can't specify --timestart twice");
++		parse_time_string(&hours, &minutes, optarg);
++		timeinfo->time_start = (hours * 60) + minutes;
++		*flags |= EBT_TIME_START;
++		break;
++		/* timestop */
++	case '2':
++		if (*flags & EBT_TIME_STOP)
++                        ebt_print_error("Can't specify --timestop twice");
++		parse_time_string(&hours, &minutes, optarg);
++		timeinfo->time_stop = (hours * 60) + minutes;
++		*flags |= EBT_TIME_STOP;
++		break;
++
++		/* days */
++	case '3':
++		if (*flags & EBT_TIME_DAYS)
++                        ebt_print_error("Can't specify --days twice");
++		parse_days_string(&globaldays, optarg);
++		timeinfo->days_match = globaldays;
++		*flags |= EBT_TIME_DAYS;
++		break;
++	default:
++		return 0;
++	}
++	/* default value if not specified */
++	if (!(*flags & EBT_TIME_START))
++		timeinfo->time_start = 0;
++	if (!(*flags & EBT_TIME_STOP))
++		timeinfo->time_stop = 1439; /* 23*60+59 = 1439*/
++	if (!(*flags & EBT_TIME_DAYS))
++		timeinfo->days_match = 0;
++
++	return 1;
++}
++
++/* Final check; must have specified --timestart --timestop --days. */
++static void
++final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_match *match, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++        struct ebt_time_info *timeinfo = (struct ebt_time_info *)match->data;
++
++	/*
++	printf("start=%d,stop=%d,days=%d\n",
++		timeinfo->time_start,timeinfo->time_stop,timeinfo->days_match);
++	*/
++	if (timeinfo->time_stop < timeinfo->time_start)
++		ebt_print_error("stop time can't be smaller than start time");
++}
++
++
++static void
++print_days(int daynum)
++{
++	char *days[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
++	unsigned short int days_of_week[7] = {64, 32, 16, 8, 4, 2, 1};
++	unsigned short int i, nbdays=0;
++
++	for (i=0; i<7; i++) {
++		if ((days_of_week[i] & daynum) == days_of_week[i])
++		{
++			if (nbdays>0)
++				printf(",%s", days[i]);
++			else
++				printf("%s", days[i]);
++			++nbdays;
++		}
++	}
++}
++
++static void
++divide_time(int fulltime, int *hours, int *minutes)
++{
++	*hours = fulltime / 60;
++	*minutes = fulltime % 60;
++}
++
++/* Prints out the matchinfo. */
++static void
++print(const struct ebt_u_entry *entry,
++      const struct ebt_entry_match *match)
++{
++	struct ebt_time_info *time = ((struct ebt_time_info *)match->data);
++	int hour_start, hour_stop, minute_start, minute_stop;
++
++	divide_time(time->time_start, &hour_start, &minute_start);
++	divide_time(time->time_stop, &hour_stop, &minute_stop);
++	printf(" TIME from %d:%d to %d:%d on ",
++	       hour_start, minute_start,
++	       hour_stop, minute_stop);
++	print_days(time->days_match);
++	printf(" ");
++}
++
++#if 0
++/* Saves the data in parsable form to stdout. */
++static void
++save(const struct ipt_ip *ip, const struct ebt_entry_match *match)
++{
++	struct ebt_time_info *time = ((struct ebt_time_info *)match->data);
++	int hour_start, hour_stop, minute_start, minute_stop;
++
++	divide_time(time->time_start, &hour_start, &minute_start);
++	divide_time(time->time_stop, &hour_stop, &minute_stop);
++	printf(" --timestart %.2d:%.2d --timestop %.2d:%.2d --days ",
++	       hour_start, minute_start,
++	       hour_stop, minute_stop);
++	print_days(time->days_match);
++	printf(" ");
++}
++#endif
++
++static int 
++compare(const struct ebt_entry_match *m1, const struct ebt_entry_match *m2)
++{
++        struct ebt_time_info *timeinfo1 = (struct ebt_time_info *)m1->data;
++        struct ebt_time_info *timeinfo2 = (struct ebt_time_info *)m2->data;
++
++        if (timeinfo1->days_match != timeinfo2->days_match)
++                return 0;
++        if (timeinfo1->time_start != timeinfo2->time_start)
++                return 0;
++        if (timeinfo1->time_stop != timeinfo2->time_stop)
++                return 0;
++        return 1;
++}
++
++static struct ebt_u_match time_match =
++{
++   .name          = "time",
++   .size          = sizeof(struct ebt_time_info),
++   .help          = help,
++   .init          = init,
++   .parse         = parse,
++   .final_check   = final_check,
++   .print         = print,
++   .compare       = compare,
++   .extra_ops     = opts,
++};
++
++void _init(void)
++{
++	ebt_register_match(&time_match);
++}
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_wmm_mark.c ebtables-brcm/extensions/ebt_wmm_mark.c
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/ebt_wmm_mark.c	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/extensions/ebt_wmm_mark.c	2014-01-20 18:56:39.169290488 +0800
+@@ -0,0 +1,189 @@
++/*
++ *  ebt_wmm_mark
++ *
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_wmm_mark_t.h"
++
++//static int mark_supplied;
++#define WMM_MARK_TARGET '1'
++#define WMM_MARK_TAG  '2'
++#define WMM_MARK_POS  '4'
++#define WMM_MARK_SET  '8'
++
++static struct option opts[] =
++{
++	{ "wmm-mark-target" 	, required_argument, 0, WMM_MARK_TARGET },
++	{ "wmm-marktag"    	, required_argument, 0, WMM_MARK_TAG },
++	{ "wmm-markpos"      , required_argument, 0, WMM_MARK_POS },
++	{ "wmm-markset"    	, required_argument, 0, WMM_MARK_SET },	
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"wmm-mark target options:\n"
++	" --wmm-mark-target target : ACCEPT, DROP, RETURN or CONTINUE\n"	
++	" --wmm-marktag value      : set nfmark based on: dscp or vlan \n"
++	" --wmm-markset value      : set nfmark regardless of the mark based on\n"	
++	" --wmm-markpos            : bit offset of nfmark to set\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_wmm_mark_t_info *markinfo =
++	   (struct ebt_wmm_mark_t_info *)target->data;
++
++	markinfo->target = EBT_ACCEPT;
++	markinfo->mark = WMM_MARK_DSCP;
++	markinfo->markpos = PRIO_LOC_NFMARK;
++	markinfo->markset = WMM_MARK_VALUE_NONE;	
++//	mark_supplied = 0;
++}
++
++#define OPT_WMM_MARK_TARGET	0x01
++#define OPT_WMM_MARK_TAG   	0x02
++#define OPT_WMM_MARK_POS   	0x04
++#define OPT_WMM_MARK_SET   	0x08
++
++static int parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_wmm_mark_t_info *markinfo =
++	   (struct ebt_wmm_mark_t_info *)(*target)->data;
++	char *end;
++
++	//printf("c:%d, flags=%d\n", c, *flags);
++	
++	switch (c) {
++	case WMM_MARK_TARGET:
++		ebt_check_option2(flags, OPT_WMM_MARK_TARGET);
++		if (FILL_TARGET(optarg, markinfo->target))
++			ebt_print_error2("Illegal --wmm-mark-target target");
++		break;		
++		
++	case WMM_MARK_POS:
++		ebt_check_option2(flags, OPT_WMM_MARK_POS);
++		markinfo->markpos = strtoul(optarg, &end, 0);
++		if (*end != '\0' || end == optarg)
++			ebt_print_error2("Bad --wmm-markpos value '%s'", optarg);
++			
++		//printf("--wmm-markpos %d\n", markinfo->markpos);
++
++		break;
++
++	case WMM_MARK_SET:
++		ebt_check_option2(flags, OPT_WMM_MARK_SET);
++		markinfo->markset = strtoul(optarg, &end, 0);
++		if (*end != '\0' || end == optarg)
++			ebt_print_error2("Bad --wmm-markset value '%s'", optarg);
++			
++		//printf("--wmm-markset %d\n", markinfo->markset);
++
++		break;
++				
++	case WMM_MARK_TAG:
++		ebt_check_option2(flags, OPT_WMM_MARK_TAG);
++		if (optind > argc)
++			ebt_print_error2("Missing wmm-marktag argument");
++		
++		if(!strcmp(argv[optind - 1], WMM_MARK_DSCP_STR)) {
++			//printf("--wmm-marktag dscp\n");
++			markinfo->mark = WMM_MARK_DSCP;
++			//mark_supplied = 1;
++		} else if(!strcmp(argv[optind - 1], WMM_MARK_8021D_STR)) {
++			//printf("--wmm-marktag vlan\n");
++			markinfo->mark = WMM_MARK_8021D;
++			//mark_supplied = 1;		
++		} else 
++			ebt_print_error2("Bad --wmm-marktagt value '%s'", argv[optind - 1]);
++							
++                break;
++	 default:
++		return 0;
++	}
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	struct ebt_wmm_mark_t_info *markinfo =
++	   (struct ebt_wmm_mark_t_info *)target->data;
++		            
++	if(markinfo->mark == WMM_MARK_DSCP) {
++		if ((entry->ethproto != ETH_P_IPV6 && entry->ethproto != ETH_P_IP) || entry->invflags & EBT_IPROTO)
++			ebt_print_error("wmm-mark dscp must be used with -p IPv4/IPv6");
++		
++	} else if (markinfo->mark == WMM_MARK_8021D) {
++		if (entry->ethproto != ETH_P_8021Q || entry->invflags & EBT_IPROTO)
++			ebt_print_error("wmm-mark vlan must be used with -p 802_1Q");	
++	}
++			
++	if (BASE_CHAIN && markinfo->target == EBT_RETURN)
++		ebt_print_error("--wmm-mark-target RETURN not allowed on base chain");
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	
++	struct ebt_wmm_mark_t_info *markinfo =
++	   (struct ebt_wmm_mark_t_info *)target->data;
++
++	printf(" --wmm-mark ");
++	switch (markinfo->mark){
++		case WMM_MARK_DSCP:
++			printf("dscp");
++			break;
++		case WMM_MARK_8021D:
++			printf("vlan");
++			break;			
++		default:
++			printf("invalid");
++					
++	}
++	
++	printf(" --wmm-markpos %d", markinfo->markpos);	
++	printf(" --wmm-markset %d", markinfo->markset);	
++	printf(" --wmm-mark-target %s", TARGET_NAME(markinfo->target));
++}
++
++static int compare(const struct ebt_entry_target *t1,
++   const struct ebt_entry_target *t2)
++{
++	struct ebt_wmm_mark_t_info *markinfo1 =
++	   (struct ebt_wmm_mark_t_info *)t1->data;
++	struct ebt_wmm_mark_t_info *markinfo2 =
++	   (struct ebt_wmm_mark_t_info *)t2->data;
++
++	return markinfo1->target == markinfo2->target &&
++	   markinfo1->mark == markinfo2->mark &&	
++	   markinfo1->markset == markinfo2->markset && 
++	   markinfo1->markpos == markinfo2->markpos;
++}
++
++static struct ebt_u_target mark_target =
++{
++	.name		= EBT_WMM_MARK_TARGET,
++	.size		= sizeof(struct ebt_wmm_mark_t_info),
++	.help		= print_help,
++	.init		= init,
++	.parse		= parse,
++	.final_check	= final_check,
++	.print		= print,
++	.compare	= compare,
++	.extra_ops	= opts,
++};
++
++void _init(void)
++{
++	ebt_register_target(&mark_target);
++}
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/extensions/Makefile ebtables-brcm/extensions/Makefile
+--- ebtables-orig/ebtables-v2.0.10-4/extensions/Makefile	2011-12-16 04:02:47.000000000 +0800
++++ ebtables-brcm/extensions/Makefile	2014-01-20 18:56:39.169290488 +0800
+@@ -1,7 +1,13 @@
+ #! /usr/bin/make
+ 
+-EXT_FUNC+=802_3 nat arp arpreply ip ip6 standard log redirect vlan mark_m mark \
+-          pkttype stp among limit ulog nflog
++#BRCM begin
++#EXT_FUNC+=802_3 nat arp arpreply ip ip6 standard log redirect vlan mark_m mark \
++#          pkttype stp among limit ulog nflog
++EXT_FUNC+=ip ip6 standard vlan mark_m mark time ftos skiplog
++ifeq ($(strip $(WIRELESS)),1)
++EXT_FUNC+=wmm_mark
++endif
++#BRCM end
+ EXT_TABLES+=filter nat broute
+ EXT_OBJS+=$(foreach T,$(EXT_FUNC), extensions/ebt_$(T).o)
+ EXT_OBJS+=$(foreach T,$(EXT_TABLES), extensions/ebtable_$(T).o)
+@@ -11,13 +17,13 @@
+ EXT_LIBSI+=$(foreach T,$(EXT_TABLES), -lebtable_$(T))
+ 
+ extensions/ebt_%.so: extensions/ebt_%.o
+-	$(CC) $(LDFLAGS) -shared -o $@ -lc $< -nostartfiles
++	$(CC) $(LDFLAGS) -shared -o $@ $< -nostartfiles
+ 
+ extensions/libebt_%.so: extensions/ebt_%.so
+ 	mv $< $@
+ 
+ extensions/ebtable_%.so: extensions/ebtable_%.o
+-	$(CC) $(LDFLAGS) -shared -o $@ -lc $< -nostartfiles
++	$(CC) $(LDFLAGS) -shared -o $@ $< -nostartfiles
+ 
+ extensions/libebtable_%.so: extensions/ebtable_%.so
+ 	mv $< $@
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ftos_t.h ebtables-brcm/include/linux/netfilter_bridge/ebt_ftos_t.h
+--- ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ftos_t.h	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/include/linux/netfilter_bridge/ebt_ftos_t.h	2014-01-20 18:56:39.145290488 +0800
+@@ -0,0 +1,18 @@
++#ifndef __LINUX_BRIDGE_EBT_FTOS_T_H
++#define __LINUX_BRIDGE_EBT_FTOS_T_H
++
++struct ebt_ftos_t_info
++{
++   int           ftos_set;
++	unsigned char ftos;
++	// EBT_ACCEPT, EBT_DROP or EBT_CONTINUE or EBT_RETURN
++	int target;
++};
++#define EBT_FTOS_TARGET "ftos"
++
++#define FTOS_TARGET       0x01
++#define FTOS_SETFTOS      0x02
++#define FTOS_WMMFTOS      0x04
++#define FTOS_8021QFTOS    0x08
++
++#endif
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ip.h ebtables-brcm/include/linux/netfilter_bridge/ebt_ip.h
+--- ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_ip.h	2011-12-16 04:02:48.000000000 +0800
++++ ebtables-brcm/include/linux/netfilter_bridge/ebt_ip.h	2014-01-20 18:56:39.145290488 +0800
+@@ -23,8 +23,9 @@
+ #define EBT_IP_PROTO 0x08
+ #define EBT_IP_SPORT 0x10
+ #define EBT_IP_DPORT 0x20
++#define EBT_IP_DSCP  0x40  /* brcm */
+ #define EBT_IP_MASK (EBT_IP_SOURCE | EBT_IP_DEST | EBT_IP_TOS | EBT_IP_PROTO |\
+- EBT_IP_SPORT | EBT_IP_DPORT )
++ EBT_IP_SPORT | EBT_IP_DPORT | EBT_IP_DSCP )
+ #define EBT_IP_MATCH "ip"
+ 
+ /* the same values are used for the invflags */
+@@ -34,6 +35,7 @@
+ 	__be32 smsk;
+ 	__be32 dmsk;
+ 	__u8  tos;
++	__u8  dscp; /* brcm */
+ 	__u8  protocol;
+ 	__u8  bitmask;
+ 	__u8  invflags;
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_mark_t.h ebtables-brcm/include/linux/netfilter_bridge/ebt_mark_t.h
+--- ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_mark_t.h	2011-12-16 04:02:48.000000000 +0800
++++ ebtables-brcm/include/linux/netfilter_bridge/ebt_mark_t.h	2014-01-20 18:56:39.145290488 +0800
+@@ -12,6 +12,7 @@
+ #define MARK_OR_VALUE  (0xffffffe0)
+ #define MARK_AND_VALUE (0xffffffd0)
+ #define MARK_XOR_VALUE (0xffffffc0)
++#define VTAG_SET_VALUE (0xffffffb0)
+ 
+ struct ebt_mark_t_info {
+ 	unsigned long mark;
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_time.h ebtables-brcm/include/linux/netfilter_bridge/ebt_time.h
+--- ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_time.h	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/include/linux/netfilter_bridge/ebt_time.h	2014-01-20 18:56:39.145290488 +0800
+@@ -0,0 +1,14 @@
++#ifndef __LINUX_BRIDGE_EBT_TIME_H
++#define __LINUX_BRIDGE_EBT_TIME_H
++
++
++struct ebt_time_info {
++	__u8  days_match;   /* 1 bit per day. -SMTWTFS                      */
++	__u16 time_start;   /* 0 < time_start < 23*60+59 = 1439             */
++	__u16 time_stop;    /* 0:0 < time_stat < 23:59                      */
++	__u8  kerneltime;   /* ignore skb time (and use kerneltime) or not. */
++};
++
++#define EBT_TIME_MATCH "time"
++
++#endif /* __LINUX_BRIDGE_EBT_TIME_H */
+diff -Naur ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_wmm_mark_t.h ebtables-brcm/include/linux/netfilter_bridge/ebt_wmm_mark_t.h
+--- ebtables-orig/ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_wmm_mark_t.h	1970-01-01 08:00:00.000000000 +0800
++++ ebtables-brcm/include/linux/netfilter_bridge/ebt_wmm_mark_t.h	2014-01-20 18:56:39.145290488 +0800
+@@ -0,0 +1,27 @@
++#ifndef __LINUX_BRIDGE_EBT_MARK_T_H
++#define __LINUX_BRIDGE_EBT_MARK_T_H
++
++#define WMM_MARK_DSCP		1
++#define WMM_MARK_8021D		2
++
++#define WMM_MARK_DSCP_STR	"dscp"
++#define WMM_MARK_8021D_STR	"vlan"
++
++#define PRIO_LOC_NFMARK		16
++#define PRIO_LOC_NFMASK		7	
++
++#define WMM_DSCP_MASK_SHIFT	5
++#define WMM_MARK_VALUE_NONE	-1
++
++
++struct ebt_wmm_mark_t_info
++{
++	int mark; 
++	int markpos;
++	int markset;
++	/* EBT_ACCEPT, EBT_DROP, EBT_CONTINUE or EBT_RETURN */
++	int target;
++};
++#define EBT_WMM_MARK_TARGET "wmm-mark"
++
++#endif

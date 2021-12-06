@@ -1,0 +1,250 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-02-05 20:06:58.464475000 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-02-05 20:05:34.677594100 +0800
+@@ -22,6 +22,17 @@
+ #define AES 2
+ 
+ 
++#define WPS_DEVICENAME "wps_devicename"
++enum {
++	WPS_PIN = 1,
++	WPS_PBC
++};
++
++enum {
++	WPS_STA_PIN = 1,
++	WPS_AP_PIN
++};
++
+ extern tr98Object_t tr98Obj[];
+ 
+ 
+@@ -3465,9 +3476,6 @@
+ 		if(!strcmp(paramList->name, "UUID")) {
+ 			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_UUID");
+ 		}
+-		else if(!strcmp(paramList->name, "DevicePassword")) {
+-			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_DevicePin");
+-		}
+ 
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -3476,21 +3484,29 @@
+ 		}
+ 
+ 		/*Not defined in tr181, give it a default value*/
+-		if(!strcmp(paramList->name, "SetupLock")) {
++		if(!strcmp(paramList->name, "DeviceName")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(WPS_DEVICENAME));
++		}else if(!strcmp(paramList->name, "DevicePassword")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(0));
++		}else if(!strcmp(paramList->name, "Version")) {
++			paramValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_V2");
++			if(json_object_get_boolean(paramValue) == true)
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(2));
++			else json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(1));
++		}else if(!strcmp(paramList->name, "SetupLock")) {
+ 			printf("%s: SetupLock\n", __FUNCTION__);
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("false"));
+-			paramList++;
+-			continue;
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(false));
+ 		}else if(!strcmp(paramList->name, "SetupLockedState")) {
+ 			printf("%s: SetupLockedState\n", __FUNCTION__);
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("UnLocked"));
+-			paramList++;
+-			continue;
+-		}
+-
++		}else if(!strcmp(paramList->name, "ConfigurationState")) {
++			//  static implement and might modify in terms of request
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Configured"));
++		}else {
+ #if TR98_MAPPING_DEBUG
+-		printf("Can't find parameter %s in TR181\n", paramList->name);
++			printf("Can't find parameter %s in TR181\n", paramList->name);
+ #endif
++		}
+ 		paramList++;
+ 	}
+ 
+@@ -3498,6 +3514,7 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WPS
+  *
+  *   Related object in TR181:
+@@ -3517,6 +3534,15 @@
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;	
++	bool tr98WpsEnable;
++	char *tr98WpsMthSupportStr = NULL;
++	int tr98WpsMthSupport = 0;
++	char *tr98WpsMthEnabledStr = NULL;
++	bool wpsConfigured = true, wpsOldConfigured = true;
++	int tr98WpsMthEnabled = 0;
++	int wpsPin = 0;
++	int wpsStationPin = 0;
++
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".WPS");
+@@ -3556,34 +3582,113 @@
+ 		apWpsJobj = zcfgFeJsonMultiObjAppend(RDM_OID_WIFI_ACCESS_POINT_WPS, &apIid, multiJobj, tmpObj);
+ 	}
+ 
++	ret = ZCFG_SUCCESS;
++
++	tr98WpsEnable = json_object_get_boolean(json_object_object_get(tr98Jobj, "Enable"));
++
++	if(tr98WpsEnable == false) {
++		json_object_object_add(apWpsJobj, "Enable", json_object_new_boolean(tr98WpsEnable));
++		goto write_parameters_complete;
++	}
++
++	tr98WpsMthSupportStr =	json_object_get_string(json_object_object_get(tr98Jobj, "ConfigMethodsSupported"));
++    if(tr98WpsMthSupportStr && (strstr(tr98WpsMthSupportStr, "PIN"))) tr98WpsMthSupport |= WPS_PIN;
++	if(tr98WpsMthSupportStr && (strstr(tr98WpsMthSupportStr, "PushButton"))) tr98WpsMthSupport |= WPS_PBC;
++
++	tr98WpsMthEnabledStr =	json_object_get_string(json_object_object_get(tr98Jobj, "ConfigMethodsEnabled"));
++    if(tr98WpsMthEnabledStr && (!strcmp(tr98WpsMthEnabledStr, "PIN"))) tr98WpsMthEnabled = WPS_PIN;
++	else if(tr98WpsMthEnabledStr && (!strcmp(tr98WpsMthEnabledStr, "PushButton"))) tr98WpsMthEnabled = WPS_PBC;
++
++	if( ((tr98WpsMthEnabled == WPS_PIN) && !(tr98WpsMthSupport & WPS_PIN)) ||
++		((tr98WpsMthEnabled == WPS_PBC) && !(tr98WpsMthSupport & WPS_PBC)) ) {
++		ret = ZCFG_INVALID_PARAM_VALUE;
++		goto write_parameters_complete;
++	}
++
++	if(tr98WpsMthEnabled == WPS_PIN) wpsPin = WPS_STA_PIN;
++
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/		
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-		if(paramValue != NULL) {
+-			if(!strcmp(paramList->name, "SetupLock")) {
+-				printf("%s: SetupLock\n", __FUNCTION__);
+-				if(strcmp(paramValue, "false")) {
+-					ret = ZCFG_INVALID_PARAM_VALUE;
+-					goto _write_parameters_complete;
+-				}
+-				paramList++;
+-				continue;
++		if(!paramValue) {
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "Enable")) {
++			json_object_object_add(apWpsJobj, "Enable", json_object_new_boolean(tr98WpsEnable));
++		}else if(!strcmp(paramList->name, "ConfigMethodsSupported")) {
++			if(tr98WpsMthSupportStr)
++				json_object_object_add(apWpsJobj, "ConfigMethodsSupported", json_object_new_string((const char *)tr98WpsMthSupportStr));
++		}else if(!strcmp(paramList->name, "ConfigMethodsEnabled")) {
++			if(tr98WpsMthEnabledStr)
++				json_object_object_add(apWpsJobj, "ConfigMethodsEnabled", json_object_new_string((const char *)tr98WpsMthEnabledStr));
++		}else if(!strcmp(paramList->name, "DevicePassword")) {
++				wpsStationPin = json_object_get_int(paramValue);
++				printf("%s: wps pin %d\n", __FUNCTION__, wpsStationPin);
++		}else if(!strcmp(paramList->name, "SetupLock")) {
++			if((json_object_get_boolean(paramValue) == true)) {
++				ret = ZCFG_INVALID_PARAM_VALUE;
++				goto write_parameters_complete;
+ 			}
++		}
++#ifdef WPS_ACCESSPOINT_PIN
++		else if(!strcmp(paramList->name, "X_ZYXEL_WPS_Configured")) {
++			tr181ParamValue = json_object_object_get(apWpsJobj, "X_ZYXEL_WPS_Configured");
++			wpsOldConfigured = json_object_get_boolean(tr181ParamValue);
++
++			wpsConfigured = json_object_get_boolean(paramValue);
++			json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_Configured", json_object_new_boolean(wpsConfigured));
++		}else if(!strcmp(paramList->name, "X_ZYXEL_WPS_GenDevicePin")) {
++			if((json_object_get_boolean(paramValue) == true) && (wpsConfigured == true)) {
++				json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableAPPin", json_object_new_boolean(true));
++				json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_StationPin", json_object_new_string("00000000"));
++				wpsPin = WPS_AP_PIN;
++			}
++			json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_GenDevicePin", JSON_OBJ_COPY(paramValue));
++		}
++#endif
++		else {
+ 			tr181ParamValue = json_object_object_get(apWpsJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+ 				json_object_object_add(apWpsJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				paramList++;
+-				continue;
+-			}
+-		}
++			}else{
+ #if TR98_MAPPING_DEBUG
+-		printf("Can't find parameter %s in TR181\n", paramList->name);
++				printf("Can't find parameter %s in TR181\n", paramList->name);
+ #endif
+-		paramList++;	
++			}
++		}
++		paramList++;
++	}
++
++	// special parameter config
++	if( ((wpsOldConfigured == true) && (wpsConfigured != true)) ||
++		((wpsOldConfigured == false) && (wpsConfigured == true)) ) {
++		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_StationPin", json_object_new_string("00000000"));
++		json_object_object_add(apWpsJobj, "ConfigMethodsEnabled", json_object_new_string("PIN"));
++		goto write_parameters_complete;
++	}
++ 
++	if(tr98WpsMthEnabled == WPS_PBC) {
++		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnablePBC", json_object_new_boolean(true));
++		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_StationPin", json_object_new_string("00000000"));
++	}
++
++	if((tr98WpsMthEnabled == WPS_PIN) && (wpsPin == WPS_STA_PIN)) {
++		char wpsStationPinStr[10] = {0};
++
++		if((wpsStationPin > (10000-1)) || (wpsStationPin < 0)) {
++			ret = ZCFG_INVALID_PARAM_VALUE;
++			goto write_parameters_complete;
++		}
++		sprintf(wpsStationPinStr, "%04d", wpsStationPin);
++
++		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_EnableStaPin", json_object_new_boolean(true));				
++		json_object_object_add(apWpsJobj, "X_ZYXEL_WPS_StationPin", json_object_new_string(wpsStationPinStr));
+ 	}
+ 
+-_write_parameters_complete:
++write_parameters_complete:
+ 	/*Set Device.WiFi.AccessPoint.i.Security*/
+ 	if(multiJobj){
+ 		json_object_put(tmpObj);
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2015-02-05 20:06:58.452475000 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2015-02-05 20:06:58.540475002 +0800
+@@ -293,6 +293,7 @@
+ 
+ };
+ 
++
+ tr98Parameter_t para_LanDevWlanCfgWps[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "DeviceName", PARAMETER_ATTR_READONLY, 33, json_type_string},
+@@ -307,6 +308,12 @@
+ 	{ "LastConfigurationError", PARAMETER_ATTR_READONLY, 28, json_type_string},
+ 	{ "RegistrarNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "RegistrarEstablished", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++#define WPS_ACCESSPOINT_PIN
++#ifdef WPS_ACCESSPOINT_PIN
++	{ "X_ZYXEL_WPS_Configured", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_WPS_GenDevicePin", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_WPS_DevicePin", PARAMETER_ATTR_READONLY, 10, json_type_string},
++#endif
+ 	{ NULL, 0, 0, 0}
+ };
+ 

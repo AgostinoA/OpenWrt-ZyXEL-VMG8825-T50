@@ -1,0 +1,158 @@
+Index: ppp-2.4.3/pppd/plugins/rp-pppoe/plugin.c
+===================================================================
+--- ppp-2.4.3.orig/pppd/plugins/rp-pppoe/plugin.c	2016-05-06 11:06:33.951690117 +0800
++++ ppp-2.4.3/pppd/plugins/rp-pppoe/plugin.c	2016-05-06 13:43:14.335498765 +0800
+@@ -51,6 +51,18 @@
+ #include "if_ppp.h"
+ #include "if_pppox.h"
+ 
++#if defined(USA_PRODUCT) || defined(SEND_PADT_BEFORE_DISCOVERY)
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++#include "zcfg_net.h"
++#include <json/json.h>
++
++int first_init = 1;
++static char *previousSession = NULL;
++extern zcfgRet_t pppdMsgSend(uint32_t, zcfgEid_t, int, const char *);
++#endif
++
+ #define _PATH_ETHOPT         _ROOT_PATH "/etc/ppp/options."
+ 
+ char pppd_version[] = VERSION;
+@@ -65,9 +77,6 @@
+ #if 1 /* vlanautohunt, ZyXEL, John */
+ extern int vid;
+ #endif
+-#ifdef USA_PRODUCT
+-int first_init = 1;
+-#endif
+ 
+ static int PPPoEDevnameHook(char *cmd, char **argv, int doit);
+ static option_t Options[] = {
+@@ -86,6 +95,10 @@
+ #if 1 /* vlanautohunt, ZyXEL, John */
+      { "vid", o_int, &vid, "vlanautohunt vid"},	
+ #endif
++#if defined(USA_PRODUCT) || defined(SEND_PADT_BEFORE_DISCOVERY)
++	{ "term_pppoe_sess",  o_string, &previousSession,
++	  "Send PADT with session (sessid:macaddr) first" },
++#endif
+     { NULL }
+ };
+ 
+@@ -138,37 +151,82 @@
+ 
+     strlcpy(ppp_devnam, devnam, sizeof(ppp_devnam));
+     if (existingSession) {
+-	unsigned int mac[ETH_ALEN];
+-	int i, ses;
+-	if (sscanf(existingSession, "%d:%x:%x:%x:%x:%x:%x",
+-		   &ses, &mac[0], &mac[1], &mac[2],
+-		   &mac[3], &mac[4], &mac[5]) != 7) {
+-	    fatal("Illegal value for rp_pppoe_sess option");
+-	}
+-	conn->session = htons(ses);
+-	for (i=0; i<ETH_ALEN; i++) {
+-	    conn->peerEth[i] = (unsigned char) mac[i];
+-	}
++		unsigned int mac[ETH_ALEN];
++		int i, ses;
++		if (sscanf(existingSession, "%d:%x:%x:%x:%x:%x:%x",
++			   &ses, &mac[0], &mac[1], &mac[2],
++			   &mac[3], &mac[4], &mac[5]) != 7) {
++		    fatal("Illegal value for rp_pppoe_sess option");
++		}
++		conn->session = htons(ses);
++		for (i=0; i<ETH_ALEN; i++) {
++		    conn->peerEth[i] = (unsigned char) mac[i];
++		}
+     } else {
+-	discovery(conn);
+-#ifdef USA_PRODUCT
+-	if(first_init == 1){
++#if defined(USA_PRODUCT) || defined(SEND_PADT_BEFORE_DISCOVERY)
++		if(first_init == 1 && previousSession != NULL){
++			unsigned int mac[ETH_ALEN];
++			int i ,ses;
++			
++			conn->discoverySocket = openInterface(conn->ifName, Eth_PPPOE_Discovery, conn->myEth);
++		
++			if (sscanf(previousSession, "%d:%x:%x:%x:%x:%x:%x",
++				   &ses, &mac[0], &mac[1], &mac[2],
++				   &mac[3], &mac[4], &mac[5]) != 7) {
++				   fatal("Illegal value for rp_pppoe_sess option");
++			}
++			conn->session = htons(ses);
++			
++			for (i=0; i<ETH_ALEN; i++)
++				conn->peerEth[i] = (unsigned char) mac[i];
++			
+ 			char Before_PADT[64] = "Send a PADT before the PPPoE connection";
+ 			char buf[1024] = {};
+ 			sprintf(buf, "RP-PPPoE: %s", Before_PADT);
++			
++			//THIS IS A WORKAROUND, sometime send PADT fail, wait 2 second seems can resolve the problem.
++			sleep(2);
+ 			sendPADT(conn, buf);
++			//close(conn->discoverySocket);
++			//conn->discoverySocket = -1;
+ 			first_init = 0;
+-	}
++		}
+ #endif
+-	if (conn->discoveryState != STATE_SESSION) {
+-	    error("Unable to complete PPPoE Discovery");
+-	    return -1;
+-	}
++		discovery(conn);
++		if (conn->discoveryState != STATE_SESSION) {
++		    error("Unable to complete PPPoE Discovery");
++		    return -1;
++		}
+     }
+ 
+     /* Set PPPoE session-number for further consumption */
+     ppp_session_number = ntohs(conn->session);
+ 
++#if defined(USA_PRODUCT) || defined(SEND_PADT_BEFORE_DISCOVERY)
++	struct json_object *ppp_arg = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0; 
++	char sessionID[32] = {0};
++
++	sprintf(sessionID, "%d:%x:%x:%x:%x:%x:%x", ppp_session_number,
++												conn->peerEth[0],
++												conn->peerEth[1],
++												conn->peerEth[2],
++												conn->peerEth[3],
++												conn->peerEth[4],
++												conn->peerEth[5]);
++	
++	ppp_arg = json_object_new_object();
++	json_object_object_add(ppp_arg, "sessionID", json_object_new_string(sessionID));
++	json_object_object_add(ppp_arg, "linkname", json_object_new_string(linkname));
++
++	payload = json_object_to_json_string(ppp_arg);
++	payloadLen = strlen(payload) + 1;
++	pppdMsgSend(ZCFG_MSG_PPPD_EVENT , ZCFG_EID_ESMD, payloadLen, payload);
++	json_object_put(ppp_arg);
++#endif
++
++
+     /* Make the session socket */
+     conn->sessionSocket = socket(AF_PPPOX, SOCK_STREAM, PX_PROTO_OE);
+     if (conn->sessionSocket < 0) {
+@@ -260,7 +318,10 @@
+     }
+     close(conn->sessionSocket);
+     /* don't send PADT?? */
+-    close(conn->discoverySocket);
++	if(conn->discoverySocket >= 0){
++		sendPADT(conn, NULL);
++		close(conn->discoverySocket);
++	}
+ }
+ 
+ static void

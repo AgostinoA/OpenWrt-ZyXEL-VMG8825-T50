@@ -1,0 +1,116 @@
+Index: linux-3.18.21/include/linux/netfilter_bridge/ebt_AUTOMAP.h
+===================================================================
+--- linux-3.18.21.orig/include/linux/netfilter_bridge/ebt_AUTOMAP.h	2018-05-09 11:25:55.884974277 +0800
++++ linux-3.18.21/include/linux/netfilter_bridge/ebt_AUTOMAP.h	2018-05-09 11:32:09.343757485 +0800
+@@ -13,33 +13,47 @@
+ 
+ 
+ 		/*
+-		Auto Priority Mapping Table
++              		DSCP  |  Packet Length  |  802.1P  |   Queue   |   Priority  |
+ 
++           		------------------------------------------------------------------
+ 
+-			DSCP	|   Packet Length	| 802.1P	|     Queue     |
+-		   ---------------------------------------------
+-					|				|   001	|       0 		|
+-					|				|		|			|
+-					|				|   010	|       1		|
+-					|				|		|			|
+-			0x00       |       >1100		|   000	|       2		|
+-					|				|		|			|
+-			0x08       |       250-1100	|   011	|       3		|
+-					|				|		|			|
+-			0x10       |				|   100	|       4		|
+-					|				|		|			|
+-			0x18       |       <250		|   101	|       5		|
+-					|				|		|			|
+-		0x20,0x28	|				|   110	|       6		|
+-					|				|		|			|
+-		0x30,0x38  	|				|   111	|       7		|
++             		0x00   |                 |    001   |     0     |      4      |
++
++             		       |                 |          |           |             |
++
++             		0x08   |       >1100     |    010   |     1     |      4      |
++
++             		       |                 |          |           |             |
++
++             		0x10   |                 |    000   |     2     |      3      |
++
++             		       |                 |          |           |             |
++
++             		0x18   |     250-1100    |    011   |     3     |      3      |
++
++             		       |                 |          |           |             |
++
++             		0x20   |                 |    100   |     4     |      2      |
++
++             		       |                 |          |           |             |
++
++             		0x28   |       <250      |    101   |     5     |      2      |
++
++             		       |                 |          |           |             |
++
++             		0x30   |                 |    110   |     6     |      1      |
++
++             		       |                 |          |           |             |
++
++             		0x38   |                 |    111   |     7     |      1      |
+ 		*/
+ 		
+ 
+ /* accoding to tr181 8021p to DSCP mapping table(upstream), higher value higher priority*/
+-unsigned short vlan8021pToPriorityQueue[8] = {2,0,1,3,4,5,6,7};
+-unsigned short dscpPrecedenceToPriorityQueue[8] = {2,3,4,5,6,6,7,7};
+-
++unsigned short vlan8021pToDSCP[8]= {0x00,0x00,0x00,0x08,0x10,0x18,0x28,0x38};
++unsigned short dscpPrecedenceTo8021p[8] = {0x40,0x40,0x30,0x30,0x20,0x20,0x10,0x10};
++unsigned short vlan8021pToPriorityQueue[8] = {0x30,0x40,0x40,0x30,0x20,0x20,0x10,0x10};
++unsigned short dscpPrecedenceToPriorityQueue[8] = {0x40,0x40,0x30,0x30,0x20,0x20,0x10,0x10};
+ 
+ /* target info */
+ struct ebt_automap_t_info {
+Index: linux-3.18.21/net/bridge/netfilter/ebt_AUTOMAP.c
+===================================================================
+--- linux-3.18.21.orig/net/bridge/netfilter/ebt_AUTOMAP.c	2018-05-09 11:25:55.884974277 +0800
++++ linux-3.18.21/net/bridge/netfilter/ebt_AUTOMAP.c	2018-05-09 11:37:15.940102282 +0800
+@@ -70,10 +70,13 @@
+ ebt_automap_tg(struct sk_buff *skb, const struct xt_action_param *par) 
+ {
+ 	const struct ebt_automap_t_info *aminfo = par->targinfo;
++	const struct vlan_hdr *fp;
++	struct vlan_hdr _frame;
+ 	struct iphdr *iph = NULL;
+ 	unsigned char prio = 0;
+ 	unsigned char dscpPrecedence = 0;
+-
++	unsigned short TCI;
++	unsigned short id;
+ 	
+ //	getVlanPrioAndIpHeader(skb, &prio, &iph);
+ 
+@@ -87,7 +90,10 @@
+ 	
+ 	switch(aminfo->type){
+ 		case AUTOMAP_TYPE_8021P:
+-			prio = ((skb)->vlan_tci>>13)&0x7;
++			fp = skb_header_pointer(skb, 0, sizeof(_frame), &_frame);
++			TCI = ntohs(fp->h_vlan_TCI);
++			id = TCI & VLAN_VID_MASK;
++			prio = (TCI >> 13) & 0x7;
+ 			/* mark value for priority queue */
+ 			skb->mark |= vlan8021pToPriorityQueue[prio];
+ 
+@@ -110,9 +116,9 @@
+ 				skb->mark|=0x0;
+ 			else {
+ 				if(iph->tot_len > 1100){
+-					skb->mark|=vlan8021pToPriorityQueue[0]; /* queue prio 2 */
++					skb->mark|=vlan8021pToPriorityQueue[1]; /* queue prio 4 */
+ 				}else if(iph->tot_len < 250){
+-					skb->mark|=vlan8021pToPriorityQueue[5]; /* queue prio 5 */
++					skb->mark|=vlan8021pToPriorityQueue[6]; /* queue prio 2 */
+ 				}else{  /*250~1100*/
+ 					skb->mark|=vlan8021pToPriorityQueue[3]; /* queue prio 3 */
+ 				}

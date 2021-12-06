@@ -1,0 +1,257 @@
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosShaper.c	2019-04-01 15:56:52.666489392 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c	2019-04-08 19:43:25.059074899 +0800
+@@ -30,7 +30,7 @@
+ dal_param_t QosShaper_param[] = {
+ 	{"Index",						dalType_int, 			0, 0, 		  NULL,		NULL,	dal_Edit|dal_Delete},
+ 	{"Enable",						dalType_boolean,		0, 0, 		  NULL,		NULL,	dal_Add},
+-	{"Interface",					dalType_RtWanWWan, 		0, 0,         NULL,		NULL,	dal_Add},
++	{"Interface",					dalType_ShaperIntf    , 0, 0,         NULL,		NULL,	dal_Add},
+ 	{"ShapingRate",					dalType_int, 			0, 1024000,   NULL,  	NULL,	dal_Add},
+ 	{NULL,							0,						0, 0,	      NULL,		NULL,	NULL},
+ };
+@@ -235,66 +235,98 @@
+ 			printf("%-7s %-12d %-20s %-12s\n",
+ 			json_object_get_string(json_object_object_get(obj, "Index")),
+ 			json_object_get_boolean(json_object_object_get(obj, "Enable")),
+-			json_object_get_string(json_object_object_get(obj, "WanInterface")),
+-			json_object_get_string(json_object_object_get(obj, "RateLimit")));
++			json_object_get_string(json_object_object_get(obj, "IfName")),
++			json_object_get_string(json_object_object_get(obj, "ShapingRate")));
+ 		}
+ 	}
+ }
+ 
+-zcfgRet_t zcfgFeDalQosShaperGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *pramJobj = NULL;
+-	struct json_object *shaperObj = NULL;
+-	struct json_object *wanobj = NULL;
+-	struct json_object *indexObj = NULL;
+-	objIndex_t shaperIid = {0};
+-	objIndex_t wanIid = {0};
+-	const char *Interface;
+-	const char *newInt;
+-	int count = 1;
+-	int idx = -1;
+-
+-	if ((Jobj != NULL) && (json_object_object_get(Jobj, "idx") != NULL))
+-	{
+-		idx = json_object_get_int(json_object_object_get(Jobj, "idx"));
+-	}
+-
+-	IID_INIT(shaperIid);
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS){
+-		if (idx == -1 || shaperIid.idx[0] == idx) {
+-			pramJobj = json_object_new_object();
+-			IID_INIT(wanIid);
+-			wanIid.level = 1;
+-			if(json_object_object_get(shaperObj, "Interface") != NULL) {
+-				Interface = json_object_get_string(json_object_object_get(shaperObj,"Interface"));
+-				if(strstr(Interface, "PPP") != NULL) {
+-					while((ret = zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &wanIid, &wanobj)) == ZCFG_SUCCESS) {
+-						if(!strcmp(Interface, json_object_get_string(json_object_object_get(wanobj, "LowerLayers"))))
+-							break;
+-
+-						zcfgFeJsonObjFree(wanobj);
+-					}
+-				}
+-				else {
+-					sscanf(Interface, "IP.Interface.%hhu", &wanIid.idx[0]);
+-					ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &wanIid, &wanobj);
+-				}
+-				if(wanobj && json_object_object_get(wanobj, "X_ZYXEL_SrvName") != NULL){
+-					newInt = json_object_get_string(json_object_object_get(wanobj, "X_ZYXEL_SrvName"));
+-					json_object_object_add(pramJobj, "WanInterface",json_object_new_string(newInt));
+-					json_object_object_add(pramJobj, "Index", json_object_new_int(count));
+-					json_object_object_add(pramJobj, "idx", json_object_new_int(shaperIid.idx[0]));
+-					json_object_object_add(pramJobj, "RateLimit", JSON_OBJ_COPY(json_object_object_get(shaperObj, "ShapingRate")));
+-					json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(shaperObj, "Enable")));
+-					json_object_array_add(Jarray, pramJobj);
+-				}
+-				zcfgFeJsonObjFree(wanobj);
+-	 		}
+-		}
+-		count++;
+-		zcfgFeJsonObjFree(shaperObj);
+-	}	
+-	return ret;
++zcfgRet_t zcfgFeDalQosShaperGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++    zcfgRet_t ret = ZCFG_SUCCESS;
++    struct json_object *pramJobj = NULL;
++    struct json_object *shaperObj = NULL;
++    struct json_object *wanobj = NULL;
++    struct json_object *lanObj = NULL;
++    struct json_object *indexObj = NULL;
++    struct json_object *tmpObj = NULL;
++    objIndex_t shaperIid = {0};
++    objIndex_t wanIid = {0};
++    objIndex_t lanIid;
++    const char *Interface;
++    const char *newInt;
++    int count = 1;
++    int idx = -1;
++
++    if ((Jobj != NULL) && ((tmpObj = json_object_object_get(Jobj, "idx")) != NULL))
++    {
++        idx = json_object_get_int(tmpObj);
++    }
++
++    IID_INIT(shaperIid);
++    while (zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_QOS_SHAPER, &shaperIid, &shaperObj) == ZCFG_SUCCESS)
++    {
++        if (idx == -1 || shaperIid.idx[0] == idx)
++        {
++            pramJobj = json_object_new_object();
++            IID_INIT(wanIid);
++            wanIid.level = 1;
++            if ((tmpObj = json_object_object_get(shaperObj, "Interface")) != NULL)
++            {
++                Interface = json_object_get_string(tmpObj);
++                if(strstr(Interface, "PPP") != NULL)
++                {
++                    while ((ret = zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &wanIid, &wanobj)) == ZCFG_SUCCESS)
++                    {
++                        if ((tmpObj = json_object_object_get(wanobj, "LowerLayers")) != NULL)
++                        {
++                            if (!strcmp(Interface, json_object_get_string(tmpObj)))
++                            {
++                                zcfgFeJsonObjFree(wanobj);
++                                break;
++                            }
++                        }
++                        zcfgFeJsonObjFree(wanobj);
++                    }
++                }
++                else if (strstr(Interface, "IP") != NULL)
++                {
++                    sscanf(Interface, "IP.Interface.%hhu", &wanIid.idx[0]);
++                    ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &wanIid, &wanobj);
++                }
++                else
++                {
++                    IID_INIT(lanIid);
++                    lanIid.level = 1;
++                    sscanf(Interface, "Ethernet.Interface.%hhu", &lanIid.idx[0]);
++                    ret = zcfgFeObjJsonGet(RDM_OID_ETH_IFACE, &lanIid, &lanObj);
++                }
++
++                if (wanobj && ((tmpObj = json_object_object_get(wanobj, "X_ZYXEL_SrvName")) != NULL))
++                {
++                    newInt = json_object_get_string(tmpObj);
++                    json_object_object_add(pramJobj, "IfName",json_object_new_string(newInt));
++                    zcfgFeJsonObjFree(wanobj);
++                }
++                else if (lanObj && ((tmpObj = json_object_object_get(lanObj, "X_ZYXEL_LanPort")) != NULL))
++                {
++                    newInt = json_object_get_string(tmpObj);
++                    json_object_object_add(pramJobj, "IfName",json_object_new_string(newInt));
++                    zcfgFeJsonObjFree(lanObj);
++                }
++
++                json_object_object_add(pramJobj, "Interface",json_object_new_string(Interface));
++                json_object_object_add(pramJobj, "Index", json_object_new_int(count));
++                json_object_object_add(pramJobj, "idx", json_object_new_int(shaperIid.idx[0]));
++                json_object_object_add(pramJobj, "ShapingRate", JSON_OBJ_COPY(json_object_object_get(shaperObj, "ShapingRate")));
++                json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(shaperObj, "Enable")));
++                json_object_array_add(Jarray, pramJobj);
++            }
++        }
++        count++;
++        zcfgFeJsonObjFree(shaperObj);
++    }
++    return ret;
+ }
+ 
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2019-04-01 15:56:53.042489392 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2019-04-08 20:21:51.415321452 +0800
+@@ -3863,6 +3863,70 @@
+ 						stringPtr = json_object_get_string(pramJobj);
+ 						json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
+ 						break;
++                    case dalType_ShaperIntf:
++                        stringPtr = json_object_get_string(pramJobj);
++                        if ((obj_tmp = json_object_object_get(Jobj, "cmdtype")) != NULL)
++                        {
++                            if (!strcmp(json_object_get_string(obj_tmp), "GUI"))
++                            {
++                                json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(stringPtr));
++                                break;
++                            }
++                        }
++
++                        if (strstr(stringPtr, "LAN"))
++                        {
++                            getLanPortList(&LanPortListJarray);
++
++                            len = json_object_array_length(LanPortListJarray);
++                            for (j = 0; j < len; j++)
++                            {
++                                LanPortObj = json_object_array_get_idx(LanPortListJarray, j);
++                                if ((obj_tmp = json_object_object_get(LanPortObj, "Name")) != NULL)
++                                {
++                                    Name = json_object_get_string(obj_tmp);
++                                    if (!strcmp(stringPtr, Name))
++                                    {
++                                        if ((obj_tmp = json_object_object_get(LanPortObj, "IntfPath")) != NULL)
++                                        {
++                                            IntfPath = json_object_get_string(obj_tmp);
++                                            json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(IntfPath));
++                                            found = true;
++                                        }
++                                    }
++                                }
++                            }
++                        }
++                        else
++                        {
++                            getWanLanList(&WanLanListJarray);
++
++                            len = json_object_array_length(WanLanListJarray);
++                            for (j = 0; j < len; j++)
++                            {
++                                WanLanObj = json_object_array_get_idx(WanLanListJarray, j);
++                                if ((obj_tmp = json_object_object_get(WanLanObj, "Name")) != NULL)
++                                {
++                                    Name = json_object_get_string(obj_tmp);
++                                    if (!strcmp(stringPtr, Name))
++                                    {
++                                        if ((obj_tmp = json_object_object_get(WanLanObj, "IpIfacePath")) != NULL)
++                                        {
++                                            IpIfacePath = json_object_get_string(obj_tmp);
++                                            json_object_object_add(Jobj, paramList[i].paraName, json_object_new_string(IpIfacePath));
++                                            found = true;
++                                        }
++                                    }
++                                }
++                            }
++                        }
++
++                        if (!found)
++                        {
++                            printf("Wrong parameter value <%s> of %s\n", stringPtr, paramList[i].paraName);
++                            return false;
++                        }
++                        break;
+ 					default:
+ 						break;
+ 				}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2019-04-01 15:56:50.338489392 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2019-04-01 16:14:34.434824900 +0800
+@@ -127,7 +127,8 @@
+ 	dalType_usrAccount,
+ 	dalType_intfVlan,					// vlan group name without BrRefKey value
+ 	dalType_wlanMode,					// 802.11b, 802.11g, 802.11n, ...
+-	dalType_wifiSSID
++	dalType_wifiSSID,
++    dalType_ShaperIntf
+ };
+ 
+ bool getSpecificObj(zcfg_offset_t oid, char *key, json_type type, void *value, objIndex_t *outIid, struct json_object **outJobj);

@@ -1,0 +1,121 @@
+Index: linux-3.18.21/net/ipv4/ip_gre.c
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/ip_gre.c	2015-09-01 06:19:23.000000000 +0800
++++ linux-3.18.21/net/ipv4/ip_gre.c	2019-05-29 11:42:26.232419645 +0800
+@@ -32,6 +32,7 @@
+ #include <linux/netfilter_ipv4.h>
+ #include <linux/etherdevice.h>
+ #include <linux/if_ether.h>
++#include <linux/if_vlan.h>
+ 
+ #include <net/sock.h>
+ #include <net/ip.h>
+@@ -47,6 +48,7 @@
+ #include <net/netns/generic.h>
+ #include <net/rtnetlink.h>
+ #include <net/gre.h>
++#include <net/tcp.h>
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+ #include <net/ipv6.h>
+@@ -224,6 +226,90 @@
+ 	return PACKET_REJECT;
+ }
+ 
++static u32 gre_set_tcp_mss(struct sk_buff *skb, u16 mtu)
++{
++    struct ethhdr *eth_h = NULL;
++    struct vlan_hdr *vlan_h = NULL;
++    struct iphdr *ip_h = NULL;
++    struct tcphdr *tcp_h = NULL;
++    unsigned char *cp = NULL;
++    u32 optlen = 0;
++    u32 i = 0;
++    u16 newmss = 0;
++    //u16 oldmss = 0;
++    u8 *op = NULL;
++
++    /* skb->data = eth(14) + [vlan(4)] + ip(20) + tcp(20+) */
++    cp = (unsigned char *)skb->data;
++    eth_h = (struct ethhdr *)cp;
++    if(eth_h->h_proto == htons(ETH_P_IP)) {
++        cp += sizeof(struct ethhdr);
++    }
++    else if(eth_h->h_proto == htons(ETH_P_8021Q)) {
++        cp += sizeof(struct ethhdr);
++        vlan_h = (struct vlan_hdr *)cp;
++        if(vlan_h->h_vlan_encapsulated_proto != htons(ETH_P_IP))
++            return 0;
++
++        cp += sizeof(struct vlan_hdr);
++    }
++    else {
++        return 0;
++    }
++
++    ip_h = (struct iphdr *)cp;
++    if(ip_h-> protocol != htons(IPPROTO_TCP))
++        return 0;
++
++    cp += sizeof(struct iphdr);
++    tcp_h = (struct tcphdr *)cp;
++
++    /* TCP SYN */
++    if(tcp_h != NULL && tcp_h->syn) {
++        /* invalid TCP header length*/
++        if(tcp_h->doff * 4 < sizeof(struct tcphdr))
++            return 0;
++
++        /* no extra option field */
++        optlen = (tcp_h->doff * 4) - sizeof(struct tcphdr);
++        if(!optlen)
++            return 0;
++
++        /* find MSS field and update it */
++        op = ((u8*)tcp_h + sizeof(struct tcphdr));
++        for(i = 0; i < optlen; ) {
++            if(op[i] == TCPOPT_MSS && (optlen - i) >= TCPOLEN_MSS && op[i+1] == TCPOLEN_MSS) {
++                u16 mssval = 0;
++
++                //oldmss = (op[i+3] << 8) | op[i+2];
++                mssval = (op[i+2] << 8) | op[i+3];
++
++                // MTU - (iphdr + tcphdr)
++                if(mssval > (mtu - 40))
++                    newmss = htons(mtu - 52);
++                else
++                    break;
++
++                //mss = &newmss;
++                op[i+2] = (newmss & 0xFF00) >> 8;
++                op[i+3] = newmss & 0xFF;
++
++                // recalculate checksum
++                inet_proto_csum_replace2(&tcp_h->check, skb, htons(mssval), newmss, 0);
++
++                mssval = (op[i+2] << 8) | op[i+3];
++                break;
++            }
++            if (op[i] < 2)
++                i++;
++            else
++                i += op[i+1] ? : 1;
++        }
++    }
++
++    return 0;
++}
++
+ static void __gre_xmit(struct sk_buff *skb, struct net_device *dev,
+ 		       const struct iphdr *tnl_params,
+ 		       __be16 proto)
+@@ -238,6 +324,9 @@
+ 		tunnel->o_seqno++;
+ 	tpi.seq = htonl(tunnel->o_seqno);
+ 
++    /* Parse skb and update TCP SYN MSS value */
++    gre_set_tcp_mss(skb, dev->mtu);
++
+ 	/* Push GRE header. */
+ 	gre_build_header(skb, &tpi, tunnel->tun_hlen);
+ 

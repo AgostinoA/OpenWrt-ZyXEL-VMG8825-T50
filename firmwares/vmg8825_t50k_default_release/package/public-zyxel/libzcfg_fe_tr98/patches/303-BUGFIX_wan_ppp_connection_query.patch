@@ -1,0 +1,124 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2016-03-10 16:37:05.893600992 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2016-03-10 16:42:24.257607099 +0800
+@@ -2256,6 +2256,11 @@
+ 		return ret;
+ 	}
+ 
++	if(!strlen(ipIface) || !strstr(ipIface, "IP.Interface")){
++		ztrdbg(ZTR_DL_ERR, "%s: querying ipiface returns %s, not IP.Interface\n", __FUNCTION__, ipIface);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
+ 	IID_INIT(ipIfaceIid);
+ 	sscanf(ipIface, "IP.Interface.%hhu", &ipIfaceIid.idx[0]);
+ 	ipIfaceIid.level = 1;
+@@ -2267,7 +2272,7 @@
+ 	
+ 	/* Get Device.Ethernet.VLANTermination.i */
+ 	lowerLayer = json_object_get_string(json_object_object_get(ipIfaceJobj, "LowerLayers"));
+-	if (strstr(lowerLayer, "Ethernet.VLANTermination") != NULL){
++	if (lowerLayer && strstr(lowerLayer, "Ethernet.VLANTermination") != NULL){
+ 		IID_INIT(vlanTermIid);
+ 		sscanf(lowerLayer, "Ethernet.VLANTermination.%hhu", &vlanTermIid.idx[0]);
+ 		vlanTermIid.level = 1;
+@@ -2277,7 +2282,7 @@
+ 
+ 	/* Get Device.Ethernet.Link.i */
+ 	lowerLayer = json_object_get_string(json_object_object_get(vlanTermJobj, "LowerLayers"));
+-	if (strstr(lowerLayer, "Ethernet.Link.") != NULL){
++	if (lowerLayer && strstr(lowerLayer, "Ethernet.Link.") != NULL){
+ 		IID_INIT(ethLinkIid);
+ 		sscanf(lowerLayer, "Ethernet.Link.%hhu", &ethLinkIid.idx[0]);
+ 		ethLinkIid.level = 1;
+@@ -2469,9 +2474,9 @@
+ 			paramValue = json_object_object_get(ipIfaceJobj, "Status");
+ 			if(paramValue != NULL) {
+ 				connStatus = json_object_get_string(paramValue);
+-				if(!strcmp(connStatus, "Up"))
++				if(connStatus && !strcmp(connStatus, "Up"))
+ 					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Connected"));
+-				else if (!strcmp(connStatus, "Down") ||!strcmp(connStatus, "LowerLayerDown"))
++				else if (connStatus && (!strcmp(connStatus, "Down") ||!strcmp(connStatus, "LowerLayerDown")))
+ 					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Disconnected"));
+ 				else
+ 					json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Unconfigured"));
+@@ -2588,7 +2593,7 @@
+ 				paramValue = json_object_object_get(rtJobj, "X_ZYXEL_ActiveV6DefaultGateway");
+ 				if(paramValue != NULL) {
+ 					v6DefaultGw = json_object_get_string(paramValue);
+-					if(strstr(v6DefaultGw, ipIface)) {
++					if(v6DefaultGw && strstr(v6DefaultGw, ipIface)) {
+ 						json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(true));
+ 					}
+ 					else {
+@@ -2627,7 +2632,7 @@
+ 	}
+ ipConnFree:
+ 	if (ipIfaceJobj)
+-	json_object_put(ipIfaceJobj);
++		json_object_put(ipIfaceJobj);
+ 	if(ipAddrJobj)
+ 		json_object_put(ipAddrJobj);
+ 	if(dnsSrvJobj)
+@@ -4956,7 +4961,7 @@
+ 		goto pppConnFree;
+ 
+ 	IID_INIT(natIntfSetIid);
+-	if((ret = retrieveJobjWithIpIface((const char *)ipIface, RDM_OID_NAT_INTF_SETTING, &natIntfSetIid, &natIntfSetJobj)) != ZCFG_SUCCESS){
++	if(retrieveJobjWithIpIface((const char *)ipIface, RDM_OID_NAT_INTF_SETTING, &natIntfSetIid, &natIntfSetJobj) != ZCFG_SUCCESS){
+ 		zcfgLog(ZCFG_LOG_DEBUG, "%s: retrieve NAT_INTF_SETTING fail\n", __FUNCTION__);
+ 	}
+ 
+@@ -4975,8 +4980,9 @@
+ 		if(paramValue != NULL) {
+ 			if(!strcmp(paramList->name, "Name")) {
+ 				paramValue = json_object_object_get(ipIfaceJobj, "X_ZYXEL_SrvName");
+-				if(paramValue)
+-					printf("X_ZYXEL_SrvName, %s\n", json_object_get_string(paramValue));
++				const char *ipIfaceSrvName = json_object_get_string(paramValue);
++				if(ipIfaceSrvName && strlen(ipIfaceSrvName))
++					printf("X_ZYXEL_SrvName, %s\n", ipIfaceSrvName);
+ 				else
+ 					printf("X_ZYXEL_SrvName null\n");
+ 			}
+@@ -5005,17 +5011,18 @@
+ 			}
+ 		}
+ 
+-		paramValue = ethLinkJobj ? json_object_object_get(ethLinkJobj, paramList->name) : ethLinkJobj;
+-		if(paramValue != NULL && strcmp(paramList->name, "MACAddress") == 0) {
+-			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-			paramList++;
+-			continue;
+-		}
+-
+ 		/*Is IP.Interface.i necessary here?*/
+ 
+ 		/*special case*/
+-		if(strstr(paramList->name, "PPPoESessionID") != NULL) {
++
++		if(!strcmp(paramList->name, "MACAddress")) {
++			paramValue = ethLinkJobj ? json_object_object_get(ethLinkJobj, paramList->name) : ethLinkJobj;
++			if(paramValue != NULL)
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		else if(strstr(paramList->name, "PPPoESessionID") != NULL) {
+ 			paramValue = json_object_object_get(pppoeJobj, "SessionID");
+ 		}
+ 		else if(!strcmp(paramList->name, "PPPEncryptionProtocol")) {
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2016-03-10 16:37:05.781600990 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2016-03-10 16:37:05.973600994 +0800
+@@ -87,6 +87,7 @@
+ 			return ZCFG_SUCCESS;
+ 
+ 		json_object_put(*jobj);
++		*jobj = NULL;
+ 	}
+ 
+ 	return ZCFG_NO_SUCH_OBJECT;

@@ -1,0 +1,302 @@
+Index: ebtables-v2.0.8-2/extensions/ebt_ftos.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/extensions/ebt_ftos.c	2016-12-02 14:38:10.563450884 +0800
++++ ebtables-v2.0.8-2/extensions/ebt_ftos.c	2016-11-30 00:31:19.585631600 +0800
+@@ -1,19 +1,37 @@
+-/* ebt_ftos
++/* 
++ * Description: EBTables time extension module for userspace.
++ *  Authors:  Song Wang <songw@broadcom.com>, ported from FTOS patch netfilter/iptables
++ *           The following is the original disclaimer.
+  *
+- * Authors:
++ * Shared library add-on to iptables for FTOS
++ *
++ * (C) 2000 by Matthew G. Marsh <mgm@paktronix.com>
++ *
++ * This program is distributed under the terms of GNU GPL v2, 1991
++ *
++ * libipt_FTOS.c borrowed heavily from libipt_TOS.c  11/09/2000
+  *
+  */
+-#if 1  /*Rodney_20090724*/
+ #include <stdio.h>
+-#include <stdlib.h>
+ #include <string.h>
++#include <stdlib.h>
+ #include <getopt.h>
++
+ #include "../include/ebtables_u.h"
+-#include <linux/netfilter_bridge/ebt_ftos_t.h>
++#include "../include/linux/netfilter_bridge/ebt_ftos_t.h"
+ 
++static int ftos_supplied;
++
++#define FTOS_TRGT    '1'
++#define FTOS_SET     '2'
++#define FTOS_WMM     '4'
++#define FTOS_8021Q   '8'
+ static struct option opts[] =
+ {
+-	{ "set-ftos" , required_argument, 0, '1' },
++	{ "ftos-target" , required_argument, 0, FTOS_TRGT },
++	{ "set-ftos"    , required_argument, 0, FTOS_SET },
++	{ "wmm-ftos"    , no_argument      , 0, FTOS_WMM },
++	{ "8021q-ftos"  , no_argument      , 0, FTOS_8021Q },
+ 	{ 0 }
+ };
+ 
+@@ -21,105 +39,145 @@
+ {
+ 	printf(
+ 	"ftos target options:\n"
+-	" --set-ftos value[/mask]     : Set tos value\n");
++	" --set-ftos value     : Set TOS byte in IP packet header \n"
++	"			 This value can be in decimal (ex: 32)\n"
++	"			 in hex (ex: 0x20)\n"
++	" --ftos-target target : ACCEPT, DROP, RETURN or CONTINUE\n");
+ }
+ 
+ static void init(struct ebt_entry_target *target)
+ {
+-	struct ebt_ftos_info *ftosinfo =
+-	   (struct ebt_ftos_info *)target->data;
++	struct ebt_ftos_t_info *ftosinfo =
++	   (struct ebt_ftos_t_info *)target->data;
+ 
+ 	ftosinfo->target = EBT_CONTINUE;
+-	ftosinfo->mask = 0xff;
++	ftosinfo->ftos = 0;
++	ftos_supplied = 0;
+ }
+ 
+-static void
+-parse_ftos(const unsigned char *s, struct ebt_ftos_info *ftosinfo){
+-	char *buffer;
+-	char *end, *cp;
+-
+-	buffer = strdup(s);
+-	if ((cp = strchr(buffer, '/')) == NULL){
+-		ftosinfo->ftos = strtol(buffer, &end, 0);
+-		ftosinfo->mask = 0xff;
+-	}
+-	else {
+-		*cp = '\0';
+-		cp++;
+-		ftosinfo->ftos = buffer[0] ? strtol(buffer, &end, 0) : 0;
+-		if (ebt_errormsg[0] != '\0')
+-			return;
+-		ftosinfo->mask = cp[0] ? strtol(cp, &end, 0) : 0xFF;
+-		if (ebt_errormsg[0] != '\0')
+-			return;
+-	}
+-	free(buffer);
+-}
++#define OPT_FTOS_TARGET       0x01
++#define OPT_FTOS_SETFTOS      0x02
++#define OPT_FTOS_WMMFTOS      0x04
++#define OPT_FTOS_8021QFTOS    0x08
+ 
+-static int parse(int c, char **argv, int argc,
++static int
++parse(int c, char **argv, int argc,
+    const struct ebt_u_entry *entry, unsigned int *flags,
+    struct ebt_entry_target **target)
+ {
+-	struct ebt_ftos_info *ftosinfo =
+-	   (struct ebt_ftos_info *)(*target)->data;
++	struct ebt_ftos_t_info *ftosinfo =
++	   (struct ebt_ftos_t_info *)(*target)->data;
+ 	char *end;
+ 
+ 	switch (c) {
+-	case '1':
+-		parse_ftos(optarg, ftosinfo);
++	case FTOS_TRGT:
++#if 1	/* porting from MSTC */
++		ebt_check_option2(flags, OPT_FTOS_TARGET);
++#else
++		ebt_check_option2(flags, FTOS_TRGT);
++#endif
++		if (FILL_TARGET(optarg, ftosinfo->target))
++			ebt_print_error("Illegal --ftos-target target");
+ 		break;
+-
++	case FTOS_SET:
++		ebt_check_option2(flags, FTOS_SET);
++		ftosinfo->ftos = (u_int8_t)strtoul(optarg, &end, 0);
++        ftosinfo->ftos_set = OPT_FTOS_SETFTOS;
++		if (*end != '\0' || end == optarg)
++			ebt_print_error("Bad FTOS value '%s'", optarg);
++		ftos_supplied = 1;
++                break;
++    case FTOS_WMM:
++        ebt_check_option2(flags, OPT_FTOS_SETFTOS);
++        ftosinfo->ftos_set = FTOS_WMM;
++        //printf("LEON DEBUG: wmm-ftos..........\n");
++        ftos_supplied = 1;
++        break;
++    case FTOS_8021Q:
++        ebt_check_option2(flags, OPT_FTOS_8021QFTOS);
++        ftosinfo->ftos_set = FTOS_8021Q;
++        //printf("LEON DEBUG: 8021q-ftos..........\n");
++        ftos_supplied = 1;
++        break;
+ 	 default:
+ 		return 0;
+ 	}
+-
+ 	return 1;
+ }
+ 
+-static void final_check(const struct ebt_u_entry *entry,
++static void
++final_check(const struct ebt_u_entry *entry,
+    const struct ebt_entry_target *target, const char *name,
+    unsigned int hookmask, unsigned int time)
+ {
++	struct ebt_ftos_t_info *ftosinfo = (struct ebt_ftos_t_info *)target->data;
+ 
++	if (time == 0 && ftos_supplied == 0)
++		ebt_print_error("No ftos value supplied");
++	if (BASE_CHAIN && ftosinfo->target == EBT_RETURN)
++		ebt_print_error("--ftos-target RETURN not allowed on base chain");
+ }
+ 
+-static void print(const struct ebt_u_entry *entry,
++
++/* Prints out the targinfo. */
++static void 
++print(const struct ebt_u_entry *entry,
+    const struct ebt_entry_target *target)
+ {
+-	struct ebt_ftos_info *ftosinfo =
+-	   (struct ebt_ftos_info *)target->data;
+-
+-	printf("--set-ftos 0x%x/0x%x", ftosinfo->ftos, ftosinfo->mask);
+-
++	const struct ebt_ftos_t_info *ftosinfo = (const struct ebt_ftos_t_info*)target->data;
++    if(ftosinfo->ftos_set == FTOS_WMM)
++        printf("WMM mapping to Tos");
++    else if(ftosinfo->ftos_set == FTOS_8021Q)
++        printf("802.1Q mapping to Tos");
++    else
++	printf("TOS set 0x%x", ftosinfo->ftos);
++
++	if (ftosinfo->target == EBT_ACCEPT)
++		return;
++	printf(" --ftos-target %s", TARGET_NAME(ftosinfo->target));
++}
++
++static int 
++compare(const struct ebt_entry_target *t1,
++  	 const struct ebt_entry_target *t2)
++{
++	struct ebt_ftos_t_info *ftosinfo1 =
++	   (struct ebt_ftos_t_info *)t1->data;
++	struct ebt_ftos_t_info *ftosinfo2 =
++	   (struct ebt_ftos_t_info *)t2->data;
++
++	return ftosinfo1->target == ftosinfo2->target &&
++	   ftosinfo1->ftos == ftosinfo2->ftos &&
++	   ftosinfo1->ftos_set == ftosinfo2->ftos_set;
+ }
+ 
+-static int compare(const struct ebt_entry_target *t1,
+-   const struct ebt_entry_target *t2)
++#if 0
++/* Saves the union ipt_targinfo in parsable form to stdout. */
++static void
++save(const struct ipt_ip *ip, const struct ipt_entry_target *target)
+ {
+-	struct ebt_ftos_info *ftosinfo1 =
+-	   (struct ebt_ftos_info *)t1->data;
+-	struct ebt_ftos_info *ftosinfo2 =
+-	   (struct ebt_ftos_info *)t2->data;
++	const struct ipt_FTOS_info *finfo =
++		(const struct ipt_FTOS_info *)target->data;
+ 
+-	return ftosinfo1->ftos == ftosinfo2->ftos &&
+-	ftosinfo1->mask == ftosinfo2->mask;
++	printf("--set-ftos 0x%02x ", finfo->ftos);
+ }
++#endif
+ 
+-static struct ebt_u_target ftos_target =
++static
++struct  ebt_u_target ftos_target = 
+ {
+-	.name		= EBT_FTOS_TARGET,
+-	.size		= sizeof(struct ebt_ftos_info),
+-	.help		= print_help,
+-	.init		= init,
+-	.parse		= parse,
+-	.final_check	= final_check,
+-	.print		= print,
+-	.compare	= compare,
+-	.extra_ops	= opts,
++    EBT_FTOS_TARGET,
++    sizeof(struct ebt_ftos_t_info),
++    print_help,
++    init,
++    parse,
++    final_check,
++    print,
++    compare,
++    opts
+ };
+ 
+ void _init(void)
+ {
+ 	ebt_register_target(&ftos_target);
+ }
+-#endif
+Index: ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ftos_t.h
+===================================================================
+--- ebtables-v2.0.8-2.orig/include/linux/netfilter_bridge/ebt_ftos_t.h	2016-12-02 14:38:10.567450884 +0800
++++ ebtables-v2.0.8-2/include/linux/netfilter_bridge/ebt_ftos_t.h	2016-12-02 13:24:44.635613000 +0800
+@@ -1,12 +1,18 @@
+ #ifndef __LINUX_BRIDGE_EBT_FTOS_T_H
+ #define __LINUX_BRIDGE_EBT_FTOS_T_H
+ 
+-struct ebt_ftos_info
++struct ebt_ftos_t_info
+ {
++    int           ftos_set;
+ 	unsigned char ftos;
+-	unsigned char mask;
+-    int target;
++	// EBT_ACCEPT, EBT_DROP or EBT_CONTINUE or EBT_RETURN
++	int target;
+ };
+ #define EBT_FTOS_TARGET "ftos"
+ 
++#define FTOS_TARGET       0x01
++#define FTOS_SETFTOS      0x02
++#define FTOS_WMMFTOS      0x04
++#define FTOS_8021QFTOS    0x08
++
+ #endif
+Index: ebtables-v2.0.8-2/extensions/ebt_policer.c
+===================================================================
+--- ebtables-v2.0.8-2.orig/extensions/ebt_policer.c	2016-12-02 16:44:51.311651600 +0800
++++ ebtables-v2.0.8-2/extensions/ebt_policer.c	2016-12-07 16:13:16.910645097 +0800
+@@ -67,14 +67,14 @@
+ 	    "                                [Kilo-bytes followed by kb.\n"
+ 	    "                                Support 1kb to 1000kb.]\n"
+ 	    "srtcm mode: \n"
+-	    "The nfmark field of red packet is marked as 0x10000, \n"
+-	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "The nfmark field of red packet is marked as 0x4000, \n"
++	    "yellow packet is 0x8000 and green packet is 0xC000.\n"
+ 	    "--crate rate			committed data rate match, default %ukbps\n"
+ 	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
+ 	    "--ebs-burst size		size to match in EBS burst, default %ukb\n"
+ 	    "trtcm mode: \n"
+-	    "The nfmark field of red packet is marked as 0x10000, \n"
+-	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "The nfmark field of red packet is marked as 0x4000, \n"
++	    "yellow packet is 0x8000 and green packet is 0xC000.\n"
+ 	    "--crate rate			committed data rate match, default %ukbps\n"
+ 	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
+ 	    "--prate rate			peak data rate match, default %ukbps\n"

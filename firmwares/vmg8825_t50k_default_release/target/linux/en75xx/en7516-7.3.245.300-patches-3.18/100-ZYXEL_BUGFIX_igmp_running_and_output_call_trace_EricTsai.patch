@@ -1,0 +1,397 @@
+Index: linux-en75/net/bridge/ecnt_br.c
+===================================================================
+--- linux-en75.orig/net/bridge/ecnt_br.c	2019-03-12 16:04:02.710476365 +0800
++++ linux-en75/net/bridge/ecnt_br.c	2019-03-12 16:20:37.630447663 +0800
+@@ -386,20 +386,23 @@
+ 		ptr = kzalloc(size, GFP_ATOMIC);
+ 	}
+ 	return ptr;
+-
+ }
+ 
+-#ifdef TCSUPPORT_MULTICAST_SPEED
++//#ifdef TCSUPPORT_MULTICAST_SPEED
+ void igmp_hwnat_free(struct rcu_head *head)
+ {
+ 	struct IGMP_HWNATEntry_s *entry
+ 		= container_of(head, struct IGMP_HWNATEntry_s,rcu);
+-	if(entry)
++	if(entry){
++		if(entry->age_timer)
++			kfree(entry->age_timer);
+ 		kfree(entry);
++	}
+ 	
+ 	return;
+ }
+-#else
++//#else
++#if 0
+ void igmp_hwnat_free(void* ptr)
+ {
+ 	if (ptr)
+@@ -475,13 +478,14 @@
+ 
+ int igmp_hwnat_should_deliver(struct net_bridge *br,struct net_bridge_port *port,IGMP_HWNATEntry_t* entry)
+ {
+-	struct net_bridge_mdb_htable *mdb = br->mdb;
++	struct net_bridge_mdb_htable *mdb;
+ 	struct net_bridge_mdb_entry *mp = NULL;
+ 	struct net_bridge_port_group *pg = NULL;
+ 	struct br_ip  group;
+ 	int hash,flag = 0;
+ 	char src[16];
+-	
++
++	mdb = mlock_dereference(br->mdb, br);
+ 	if (!mdb)
+ 	{
+ 		IGMP_HWNAT_DEBUG("mdb == NULL");
+@@ -497,7 +501,7 @@
+ 		group.proto = htons(ETH_P_IPV6);
+ 	else
+ 		return 0;
+-	
++
+ #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+ 	memcpy(group.u.ip6.s6_addr,entry->grp_addr,16);
+ #endif
+@@ -568,7 +572,8 @@
+     int switch_port = 0;
+ 	
+ 	IGMP_HWNAT_DEBUG("enter");
+-	list_for_each_entry(p, &br->port_list, list)
++
++	list_for_each_entry_rcu(p, &br->port_list, list)
+ 	{
+ 		if (igmp_hwnat_should_deliver(br,p,entry)==0)
+ 			continue;	
+@@ -608,18 +613,25 @@
+ 	struct multicast_br_list *ptr = NULL;
+ 	int mask = 0;
+ 	
+-	if(br_p)
+-		return igmp_hwnat_port_mask(br_p, entry);
+-	else
++	if(br_p){
++		int rst = igmp_hwnat_port_mask(br_p, entry);
++		return rst;
++	}else
+ 	{
+-		spin_lock(&br_lock);
++		//spin_lock(&br_lock);
+ 		list_for_each_entry_safe(b_entry, ptr, &br_list, list)
+-	    {
+-			mask = igmp_hwnat_port_mask(b_entry->br, entry);
++		{
++			br_p = b_entry->br;
++			if(!spin_trylock(&br_p->lock)){
++				IGMP_HWNAT_DEBUG("brlocked");
++				continue;
++			}
++			mask = igmp_hwnat_port_mask(br_p, entry);
++			spin_unlock(&br_p->lock);
+ 			if(mask != 0)
+ 				break;
+-	    }
+-		spin_unlock(&br_lock);
++		}
++		//spin_unlock(&br_lock);
+ 	}
+ 	return mask;
+ }
+@@ -639,12 +651,14 @@
+ 		IGMP_HWNAT_DEBUG("entry == NULL");
+ 		return 0;
+ 	}
+-	IGMP_HWNAT_DEBUG("enter");
++	//IGMP_HWNAT_DEBUG("enter");
++	IGMP_HWNAT_DEBUG("%d, %u.%u.%u.%u, %u.%u.%u.%u", entry->index, entry->grp_addr[0], entry->grp_addr[1], entry->grp_addr[2], entry->grp_addr[3], entry->src_addr[0], entry->src_addr[1], entry->src_addr[2], entry->src_addr[3]);
+ 	
+-	del_timer(&entry->age_timer);
++	del_timer(entry->age_timer);
+ #ifdef TCSUPPORT_MULTICAST_SPEED
+ 	list_del_rcu(&(entry->list));
+-	call_rcu_bh(&(entry->rcu), igmp_hwnat_free);
++	//call_rcu_bh(&(entry->rcu), igmp_hwnat_free);
++	call_rcu(&(entry->rcu), igmp_hwnat_free);
+ #else
+ 	list_del(&entry->list);
+ 	igmp_hwnat_free(entry);
+@@ -754,7 +768,8 @@
+ 	
+ 	spin_lock_bh(&hwnat_lock);
+ #ifdef TCSUPPORT_MULTICAST_SPEED
+-	list_for_each_entry_rcu(entry,hwnat_flow,list)
++	//list_for_each_entry_rcu(entry,hwnat_flow,list)
++	list_for_each_entry_safe(entry, tmp, hwnat_flow, list)
+ #else
+ 	list_for_each_entry_safe(entry,tmp,hwnat_flow,list)
+ #endif
+@@ -812,7 +827,8 @@
+         return NULL;
+     }
+ #endif
+-
++
++	IGMP_HWNAT_DEBUG("index %d", index);
+ 	struct list_head* hwnat_flow = igmp_hwnat_get_list();
+ 
+ 	list_for_each_entry_rcu(entry,hwnat_flow,list)
+@@ -820,7 +836,7 @@
+ 		if (entry->index == index)
+ 		{
+ 			return entry;
+-	}
++		}
+ 	}
+ 	
+ 	return NULL;
+@@ -836,6 +852,7 @@
+ **************************************************/
+ void igmp_hwnat_timer_timeout(unsigned long arg)
+ {
++#if 0
+ 	IGMP_HWNATEntry_t* entry = (IGMP_HWNATEntry_t* )arg;
+ 	IGMP_HWNAT_DEBUG("enter");
+ 
+@@ -849,9 +866,31 @@
+ 		}
+ 		else
+ 		{
+-			mod_timer(&entry->age_timer,round_jiffies(jiffies) + hwnat_age_time);
++			mod_timer(entry->age_timer,round_jiffies(jiffies) + hwnat_age_time);
++		}
++	}
++#else
++	IGMP_HWNATEntry_t *entry = NULL;
++	struct list_head *hwnat_flow = igmp_hwnat_get_list();
++	unsigned long index = arg;
++	if(!index){
++		return;
++	}
++
++	spin_lock(&hwnat_lock);
++	list_for_each_entry(entry, hwnat_flow, list){
++		if(entry->index == index){
++			if(igmp_hwnat_check_entry_valid(entry) == 0){
++				igmp_hwnat_delete_entry(entry);
++			}else
++				mod_timer(entry->age_timer, round_jiffies(jiffies) + hwnat_age_time);
++
++			spin_unlock(&hwnat_lock);
++			return;
+ 		}
+ 	}
++	spin_unlock(&hwnat_lock);
++#endif
+ 	return;
+ }
+ 
+@@ -887,15 +926,19 @@
+ 	memcpy(entry->grp_addr,grp_addr,16);
+ 	memcpy(entry->src_addr,src_addr,16);
+ 	
++	entry->age_timer = kzalloc(sizeof(struct timer_list), GFP_ATOMIC);
++	if(entry->age_timer){
++		//setup_timer(&entry->age_timer, igmp_hwnat_timer_timeout, (unsigned long)entry);
++		setup_timer(entry->age_timer, igmp_hwnat_timer_timeout, (unsigned long)index);
++		mod_timer(entry->age_timer,round_jiffies(jiffies) + hwnat_age_time);
++	}
++
+ #ifdef TCSUPPORT_MULTICAST_SPEED
+ 	list_add_tail_rcu(&entry->list, hwnat_flow);	
+ #else
+ 	list_add_tail(&entry->list,hwnat_flow);
+ #endif
+ 
+-	setup_timer(&entry->age_timer, igmp_hwnat_timer_timeout, (unsigned long)entry);	
+-	mod_timer(&entry->age_timer,round_jiffies(jiffies) + hwnat_age_time);
+-	
+ 	return entry;
+ }
+ 
+@@ -970,7 +1013,8 @@
+ 	int i;
+ 	unsigned long wlanmask;
+ 	unsigned long masktemp = mask;
+-	entry->wifinum = 0;
++	unsigned char wifinum = entry->wifinum;
++	//entry->wifinum = 0;
+ 	IGMP_HWNAT_DEBUG("state=%d,mask=%d",state,mask);
+ 	switch(state)
+ 	{
+@@ -979,10 +1023,12 @@
+ 		case MULTICAST_SPEED_STATE_III:
+ 			//for multi ssid speed
+ 			wlanmask = (masktemp>>HWNAT_WLAN_IF_BASE)&0x0ff;
++			wifinum = 0;
+ 			for(i = 0;i < HWNAT_WLAN_IF_MAXNUM; i++)
+ 			{
+ 				if(wlanmask&(1 << i))
+-					entry->wifinum++;
++					//entry->wifinum++;
++					wifinum++;
+ 			}
+ 			break;
+ 
+@@ -995,7 +1041,30 @@
+ 	if(hwnat_set_rule_according_to_state_hook)
+ 		hwnat_set_rule_according_to_state_hook(entry->index,state,mask);
+ 	
+-	entry->mask = mask;
++	//entry->mask = mask;
++#ifdef TCSUPPORT_MULTICAST_SPEED
++	if(entry->wifinum != wifinum || entry->mask != mask){
++		entry->mask = mask;
++		entry->wifinum = wifinum;
++		return 0;
++
++		IGMP_HWNATEntry_t *udt = (IGMP_HWNATEntry_t *)igmp_hwnat_alloc(sizeof(IGMP_HWNATEntry_t));
++		if(!udt){
++			IGMP_HWNAT_DEBUG("alloc entry fail");
++			return -1;
++		}
++		igmp_hwnat_entry_copy(udt, entry);
++		udt->mask = mask;
++		udt->wifinum = wifinum;
++		list_replace_rcu(&entry->list, &udt->list);
++		call_rcu(&entry->rcu, igmp_hwnat_free);
++	}
++#else
++	if(entry->wifinum != wifinum)
++		entry->wifinum = wifinum;
++	if(entry->mask != mask)
++		entry->mask = mask;
++#endif
+ 
+ 	return 0;
+ }
+@@ -1026,11 +1095,13 @@
+ 	spin_lock(&hwnat_lock);
+ 
+ #ifdef TCSUPPORT_MULTICAST_SPEED
+-	list_for_each_entry_rcu(entry,hwnat_flow,list)
++	//list_for_each_entry_rcu(entry,hwnat_flow,list)
++	list_for_each_entry_safe(entry, temp, hwnat_flow, list)
++	{
+ #else
+ 	list_for_each_entry_safe(entry,temp,hwnat_flow,list)
+-#endif
+ 	{
++#endif
+ 		if (igmp_hwnat_check_entry_valid(entry)==0)/*check if is a valid hw_nat entry*/
+ 		{
+ 			igmp_hwnat_delete_entry(entry);
+@@ -1653,9 +1724,11 @@
+ 
+ 	b->br = br;
+ 	strncpy(b->name, br->dev->name, IFNAMSIZ);
+-	spin_lock(&br_lock);
++	//spin_lock(&br_lock);
++	spin_lock_bh(&hwnat_lock);
+ 	list_add(&b->list, &br_list);
+-	spin_unlock(&br_lock);
++	//spin_unlock(&br_lock);
++	spin_unlock_bh(&hwnat_lock);
+ }
+ 
+ void delbr_to_bridge_list(struct net_bridge *br)
+@@ -1663,23 +1736,36 @@
+ 	struct multicast_br_list *entry = NULL;
+ 	struct multicast_br_list *ptr = NULL;
+ 
+-	spin_lock(&br_lock);
++	struct net_device *netdev = br ? br->dev : NULL;
++	if(netdev){
++		IGMP_HWNAT_DEBUG("%s", netdev->name);
++	}
++
++	//spin_lock(&br_lock);
++	spin_lock_bh(&hwnat_lock);
+ 	list_for_each_entry_safe(entry, ptr, &br_list, list)
+-    {
+-        if(strcmp(entry->name, br->dev->name)== 0)
+-        {
+-            list_del(&entry->list);
++	{
++		if(strcmp(entry->name, br->dev->name)== 0)
++		{
++			list_del(&entry->list);
+ 			kfree(entry);
+-            entry = NULL;
+-        }
+-    }
+-	spin_unlock(&br_lock);
++			entry = NULL;
++		}
++	}
++	//spin_unlock(&br_lock);
++	spin_unlock_bh(&hwnat_lock);
++
+ }
+ #endif
+ #endif
+ 
+ void igmp_hwnat_init(struct net_bridge *br)
+ {
++	struct net_device *netdev = br ? br->dev : NULL;
++
++	if(netdev){
++		IGMP_HWNAT_DEBUG("%s", netdev->name);
++	}
+ #if 1 //ZYXEL
+ 	struct file* fp = NULL;		
+ 	fp = filp_open("/proc/tc3162/igmp_hwnat", O_RDWR, 0);	
+@@ -1727,6 +1813,7 @@
+ 
+ void igmp_hwnat_fini(void)
+ {
++	IGMP_HWNAT_DEBUG("");
+ 	igmp_hwnat_clear_flows();
+ 	remove_proc_entry("tc3162/igmp_hwnat",0);	
+ 	return;
+Index: linux-en75/include/linux/ecnt_skbuff.h
+===================================================================
+--- linux-en75.orig/include/linux/ecnt_skbuff.h	2019-03-12 16:04:02.362476375 +0800
++++ linux-en75/include/linux/ecnt_skbuff.h	2019-03-12 16:04:02.774476363 +0800
+@@ -249,7 +249,8 @@
+ 	short int bindvid;
+ 	unsigned char grp_addr[16];
+ 	unsigned char src_addr[16];
+-	struct timer_list age_timer;
++
++	struct timer_list *age_timer;
+ }IGMP_HWNATEntry_t;
+ #else
+ /*move from br_private.h*/
+@@ -268,7 +269,8 @@
+ 	unsigned char wifinum;
+ 	unsigned char grp_addr[16];
+ 	unsigned char src_addr[16];
+-	struct timer_list age_timer;
++	struct timer_list *age_timer;
++
+ }IGMP_HWNATEntry_t;
+ #endif
+ 
+Index: linux-en75/net/bridge/br_if.c
+===================================================================
+--- linux-en75.orig/net/bridge/br_if.c	2019-03-12 16:04:02.518476371 +0800
++++ linux-en75/net/bridge/br_if.c	2019-03-12 16:04:02.774476363 +0800
+@@ -274,11 +274,14 @@
+ 	struct net_bridge *br = netdev_priv(dev);
+ 	struct net_bridge_port *p, *n;
+ 
++#ifdef TCSUPPORT_MULTICAST_SPEED
++	delbr_to_bridge_list(br);
++#endif
+ 	list_for_each_entry_safe(p, n, &br->port_list, list) {
+ 		del_nbp(p);
+ 	}
+ 
+-#if 1//ZYXEL
++#if 0//ZYXEL
+ #ifdef TCSUPPORT_MULTICAST_SPEED
+ 	delbr_to_bridge_list(br);
+ #endif

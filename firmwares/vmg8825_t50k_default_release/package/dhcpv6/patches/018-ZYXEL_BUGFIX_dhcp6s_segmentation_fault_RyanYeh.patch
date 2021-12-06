@@ -1,0 +1,173 @@
+Index: wide-dhcpv6-20080615/dhcp6s.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6s.c	2018-07-26 18:30:36.701468556 +0800
++++ wide-dhcpv6-20080615/dhcp6s.c	2018-07-26 18:32:09.452054400 +0800
+@@ -3993,19 +3993,16 @@
+ 	struct dhcp6_listval *lv;
+ 	struct dhcp6_binding *binding;
+ {
+-	FILE *lease6fp;
++	FILE *fp = NULL;
++	FILE *fpTmp = NULL;
+ 	char hwaddr[65] = {0};
+-	char IPv6addr[48] = {0};
+ 	char ClinetId[48] = {0};
+-	char PreferredTime[10] = {0};
+-	char validTime[12] = {0};
+-	char lease6Info[512] = {0};
++	char line[512] = {0};
+ 	char *delim = ":";
+ 	char *pch;
+ 	int count = 0, i = 0;
+ 	char *addrtemp[6];
+-	char *msg = NULL;
+-	int msgLen = 0, clientLen = 0;
++	int clientLen = 0;
+ 
+ 	sprintf(ClinetId, "%s", duidstr(&binding->clientid));
+ 	clientLen = strlen(ClinetId);
+@@ -4045,20 +4042,38 @@
+ 			strcat(hwaddr, ":");
+ 	}
+ 
+-	sprintf(lease6Info, "%s ", duidstr(&binding->clientid));
+-	sprintf(IPv6addr, "%s ", in6addr2str(&lv->val_statefuladdr6.addr, 0));
+-	sprintf(PreferredTime, "%lu", lv->val_statefuladdr6.pltime);
+-	sprintf(validTime, "%lu", lv->val_statefuladdr6.vltime);
+-	strcat(lease6Info, IPv6addr);
+-	strcat(lease6Info, hwaddr);
+-	strcat(lease6Info, " ");
+-	strcat(lease6Info, PreferredTime);
+-	strcat(lease6Info, " ");
+-	strcat(lease6Info, validTime);
+-
+-	if ((lease6fp = fopen(leases6_file, "a+")) != NULL) {
+-		fprintf(lease6fp, "%s\n", lease6Info);
+-		fclose(lease6fp);
++	if((fp = fopen(leases6_file, "r")) == NULL) {
++		if((fp = fopen(leases6_file, "w")) != NULL) {
++			fprintf(fp, "%s %s %s %lu %lu\n",
++				duidstr(&binding->clientid),
++				in6addr2str(&lv->val_statefuladdr6.addr, 0),
++				hwaddr,
++				lv->val_statefuladdr6.pltime,
++				lv->val_statefuladdr6.vltime);
++		}
++		fclose(fp);
++	}
++	else if((fpTmp = fopen(leases6_tmpfile, "w")) != NULL) {
++		/* Write current v6 info. */
++		fprintf(fpTmp, "%s %s %s %lu %lu\n",
++			duidstr(&binding->clientid),
++			in6addr2str(&lv->val_statefuladdr6.addr, 0),
++			hwaddr,
++			lv->val_statefuladdr6.pltime,
++			lv->val_statefuladdr6.vltime);
++
++		/* Copy the others. */
++		while(fgets(line, sizeof(line), fp)) {
++			sscanf(line, "%s", ClinetId);
++			if(strcmp(ClinetId, duidstr(&binding->clientid)) != 0) {
++				fprintf(fpTmp, "%s", line);
++			}
++		}
++
++		fclose(fp);
++		fclose(fpTmp);
++		remove(leases6_file);
++		rename(leases6_tmpfile, leases6_file);
+ 	}
+ }
+ 
+@@ -4068,22 +4083,19 @@
+ {
+ 	FILE *lease_v6fp = NULL;
+ 	FILE *leasetmp_v6fp = NULL;
+-	char line[512]={0}, ClientId[48] = {0};
+-	char updatetime[12] = {0};
++	char line[512]={0}, ClientId[48] = {0}, IPv6addr[48] = {0}, hwaddr[65] = {0}, PreferredTime[10] = {0},
++		validTime[12] = {0};
+ 
+ 	lease_v6fp = fopen(leases6_file, "r");
+ 	if(lease_v6fp != NULL){
+ 		while (fgets(line, sizeof(line), lease_v6fp)) {
+-			sscanf(line, "%s %*s %*s %*s %*s", ClientId);
++			sscanf(line, "%s %s %s %s %s", ClientId, IPv6addr, hwaddr, PreferredTime, validTime);
+ 
+ 			if(strcmp(ClientId, duidstr(&binding->clientid)) == 0)
+ 			{
+-				if(line[strlen(line) - 1] == '\n')
+-					line[strlen(line) - 1] = '\0';
+-
+-				sprintf(updatetime, "%d", binding->updatetime);
+-				strcat(line, " ");
+-				strcat(line, updatetime);
++				memset(line, 0, sizeof(line));
++				sprintf(line, "%s %s %s %s %s %d",
++					ClientId, IPv6addr, hwaddr, PreferredTime, validTime, binding->updatetime);
+ 
+ 				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
+ 				{
+@@ -4117,21 +4129,20 @@
+ {
+ 	FILE *lease_v6fp = NULL;
+ 	FILE *leasetmp_v6fp = NULL;
+-	char line[512]={0}, ClientId[48] = {0};
++	char line[512]={0}, ClientId[48] = {0}, IPv6addr[48] = {0}, hwaddr[65] = {0}, PreferredTime[10] = {0},
++		validTime[12] = {0}, updatetime[12] = {0};
+ 	char ipV6LinklocalAddr[48] = {0};
+ 
+ 	lease_v6fp = fopen(leases6_file, "r");
+ 	if(lease_v6fp != NULL){
+ 		while (fgets(line, sizeof(line), lease_v6fp)) {
+-			sscanf(line, "%s %*s %*s %*s %*s %*s", ClientId);
++			sscanf(line, "%s %s %s %s %s %s", ClientId, IPv6addr, hwaddr, PreferredTime, validTime, updatetime);
+ 			if(strcmp(ClientId, duidstr(&optinfo->clientID)) == 0)
+ 			{
+-				if(line[strlen(line) - 1] == '\n')
+-					line[strlen(line) - 1] = '\0';
+-				sprintf(ipV6LinklocalAddr, "%s", addr2str(from));
++				memset(line, 0, sizeof(line));
+ 				//printf("from = %s, ipV6LinklocalAddr = %s, %s(%d)\n", addr2str(from), ipV6LinklocalAddr, __FUNCTION__, __LINE__);
+-				strcat(line, " ");
+-				strcat(line, ipV6LinklocalAddr);
++				sprintf(line, "%s %s %s %s %s %s %s",
++					ClientId, IPv6addr, hwaddr, PreferredTime, validTime, updatetime, addr2str(from));
+ 
+ 				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
+ 				{
+@@ -4166,17 +4177,15 @@
+ {
+ 	//set dhcp6s json config for TR069
+ 	struct json_object *dhcp6sJsonMsg = NULL;
+-	dhcp6sJsonMsg = json_object_new_object();
+ 	//dprintf(LOG_ERR, FNAME, "json : %s\n", json_object_to_json_string(dhcp6sJsonMsg));
+ 	FILE *lease_v6fp = NULL;
+-	FILE *leasetmp_v6fp = NULL;
+ 	char line[512]={0}, ClientId[48] = {0}, IPv6addr[48] = {0}, hwaddr[65] = {0}, PreferredTime[10] = {0},
+ 		validTime[12] = {0}, updatetime[12] = {0}, ipV6LinklocalAddr[48] = {0};
+ 	char *msg = NULL;
+ 	int msgLen = 0, addrEntries = 0, prefixEntries = 0;
+ 	struct dhcp6_listval *ia, *opt;
+ 	char iaInfo[100] = {0}, ia_opt[50] = {0}, time_opt[20] = {0};
+-	char optInfo_1[5] = {0}, optInfo_2[5] = {0}, optInfo_3[5] = {0}, optInfo[7] = {0};
++	char optInfo_1[5] = {0}, optInfo_2[5] = {0}, optInfo_3[5] = {0}, optInfo[15] = {0};
+ 	int optCont = 0;
+ 
+ 	lease_v6fp = fopen(leases6_file, "r");
+@@ -4256,6 +4265,7 @@
+ 				printf("ORZORZORZORZORZ ClientIPv6addrVltime = %d, vltime = %s, %s(%d)\n", dhcp6sMsg.ClientIPv6addrVltime, validTime, __FUNCTION__, __LINE__);
+ 				printf("ORZORZORZORZORZ ClientIPv6addrVltime = %d, vltime = %s, %s(%d)\n", dhcp6sMsg.ClientIPv6addrPltime, PreferredTime, __FUNCTION__, __LINE__);
+ #endif
++				dhcp6sJsonMsg = json_object_new_object();
+ 				dhcp6sMsgToJsonFormat(dhcp6sJsonMsg);
+ 				msg = json_object_to_json_string(dhcp6sJsonMsg);
+ 				msgLen = strlen(msg) + 1;
+@@ -4266,6 +4276,7 @@
+ 			}
+ 
+ 		}
++		fclose(lease_v6fp);
+ 	}
+ 
+ }

@@ -1,0 +1,162 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2019-12-05 21:23:33.476930735 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2019-12-05 21:29:05.031181000 +0800
+@@ -172,6 +172,8 @@
+ struct json_object *v6AddrObj = NULL;
+ struct json_object *dnsObj = NULL;
+ 
++struct json_object *featureFlagObj = NULL;
++
+ objIndex_t atmLinkIid = {0};
+ objIndex_t atmLinkQosIid = {0};
+ objIndex_t ptmLinkIid = {0};
+@@ -1601,6 +1603,7 @@
+ 	//sprintf(optEnableName, "option%dEnable", Tag); //ex. option60Enable
+ 	sprintf(optValueName, "option%dValue", Tag); //ex. option60Value
+ 	//Enable = json_object_get_boolean(json_object_object_get(Jobj, optEnableName));
++	const char *dhcpOption61Mode = featureFlagObj ? json_object_get_string(json_object_object_get(featureFlagObj, "DHCPOption61Mode")) : NULL;
+ 
+ 	if(Tag==60){
+ 		opt60Val = json_object_get_string(json_object_object_get(Jobj, "option60Value"));
+@@ -1611,13 +1614,18 @@
+ 	else if(Tag==61){
+ 		char *tmpIaid = NULL;
+ 		char *tmpDuid = NULL;
+-		if(json_object_object_get(Jobj, "option61Iaid"))
+-			tmpIaid = json_object_get_string(json_object_object_get(Jobj, "option61Iaid"));
+-		if(json_object_object_get(Jobj, "option61Duid"))
+-			tmpDuid = json_object_get_string(json_object_object_get(Jobj, "option61Duid"));
+-		if(json_object_object_get(Jobj, "option61Iaid")&&json_object_object_get(Jobj, "option61Duid")){
+-			opt61ValEncode(tmpIaid,tmpDuid,Value,Tag);
+-			json_object_object_add(Jobj,"option61Value",json_object_new_string(Value));
++		if(dhcpOption61Mode && !strcmp(dhcpOption61Mode, "ADDRDOMAIN")){
++			json_object_object_add(Jobj, "option61Value", json_object_new_string(""));
++		}else{
++			// default DUIDEN
++			if(json_object_object_get(Jobj, "option61Iaid"))
++				tmpIaid = json_object_get_string(json_object_object_get(Jobj, "option61Iaid"));
++			if(json_object_object_get(Jobj, "option61Duid"))
++				tmpDuid = json_object_get_string(json_object_object_get(Jobj, "option61Duid"));
++			if(json_object_object_get(Jobj, "option61Iaid")&&json_object_object_get(Jobj, "option61Duid")){
++				opt61ValEncode(tmpIaid,tmpDuid,Value,Tag);
++				json_object_object_add(Jobj,"option61Value",json_object_new_string(Value));
++			}
+ 		}
+ 	}
+     else if(Tag == 125){
+@@ -1829,8 +1837,10 @@
+ 	bool needSet = false;
+ 	char tmp[256]={0}, Value[256]={0};
+ 	char *newValue = NULL;
+-	
++
++
+ 	oid = RDM_OID_DHCPV4_SENT_OPT;
++	const char *dhcpOption61Mode = featureFlagObj ? json_object_get_string(json_object_object_get(featureFlagObj, "DHCPOption61Mode")) : NULL;
+ 	
+ 	if(*optObj){
+ 		CurrOptEnable = json_object_get_boolean(json_object_object_get(*optObj, "Enable"));
+@@ -1860,14 +1870,18 @@
+ 	else if(Tag==61 && optEnable){
+ 		char *tmpIaid = NULL;
+ 		char *tmpDuid = NULL;
+-		if(json_object_object_get(Jobj, "option61Iaid"))
+-			tmpIaid = json_object_get_string(json_object_object_get(Jobj, "option61Iaid"));
+-		if(json_object_object_get(Jobj, "option61Duid"))
+-			tmpDuid = json_object_get_string(json_object_object_get(Jobj, "option61Duid"));
+-		if(json_object_object_get(Jobj, "option61Iaid")&&json_object_object_get(Jobj, "option61Duid")){
+-			strcpy(tmp,"");
+-			opt61ValEncode(tmpIaid,tmpDuid,tmp,Tag);
+-			strcpy(Value, tmp);
++		if(dhcpOption61Mode && !strcmp(dhcpOption61Mode, "ADDRDOMAIN")){
++			strcpy(Value, CurrValue);
++		}else{
++			if(json_object_object_get(Jobj, "option61Iaid"))
++				tmpIaid = json_object_get_string(json_object_object_get(Jobj, "option61Iaid"));
++			if(json_object_object_get(Jobj, "option61Duid"))
++				tmpDuid = json_object_get_string(json_object_object_get(Jobj, "option61Duid"));
++			if(json_object_object_get(Jobj, "option61Iaid")&&json_object_object_get(Jobj, "option61Duid")){
++				strcpy(tmp,"");
++				opt61ValEncode(tmpIaid,tmpDuid,tmp,Tag);
++				strcpy(Value, tmp);
++			}
+ 		}
+ 	}
+ 	else if(Tag==125 && optEnable){
+@@ -2827,6 +2841,8 @@
+ 	if(dynamicDnsClientSrv4Obj) zcfgFeJsonObjFree(dynamicDnsClientSrv4Obj);
+ 	if(dynamicDnsClientSrv6Obj) zcfgFeJsonObjFree(dynamicDnsClientSrv6Obj);
+ 	
++	if(featureFlagObj) zcfgFeJsonObjFree(featureFlagObj);
++
+ 	return ret;
+ }
+ 
+@@ -3465,14 +3481,14 @@
+ 	bool checkDuplicateVlan = true;
+ 	IID_INIT(iid);
+ 	iid.idx[0] = 0;
+-	if(ZCFG_SUCCESS==zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FEATURE_FLAG, &iid, &obj)){
+-		checkDuplicateVlan = json_object_get_boolean(json_object_object_get(obj, "checkDuplicateVlan"));
++	if(ZCFG_SUCCESS==zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FEATURE_FLAG, &iid, &featureFlagObj)){
++		checkDuplicateVlan = json_object_get_boolean(json_object_object_get(featureFlagObj, "checkDuplicateVlan"));
+ 		if(false ==checkDuplicateVlan){
+-			if(obj) zcfgFeJsonObjFree(obj);
++			//if(obj) zcfgFeJsonObjFree(obj);
+ 			return false;
+ 		}
+ 	}
+-	if(obj) zcfgFeJsonObjFree(obj);
++	//if(obj) zcfgFeJsonObjFree(obj);
+ 	/*support duplicate vlan by config. end*/
+ 
+ 	Name = Jgets(Jobj, "Name");
+@@ -4357,6 +4373,8 @@
+ 			}
+ 			zcfgFeJsonObjFree(v4FwdObj);
+ 		}
++
++		const char *dhcpOption61Mode = featureFlagObj ? json_object_get_string(json_object_object_get(featureFlagObj, "DHCPOption61Mode")) : NULL;
+ 		
+ 		//DHCP REQ OPT
+ 		IID_INIT(iid);
+@@ -4391,13 +4409,19 @@
+ 				}
+ 			}else if(tag == 61 ){
+ 				json_object_object_add(pramJobj, "option61Enable", json_object_new_boolean(opt));
+-				char iaidVal[256]={0};
+-				char duidVal[256]={0};
+-				if(opt){
+-					opt61ValDecode(value,iaidVal,duidVal);
++				if(dhcpOption61Mode && !strcmp(dhcpOption61Mode, "ADDRDOMAIN")){
++					char addrDomain[256] = {0};
++
++					json_object_object_add(pramJobj, "option61Value", json_object_new_string(addrDomain));
++				}else{ // default
++					char iaidVal[256]={0};
++					char duidVal[256]={0};
++					if(opt){
++						opt61ValDecode(value,iaidVal,duidVal);
++					}
++					json_object_object_add(pramJobj, "option61Iaid", json_object_new_string(iaidVal));
++					json_object_object_add(pramJobj, "option61Duid", json_object_new_string(duidVal));
+ 				}
+-				json_object_object_add(pramJobj, "option61Iaid", json_object_new_string(iaidVal));
+-				json_object_object_add(pramJobj, "option61Duid", json_object_new_string(duidVal));
+ 			}else if(tag == 125 ){
+ 				json_object_object_add(pramJobj, "option125Enable", json_object_new_boolean(opt));
+ 				json_object_object_add(pramJobj, "option125Value", json_object_new_string(value));
+@@ -4575,6 +4599,12 @@
+ 	struct json_object *pramJobj = NULL;
+ 	struct json_object *ipIfObj = NULL;
+ 	initGlobalObjects();
++
++
++	objIndex_t featureFlagIid;
++	IID_INIT(featureFlagIid);
++	zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FEATURE_FLAG, &featureFlagIid, &featureFlagObj);
++
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfObj) == ZCFG_SUCCESS) {
+ 		
+ 		pramJobj = json_object_new_object();

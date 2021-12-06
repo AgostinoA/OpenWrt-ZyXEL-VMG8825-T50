@@ -1,0 +1,485 @@
+Index: u-boot-2009.11/common/cmd_bootm.c
+===================================================================
+--- u-boot-2009.11.orig/common/cmd_bootm.c	2012-11-03 21:14:18.730066702 +0800
++++ u-boot-2009.11/common/cmd_bootm.c	2012-11-03 21:14:18.794067321 +0800
+@@ -197,6 +197,8 @@
+   #define IH_INITRD_ARCH IH_ARCH_SH
+ #elif defined(__sparc__)
+   #define IH_INITRD_ARCH IH_ARCH_SPARC
++#elif defined(__arc__)
++  #define IH_INITRD_ARCH IH_ARCH_ARC
+ #else
+ # error Unknown CPU type
+ #endif
+@@ -971,7 +973,9 @@
+ 
+ 	debug ("   kernel data at 0x%08lx, len = 0x%08lx (%ld)\n",
+ 			*os_data, *os_len, *os_len);
+-
++#if defined(CONFIG_ARC_EMAC) && defined(CONFIG_CMD_NET)
++	eth_stop();
++#endif
+ 	return (void *)img_addr;
+ }
+ 
+Index: u-boot-2009.11/common/cmd_elf.c
+===================================================================
+--- u-boot-2009.11.orig/common/cmd_elf.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/common/cmd_elf.c	2012-11-03 21:14:18.794067321 +0800
+@@ -41,6 +41,9 @@
+ 	if (dcache)
+ 		dcache_disable ();
+ 
++#ifdef CONFIG_ARC
++    eth_stop();
++#endif
+ 	/*
+ 	 * pass address parameter as argv[0] (aka command name),
+ 	 * and all remaining args
+Index: u-boot-2009.11/common/env_common.c
+===================================================================
+--- u-boot-2009.11.orig/common/env_common.c	2012-11-03 21:14:18.786063227 +0800
++++ u-boot-2009.11/common/env_common.c	2012-11-03 21:14:18.794067321 +0800
+@@ -218,11 +218,18 @@
+ #ifdef CONFIG_SYS_REDUNDAND_ENVIRONMENT
+ 	env_ptr->flags = 0xFF;
+ #endif
++
++#ifndef CONFIG_RUBY_BOARD
+ 	env_crc_update ();
+ 	gd->env_valid = 1;
++#endif
+ }
+ 
++#ifndef CONFIG_RUBY_BOARD
+ void env_relocate (void)
++#else
++void env_relocate (void *tmp_buf)
++#endif
+ {
+ #ifndef CONFIG_RELOC_FIXUP_WORKS
+ 	DEBUGF ("%s[%d] offset = 0x%lx\n", __FUNCTION__,__LINE__,
+@@ -246,10 +253,18 @@
+ 	/*
+ 	 * We must allocate a buffer for the environment
+ 	 */
++#ifndef CONFIG_RUBY_BOARD
+ 	env_ptr = (env_t *)malloc (CONFIG_ENV_SIZE);
+-	DEBUGF ("%s[%d] malloced ENV at %p\n", __FUNCTION__,__LINE__,env_ptr);
++#else
++	if ( tmp_buf!=NULL ) {
++		env_ptr = (env_t *)tmp_buf;
++	} else {
++		env_ptr = (env_t *)malloc (CONFIG_ENV_SIZE);
++	}
+ #endif
+ 
++	DEBUGF ("%s[%d] malloced ENV at %p\n", __FUNCTION__,__LINE__,env_ptr);
++#endif
+ 	if (gd->env_valid == 0) {
+ #if defined(CONFIG_GTH)	|| defined(CONFIG_ENV_IS_NOWHERE)	/* Environment not changable */
+ 		puts ("Using default environment\n\n");
+@@ -258,7 +273,7 @@
+ 		show_boot_progress (-60);
+ #endif
+ 		set_default_env();
+-#if defined(CONFIG_CMD_SAVEENV) && !defined(CONFIG_ENV_IS_NOWHERE)
++#if defined(CONFIG_CMD_SAVEENV) && !defined(CONFIG_ENV_IS_NOWHERE) && !defined(CONFIG_RUBY_BOARD)
+ 		puts ("Save the default environment\n\n");
+ 		saveenv();
+ #endif
+Index: u-boot-2009.11/common/image.c
+===================================================================
+--- u-boot-2009.11.orig/common/image.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/common/image.c	2012-11-03 21:14:18.794067321 +0800
+@@ -94,6 +94,7 @@
+ 	{	IH_ARCH_SPARC64,	"sparc64",	"SPARC 64 Bit",	},
+ 	{	IH_ARCH_BLACKFIN,	"blackfin",	"Blackfin",	},
+ 	{	IH_ARCH_AVR32,		"avr32",	"AVR32",	},
++	{	IH_ARCH_ARC,		"arc",		"arc",	},
+ 	{	-1,			"",		"",		},
+ };
+ 
+Index: u-boot-2009.11/examples/standalone/stubs.c
+===================================================================
+--- u-boot-2009.11.orig/examples/standalone/stubs.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/examples/standalone/stubs.c	2012-11-03 21:16:03.000000000 +0800
+@@ -184,6 +184,28 @@
+ "	jmp %%g1\n"					\
+ "	nop\n"						\
+ 	: : "i"(offsetof(gd_t, jt)), "i"(XF_ ## x * sizeof(void *)) : "g1" );
++#elif defined(CONFIG_ARC) && defined(CONFIG_RUBY_BOARD)
++#include <asm/io.h>
++/*
++ * Ruby does not have a dedicated register to store the pointer to
++ * the global_data(gd).
++ */
++gd_t *gd;
++
++/*
++ * The gd pointer is stored on pio register at 0xe00000bc
++ * first arg is pointer to jump table, second arg is offset
++ * of jump.  r10, r11 are clobbered
++ */
++#define EXPORT_FUNC(x) \
++	asm volatile (			\
++"	.globl " #x "\n"		\
++#x ":\n"				\
++"	ld	r10,[0xe00000bc] \n"	\
++"	ld	r11,[r10,%0] \n"	\
++"	ld	r10,[r11,%1] \n"	\
++"	jal	[r10] \n"			\
++	: : "i"(offsetof(gd_t, jt)), "i"(XF_ ## x * sizeof(void *)):"r10","r11");
+ 
+ #else
+ #error stubs definition missing for this architecture
+@@ -220,6 +241,10 @@
+ 	global_data = (gd_t *)argv[-1];
+ 	jt = global_data->jt;
+ #endif
++#if defined(CONFIG_ARC) && defined(CONFIG_RUBY_BOARD)
++    /* Ruby does not have a dedicated register for passing global_data; see board/ruby/ruby.c-->board_global_data_init() */
++    gd = (gd_t *)readl(0xe00000bc);
++#endif
+ }
+ 
+ #undef EXPORT_FUNC
+Index: u-boot-2009.11/include/image.h
+===================================================================
+--- u-boot-2009.11.orig/include/image.h	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/include/image.h	2012-11-03 21:14:18.798054980 +0800
+@@ -106,6 +106,7 @@
+ #define IH_ARCH_BLACKFIN	16	/* Blackfin	*/
+ #define IH_ARCH_AVR32		17	/* AVR32	*/
+ #define IH_ARCH_ST200	        18	/* STMicroelectronics ST200  */
++#define IH_ARCH_ARC         19  /* ARC */
+ 
+ /*
+  * Image Types
+@@ -501,6 +502,8 @@
+ 	if (!image_check_arch (hdr, IH_ARCH_SH))
+ #elif defined(__sparc__)
+ 	if (!image_check_arch (hdr, IH_ARCH_SPARC))
++#elif defined(__arc__)
++    if (!image_check_arch (hdr, IH_ARCH_ARC))
+ #else
+ # error Unknown CPU type
+ #endif
+Index: u-boot-2009.11/net/bootp.c
+===================================================================
+--- u-boot-2009.11.orig/net/bootp.c	2012-11-03 21:14:18.718145351 +0800
++++ u-boot-2009.11/net/bootp.c	2012-11-03 21:14:18.798054980 +0800
+@@ -476,6 +476,16 @@
+ }
+ 
+ #else
++
++#if defined(CONFIG_CMD_BOOTP) && defined(CONFIG_BOOTP_QTN_VENDORINFO) && !defined(CONFIG_CMD_DHCP)
++static u8 BootpQtnVendorInfo(u8 * payload) {
++	static const char vendor_specific_payload[] = "QUANTENNA-RGMII";
++	size_t payload_size = strlen(vendor_specific_payload) + 1;
++	memcpy(payload, vendor_specific_payload, payload_size);
++	return payload_size;
++}
++#endif
++
+ /*
+  *	Warning: no field size check - change CONFIG_BOOTP_* at your own risk!
+  */
+@@ -542,6 +552,12 @@
+ 	e   += 32;
+ #endif
+ 
++#if defined(CONFIG_BOOTP_QTN_VENDORINFO)
++	*e++ = 43;
++	*e = BootpQtnVendorInfo(e + 1);
++	e += *e + 1;
++#endif
++
+ 	*e++ = 255;		/* End of the list */
+ 
+ 	return e - start;
+Index: u-boot-2009.11/tools/Makefile
+===================================================================
+--- u-boot-2009.11.orig/tools/Makefile	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/tools/Makefile	2012-11-03 21:14:18.798054980 +0800
+@@ -82,6 +82,8 @@
+ BIN_FILES-y += mkimage$(SFX)
+ BIN_FILES-$(CONFIG_NETCONSOLE) += ncb$(SFX)
+ BIN_FILES-$(CONFIG_SHA1_CHECK_UB_IMG) += ubsha1$(SFX)
++BIN_FILES-y += chkimage$(SFX)
++BIN_FILES-y += chkimage_target
+ 
+ # Source files which exist outside the tools directory
+ EXT_OBJ_FILES-y += common/env_embedded.o
+@@ -104,6 +106,7 @@
+ OBJ_FILES-$(CONFIG_NETCONSOLE) += ncb.o
+ OBJ_FILES-y += os_support.o
+ OBJ_FILES-$(CONFIG_SHA1_CHECK_UB_IMG) += ubsha1.o
++OBJ_FILES-y += chkimage.o
+ 
+ # Don't build by default
+ #ifeq ($(ARCH),ppc)
+@@ -153,6 +156,10 @@
+ 		-D__KERNEL_STRICT_NAMES
+ CFLAGS     = $(HOSTCFLAGS) $(CPPFLAGS) -O
+ 
++ifeq ($(ARCH),arc)
++CPPFLAGS += -I$(TOPDIR)/quantenna/common
++endif
++
+ # No -pedantic switch to avoid libfdt compilation warnings
+ FIT_CFLAGS = -Wall $(CPPFLAGS) -O
+ 
+@@ -210,6 +217,17 @@
+ $(obj)ubsha1$(SFX):	$(obj)os_support.o $(obj)sha1.o $(obj)ubsha1.o
+ 	$(CC) $(CFLAGS) -o $@ $^
+ 
++$(obj)chkimage$(SFX):	$(obj)chkimage.o $(obj)crc32.o $(obj)image.o $(obj)md5.o \
++			$(obj)sha1.o $(LIBFDT_OBJS) $(obj)os_support.o
++	$(CC) $(CFLAGS) $(HOST_LDFLAGS) -o $@ $^
++	$(STRIP) $@
++
++$(obj)chkimage_target:	$(obj)chkimage$(SFX)
++	$(CROSS_COMPILE)gcc $(CFLAGS) $(HOST_LDFLAGS) -Os -o $@ \
++		chkimage.c ../lib_generic/crc32.c ../common/image.c ../lib_generic/md5.c \
++		../lib_generic/sha1.c ../libfdt/*.c os_support.c
++	$(CROSS_COMPILE)strip $@
++
+ # Some files complain if compiled with -pedantic, use FIT_CFLAGS
+ $(obj)default_image.o: $(SRCTREE)/tools/default_image.c
+ 	$(CC) -g $(FIT_CFLAGS) -c -o $@ $<
+@@ -229,6 +247,9 @@
+ $(obj)os_support.o: $(SRCTREE)/tools/os_support.c
+ 	$(CC) -g $(FIT_CFLAGS) -c -o $@ $<
+ 
++$(obj)chkimage.o: $(SRCTREE)/tools/chkimage.c
++	$(CC) -g $(FIT_CFLAGS) -c -o $@ $<
++
+ # Some of the tool objects need to be accessed from outside the tools directory
+ $(obj)%.o: $(SRCTREE)/common/%.c
+ 	$(CC) -g $(FIT_CFLAGS) -c -o $@ $<
+Index: u-boot-2009.11/net/eth.c
+===================================================================
+--- u-boot-2009.11.orig/net/eth.c	2012-11-03 21:14:18.774068681 +0800
++++ u-boot-2009.11/net/eth.c	2012-11-03 21:14:18.798054980 +0800
+@@ -218,6 +218,10 @@
+ 	comcerto_gemac_initialize(bis, 0, "comcerto_gemac0");
+ 	comcerto_gemac_initialize(bis, 1, "comcerto_gemac1");
+ #endif
++#if defined (CONFIG_ARC_EMAC)
++	arc_eth_init(bis);
++#endif
++
+ 	if (!eth_devices) {
+ 		puts ("No ethernet found.\n");
+ 		show_boot_progress (-64);
+Index: u-boot-2009.11/common/dlmalloc.c
+===================================================================
+--- u-boot-2009.11.orig/common/dlmalloc.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/common/dlmalloc.c	2012-11-03 21:14:18.798054980 +0800
+@@ -1533,7 +1533,9 @@
+ 	mem_malloc_end = start + size;
+ 	mem_malloc_brk = start;
+ 
++#ifndef CONFIG_ARC_HEAP_MEM_NO_INIT
+ 	memset((void *)mem_malloc_start, 0, size);
++#endif
+ }
+ #endif
+ 
+Index: u-boot-2009.11/common/env_sf.c
+===================================================================
+--- u-boot-2009.11.orig/common/env_sf.c	2012-11-03 21:14:18.786063227 +0800
++++ u-boot-2009.11/common/env_sf.c	2012-11-03 21:14:18.798054980 +0800
+@@ -30,6 +30,8 @@
+ #include <malloc.h>
+ #include <spi_flash.h>
+ 
++#ifndef CONFIG_RUBY_BOARD
++
+ #ifndef CONFIG_ENV_SPI_BUS
+ # define CONFIG_ENV_SPI_BUS	0
+ #endif
+@@ -157,3 +159,5 @@
+ 
+ 	return 0;
+ }
++
++#endif /* #ifndef CONFIG_RUBY_BOARD */
+Index: u-boot-2009.11/drivers/mtd/spi/Makefile
+===================================================================
+--- u-boot-2009.11.orig/drivers/mtd/spi/Makefile	2012-11-03 21:14:18.674067109 +0800
++++ u-boot-2009.11/drivers/mtd/spi/Makefile	2012-11-03 21:14:18.798054980 +0800
+@@ -34,6 +34,7 @@
+ COBJS-$(CONFIG_SPI_FLASH_WINBOND)	+= winbond.o
+ COBJS-$(CONFIG_SPI_M95XXX) += eeprom_m95xxx.o
+ COBJS-$(CONFIG_SPI_FLASH_RT6855A) += rt6855a_spiflash.o
++COBJS-$(CONFIG_SPI_FLASH_RUBY) += ruby_spiflash.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+Index: u-boot-2009.11/lib_generic/lzma/LzmaTools.c
+===================================================================
+--- u-boot-2009.11.orig/lib_generic/lzma/LzmaTools.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/lib_generic/lzma/LzmaTools.c	2012-11-03 21:14:18.802728481 +0800
+@@ -50,7 +50,21 @@
+ #include <linux/string.h>
+ #include <malloc.h>
+ 
++#ifdef CONFIG_RUBY_BOARD
++static void *SzAlloc(void *p, size_t size)
++{
++    void *tmp;
++    p = p;
++
++    if ( (tmp = malloc(size)) == NULL ) {
++        printf("\nLZMA: malloc failed! needs %d bytes\n", size);
++    }
++    return tmp;
++}
++#else
+ static void *SzAlloc(void *p, size_t size) { p = p; return malloc(size); }
++#endif
++
+ static void SzFree(void *p, void *address) { p = p; free(address); }
+ 
+ int lzmaBuffToBuffDecompress (unsigned char *outStream, SizeT *uncompressedSize,
+Index: u-boot-2009.11/lib_generic/string.c
+===================================================================
+--- u-boot-2009.11.orig/lib_generic/string.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/lib_generic/string.c	2012-11-03 21:14:18.802728481 +0800
+@@ -14,7 +14,7 @@
+  * -  Added strsep() which will replace strtok() soon (because strsep() is
+  *    reentrant and should be faster). Use only strsep() in new code, please.
+  */
+-
++#include <common.h>
+ #include <linux/types.h>
+ #include <linux/string.h>
+ #include <linux/ctype.h>
+Index: u-boot-2009.11/include/linux/stat.h
+===================================================================
+--- u-boot-2009.11.orig/include/linux/stat.h	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/include/linux/stat.h	2012-11-03 21:14:18.802728481 +0800
+@@ -68,7 +68,7 @@
+ #endif	/* __PPC__ */
+ 
+ #if defined (__ARM__) || defined (__I386__) || defined (__M68K__) || defined (__bfin__) ||\
+-	defined (__microblaze__)
++	defined (__microblaze__) || defined (__ARC__)
+ 
+ struct stat {
+ 	unsigned short st_dev;
+Index: u-boot-2009.11/common/cmd_jffs2.c
+===================================================================
+--- u-boot-2009.11.orig/common/cmd_jffs2.c	2012-11-03 21:14:18.762054579 +0800
++++ u-boot-2009.11/common/cmd_jffs2.c	2012-11-03 21:14:18.802728481 +0800
+@@ -143,7 +143,7 @@
+ u8 current_mtd_partnum = 0;
+ #endif
+ 
+-#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ #include <spi_flash.h>
+ struct spi_flash *spiFlash = NULL;
+ #endif
+@@ -182,7 +182,7 @@
+ 
+ 		printf("no such FLASH device: %s%d (valid range 0 ... %d\n",
+ 				MTD_DEV_TYPE(type), num, CONFIG_SYS_MAX_FLASH_BANKS - 1);
+-#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ 		spiFlash = spi_flash_probe(CONFIG_JFFS2_SPI_BUS, num, CONFIG_JFFS2_SPI_MAX_HZ, CONFIG_JFFS2_SPI_MODE);
+ 		if ( spiFlash != NULL ) {
+ 			*size = spiFlash->size;
+@@ -313,7 +313,7 @@
+ 	}
+ 
+ 	return sector_size;
+-#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ 	return spiFlash->sector_size;
+ #else
+ 	BUG();
+Index: u-boot-2009.11/fs/jffs2/jffs2_1pass.c
+===================================================================
+--- u-boot-2009.11.orig/fs/jffs2/jffs2_1pass.c	2012-11-03 21:14:18.758058818 +0800
++++ u-boot-2009.11/fs/jffs2/jffs2_1pass.c	2012-11-03 21:14:18.802728481 +0800
+@@ -145,7 +145,7 @@
+ /* keeps pointer to currentlu processed partition */
+ static struct part_info *current_part;
+ 
+-#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ #include <spi_flash.h>
+ extern struct spi_flash *spiFlash;
+ #endif
+@@ -394,7 +394,7 @@
+ }
+ #endif
+ 
+-#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ #define SPIFLASH_PAGE_SIZE 512
+ #define SPIFLASH_PAGE_MASK (~(SPIFLASH_PAGE_SIZE-1))
+ 
+@@ -497,14 +497,14 @@
+ 		if ( flash_info[id->num].size > 0 ) {
+ 			return get_fl_mem_nor(off, size, ext_buf);
+ 		} else {
+-  #if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++  #if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ 			return get_fl_mem_spi(off, size, ext_buf);
+   #else
+ 			return NULL;
+   #endif
+ 		}
+ 	}
+-#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ 	if (id->type == MTD_DEV_TYPE_NOR) {
+ 		return get_fl_mem_spi(off, size, ext_buf);
+ 	} else {
+@@ -537,14 +537,14 @@
+ 		if ( flash_info[id->num].size > 0 ) {
+ 			return get_node_mem_nor(off, ext_buf);
+ 		} else {
+-  #if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++  #if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ 			return get_node_mem_spi(off, ext_buf);
+   #else
+ 			return NULL;
+   #endif
+ 		}
+ 	}
+-#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)  || defined(CONFIG_SPI_FLASH_RUBY)
+ 	if (id->type == MTD_DEV_TYPE_NOR) {
+ 		return get_node_mem_spi(off, ext_buf);
+ 	} else {
+@@ -577,7 +577,7 @@
+ 	if (buf == ext_buf)
+ 		return;
+ 	switch (id->type) {
+-#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A) || defined(CONFIG_SPI_FLASH_RUBY)
+ 	case MTD_DEV_TYPE_NOR:
+ 		return put_fl_mem_spi(buf);
+ #endif
+Index: u-boot-2009.11/include/common.h
+===================================================================
+--- u-boot-2009.11.orig/include/common.h	2012-11-03 21:14:18.674067109 +0800
++++ u-boot-2009.11/include/common.h	2012-11-03 21:14:18.802728481 +0800
+@@ -245,7 +245,11 @@
+ 
+ /* common/cmd_nvedit.c */
+ int	env_init     (void);
++#ifndef CONFIG_RUBY_BOARD
+ void	env_relocate (void);
++#else
++void	env_relocate (void *tmp_buf);
++#endif
+ int	envmatch     (uchar *, int);
+ char	*getenv	     (char *);
+ int	getenv_r     (char *name, char *buf, unsigned len);

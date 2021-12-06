@@ -1,0 +1,6 @@
+TARGET_CROSS=
+GCC_VERSION=4.6.3
+LIBC_TYPE=unknown
+LIBC_URL=unknown
+LIBC_VERSION=unknown
+LIBC_SO_VERSION=unknown

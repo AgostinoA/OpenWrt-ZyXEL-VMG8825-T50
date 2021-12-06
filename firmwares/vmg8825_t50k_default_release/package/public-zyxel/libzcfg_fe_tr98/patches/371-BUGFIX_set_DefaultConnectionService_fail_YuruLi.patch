@@ -1,0 +1,114 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2016-09-23 14:20:04.999943318 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2016-09-23 14:11:18.891434200 +0800
+@@ -65,12 +65,12 @@
+ zcfgRet_t l3fwdObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	objIndex_t objIid;
+-	char iface[32] = {0};
+ 	rdm_RoutingRouter_t *routerObj = NULL;
+ 	rdm_IpIface_t *ipIfaceObj = NULL;
+ 	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
++	char *intf = NULL, *tmp_ptr = NULL;
+ 	char X_ZYXEL_ActiveDefaultGateway[321] = {0};
++	char DefaultConnectionService[513] = {0};
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -91,14 +91,15 @@
+ 			objIid.level = 1;
+ 			sscanf(intf, "IP.Interface.%hhu", &objIid.idx[0]);
+ 			if(feObjStructGet(RDM_OID_IP_IFACE, &objIid, (void **)&ipIfaceObj, TR98_GET_WITHOUT_UPDATE) == ZCFG_SUCCESS ) {
+-				if(!strcmp(ipIfaceObj->Status, TR181_UP)){
+-					if(strstr(ipIfaceObj->LowerLayers, "PPP.Interface") != NULL)
+-						strcpy(iface, ipIfaceObj->LowerLayers);
+-					else
+-						strcpy(iface, intf);
+-					
+-					zcfgFeObjStructFree(ipIfaceObj);
+-					break;
++				memset(tr98ObjName, 0, sizeof(tr98ObjName));
++				if(strstr(ipIfaceObj->LowerLayers, "PPP.Interface") != NULL)
++					zcfgFe181To98MappingNameGet(ipIfaceObj->LowerLayers, tr98ObjName);
++				else
++					zcfgFe181To98MappingNameGet(intf, tr98ObjName);
++				if(tr98ObjName[0] != '\0'){
++					if(DefaultConnectionService[0] != '\0')
++						strcat(DefaultConnectionService, ",");
++					strcat(DefaultConnectionService, tr98ObjName);
+ 				}
+ 				zcfgFeObjStructFree(ipIfaceObj);
+ 			}
+@@ -106,10 +107,8 @@
+ 		intf = strtok_r(NULL, ",", &tmp_ptr);
+ 	}
+ 
+-	zcfgFe181To98MappingNameGet(iface, tr98ObjName);
+-
+ 	*tr98Jobj = json_object_new_object();
+-	json_object_object_add(*tr98Jobj, "DefaultConnectionService", json_object_new_string(tr98ObjName));
++	json_object_object_add(*tr98Jobj, "DefaultConnectionService", json_object_new_string(DefaultConnectionService));
+ 	json_object_object_add(*tr98Jobj, "ForwardNumberOfEntries", json_object_new_int(routerObj->IPv4ForwardingNumberOfEntries));
+ 	json_object_object_add(*tr98Jobj, "X_ZYXEL_AutoSecureDefaultIface", json_object_new_boolean(routerObj->X_ZYXEL_AutoSecureDefaultIface));
+ 	
+@@ -134,6 +133,11 @@
+ 	objIndex_t objIid;
+ 	char defaultIfaceName[MAX_TR181_PATHNAME] = {0};
+ 	struct json_object *routerObj = NULL, *paramValue = NULL;
++	char DefaultConnectionService[513] = {0};
++	char X_ZYXEL_ActiveDefaultGateway[321] = {0};
++	char tr181ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char ipIfaceName[32] = {0};
++	char *intf = NULL, *tmp_ptr = NULL;
+ 
+ 	printf("%s\n", __FUNCTION__);
+ 
+@@ -149,6 +153,35 @@
+ 	if(paramValue = json_object_object_get(tr98Jobj, "X_ZYXEL_AutoSecureDefaultIface"))
+ 		json_object_object_add(routerObj, "X_ZYXEL_AutoSecureDefaultIface", JSON_OBJ_COPY(paramValue));
+ 
++	if(paramValue = json_object_object_get(tr98Jobj, "DefaultConnectionService")){
++		strcpy(DefaultConnectionService, json_object_get_string(paramValue));
++		printf("DefaultConnectionService=%s\n", DefaultConnectionService);
++		
++		intf = strtok_r(DefaultConnectionService, ",", &tmp_ptr);
++		while(intf != NULL){
++			if(*intf != '\0' && strstr(intf, "InternetGatewayDevice.WANDevice.")){
++				zcfgFe98To181MappingNameGet(intf, tr181ObjName);
++				ipIfaceName[0] = '\0';
++				if(strstr(tr181ObjName, "PPP.Interface") != NULL){
++					zcfgFeTr181IfaceStackHigherLayerGet(tr181ObjName, ipIfaceName);
++					printf("ipIfaceName=%s\n", ipIfaceName);
++				}
++				else if(strstr(tr181ObjName, "IP.Interface") != NULL){
++					strcpy(ipIfaceName, tr181ObjName);
++				}
++
++				if(ipIfaceName[0] != '\0'){
++					if(X_ZYXEL_ActiveDefaultGateway[0] != '\0')
++						strcat(X_ZYXEL_ActiveDefaultGateway, ",");
++					strcat(X_ZYXEL_ActiveDefaultGateway, ipIfaceName);
++				}
++			}
++			intf = strtok_r(NULL, ",", &tmp_ptr);
++		}
++		printf("X_ZYXEL_ActiveDefaultGateway=%s\n", X_ZYXEL_ActiveDefaultGateway);
++		json_object_object_add(routerObj, "X_ZYXEL_ActiveDefaultGateway", json_object_new_string(X_ZYXEL_ActiveDefaultGateway));
++	}
++
+ 	if(multiJobj) {
+ 		zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER, &objIid, multiJobj, routerObj);
+ 	}
+Index: libzcfg_fe_tr98-1.0/l3fwd_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd_parameter.h	2016-09-23 14:20:04.999943318 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd_parameter.h	2016-09-23 14:20:05.167943322 +0800
+@@ -1,5 +1,5 @@
+ tr98Parameter_t para_L3Fwd[] = {
+-	{ "DefaultConnectionService", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "DefaultConnectionService", PARAMETER_ATTR_WRITE, 513, json_type_string},
+ 	{ "ForwardNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "X_ZYXEL_AutoSecureDefaultIface", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_DefaultGwInterface", PARAMETER_ATTR_READONLY, 321, json_type_string},

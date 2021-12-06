@@ -1,0 +1,855 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-10-06 18:49:26.966509153 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-10-06 18:53:08.780498900 +0800
+@@ -8,10 +8,12 @@
+ NETWORK_BR_PATH = ./network/broadband
+ MAINTENANCE_MGMT = ./maintenance/mgmt
+ MAINTENANCE = ./maintenance
++VOIP_SIP_PATH = ./voip/sip
+ SOURCES += $(wildcard $(FE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_BR_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_MGMT)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE)/*.c)
++SOURCES += $(wildcard $(VOIP_SIP_PATH)/*.c)
+ OBJS = $(patsubst %.c, %.o, $(SOURCES))
+ 
+ #OBJ_FILES = zcfg_fe_dal.o zcfg_fe_dal_broadband.o zcfg_fe_dal_mgmt.o
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2016-10-06 17:14:57.655876400 +0800
+@@ -0,0 +1,806 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++dal_param_t VOIP_LINE_param[]={
++	{"EditPath",							dalType_string,	0,	0,	NULL},
++	{"AddPath",								dalType_string,	0,	0,	NULL},
++	{"enable",								dalType_string,	0,	0,	NULL},
++	{"DirectoryNumber",						dalType_string,	0,	0,	NULL},
++	{"PhyReferenceList",					dalType_string,	0,	0,	NULL},
++	{"AuthUserName",						dalType_string,	0,	0,	NULL},
++	{"AuthPassword",						dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_Url_Type",					dalType_int,	0,	0,	NULL},
++	{"AnonymousCallEnable",					dalType_boolean,0,	0,	NULL},
++	{"CallTransferEnable",					dalType_boolean,0,	0,	NULL},
++	{"CallWaitingEnable",					dalType_boolean,0,	0,	NULL},
++	{"X_ZYXEL_CallWaitingRejectTime",		dalType_int,	0,	0,	NULL},
++	{"CallForwardUnconditionalEnable",		dalType_boolean,0,	0,	NULL},
++	{"CallForwardUnconditionalNumber",		dalType_string,	0,	0,	NULL},
++	{"CallForwardOnBusyEnable",				dalType_boolean,0,	0,	NULL},
++	{"CallForwardOnNoAnswerEnable",			dalType_boolean,0,	0,	NULL},
++	{"CallForwardOnNoAnswerNumber",			dalType_string,	0,	0,	NULL},
++	{"CallForwardOnNoAnswerRingCount",		dalType_int,	0,	0,	NULL},
++	{"AnonymousCallBlockEnable",			dalType_boolean,0,	0,	NULL},
++	{"DoNotDisturbEnable",					dalType_boolean,0,	0,	NULL},
++	{"MWIEnable",							dalType_boolean,0,	0,	NULL},
++	{"X_ZYXEL_MwiExpireTime",				dalType_int,	0,	0,	NULL},
++	{"X_ZYXEL_MissedCallEmailEnable",		dalType_boolean,0,	0,	NULL},
++	{"X_ZYXEL_MissedCallEmailEvent",		dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_RemoteRingbackTone",			dalType_boolean,0,	0,	NULL},
++	{"X_ZYXEL_RemoteRingbackToneIndex",		dalType_int,	0,	0,	NULL},
++	{"X_ZYXEL_MusicOnHoldTone",				dalType_boolean,0,	0,	NULL},
++	{"LineCallFeature_MusicOnHoldPlayIndex",dalType_int,	0,	0,	NULL},
++	{"EchoCancellationEnable",				dalType_boolean,0,	0,	NULL},
++	{"TransmitGain",						dalType_int,	0,	0,	NULL},
++	{"ReceiveGain",							dalType_int,	0,	0,	NULL},
++	{"primaryCodec",						dalType_string,	0,	0,	NULL},
++	{"secondarydCodec",						dalType_string,	0,	0,	NULL},
++	{"thirdCodec",							dalType_string,	0,	0,	NULL},
++	{"SilenceSuppression",					dalType_boolean,0,	0,	NULL},
++	{"SericeRef",							dalType_string,	0,	0,	NULL},
++	{"EmailSubject",						dalType_string,	0,	0,	NULL},
++	{"EmailTo",								dalType_string,	0,	0,	NULL},
++	{"SericeRef",							dalType_boolean,0,	0,	NULL},
++	{"EmailTo",								dalType_boolean,0,	0,	NULL},
++	{"EmailSubject",						dalType_boolean,0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++};
++
++
++int	profileId;
++const char* enable;
++const char* DirectoryNumber;
++const char* PhyReferenceList;
++const char* AuthUserName;
++const char* AuthPassword;
++const char* X_ZYXEL_Url_Type;
++bool CallTransferEnable;
++bool CallWaitingEnable;
++unsigned int X_ZYXEL_CallWaitingRejectTime;
++bool CallForwardUnconditionalEnable;
++const char* CallForwardUnconditionalNumber;
++const char* CallForwardOnBusyNumber;
++bool CallForwardOnBusyEnable;
++bool CallForwardOnNoAnswerEnable;
++const char* CallForwardOnNoAnswerNumber;
++unsigned int CallForwardOnNoAnswerRingCount;
++bool AnonymousCallEnable;
++bool AnonymousCallBlockEnable;
++bool DoNotDisturbEnable;
++bool MWIEnable;
++bool X_ZYXEL_WarmLineEnable;
++bool X_ZYXEL_HotLineEnable;
++const char* X_ZYXEL_HotLineNum;
++const char* X_ZYXEL_WarmLineNumber;
++unsigned int X_ZYXEL_TimerFirstDigitWarmLine;
++unsigned int X_ZYXEL_MwiExpireTime;
++bool X_ZYXEL_MissedCallEmailEnable;
++const char* X_ZYXEL_MissedCallEmailEvent;
++bool X_ZYXEL_RemoteRingbackTone;
++unsigned int X_ZYXEL_RemoteRingbackToneIndex;
++bool X_ZYXEL_MusicOnHoldTone;
++unsigned int X_ZYXEL_MusicOnHoldToneIndex;
++bool X_ZYXEL_CCBSEnable;
++bool EchoCancellationEnable;
++int TransmitGain;
++int ReceiveGain;
++const char* primaryCodec;
++const char* secondarydCodec;
++const char* thirdCodec;
++const char* SericeRef;
++const char* EmailSubject;
++const char* EmailTo;
++bool SilenceSuppression;
++bool LineSilenceSuppression;
++bool X_ZYXEL_ComfortNoise;
++
++unsigned int flag1;
++
++struct json_object *lineObj;
++struct json_object *lineSipObj;
++struct json_object *lineCallingFeatureObj;
++struct json_object *lineProcessingObj;
++struct json_object *lineCodecListObj;
++struct json_object *lineMailCfgObj;
++struct json_object *lineSchemaObj;
++struct json_object *multiJobj;
++struct json_object *guiCustObj;
++
++objIndex_t lineIid = {0};
++objIndex_t lineSipIid = {0};
++objIndex_t lineCallingFeatureIid = {0};
++objIndex_t lineProcessingIid = {0};
++objIndex_t lineCodecListIid = {0};
++objIndex_t lineMailCfgIid = {0};
++objIndex_t flagIid = {0};
++
++
++zcfgRet_t zcfgFeDalLineParaSet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t initLineSchemaGlobalObjects(){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t getLineSchemaBasicInfo(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineSchemaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//initLineSchemaGlobalObjects();
++	//getLineSchemaBasicInfo(Jobj);
++
++	//zcfgFeDalLineSchemaParaGet(Jobj);
++	//zcfgFeDalLineSipSchemaParaGet(Jobj);
++	//zcfgFeDalLineCallfeatureSchemaParaGet(Jobj);
++	//zcfgFeDalLineMailCfgSchemaParaGet(Jobj);
++	//zcfgFeDalLineCodecListSchemaParaGet(Jobj);
++	//zcfgFeDalLineProcessingSchemaParaGet(Jobj);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineSchemaParaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineSipSchemaParaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineCallfeatureSchemaParaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineMailCfgSchemaParaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineCodecListSchemaParaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineProcessingSchemaParaGet(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	return ret;
++}
++
++void initLineGlobalObjects(){
++	lineObj = NULL;
++	lineSipObj = NULL;
++	lineCallingFeatureObj = NULL;
++	lineProcessingObj = NULL;
++	lineCodecListObj = NULL;
++	lineMailCfgObj = NULL;
++	lineSchemaObj = NULL;
++	multiJobj = NULL;
++	guiCustObj = NULL;
++
++	return;
++}
++
++void zcfgFeDalCustomizationflagGet(){
++
++	IID_INIT(flagIid);
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_GUI_CUSTOMIZATION, &flagIid, &guiCustObj) == ZCFG_SUCCESS){
++		flag1 = json_object_get_int(json_object_object_get(guiCustObj, "Flag1"));
++		zcfgFeJsonObjFree(guiCustObj);
++		return;
++	}
++
++	return;
++}
++
++void zcfgFeDalLineObjEditIidGet(struct json_object *Jobj){
++	const char* path = NULL;
++	int profileNum, lineNum;
++
++	path = json_object_get_string(json_object_object_get(Jobj, "EditPath"));
++	//printf("%s(): Edit Line path : %s \n ",__FUNCTION__,path);
++
++	sscanf(path,"VoiceProfile.%d.Line.%d",&profileNum,&lineNum);
++	//printf("Edit Line - profile: %d, line: %d \n ",profileNum,lineNum);
++
++	lineIid.level = 3;
++	lineIid.idx[0] = 1;
++	lineIid.idx[1] = profileNum;
++	lineIid.idx[2] = lineNum;
++
++	return;
++}
++
++void freeAllLineObjects(){
++
++	if(lineObj) json_object_put(lineObj);
++	if(lineSipObj) json_object_put(lineSipObj);
++	if(lineCallingFeatureObj) json_object_put(lineCallingFeatureObj);
++	if(lineProcessingObj) json_object_put(lineProcessingObj);
++	if(lineCodecListObj) json_object_put(lineCodecListObj);
++	if(lineMailCfgObj) json_object_put(lineMailCfgObj);
++	if(lineSchemaObj) json_object_put(lineSchemaObj);
++	if(multiJobj) json_object_put(multiJobj);
++	if(guiCustObj) json_object_put(guiCustObj);
++
++	return;
++}
++
++void getLineBasicInfo(struct json_object *Jobj){
++
++	enable = json_object_get_string(json_object_object_get(Jobj, "Enable"));
++	DirectoryNumber = json_object_get_string(json_object_object_get(Jobj, "DirectoryNumber"));
++	if(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST&flag1){
++		PhyReferenceList = json_object_get_string(json_object_object_get(Jobj, "PhyReferenceList"));
++	}
++	AuthUserName = json_object_get_string(json_object_object_get(Jobj, "AuthUserName"));
++	AuthPassword = json_object_get_string(json_object_object_get(Jobj, "AuthPassword"));
++	X_ZYXEL_Url_Type = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Url_Type"));
++	CallTransferEnable= json_object_get_boolean(json_object_object_get(Jobj, "CallTransferEnable"));
++	CallWaitingEnable = json_object_get_boolean(json_object_object_get(Jobj, "CallWaitingEnable"));
++	X_ZYXEL_CallWaitingRejectTime = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_CallWaitingRejectTime"));
++	CallForwardUnconditionalEnable = json_object_get_boolean(json_object_object_get(Jobj, "CallForwardUnconditionalEnable"));
++	CallForwardUnconditionalNumber = json_object_get_string(json_object_object_get(Jobj, "CallForwardUnconditionalNumber"));
++	CallForwardOnBusyNumber = json_object_get_string(json_object_object_get(Jobj, "CallForwardOnBusyNumber"));
++	CallForwardOnBusyEnable = json_object_get_boolean(json_object_object_get(Jobj, "CallForwardOnBusyEnable"));
++	CallForwardOnNoAnswerEnable = json_object_get_boolean(json_object_object_get(Jobj, "CallForwardOnNoAnswerEnable"));
++	CallForwardOnNoAnswerNumber = json_object_get_string(json_object_object_get(Jobj, "CallForwardOnNoAnswerNumber"));
++	CallForwardOnNoAnswerRingCount = json_object_get_int(json_object_object_get(Jobj, "CallForwardOnNoAnswerRingCount"));
++	AnonymousCallEnable = json_object_get_boolean(json_object_object_get(Jobj, "AnonymousCallEnable"));
++	AnonymousCallBlockEnable = json_object_get_boolean(json_object_object_get(Jobj, "AnonymousCallBlockEnable"));
++	DoNotDisturbEnable = json_object_get_boolean(json_object_object_get(Jobj, "DoNotDisturbEnable"));
++	MWIEnable = json_object_get_boolean(json_object_object_get(Jobj, "MWIEnable"));
++	X_ZYXEL_WarmLineEnable = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_WarmLineEnable"));
++	X_ZYXEL_HotLineEnable = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_HotLineEnable"));
++	X_ZYXEL_HotLineNum = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_HotLineNum"));
++	X_ZYXEL_WarmLineNumber = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_WarmLineNumber"));
++	X_ZYXEL_TimerFirstDigitWarmLine = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_TimerFirstDigitWarmLine"));
++	X_ZYXEL_MwiExpireTime = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_MwiExpireTime"));
++	X_ZYXEL_MissedCallEmailEnable = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_MissedCallEmailEnable"));
++	X_ZYXEL_MissedCallEmailEvent = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_MissedCallEmailEvent"));
++	if(!(HIDE_VOICE_IVR&flag1)){
++		X_ZYXEL_RemoteRingbackTone = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_RemoteRingbackTone"));
++		X_ZYXEL_RemoteRingbackToneIndex = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_RemoteRingbackToneIndex"));
++		X_ZYXEL_MusicOnHoldTone = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_MusicOnHoldTone"));
++		X_ZYXEL_MusicOnHoldToneIndex = json_object_get_int(json_object_object_get(Jobj, "X_ZYXEL_MusicOnHoldToneIndex"));
++	}
++	if(SHOW_NOT_USE_OFTEN_VOIP_SETTING&flag1){
++		X_ZYXEL_CCBSEnable = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_CCBSEnable"));
++	}
++	EchoCancellationEnable = json_object_get_boolean(json_object_object_get(Jobj, "EchoCancellationEnable"));
++	TransmitGain = json_object_get_int(json_object_object_get(Jobj, "TransmitGain"));
++	ReceiveGain = json_object_get_int(json_object_object_get(Jobj, "ReceiveGain"));
++	primaryCodec = json_object_get_string(json_object_object_get(Jobj, "primaryCodec"));
++	secondarydCodec = json_object_get_string(json_object_object_get(Jobj, "secondarydCodec"));
++	thirdCodec = json_object_get_string(json_object_object_get(Jobj, "thirdCodec"));
++	SericeRef = json_object_get_string(json_object_object_get(Jobj, "SericeRef"));
++	EmailSubject = json_object_get_string(json_object_object_get(Jobj, "EmailSubject"));
++	EmailTo = json_object_get_string(json_object_object_get(Jobj, "EmailTo"));
++	SilenceSuppression = json_object_get_boolean(json_object_object_get(Jobj, "SilenceSuppression"));
++	if(SHOW_CONFIG_VOIP_COMFORT_NOISE&flag1){
++		X_ZYXEL_ComfortNoise = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_ComfortNoise"));
++	}
++	return;
++}
++
++zcfgRet_t zcfgFeDalLineObjAdd(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *setJson = NULL;
++	IID_INIT(lineIid);
++	int profileNum;
++	const char* path = NULL;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	path = json_object_get_string(json_object_object_get(Jobj, "AddPath"));
++	//printf("%s(): Edit Line path : %s \n ",__FUNCTION__,path);
++	sscanf(path,"VoiceProfile.%d",&profileNum);
++	//printf("Edit Line - profile: %d \n ",profileNum);
++
++	lineIid.level = 2;
++	lineIid.idx[0] = 1;
++	lineIid.idx[1] = profileNum;
++
++	if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_VOICE_LINE, &lineIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonAdd add line fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalLineObjEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_LINE, &lineIid, &lineObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get line fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++	//printf("%s():  get data moedl =>lineObj :%s \n ",__FUNCTION__,json_object_to_json_string(lineObj));
++
++	if(lineObj != NULL){
++		json_object_object_add(lineObj, "Enable", json_object_new_string(enable));
++		json_object_object_add(lineObj, "DirectoryNumber", json_object_new_string(DirectoryNumber));
++		if(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST&flag1){
++			json_object_object_add(lineObj, "PhyReferenceList", json_object_new_string(PhyReferenceList));
++		}
++
++		//printf("%s(): lineObj :%s \n ",__FUNCTION__,json_object_to_json_string(lineObj));
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE, &lineIid, multiJobj, lineObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE);
++			zcfgFeJsonObjFree(lineObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++	//printf("%s(): Append Line obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineSipObjEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *setJson = NULL;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_LINE_SIP, &lineIid, &lineSipObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get line sip fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(lineSipObj != NULL){
++		json_object_object_add(lineSipObj, "AuthUserName", json_object_new_string(AuthUserName));
++		json_object_object_add(lineSipObj, "AuthPassword", json_object_new_string(AuthPassword));
++		json_object_object_add(lineSipObj, "X_ZYXEL_Url_Type", json_object_new_string(X_ZYXEL_Url_Type));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE_SIP, &lineIid, multiJobj, lineSipObj)) == NULL){
++			printf("%s: fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE_SIP);
++			zcfgFeJsonObjFree(lineSipObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++	//printf("%s():Append Line Sip obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++zcfgRet_t zcfgFeDalLineCallFeatureObjEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *setJson = NULL;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_LINE_CALLING_FEATURE, &lineIid, &lineCallingFeatureObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get line calling feature fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(lineCallingFeatureObj != NULL){
++		json_object_object_add(lineCallingFeatureObj, "CallTransferEnable", json_object_new_boolean(CallTransferEnable));
++		json_object_object_add(lineCallingFeatureObj, "CallWaitingEnable", json_object_new_boolean(CallWaitingEnable));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_CallWaitingRejectTime", json_object_new_int(X_ZYXEL_CallWaitingRejectTime));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardUnconditionalEnable", json_object_new_boolean(CallForwardUnconditionalEnable));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardUnconditionalNumber", json_object_new_string(CallForwardUnconditionalNumber));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardOnBusyNumber", json_object_new_string(CallForwardOnBusyNumber));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardOnBusyEnable", json_object_new_boolean(CallForwardOnBusyEnable));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardOnNoAnswerEnable", json_object_new_boolean(CallForwardOnNoAnswerEnable));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardOnNoAnswerNumber", json_object_new_string(CallForwardOnNoAnswerNumber));
++		json_object_object_add(lineCallingFeatureObj, "CallForwardOnNoAnswerRingCount", json_object_new_int(CallForwardOnNoAnswerRingCount));
++		json_object_object_add(lineCallingFeatureObj, "AnonymousCallEnable", json_object_new_boolean(AnonymousCallEnable));
++		json_object_object_add(lineCallingFeatureObj, "AnonymousCallBlockEnable", json_object_new_boolean(AnonymousCallBlockEnable));
++		json_object_object_add(lineCallingFeatureObj, "DoNotDisturbEnable", json_object_new_boolean(DoNotDisturbEnable));
++		json_object_object_add(lineCallingFeatureObj, "MWIEnable", json_object_new_boolean(MWIEnable));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_MwiExpireTime", json_object_new_int(X_ZYXEL_MwiExpireTime));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_MissedCallEmailEnable", json_object_new_boolean(X_ZYXEL_MissedCallEmailEnable));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_WarmLineEnable", json_object_new_boolean(X_ZYXEL_WarmLineEnable));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_HotLineEnable", json_object_new_boolean(X_ZYXEL_HotLineEnable));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_HotLineNum", json_object_new_string(X_ZYXEL_HotLineNum));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_WarmLineNumber", json_object_new_string(X_ZYXEL_WarmLineNumber));
++		json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_TimerFirstDigitWarmLine", json_object_new_int(X_ZYXEL_TimerFirstDigitWarmLine));
++		if(!(HIDE_VOICE_IVR&flag1)){
++			json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_RemoteRingbackTone", json_object_new_boolean(X_ZYXEL_RemoteRingbackTone));
++			json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_RemoteRingbackToneIndex", json_object_new_int(X_ZYXEL_RemoteRingbackToneIndex));
++			json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_MusicOnHoldTone", json_object_new_boolean(X_ZYXEL_MusicOnHoldTone));
++			json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_MusicOnHoldToneIndex", json_object_new_int(X_ZYXEL_MusicOnHoldToneIndex));
++		}
++		if(SHOW_NOT_USE_OFTEN_VOIP_SETTING&flag1){
++			json_object_object_add(lineCallingFeatureObj, "X_ZYXEL_CCBSEnable", json_object_new_boolean(X_ZYXEL_CCBSEnable));
++		}
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE_CALLING_FEATURE, &lineIid, multiJobj, lineCallingFeatureObj)) == NULL){
++			printf("%s: fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE_CALLING_FEATURE);
++			zcfgFeJsonObjFree(lineCallingFeatureObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	//printf("%s(): Append Line Call Feature obj to multiJobj :%s \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++zcfgRet_t zcfgFeDalLineCodecListObjEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *setJson = NULL;
++	const char* codec = NULL;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	IID_INIT(lineCodecListIid);
++	while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_LINE_CODEC_LIST, &lineIid, &lineCodecListIid, &lineCodecListObj) == ZCFG_SUCCESS){
++		codec = json_object_get_string(json_object_object_get(lineCodecListObj, "Codec"));
++		//printf("codec : %s   => primaryCodec : %s  ,  secondarydCodec : %s  , thirdCodec : %s \n",codec,primaryCodec, secondarydCodec, thirdCodec);
++
++		if(strcmp(primaryCodec,codec) && strcmp(secondarydCodec,codec) && strcmp(thirdCodec,codec)){
++			json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(100));
++		}
++
++		if(!strcmp(primaryCodec,codec)){
++			json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(1));
++		}
++
++		if(!strcmp(secondarydCodec,codec)){
++			json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(2));
++		}
++
++		if(!strcmp(thirdCodec,codec)){
++			json_object_object_add(lineCodecListObj, "Priority", json_object_new_int(3));
++		}
++
++		json_object_object_add(lineCodecListObj, "SilenceSuppression", json_object_new_boolean(SilenceSuppression));
++		if(SHOW_CONFIG_VOIP_COMFORT_NOISE&flag1){
++			json_object_object_add(lineCodecListObj, "X_ZYXEL_ComfortNoise", json_object_new_int(X_ZYXEL_ComfortNoise));
++
++		}
++		//printf("%s(): Append codec list boj  :%s \n ",__FUNCTION__,json_object_to_json_string(lineCodecListObj));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE_CODEC_LIST, &lineCodecListIid, multiJobj, lineCodecListObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE_CODEC_LIST);
++			zcfgFeJsonObjFree(lineCodecListObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++		zcfgFeJsonObjFree(lineCodecListObj);
++	}
++
++	//printf("%s(): Append Line Codec List obj to multiJobj :%s \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++
++}
++zcfgRet_t zcfgFeDalLineProcessingEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *setJson = NULL;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_LINE_PROCESSING, &lineIid, &lineProcessingObj)) != ZCFG_SUCCESS){
++		printf("%s(): zcfgFeObjJsonGetWithoutUpdate get line processing fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(lineProcessingObj != NULL){
++		json_object_object_add(lineProcessingObj, "EchoCancellationEnable", json_object_new_boolean(EchoCancellationEnable));
++		json_object_object_add(lineProcessingObj, "TransmitGain", json_object_new_int(TransmitGain));
++		json_object_object_add(lineProcessingObj, "ReceiveGain", json_object_new_int(ReceiveGain));
++
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE_PROCESSING, &lineIid, multiJobj, lineProcessingObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE_PROCESSING);
++			zcfgFeJsonObjFree(lineProcessingObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	//printf("%s(): Append Line Processing obj to multiJobj :%s \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineMailCfgAdd(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char* tmpEvent = NULL;
++	char eventTarget[65] = {0};
++	struct json_object *setJson = NULL;
++	int profileId,lineId;
++	lineMailCfgObj = NULL;
++	bool mailEventConfigIsExist = false;
++
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	profileId = lineIid.idx[1];
++	lineId = lineIid.idx[2];
++	sprintf(eventTarget,"MAILSEND_EVENT_VOICE_MISSED_CALL_%d_%d",profileId,lineId);
++
++	//printf("%s():eventTarget : %s\n",__FUNCTION__,eventTarget);
++
++	IID_INIT(lineMailCfgIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, &lineMailCfgObj) == ZCFG_SUCCESS) {
++		tmpEvent = json_object_get_string(json_object_object_get(lineMailCfgObj, "Event"));
++		if(strcmp(tmpEvent,eventTarget) == 0){
++			mailEventConfigIsExist = true;
++			break;
++		}
++	}
++
++	if(mailEventConfigIsExist != true){
++		IID_INIT(lineMailCfgIid);
++		if((ret = zcfgFeObjJsonAdd(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) zcfgFeObjJsonAdd add mail config fail~ \n ",__FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, &lineMailCfgObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get mail config fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	json_object_object_add(lineMailCfgObj, "SericeRef", json_object_new_string(SericeRef));
++	json_object_object_add(lineMailCfgObj, "EmailSubject", json_object_new_string(EmailSubject));
++	json_object_object_add(lineMailCfgObj, "EmailTo", json_object_new_string(EmailTo));
++	json_object_object_add(lineMailCfgObj, "Event", json_object_new_string(eventTarget));
++	json_object_object_add(lineMailCfgObj, "Enable", json_object_new_boolean(true));
++
++	if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, multiJobj, lineMailCfgObj)) == NULL){
++		printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_MAIL_EVENT_CFG);
++		zcfgFeJsonObjFree(lineMailCfgObj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	//printf("%s(): Append mailCfg obj to multiJobj :%s \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLineMailCfgEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char* tmpEvent;
++	struct json_object *setJson = NULL;
++	lineMailCfgObj = NULL;
++
++	//printf("%s() Enter \n ",__FUNCTION__);
++	IID_INIT(lineMailCfgIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, &lineMailCfgObj) == ZCFG_SUCCESS) {
++		tmpEvent = json_object_get_string(json_object_object_get(lineMailCfgObj, "Event"));
++		if(strcmp(tmpEvent,X_ZYXEL_MissedCallEmailEvent) == 0){
++			break;
++		}
++		zcfgFeJsonObjFree(lineMailCfgObj);
++	}
++
++	if(lineMailCfgObj != NULL){
++		json_object_object_add(lineMailCfgObj, "SericeRef", json_object_new_string(SericeRef));
++		json_object_object_add(lineMailCfgObj, "EmailSubject", json_object_new_string(EmailSubject));
++		json_object_object_add(lineMailCfgObj, "EmailTo", json_object_new_string(EmailTo));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, multiJobj, lineMailCfgObj)) == NULL){
++			printf("%s: fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_MAIL_EVENT_CFG);
++			zcfgFeJsonObjFree(lineMailCfgObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}else{
++		if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) zcfgFeObjJsonAdd add mail config fail~ \n ",__FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++		if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, &lineMailCfgObj)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get mail config fail~ \n ",__FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++		if(lineMailCfgObj != NULL){
++			json_object_object_add(lineMailCfgObj, "SericeRef", json_object_new_string(SericeRef));
++			json_object_object_add(lineMailCfgObj, "EmailSubject", json_object_new_string(EmailSubject));
++			json_object_object_add(lineMailCfgObj, "EmailTo", json_object_new_string(EmailTo));
++			json_object_object_add(lineMailCfgObj, "Event", json_object_new_string(X_ZYXEL_MissedCallEmailEvent));
++			json_object_object_add(lineMailCfgObj, "Enable", json_object_new_boolean(true));
++
++			if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, multiJobj, lineMailCfgObj)) == NULL){
++				printf("%s: fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_MAIL_EVENT_CFG);
++				zcfgFeJsonObjFree(lineMailCfgObj);
++				return ZCFG_INTERNAL_ERROR;
++			}
++		}
++	}
++
++	//printf("%s(): Append mailCfg obj to multiJobj : %s \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalVoipLineAdd(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s(): Enter.. \n ",__FUNCTION__);
++	//printf("%s(): input Jobj :%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	zcfgFeDalCustomizationflagGet();
++	initLineGlobalObjects();
++	getLineBasicInfo(Jobj);
++	multiJobj = zcfgFeJsonObjNew();
++
++	if((ret = zcfgFeDalLineObjAdd(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to add line obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit line obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineSipObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit line sip obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineCallFeatureObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit call feature obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineCodecListObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit codec list obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineProcessingEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit line processing obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineMailCfgAdd(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to add mail config obj \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_VOICE_LINE);
++		goto exit;
++	}
++
++	//printf("%s(): Exit.. \n ",__FUNCTION__);
++
++exit:
++	freeAllLineObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipLineEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s(): Enter.. \n ",__FUNCTION__);
++	printf("%s(): input Jobj :%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	zcfgFeDalCustomizationflagGet();
++	initLineGlobalObjects();
++	getLineBasicInfo(Jobj);
++	multiJobj = zcfgFeJsonObjNew();
++
++	zcfgFeDalLineObjEditIidGet(Jobj);
++	if((ret = zcfgFeDalLineObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit line obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineSipObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit line sip obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineCallFeatureObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit call feature obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineCodecListObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit codec list obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineProcessingEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit line processing obj \n", __FUNCTION__);
++		goto exit;
++	}
++	if((ret = zcfgFeDalLineMailCfgEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit mail config obj \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set multiJobj \n", __FUNCTION__);
++		goto exit;
++	}
++
++	//printf("%s(): Exit.. \n ",__FUNCTION__);
++
++exit:
++	freeAllLineObjects();
++	return ret;
++
++}
++
++zcfgRet_t zcfgFeDalMailConfigDel(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char eventTarget[65] = {0};
++	const char* tmpEvent;
++	int proId, lineId;
++	lineMailCfgObj = NULL;
++
++	proId = lineIid.idx[1];
++	lineId = lineIid.idx[2];
++	sprintf(eventTarget,"MAILSEND_EVENT_VOICE_MISSED_CALL_%d_%d", proId, lineId);
++
++	IID_INIT(lineMailCfgIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_MAIL_EVENT_CFG, &lineMailCfgIid, &lineMailCfgObj) == ZCFG_SUCCESS) {
++		tmpEvent = json_object_get_string(json_object_object_get(lineMailCfgObj, "Event"));
++		if(strcmp(tmpEvent,eventTarget) == 0){
++			//printf("%s():Delete Mail Event Config - (%s)\n", __FUNCTION__, tmpEvent);
++			json_object_put(lineMailCfgObj);
++			break;
++		}
++		json_object_put(lineMailCfgObj);
++	}
++
++	zcfgFeObjJsonDel(RDM_OID_VOICE_LINE, &lineMailCfgIid, NULL);
++
++	//printf("%s(): Exit.. \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipLineDel(struct json_object *Jobj, char *replyMsg){
++	//printf("%s(): Enter.. \n ",__FUNCTION__);
++	//printf("%s(): string :%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char* path;
++	int profileNum, lineNum;
++
++	path = json_object_get_string(json_object_object_get(Jobj, "DelPath"));
++	//printf("%s(): Delete Line path : %s \n ",__FUNCTION__, path);
++	sscanf(path,"VoiceProfile.%d.Line.%d",&profileNum,&lineNum);
++	//printf("Delete Line- profile: %d, line: %d \n ", profileNum, lineNum);
++
++	IID_INIT(lineIid);
++	lineIid.level = 3;
++	lineIid.idx[0] = 1;
++	lineIid.idx[1] = profileNum;
++	lineIid.idx[2] = lineNum;
++
++	if((ret = zcfgFeObjJsonDel(RDM_OID_VOICE_LINE, &lineIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s: delete line obj fail \n", __FUNCTION__);
++		return ret;
++	}
++	if((ret = zcfgFeDalMailConfigDel(Jobj)) != ZCFG_SUCCESS){
++		printf("%s: delete mail config obj fail \n", __FUNCTION__);
++		return ret;
++	}
++
++	//printf("%s(): Exit.. \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipLine(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalVoipLineAdd(Jobj, NULL);
++	}
++	else if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalVoipLineEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalVoipLineDel(Jobj, NULL);
++	}
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-10-06 18:49:26.998508751 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-10-06 18:53:46.317498900 +0800
+@@ -13,12 +13,14 @@
+ extern dal_param_t SNMP_param[];
+ extern dal_param_t TIME_param[];
+ extern dal_param_t TRUST_DOMAIN_param[];
++extern dal_param_t VOIP_LINE_param[];
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalSystemInfo(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalSNMP(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalTime(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalTrustDomain(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalVoipLine(const char *method, struct json_object *Jobj, char *replyMsg);
+ 
+ typedef struct dal_handler_s {
+ 	char				*name;
+@@ -34,6 +36,7 @@
+ {"SNMP",			SNMP_param, 		zcfgFeDalSNMP},
+ {"TIME",			TIME_param, 		zcfgFeDalTime},
+ {"TRUST_DOMAIN",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain},
++{"VOIPLINE",		VOIP_LINE_param,	zcfgFeDalVoipLine},
+ {NULL,				NULL,				NULL}
+ };
+ 

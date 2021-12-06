@@ -1,0 +1,66 @@
+Index: busybox-1_20_1/sysklogd/klogd.c
+===================================================================
+--- busybox-1_20_1.orig/sysklogd/klogd.c	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/sysklogd/klogd.c	2018-12-28 14:14:26.277023245 +0800
+@@ -200,7 +200,11 @@
+ 		int n;
+ 		int priority;
+ 		char *start;
+-
++#if defined(TCSUPPORT_BTN_CHECK)
++		int fd = -1, num = 0, ker2telnet = 0;
++		char devnode[32] = {'\0'};
++		char *tempP = NULL;
++#endif
+ 		/* "2 -- Read from the log." */
+ 		start = log_buffer + used;
+ 		n = klogd_read(start, KLOGD_LOGBUF_SIZE-1 - used);
+@@ -236,6 +240,15 @@
+ 
+ 			/* Extract the priority */
+ 			priority = LOG_INFO;
++#if defined(TCSUPPORT_BTN_CHECK)						
++			if(tempP = strstr(start,"<KERN2TELNET>"))
++			{
++				ker2telnet = 1;
++				start = tempP + strlen("<KERN2TELNET>");
++			}
++			else				
++#endif
++
+ 			if (*start == '<') {
+ 				start++;
+ 				if (*start) {
+@@ -247,9 +260,31 @@
+ 					start++;
+ 			}
+ 			/* Log (only non-empty lines) */
++#if defined(TCSUPPORT_BTN_CHECK)
++			if (*start){
++				/* kernel message loglevel is KERN_TELNET, need to print on telnet */
++				if (ker2telnet)
++				{	
++					for (num = 0; num < 10; num++) 
++					{
++						snprintf(devnode, sizeof(devnode), "/dev/pts/%d", num);
++						fd = open(devnode, O_RDWR);
++						if (fd > 0) 
++						{
++							write(fd, start, strlen(start));
++							write(fd, "\n", strlen("\n"));
++							close(fd);
++						}
++					}
++					priority = LOG_INFO;
++					ker2telnet = 0;
++				}
++				syslog(priority, "%s", start);
++			}
++#else
+ 			if (*start)
+ 				syslog(priority, "%s", start);
+-
++#endif
+ 			if (!newline)
+ 				break;
+ 			start = newline;

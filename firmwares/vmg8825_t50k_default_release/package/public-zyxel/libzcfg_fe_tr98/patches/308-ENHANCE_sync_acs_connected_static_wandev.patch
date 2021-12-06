@@ -1,0 +1,583 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-03-30 21:00:20.859051188 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-03-30 21:02:31.811053700 +0800
+@@ -37,7 +37,8 @@
+ #endif
+ 
+ static struct json_object *tr98StaticNameTable = NULL;
+-
++int volatile wanDeviceInstanceNum = 0;
++bool StaticWanDevOption = false;
+ 
+ tr98NameObj_t tr98NameObjList[] =
+ {
+@@ -285,6 +286,7 @@
+ };
+ 
+ #ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
++#if 0
+ zcfgRet_t ReplaceWANDeviceIndex(char* pathname)
+ {	
+ 	objIndex_t objIid;
+@@ -323,6 +325,119 @@
+ }
+ #endif
+ 
++zcfgRet_t zcfgFeTr98StaticWANDevSync(void *obj)
++{
++#if 0
++	objIndex_t objIid;
++	rdm_MgmtSrv_t *MgmtSrvObj = NULL;
++
++	IID_INIT(objIid);
++	if(zcfgFeObjStructGetWithoutUpdate(RDM_OID_MGMT_SRV, &objIid, (void **)&MgmtSrvObj) == ZCFG_SUCCESS) {
++		ztrdbg(ZTR_DL_DEBUG, "%s: tr69WanIPName=%s\n", __FUNCTION__, MgmtSrvObj->X_ZYXEL_ActiveBoundInterface);
++		if (strlen(MgmtSrvObj->X_ZYXEL_ActiveBoundInterface) > 0){
++			ret = zcfgFe181To98MappingNameGet(MgmtSrvObj->X_ZYXEL_ActiveBoundInterface, tr98WANInterface);
++		}
++		zcfgFeObjStructFree(MgmtSrvObj);
++	}
++#endif
++	const char *wanDeviceName = NULL;
++	int wanDeviceInstance = 0;
++	rdm_MgmtSrv_t *MgmtSrvObj = (rdm_MgmtSrv_t *)obj;
++	char tr98WANInterface[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	zcfgRet_t ret = ZCFG_INTERNAL_ERROR;
++
++	if (MgmtSrvObj && strlen(MgmtSrvObj->X_ZYXEL_ActiveBoundInterface) > 0){
++		ret = zcfgFe181To98MappingNameGet(MgmtSrvObj->X_ZYXEL_ActiveBoundInterface, tr98WANInterface);
++	}
++
++	if ((ret ==  ZCFG_SUCCESS) &&  (wanDeviceName = strstr(tr98WANInterface, "WANDevice") ) && strlen(wanDeviceName)) {
++		sscanf(wanDeviceName, "WANDevice.%d", &wanDeviceInstance);
++		//ztrdbg(ZTR_DL_DEBUG, "%s: tr98WANInterface=%s\n", __FUNCTION__, tr98WANInterface);
++	}
++
++	wanDeviceInstanceNum = wanDeviceInstance;
++
++	return ZCFG_SUCCESS;
++}
++#endif
++
++zcfgRet_t ReplaceWANDeviceIndex(const char *tr98ObjName, char* pathname)
++{
++#ifndef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
++	return ZCFG_SUCCESS;
++#else
++	int wanDeviceInstance =  0;
++	int wanDevPathSize = 0;
++	const char *wanDeviceName = NULL;
++
++	//if(!tr98ObjName || !pathname)
++
++	//printf("%s: tr98ObjName=%s\n", __FUNCTION__, tr98ObjName);
++
++	//memset(pathname, 0, TR98_MAX_OBJ_NAME_LENGTH);
++	bool staticWanDev = zcfgFe98StaticWanDevStatus();
++
++	if(staticWanDev != true)
++		return ZCFG_SUCCESS;
++
++	wanDeviceName = strstr(tr98ObjName, "WANDevice.1");
++	if(!wanDeviceName)
++		return ZCFG_SUCCESS;
++
++	wanDevPathSize = strlen(TR98_WAN_DEV);
++	if(_isdigit(tr98ObjName[wanDevPathSize]))
++		return ZCFG_NO_SUCH_OBJECT;
++
++	wanDeviceInstance = wanDeviceInstanceNum;
++	if(!wanDeviceInstance || wanDeviceInstance >= 10)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	strcpy(pathname, tr98ObjName);
++	pathname[wanDevPathSize-1] = (char)(0x30+wanDeviceInstance);
++	//printf("%s: modified=%s\n", __FUNCTION__, pathname);
++
++	return ZCFG_SUCCESS;
++#endif
++}
++
++zcfgRet_t ReplaceStaticWANDeviceIndex(const char *tr98ObjName, char *pathname)
++{
++#ifndef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
++	return ZCFG_SUCCESS;
++#else
++	int wanDeviceInstance =  0;
++	int wanDevPathSize = 0;
++
++	//if(!tr98ObjName || !pathname)
++
++	//printf("%s: tr98ObjName=%s\n", __FUNCTION__, tr98ObjName);
++
++	//memset(pathname, 0, TR98_MAX_OBJ_NAME_LENGTH);
++	bool staticWanDev = zcfgFe98StaticWanDevStatus();
++
++	if(staticWanDev != true)
++		return ZCFG_SUCCESS;
++
++	wanDevPathSize = strlen(TR98_WAN_DEV);
++	if (!strstr(tr98ObjName, "e.WANDevice.") || (strlen(tr98ObjName) < wanDevPathSize))
++		return ZCFG_SUCCESS;
++
++	if ( !_isdigit(tr98ObjName[wanDevPathSize-1]) || tr98ObjName[wanDevPathSize] != '.')
++		return ZCFG_NOT_INSTANCE;
++
++	wanDeviceInstance = wanDeviceInstanceNum;
++	if(!wanDeviceInstance)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	strcpy(pathname, tr98ObjName);
++	if((int)pathname[wanDevPathSize-1] == (0x30 + wanDeviceInstance))
++		pathname[wanDevPathSize-1] = '1';
++	//printf("%s: modified=%s\n", __FUNCTION__, pathname);
++
++	return ZCFG_SUCCESS;
++#endif
++}
++
+ zcfgRet_t zcfgFeTr98AllIGDNameGet()
+ {
+ #if 0
+@@ -658,9 +773,6 @@
+ 	zcfgRet_t ret;
+ 	char tr98ClassName[257] = {0};
+ 	int handler = 0;
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-	char newtr98ObjName[257] = {0};
+-#endif
+ 
+ 	ztrdbg(ZTR_DL_DEBUG,  "%s\n", __FUNCTION__);
+ 
+@@ -673,23 +785,16 @@
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 
+ 	if(handler != -1) {
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-		strcpy(newtr98ObjName, tr98ObjName);
+-		if (strstr(tr98ObjName, "WANDevice.1")){
+-			if (ReplaceWANDeviceIndex(newtr98ObjName) != ZCFG_SUCCESS)
+-				return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-		}
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
+ 		
+-		if(tr98Obj[handler].getObj != NULL)
++		if(tr98Obj[handler].getObj != NULL && newtr98ObjName[0] != '\0')
+ 			return tr98Obj[handler].getObj(newtr98ObjName, handler, value, TR98_GET_UPDATE);
+-		else
+-			return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-#else
+-		if(tr98Obj[handler].getObj != NULL)
++		else if(tr98Obj[handler].getObj != NULL)
+ 			return tr98Obj[handler].getObj(tr98ObjName, handler, value, TR98_GET_UPDATE);
+ 		else
+ 			return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-#endif
+ 	}
+ 	else {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -776,9 +881,25 @@
+ 		n++;
+ 	}
+ 
++	zcfgFe98InfoDataSetInit();
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFe98InfoDataSetInit()
++{
++#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
++	StaticWanDevOption = true;
++#endif
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
++bool zcfgFe98StaticWanDevStatus(void)
++{
++	return StaticWanDevOption;
++}
++
+ zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -1162,9 +1283,6 @@
+ 	zcfgRet_t ret;
+ 	char tr98ClassName[128] = {0};
+ 	int handler = 0;
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-	char newtr98ObjName[256] = {0};
+-#endif
+ 
+ 	ztrdbg(ZTR_DL_DEBUG, "%s\n", __FUNCTION__);
+ 
+@@ -1177,23 +1295,16 @@
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 
+ 	if(handler != -1) {
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-		strcpy(newtr98ObjName, tr98ObjName);
+-		if (strstr(tr98ObjName, "WANDevice.1")){
+-			if (ReplaceWANDeviceIndex(newtr98ObjName) != ZCFG_SUCCESS)
+-				return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-		}
+-		
+-		if(tr98Obj[handler].getObj != NULL)
+-			return tr98Obj[handler].getObj(newtr98ObjName, handler, value, TR98_GET_WITHOUT_UPDATE);
+-		else
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
+ 			return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-#else
+-		if(tr98Obj[handler].getObj != NULL)
++
++		if(tr98Obj[handler].getObj != NULL && newtr98ObjName[0] != '\0')
++			return tr98Obj[handler].getObj(newtr98ObjName, handler, value, TR98_GET_WITHOUT_UPDATE);
++		else if(tr98Obj[handler].getObj != NULL)
+ 			return tr98Obj[handler].getObj(tr98ObjName, handler, value, TR98_GET_WITHOUT_UPDATE);
+ 		else
+ 			return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-#endif
+ 	}
+ 	else {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -1208,7 +1319,7 @@
+ 	char tr98ClassName[128] = {0};
+ 	int handler = 0;
+ 	char result[256] = {0};
+-	char tr98ObjNameTmp[128];
++	char tr98ObjNameTmp[TR98_MAX_OBJ_NAME_LENGTH];
+ 	char *ptr;
+ 
+ 	ztrdbg(ZTR_DL_DEBUG, "%s\n", __FUNCTION__);
+@@ -1224,12 +1335,9 @@
+ 		if(tr98Obj[handler].getObj != NULL){
+ 			//special case
+ 			strcpy( tr98ObjNameTmp, tr98ObjName );
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-			if (strstr(tr98ObjNameTmp, "WANDevice.1")){
+-				if (ReplaceWANDeviceIndex(tr98ObjNameTmp) != ZCFG_SUCCESS)
+-					return ZCFG_INVALID_OBJECT;
+-			}
+-#endif
++			if (ReplaceWANDeviceIndex(tr98ObjName, tr98ObjNameTmp) != ZCFG_SUCCESS)
++				return ZCFG_INVALID_OBJECT;
++
+ 			if( strcmp( tr98Obj[handler].name, TR98_LAN_HOST_CONF_MGMT) == 0 ){
+ 				ptr = strstr(tr98ObjNameTmp, ".LANHostConfigManagement");
+ 				*ptr = '\0';
+@@ -1372,17 +1480,16 @@
+ 				*ptr = '\0';
+ 				return zcfgFe98To181MappingNameGet(tr98ObjNameTmp, result);
+ 			}
+-			
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-			strcpy( tr98ObjNameTmp, tr98ObjName );
+-			if (strstr(tr98ObjNameTmp, "WANDevice.1")){
+-				if (ReplaceWANDeviceIndex(tr98ObjNameTmp) != ZCFG_SUCCESS)
+-					return ZCFG_INTERNAL_ERROR;
+-			}
+-			ret = zcfgFe98To181MappingNameGet(tr98ObjNameTmp, result);
+-#else
+-			ret = zcfgFe98To181MappingNameGet(tr98ObjName, result);
+-#endif
++
++			memset(tr98ObjNameTmp, 0, sizeof(tr98ObjNameTmp));
++			if (ReplaceWANDeviceIndex((const char *)tr98ObjName, tr98ObjNameTmp) != ZCFG_SUCCESS)
++				return ZCFG_INTERNAL_ERROR;
++
++			if(tr98ObjNameTmp[0] != '\0')
++				ret = zcfgFe98To181MappingNameGet(tr98ObjNameTmp, result);
++			else
++				ret = zcfgFe98To181MappingNameGet(tr98ObjName, result);
++
+ 			if( (ret == ZCFG_SUCCESS))
+ 				return ret;
+ 			else {
+@@ -1443,9 +1550,6 @@
+ 	zcfgRet_t ret;
+ 	char tr98ClassName[128] = {0};
+ 	int handler = 0;
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-	char newtr98ObjName[256] = {0};
+-#endif
+ 
+ 	ztrdbg(ZTR_DL_DEBUG, "%s\n", __FUNCTION__);
+ 
+@@ -1459,23 +1563,16 @@
+ 
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 	if(handler != -1) {
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-		strcpy(newtr98ObjName, tr98ObjName);
+-		if (strstr(tr98ObjName, "WANDevice.1")){
+-			if (ReplaceWANDeviceIndex(newtr98ObjName) != ZCFG_SUCCESS)
+-				return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-		}
+-		if(tr98Obj[handler].setObj != NULL)
+-			return tr98Obj[handler].setObj(newtr98ObjName, handler, value, NULL, pfault);
+-		else
+-			return ZCFG_SET_READ_ONLY_PARAM;
+-#else
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
+ 
+-		if(tr98Obj[handler].setObj != NULL)
++		if(tr98Obj[handler].setObj != NULL && newtr98ObjName[0] != '\0')
++			return tr98Obj[handler].setObj(newtr98ObjName, handler, value, NULL, pfault);
++		else if(tr98Obj[handler].setObj != NULL)
+ 			return tr98Obj[handler].setObj(tr98ObjName, handler, value, NULL, pfault);
+ 		else
+ 			return ZCFG_SET_READ_ONLY_PARAM;
+-#endif
+ 	}
+ 	else {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -1489,9 +1586,6 @@
+ 	zcfgRet_t ret;
+ 	char tr98ClassName[128] = {0};
+ 	int handler = 0;
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-	char newtr98ObjName[256] = {0};
+-#endif
+ 
+ 	if((ret = zcfgFeTr98ClassNameGet(tr98ObjName, tr98ClassName)) != ZCFG_SUCCESS) {
+ 		return ret;
+@@ -1499,22 +1593,16 @@
+ 	
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 	if(handler != -1) {
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-		strcpy(newtr98ObjName, tr98ObjName);
+-		if (strstr(tr98ObjName, "WANDevice.1")){
+-			if (ReplaceWANDeviceIndex(newtr98ObjName) != ZCFG_SUCCESS)
+-				return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-		}
+-		if(tr98Obj[handler].setObj != NULL){
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++		if(tr98Obj[handler].setObj != NULL && newtr98ObjName[0] != '\0'){
+ 			return tr98Obj[handler].setObj(newtr98ObjName, handler, value, multiJobj, paramfault);}
+-		else
+-			return ZCFG_SET_READ_ONLY_PARAM;
+-#else
+-		if(tr98Obj[handler].setObj != NULL){
++		else if(tr98Obj[handler].setObj != NULL){
+ 			return tr98Obj[handler].setObj(tr98ObjName, handler, value, multiJobj, paramfault);}
+ 		else
+ 			return ZCFG_SET_READ_ONLY_PARAM;
+-#endif
+ 	}
+ 	else {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -1528,9 +1616,6 @@
+ 	zcfgRet_t ret;
+ 	char tr98ClassName[128] = {0};
+ 	int handler = 0;
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-	char newtr98ObjName[256] = {0};
+-#endif
+ 
+ 	ztrdbg(ZTR_DL_DEBUG, "%s\n", __FUNCTION__);
+ 
+@@ -1542,26 +1627,21 @@
+ 
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 	if(handler != -1) {
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++
+ 		if(!(tr98Obj[handler].attr & OBJECT_ATTR_CREATE)){
+ 			return ZCFG_INVALID_ARGUMENTS;
+ 		}
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-		strcpy(newtr98ObjName, tr98ObjName);
+-		if (strstr(tr98ObjName, "WANDevice.1")){
+-			if (ReplaceWANDeviceIndex(newtr98ObjName) != ZCFG_SUCCESS)
+-				return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-		}
+-		if(tr98Obj[handler].addObj != NULL)
+-			return tr98Obj[handler].addObj(newtr98ObjName, idx);
+-		else
+-			return ZCFG_INVALID_ARGUMENTS;
+-#else
+ 
+-		if(tr98Obj[handler].addObj != NULL)
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++		if(tr98Obj[handler].addObj != NULL && newtr98ObjName[0] != '\0')
++			return tr98Obj[handler].addObj(newtr98ObjName, idx);
++		else if(tr98Obj[handler].addObj != NULL)
+ 			return tr98Obj[handler].addObj(tr98ObjName, idx);
+ 		else
+ 			return ZCFG_INVALID_ARGUMENTS;
+-#endif
+ 	}
+ 	else {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -1575,9 +1655,6 @@
+ 	zcfgRet_t ret;
+ 	char tr98ClassName[128] = {0};
+ 	int handler = 0;
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-	char newtr98ObjName[256] = {0};
+-#endif
+ 
+ 	ztrdbg(ZTR_DL_DEBUG, "%s\n", __FUNCTION__);
+ 
+@@ -1589,25 +1666,21 @@
+ 
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 	if(handler != -1) {
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++
+ 		if(!(tr98Obj[handler].attr & OBJECT_ATTR_CREATE)){
+ 			return ZCFG_INVALID_ARGUMENTS;
+ 		}
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-		strcpy(newtr98ObjName, tr98ObjName);
+-		if (strstr(tr98ObjName, "WANDevice.1")){
+-			if (ReplaceWANDeviceIndex(newtr98ObjName) != ZCFG_SUCCESS)
+-				return ZCFG_OBJECT_WITHOUT_PARAMETER;
+-		}
+-		if(tr98Obj[handler].delObj != NULL)
++
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++		if(tr98Obj[handler].delObj != NULL && newtr98ObjName[0] != '\0')
+ 			return tr98Obj[handler].delObj(newtr98ObjName);
+-		else
+-			return ZCFG_INVALID_ARGUMENTS;
+-#else
+-		if(tr98Obj[handler].delObj != NULL)
++		else if(tr98Obj[handler].delObj != NULL)
+ 			return tr98Obj[handler].delObj(tr98ObjName);
+ 		else
+ 			return ZCFG_INVALID_ARGUMENTS;
+-#endif
+ 	}
+ 	else {
+ 		return ZCFG_INVALID_OBJECT;
+@@ -1936,7 +2009,18 @@
+ 	}
+ 
+ 	IID_INIT(tr98ObjIid);
+-	if(zcfgFe98NameToSeqnum((const char *)tr98ObjName, &seqnum, &tr98ObjIid) == ZCFG_SUCCESS) {
++	{
++		char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++		if(newtr98ObjName[0] != '\0')
++			ret = zcfgFe98NameToSeqnum((const char *)newtr98ObjName, &seqnum, &tr98ObjIid);
++		else
++			ret = zcfgFe98NameToSeqnum((const char *)tr98ObjName, &seqnum, &tr98ObjIid);
++	}
++
++	if(ret == ZCFG_SUCCESS) {
+ 		if((ret = zcfgFeParmAttrQry(seqnum, &tr98ObjIid, name, &oid, &objIid, queriedParmName, &attr)) != ZCFG_SUCCESS) {
+ 			ztrdbg(ZTR_SL_DEBUG, "%s: parm attr query fail, %u %s\n", __FUNCTION__, seqnum, name);
+ 			return ret;
+@@ -1970,8 +2054,15 @@
+ 	handler = zcfgFeTr98HandlerGet(tr98ClassName);
+ 	if(handler != -1) {
+ 		if(tr98Obj[handler].getAttr != NULL){
+-			//return tr98Obj[handler].getAttr(tr98ObjName, handler, name);
+-			ret = tr98Obj[handler].getAttr(tr98ObjName, handler, name);
++			char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++			if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++				return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++			if(newtr98ObjName[0] != '\0')
++				ret = tr98Obj[handler].getAttr(newtr98ObjName, handler, name);
++			else
++				ret = tr98Obj[handler].getAttr(tr98ObjName, handler, name);
++
+ #ifdef ZCFG_ABANDON_NO_TR181_MAPPING_PARM
+ 			if(ret == 0)
+ 				return ZCFG_NO_SUCH_PARAMETER;
+@@ -1996,7 +2087,15 @@
+ 		}
+ 		else {
+ #ifdef ZCFG_ABANDON_NO_TR181_MAPPING_PARM
+-			int attrVal = zcfgFeTr98ObjParamAttrGetByName((const char *)tr98ObjName, (const char *)name);
++			char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++			if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++				return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++			if(newtr98ObjName[0] != '\0')
++				int attrVal = zcfgFeTr98ObjParamAttrGetByName((const char *)newtr98ObjName, (const char *)name);
++			else
++				int attrVal = zcfgFeTr98ObjParamAttrGetByName((const char *)tr98ObjName, (const char *)name);
++
+ 			if(attrVal < 0) {
+ 				return attrVal;
+ 			}
+@@ -2103,6 +2202,7 @@
+ 	zcfgFeSetParmAttr_t *setParmAttr = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	bool qriedNoSuchParam = false;
++	char newtr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
+ 
+@@ -2138,7 +2238,17 @@
+ 	}
+ 
+ 	IID_INIT(tr98ObjIid);
+-	if(zcfgFe98NameToSeqnum((const char *)tr98ObjName, &seqnum, &tr98ObjIid) == ZCFG_SUCCESS) {
++	{
++		if (ReplaceWANDeviceIndex((const char *)tr98ObjName, newtr98ObjName) != ZCFG_SUCCESS)
++			return ZCFG_OBJECT_WITHOUT_PARAMETER;
++
++		if(newtr98ObjName[0] != '\0')
++			ret = zcfgFe98NameToSeqnum((const char *)newtr98ObjName, &seqnum, &tr98ObjIid);
++		else
++			ret = zcfgFe98NameToSeqnum((const char *)tr98ObjName, &seqnum, &tr98ObjIid);
++	}
++
++	if(ret == ZCFG_SUCCESS){
+ 		if((ret = zcfgFeParmAttrQry(seqnum, &tr98ObjIid, (const char *)name, &oid, &objIid, queriedParmName, &queriedAttr)) != ZCFG_SUCCESS) {
+ 			zcfgLog(ZCFG_LOG_INFO, "%s: tr98 objnum %u %s query fail\n", __FUNCTION__, seqnum, name);
+ 			qriedNoSuchParam = true;
+@@ -2175,7 +2285,12 @@
+ 		}
+ 
+ 		multiJobj = json_object_new_array();
+-		if((ret = tr98Obj[handler].setAttr(tr98ObjName, handler, name, queriedAttr, multiJobj)) != ZCFG_SUCCESS) {
++		if(newtr98ObjName[0] != '\0')
++			ret = tr98Obj[handler].setAttr(newtr98ObjName, handler, name, queriedAttr, multiJobj);
++		else
++			ret = tr98Obj[handler].setAttr(tr98ObjName, handler, name, queriedAttr, multiJobj);
++
++		if(ret != ZCFG_SUCCESS) {
+ 			printf("%s: set parm attr handle routine fail\n", __FUNCTION__);
+ 		}
+ 		if((nObj = json_object_array_length(multiJobj))) {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2016-03-30 21:00:20.507051181 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2016-03-30 21:00:20.891051189 +0800
+@@ -162,6 +162,14 @@
+ 
+ zcfgRet_t zcfgFeTr98ObjGet(char *, struct json_object **);
+ zcfgRet_t zcfgFe98StaticNameTableInit(void);
++zcfgRet_t zcfgFe98InfoDataSetInit(void);
++zcfgRet_t ReplaceStaticWANDeviceIndex(const char *tr98ObjName, char *pathname);
++#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
++zcfgRet_t zcfgFeTr98StaticWANDevSync(void *);
++bool zcfgFe98StaticWanDevStatus(void);
++#else
++#define zcfgFeTr98StaticWANDevSync(param) do{}while(0)
++#endif
+ zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid);
+ zcfgRet_t zcfgFe98To181ObjMappingNameGet(const char *tr98PathName, char *tr181PathName);
+ zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName);

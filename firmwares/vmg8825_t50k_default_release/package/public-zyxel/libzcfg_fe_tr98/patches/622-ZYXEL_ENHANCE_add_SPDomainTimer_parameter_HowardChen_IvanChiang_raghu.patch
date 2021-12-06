@@ -1,0 +1,192 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2019-04-29 22:31:10.795616534 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2019-04-29 22:31:10.843616536 +0800
+@@ -172,7 +172,11 @@
+ 
+ #TISCALI	
+ ifeq ($(strip $(CONFIG_TISCALI_CUSTOMIZATION)),y)
+-    CFLAGS += -DTISCALI_CUSTOMIZATION
++CFLAGS += -DTISCALI_CUSTOMIZATION
++endif
++
++ifeq ($(CONFIG_ZYXEL_SP_DOMAIN_TIMER),y)
++CFLAGS += -DZYXEL_SP_DOMAIN_TIMER
+ endif
+ 
+ #ELISA
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2019-04-29 22:31:10.767616533 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2019-04-29 22:35:11.305443118 +0800
+@@ -656,7 +656,7 @@
+ {TR98_SNMP_TRAP,                ATTR_INDEX_CREA,para_SnmpTrap,          zyExtSnmpTrapObjGet,     zyExtSnmpTrapObjSet,    zyExtSnmpTrapObjAdd,	zyExtSnmpTrapObjDel, NULL, NULL, NULL},
+ //{TR98_SCHEDULE,                 ATTR_INDEX_CREA,para_Schedule,          scheduleObjGet,          scheduleObjSet,         scheduleObjAdd,   scheduleObjDel,  scheduleObjNotify, scheduleObjAttrGet, scheduleObjAttrSet},
+ {TR98_SCHEDULE,                 ATTR_INDEX_CREA,para_Schedule,          scheduleObjGet,          scheduleObjSet,         scheduleObjAdd,   scheduleObjDel,  NULL, NULL, NULL},
+-#ifdef ISKON_CUSTOMIZATION
++#if defined(ISKON_CUSTOMIZATION) || defined(ZYXEL_SP_DOMAIN_TIMER)
+ {TR98_REMO_MGMT,		0,				para_RemoMgmt,			zyExtRemoteMgmtObjGet,			 zyExtRemoteMgmtObjSet,					 NULL,				NULL,			NULL,		NULL,		NULL},
+ #else
+ {TR98_REMO_MGMT,				0,				NULL,					NULL,					 NULL,					 NULL,				NULL,			NULL},
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2019-04-29 22:31:10.799616535 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2019-04-29 22:31:10.847616537 +0800
+@@ -2773,20 +2773,23 @@
+ 	return ret;
+ }
+ #endif
+-#ifdef ISKON_CUSTOMIZATION
++#if defined(ISKON_CUSTOMIZATION) || defined(ZYXEL_SP_DOMAIN_TIMER)
+ zcfgRet_t zyExtRemoteMgmtObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid;
+ 	rdm_RemoSrv_t *remoSrv = NULL;
++#ifdef ISKON_CUSTOMIZATION
+ 	rdm_IpIface_t *ipIface = NULL;
+-	tr98Parameter_t *paramList = NULL;
+ 	char boundWanInterface[256] = {0};
+ 	char boundWanInterfaceName[256] = {0};
+ 	char *pc1, *pc2;
++#endif
+ 
++	tr98Parameter_t *paramList = NULL;
++	struct json_object *paramValue = NULL;
+ 	printf("%s : Enter\n", __FUNCTION__);
+-
++#ifdef ISKON_CUSTOMIZATION
+ 	/*Get related tr181 objects*/
+ 	IID_INIT(objIid);
+ 	objIid.level = 1;
+@@ -2833,6 +2836,30 @@
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+ 		paramList++;	
+ 	}
++#else
++		/*Get related tr181 objects*/
++		IID_INIT(objIid);
++		if((ret = feObjJsonGet(RDM_OID_REMO_MGMT, &objIid, &remoSrv, updateFlag)) != ZCFG_SUCCESS)
++			return ret;
++
++		/*fill up tr98 object from related tr181 objects*/
++		*tr98Jobj = json_object_new_object();
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name != NULL) {
++			/*Write parameter value from tr181 objects to tr98 object*/
++			paramValue = json_object_object_get(remoSrv, paramList->name);
++			if(paramValue != NULL) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++
++			/*Not defined in tr181, give it a default value*/
++			printf("Can't find parameter %s in TR181\n", paramList->name);
++			paramList++;
++		}
++		json_object_put(remoSrv);
++#endif
+ 
+ 	return ZCFG_SUCCESS;
+ }
+@@ -2842,11 +2869,14 @@
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid;
+ 	struct json_object *RemoteMgmtJobj = NULL;
++	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
++#ifdef ISKON_CUSTOMIZATION
+ 	char boundWanInterface[256] = {0};
+ 	char boundWanInterfaceName[256] = {0};
++#endif
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
+@@ -2860,7 +2890,7 @@
+ 		RemoteMgmtJobj = NULL;
+ 		RemoteMgmtJobj = zcfgFeJsonMultiObjAppend(RDM_OID_REMO_MGMT, &objIid, multiJobj, tmpObj);
+ 	}
+-
++#ifdef ISKON_CUSTOMIZATION
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/	
+@@ -2917,6 +2947,23 @@
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+ 		paramList++;	
+ 	}
++#else
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(RemoteMgmtJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(RemoteMgmtJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++#endif
+ 
+ 	if(multiJobj){
+ 		json_object_put(tmpObj);
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2019-04-29 22:31:10.623616528 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2019-04-29 22:31:10.847616537 +0800
+@@ -14,7 +14,7 @@
+ #endif
+ extern tr98Parameter_t para_Snmp[];
+ extern tr98Parameter_t para_SnmpTrap[];
+-#ifdef ISKON_CUSTOMIZATION
++#if defined(ISKON_CUSTOMIZATION) || defined(ZYXEL_SP_DOMAIN_TIMER)
+ extern tr98Parameter_t para_RemoMgmt[];
+ #endif
+ extern tr98Parameter_t para_RemoSrv[];
+@@ -178,7 +178,7 @@
+ extern zcfgRet_t zyExtSnmpTrapObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int zyExtSnmpTrapObjAttrGet(char *, int, char *);
+ extern zcfgRet_t zyExtSnmpTrapObjAttrSet(char *, int, char *, int , struct json_object *);
+-#ifdef ISKON_CUSTOMIZATION
++#if defined(ISKON_CUSTOMIZATION) || defined(ZYXEL_SP_DOMAIN_TIMER)
+ /*InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.*/
+ extern zcfgRet_t zyExtRemoteMgmtObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtRemoteMgmtObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2019-04-29 22:31:10.603616527 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2019-04-29 22:31:10.847616537 +0800
+@@ -51,9 +51,14 @@
+ 	{ "ConnectionType", PARAMETER_ATTR_WRITE, 12, json_type_string},
+ 	{ NULL, 0, 0}
+ };
+-#ifdef ISKON_CUSTOMIZATION
++#if defined(ISKON_CUSTOMIZATION) || defined(ZYXEL_SP_DOMAIN_TIMER)
+ tr98Parameter_t para_RemoMgmt[] = {
++#ifdef ISKON_CUSTOMIZATION
+ 	{ "BoundWANInterfaceList", PARAMETER_ATTR_WRITE, 257, json_type_string},
++#endif
++#ifdef ZYXEL_SP_DOMAIN_TIMER
++	{ "SPRemoteTimer", PARAMETER_ATTR_WRITE, 0, json_type_int},
++#endif
+ 	{ NULL, 0, 0}
+ };
+ #endif
+@@ -74,6 +79,9 @@
+ tr98Parameter_t para_SpRemoSrv[] = {
+ 	{ "Name", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++#ifdef ZYXEL_SP_DOMAIN_TIMER
++	{ "TimerEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++#endif
+ 	{ "Port", PARAMETER_ATTR_WRITE, 0, json_type_int},
+ 	{ NULL, 0, 0}
+ };

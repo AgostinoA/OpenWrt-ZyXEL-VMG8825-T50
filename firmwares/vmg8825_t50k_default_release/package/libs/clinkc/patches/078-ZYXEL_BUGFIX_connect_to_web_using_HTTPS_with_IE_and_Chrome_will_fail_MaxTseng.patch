@@ -1,0 +1,479 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2016-07-05 16:05:57.554431339 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2016-07-05 16:08:55.534603651 +0800
+@@ -426,7 +426,9 @@
+ #define cg_http_packet_getcontent(httpPkt) cg_string_getvalue(httpPkt->content)
+ 
+ void cg_http_packet_post(CgHttpPacket *httpPkt, CgSocket *sock);
++
+ void tr069_cg_http_packet_post(CgHttpPacket *httpPkt, CgSocket *sock); // 20160519 Max add
++
+ void cg_http_packet_read_headers(CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize);
+ BOOL cg_http_packet_read_body(
+ 							  CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize);
+Index: clinkc/include/cybergarage/net/csocket.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/csocket.h	2016-07-05 16:05:57.402438178 +0800
++++ clinkc/include/cybergarage/net/csocket.h	2016-07-05 16:10:48.605808267 +0800
+@@ -117,15 +117,14 @@
+ #if defined(CG_USE_OPENSSL)
+ 	SSL_CTX* ctx;
+ 	SSL* ssl;
+-#if 1 // 20160519 Max add
+-	BIO *io;
+-	BIO *ssl_bio;
+-#endif
+-
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 	void *ctxdata;
+ #endif
+ #endif
++#if defined(CG_USE_OPENSSL) // 20160519 Max add
++	BIO *io;
++	BIO *ssl_bio;
++#endif
+ } CgSocket, CgSocketList;
+ 
+ typedef struct _CgDatagramPacket {
+@@ -147,6 +146,7 @@
+ #define cg_socket_stream_new() cg_socket_new(CG_NET_SOCKET_STREAM)
+ #define cg_socket_dgram_new() cg_socket_new(CG_NET_SOCKET_DGRAM)
+ int cg_socket_delete(CgSocket *socket);
++int tr069_cg_socket_delete(CgSocket *sock); // 20160701 Max add
+ 
+ void cg_socket_setid(CgSocket *socket, SOCKET value);
+ #define cg_socket_getid(socket) (socket->id)
+@@ -183,6 +183,7 @@
+ #endif
+ BOOL cg_socket_isbound(CgSocket *socket);
+ BOOL cg_socket_close(CgSocket *socket);
++BOOL tr069_cg_socket_close(CgSocket *sock); // 20160701 Max add
+ 
+ BOOL cg_socket_listen(CgSocket *socket);
+ 
+@@ -193,6 +194,7 @@
+ 
+ BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName);
+ BOOL cg_socket_connect_MARK(CgSocket *sock, char *addr, int port, const char *boundIfName, unsigned int MARK);
++BOOL tr069_cg_socket_connect_MARK(CgSocket *sock, char *addr, int port, const char *boundIfName, unsigned int MARK); // 20160701 Max add
+ 
+ int cg_socket_sendfile(CgSocket *sock, int fp, ssize_t flen);
+ #else
+@@ -202,8 +204,10 @@
+ #endif
+ int cg_socket_read(CgSocket *sock, char *buffer, int bufferLen);
+ int cg_socket_write(CgSocket *sock, char *buffer, int bufferLen);
++
+ int tr069_cg_socket_write(CgSocket *sock, char *buffer, int bufferLen); // 20160519 Max add
+ int proto_flush(CgSocket *sock); // 20160519 Max add
++
+ int cg_socket_readline(CgSocket *sock, char *buffer, int bufferLen);
+ long cg_socket_skip(CgSocket *sock, long skipLen);
+ 
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2016-07-05 16:05:57.494434042 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2016-07-05 16:12:24.309872406 +0800
+@@ -396,9 +396,7 @@
+ 		tr069_cg_socket_write(sock, CG_HTTP_CRLF, sizeof(CG_HTTP_CRLF)-1);
+ 	}
+ 	tr069_cg_socket_write(sock, CG_HTTP_CRLF, sizeof(CG_HTTP_CRLF)-1);
+-#if defined(CG_USE_OPENSSL)
+ 	proto_flush(sock);
+-#endif
+ 
+ 	/**** send content ****/
+ 	content = cg_http_packet_getcontent(httpPkt);
+@@ -406,9 +404,7 @@
+ 	if (content != NULL && 0 < contentLen)
+ 	{
+ 		tr069_cg_socket_write(sock, content, contentLen);
+-#if defined(CG_USE_OPENSSL)
+ 		proto_flush(sock);
+-#endif
+ 	}
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+Index: clinkc/src/cybergarage/net/csocket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/csocket.c	2016-07-05 16:05:57.494434042 +0800
++++ clinkc/src/cybergarage/net/csocket.c	2016-07-05 16:14:54.707533194 +0800
+@@ -357,6 +357,36 @@
+ 	return 0;
+ }
+ 
++// 20160701 Max add
++int tr069_cg_socket_delete(CgSocket *sock)
++{
++        cg_log_debug_l4("Entering...\n");
++
++        tr069_cg_socket_close(sock);
++        cg_string_delete(sock->ipaddr);
++#if defined(ITRON)
++        cg_socket_freewindowbuffer(sock);
++#endif
++#ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
++        cg_string_delete(sock->remoteIpAddr);
++        cg_string_delete(sock->if_name);
++#if defined(CG_USE_OPENSSL)
++        if (cg_socket_isssl(sock) == TRUE){
++                //EVP_cleanup(); /* Clear memory allocated in SSL_library_init()*/
++        }
++#endif
++#endif
++
++
++        free(sock);
++        cg_socket_cleanup();
++
++        cg_log_debug_l4("Leaving...\n");
++
++        return 0;
++}
++
++
+ /****************************************
+ * cg_socket_isbound
+ ****************************************/
+@@ -418,7 +448,113 @@
+ 		if (sock->ctx) {
+ 			SSL_shutdown(sock->ssl); 
+ 			SSL_free(sock->ssl);
+-			BIO_free(sock->ssl_bio); // 20160519 Max add
++			sock->ssl = NULL;
++		}
++		if (sock->ctx) {
++			SSL_CTX_free(sock->ctx);
++			sock->ctx = NULL;
++		}
++		close(sock->id);
++	}
++#endif
++#endif
++
++#if (defined(WIN32) || defined(__CYGWIN__)) && !defined(ITRON)
++	#if !defined(WINCE)
++	WSAAsyncSelect(sock->id, NULL, 0, FD_CLOSE);
++	#endif
++	shutdown(sock->id, SD_BOTH );
++#if defined WINCE
++	{
++		int nRet = 1;
++		char achDiscard[256];
++		while (nRet && (nRet != SOCKET_ERROR)){
++			if (nRet>0) {
++				achDiscard[nRet]=(char)0;
++#if defined DEBUG_SOCKET
++				printf("DUMMY READ WHILE CLOSING SOCKET \n%s\n",achDiscard);
++#endif
++			}
++			nRet = recv(sock->id,achDiscard,128,0);
++		}
++	}
++#endif
++	closesocket(sock->id);
++	#if !defined(__CYGWIN__) && !defined(__MINGW32__)
++	sock->id = INVALID_SOCKET;
++	#else
++	sock->id = -1;
++	#endif
++#else
++	#if defined(BTRON) || (defined(TENGINE) && !defined(CG_TENGINE_NET_KASAGO))
++	so_shutdown(sock->id, 2);
++	so_close(sock->id);
++	#elif defined(TENGINE) && defined(CG_TENGINE_NET_KASAGO)
++	ka_tfClose(sock->id);
++	#elif defined(ITRON)
++	if (cg_socket_issocketstream(sock) == TRUE) {
++		tcp_can_cep(sock->id, TFN_TCP_ALL);
++		tcp_sht_cep(sock->id);
++		tcp_del_cep(sock->id);
++		tcp_cls_cep(sock->id, TMO_FEVR);
++		tcp_del_rep(sock->id);
++	}
++	else {
++		udp_can_cep(sock->id, TFN_UDP_ALL);
++		udp_del_cep(sock->id);
++	}
++	#else
++#ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
++#if defined(CG_USE_OPENSSL)
++	if (cg_socket_isssl(sock) == FALSE) {
++		int flag = fcntl(sock->id, F_GETFL, 0);
++		if (0 <= flag)
++			fcntl(sock->id, F_SETFL, flag | O_NONBLOCK);
++		shutdown(sock->id, 2);
++		close(sock->id);
++	}
++#else
++	int flag = fcntl(sock->id, F_GETFL, 0);
++	if (0 <= flag)
++		fcntl(sock->id, F_SETFL, flag | O_NONBLOCK);
++	shutdown(sock->id, 2);
++	close(sock->id);
++#endif
++#else
++	int flag = fcntl(sock->id, F_GETFL, 0);
++	if (0 <= flag)
++		fcntl(sock->id, F_SETFL, flag | O_NONBLOCK);
++	shutdown(sock->id, 2);
++	close(sock->id);
++#endif
++	#endif
++	sock->id = -1;
++#endif
++
++	cg_socket_setaddress(sock, "");
++	cg_socket_setport(sock, -1);
++
++	return TRUE;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++// 20160701 Max add
++BOOL tr069_cg_socket_close(CgSocket *sock)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	if (cg_socket_isbound(sock) == FALSE)
++		return TRUE;
++
++#ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
++#if defined(CG_USE_OPENSSL)
++	if (cg_socket_isssl(sock) == TRUE) {
++		shutdown(cg_socket_getid(sock), SHUT_WR);
++		if (sock->ctx) {
++			SSL_shutdown(sock->ssl); 
++			SSL_free(sock->ssl);
++			BIO_free(sock->ssl_bio);
+ 			sock->ssl = NULL;
+ 		}
+ 		if (sock->ctx) {
+@@ -977,19 +1113,179 @@
+ 			cg_socket_close(sock);
+ 			return FALSE;
+ 		}
+-#if 1 // 20160519 Max add
++		if (SSL_connect(sock->ssl) < 1) {
++			cg_socket_close(sock);
++			return FALSE;
++		}
++		if(!cg_ssl_extra_verify(sock)){
++			cg_socket_close(sock);
++			return FALSE;
++		}
++	}
++#endif
++
++	cg_log_debug_l4("Leaving...\n");
++
++	return (ret == 0) ? TRUE : FALSE;
++}
++
++
++// 20160701 Max add
++BOOL tr069_cg_socket_connect_MARK(CgSocket *sock, char *addr, int port, const char *boundIfName, unsigned int MARK)
++{
++#if defined(BTRON) || (defined(TENGINE) && !defined(CG_TENGINE_NET_KASAGO))
++	ERR ret;
++	struct sockaddr_in sockaddr;
++	if (cg_socket_tosockaddrin(addr, port, &sockaddr, TRUE) == FALSE)
++		return FALSE;
++	if (cg_socket_isbound(sock) == FALSE)
++	   	cg_socket_setid(sock, so_socket(PF_INET, cg_socket_getrawtype(sock), 0));
++	ret = so_connect(sock->id, (SOCKADDR *)&sockaddr, sizeof(struct sockaddr_in));
++#elif defined(TENGINE) && defined(CG_TENGINE_NET_KASAGO)
++	ERR ret;
++	struct sockaddr_in sockaddr;
++	if (cg_socket_tosockaddrin(addr, port, &sockaddr, TRUE) == FALSE)
++		return FALSE;
++	if (cg_socket_isbound(sock) == FALSE)
++	   	cg_socket_setid(sock, ka_socket(PF_INET, cg_socket_getrawtype(sock), cg_socket_getprototype(sock)));
++	ret = ka_connect(sock->id, (struct sockaddr *)&sockaddr, sizeof(struct sockaddr_in));
++#elif defined(ITRON)
++	T_TCP_CCEP tcpccep = { 0, sock->sendWinBuf, CG_NET_SOCKET_WINDOW_BUFSIZE, sock->recvWinBuf, CG_NET_SOCKET_WINDOW_BUFSIZE, (FP)cg_socket_tcp_callback };
++	T_IPV4EP localAddr;
++	T_IPV4EP dstAddr;
++	ER ret;
++	if (cg_socket_getavailablelocaladdress(&localAddr) == FALSE)
++		return FALSE;
++	if (cg_socket_isbound(sock) == FALSE) {
++		cg_socket_initwindowbuffer(sock);
++		cg_socket_setid(sock, cg_socket_getavailableid(cg_socket_issocketstream(sock)));
++		if (tcp_cre_cep(sock->id, &tcpccep) != E_OK)
++			return FALSE;
++	}
++	dstAddr.ipaddr = ascii_to_ipaddr(addr);
++	dstAddr.portno = htons(port);
++	ret = tcp_con_cep(sock->id, &localAddr, &dstAddr, TMO_FEVR);
++	if (ret == E_OK) {
++		cg_socket_setaddress(sock, ""/*ipaddr_to_ascii(localAddr.ipaddr)*/);
++		cg_socket_setport(sock, ntohs(localAddr.portno));
++		ret = 0;
++	}
++	else 
++		ret = -1;
++#else
++	struct addrinfo *toaddrInfo;
++	int ret;
++
++#ifdef ZYXEL_PATCH /*non-blocking mode connect, ZyXEL 2013*/
++	long flags;
++	fd_set myset;
++	struct timeval tv;
++	socklen_t lon;
++	int valopt;
++#endif
++
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	int sockOptRet;
++	struct ifreq boundIf;
++#endif
++
++	if (cg_socket_tosockaddrinfo(cg_socket_getrawtype(sock), addr, port, &toaddrInfo, TRUE) == FALSE)
++		return FALSE;
++	if (cg_socket_isbound(sock) == FALSE)
++		cg_socket_setid(sock, socket(toaddrInfo->ai_family, toaddrInfo->ai_socktype, 0));
++
++#ifdef ZYXEL_PATCH /*non-blocking mode connect, ZyXEL 2013*/
++	// Set non-blocking
++	flags = fcntl(sock->id, F_GETFL, NULL);
++	fcntl(sock->id, F_SETFL, flags | O_NONBLOCK);
++#endif
++
++#ifdef ZYXEL_PATCH /*support binding interface*/
++	if (boundIfName != NULL && strlen(boundIfName) > 0){
++		strncpy(boundIf.ifr_name, boundIfName, IFNAMSIZ);
++	
++		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_BINDTODEVICE, (char *)&boundIf,  sizeof(boundIf));	
++#if defined DEBUG
++		printf("%s: Bind to interface %s, ret = %d\n", __FUNCTION__, boundIf.ifr_name, sockOptRet);
++#endif
++	}
++	if(MARK > 0){ /*support set socket socket*/
++		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_MARK, &MARK, sizeof(MARK));	
++#if defined DEBUG
++		printf("%s: set socket Mark %d, ret = %d\n", __FUNCTION__, MARK);
++#endif		
++	}
++#endif
++
++	ret = connect(sock->id, toaddrInfo->ai_addr, toaddrInfo->ai_addrlen);
++#ifdef ZYXEL_PATCH /*non-blocking mode connect, ZyXEL 2013*/
++	if (ret < 0) {
++	   if (errno == EINPROGRESS) {
++		  tv.tv_sec = NONBLOCK_CONNECT_TIMEOUT_S;
++		  tv.tv_usec = 0;
++		  FD_ZERO(&myset);
++		  FD_SET(sock->id, &myset);
++		  if (select(sock->id+1, NULL, &myset, NULL, &tv) > 0) {
++			 lon = sizeof(int);
++			 getsockopt(sock->id, SOL_SOCKET, SO_ERROR, (void*)(&valopt), &lon);
++			 if (valopt) {
++#if defined DEBUG
++				printf( "Error in connection() %d - %s\n", valopt, strerror(valopt));
++#endif
++			 }
++			 else{
++			 	ret = 0;//connect success
++			 }
++		  }
++		  else {
++#if defined DEBUG
++			 printf( "Timeout or error() %d - %s\n", valopt, strerror(valopt));
++#endif
++		  }
++	   }
++	   else {
++#if defined DEBUG
++		  printf( "Error connecting %d - %s\n", errno, strerror(errno));
++#endif
++	   }
++	}
++
++	// Set reback to original mode again...
++	fcntl(sock->id, F_SETFL, flags);
++#endif
++
++	freeaddrinfo(toaddrInfo);
++#endif
++
++	cg_log_debug_l4("Entering...\n");
++
++	cg_socket_setdirection(sock, CG_NET_SOCKET_CLIENT);
++
++#if defined(CG_USE_OPENSSL)
++	if (cg_socket_isssl(sock) == TRUE  && ret == 0) {
++		sock->ctx = SSL_CTX_new( SSLv23_client_method());
++#ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
++		cg_ssl_set_ctx(sock, sock->ctxdata);
++#endif
++		sock->ssl = SSL_new(sock->ctx);
++		SSL_set_connect_state(sock->ssl);
++		if (SSL_set_fd(sock->ssl, cg_socket_getid(sock)) == 0) {
++			tr069_cg_socket_close(sock);
++			return FALSE;
++		}
++		//printf("\nStart Set BIO...\n");	
+ 		sock->ssl_bio = BIO_new (BIO_f_buffer ());
+ 		sock->io = BIO_new (BIO_f_ssl ());
+ 		BIO_set_ssl (sock->io, sock->ssl, BIO_NOCLOSE);
+ 		BIO_push (sock->ssl_bio, sock->io);
+-#endif
++		//printf("\nEnd Set BIO...\n\n");
+ 
+ 		if (SSL_connect(sock->ssl) < 1) {
+-			cg_socket_close(sock);
++			tr069_cg_socket_close(sock);
+ 			return FALSE;
+ 		}
+ 		if(!cg_ssl_extra_verify(sock)){
+-			cg_socket_close(sock);
++			tr069_cg_socket_close(sock);
+ 			return FALSE;
+ 		}
+ 	}
+@@ -1000,7 +1296,8 @@
+ 	return (ret == 0) ? TRUE : FALSE;
+ }
+ 
+-#if 1 // 20160519 Max add
++
++// 20160519 Max add
+ int proto_flush(CgSocket *sock)
+ {
+ 	long num1;
+@@ -1016,10 +1313,10 @@
+ 		num1 = BIO_flush(sock->ssl_bio);
+ 
+ 		if( num1 < 0 )
+-		{	
++		{
+ 			usleep(20000);
+ 			if(count == 49)
+-			printf("@@@@@@@@@@@%s, %d, count = %d\n", __FUNCTION__, __LINE__, count);
++			//printf("@@@@@@@@@@@%s, %d, count = %d\n", __FUNCTION__, __LINE__, count);
+ 
+ 			count++;
+ 			if( count < 50 )
+@@ -1030,8 +1327,8 @@
+ 
+ 	return 0;
+ 
+-}  /* End of proto_flush() */
+-#endif
++}
++
+ 
+ /****************************************
+ * cg_socket_read
+@@ -1150,6 +1447,7 @@
+ 	return nTotalSent;
+ }
+ 
++
+ // 20160519 Max add
+ int tr069_cg_socket_write(CgSocket *sock, char *cmd, int cmdLen)
+ {

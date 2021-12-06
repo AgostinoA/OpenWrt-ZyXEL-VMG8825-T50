@@ -1,0 +1,73 @@
+From f9beeb22e2a4128ed85a8dc267d0823e5cfd3f47 Mon Sep 17 00:00:00 2001
+From: Brian Foley <bpfoley@google.com>
+Date: Tue, 25 Oct 2016 14:20:55 +0200
+Subject: udhcpc: check read of option length byte to be within packet
+
+function                                             old     new   delta
+udhcp_get_option                                     215     220      +5
+udhcp_run_script                                     802     803      +1
+
+Signed-off-by: Brian Foley <bpfoley@google.com>
+Signed-off-by: Denys Vlasenko <vda.linux@googlemail.com>
+---
+ networking/udhcp/common.c | 8 +++++++-
+ networking/udhcp/dhcpc.c  | 4 ++--
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/networking/udhcp/common.c b/networking/udhcp/common.c
+index 0cf4dab63..589bcd674 100644
+--- a/networking/udhcp/common.c
++++ b/networking/udhcp/common.c
+@@ -226,9 +226,12 @@ uint8_t* FAST_FUNC udhcp_get_option(struct dhcp_packet *packet, int code)
+ 	rem = sizeof(packet->options);
+ 	while (1) {
+ 		if (rem <= 0) {
++ complain:
+ 			bb_error_msg("bad packet, malformed option field");
+ 			return NULL;
+ 		}
++
++		/* DHCP_PADDING and DHCP_END have no [len] byte */
+ 		if (optionptr[OPT_CODE] == DHCP_PADDING) {
+ 			rem--;
+ 			optionptr++;
+@@ -251,10 +254,13 @@ uint8_t* FAST_FUNC udhcp_get_option(struct dhcp_packet *packet, int code)
+ 			}
+ 			break;
+ 		}
++
++		if (rem <= OPT_LEN)
++			goto complain; /* complain and return NULL */
+ 		len = 2 + optionptr[OPT_LEN];
+ 		rem -= len;
+ 		if (rem < 0)
+-			continue; /* complain and return NULL */
++			goto complain; /* complain and return NULL */
+ 
+ 		if (optionptr[OPT_CODE] == code) {
+ 			log_option("option found", optionptr);
+diff --git a/networking/udhcp/dhcpc.c b/networking/udhcp/dhcpc.c
+index bef73277a..1c1051107 100644
+--- a/networking/udhcp/dhcpc.c
++++ b/networking/udhcp/dhcpc.c
+@@ -450,7 +450,7 @@ static char **fill_envp(struct dhcp_packet *packet)
+ 			temp = udhcp_get_option(packet, i);
+ 			if (temp) {
+ 				if (i == DHCP_OPTION_OVERLOAD)
+-					overload = *temp;
++					overload |= *temp;
+ 				else if (i == DHCP_SUBNET)
+ 					envc++; /* for $mask */
+ 				envc++;
+@@ -476,7 +476,7 @@ static char **fill_envp(struct dhcp_packet *packet)
+ 	 * uint16_t secs;   // elapsed since client began acquisition/renewal
+ 	 * uint16_t flags;  // only one flag so far: bcast. Never set by server
+ 	 * uint32_t ciaddr; // client IP (usually == yiaddr. can it be different
+-	 *                  // if during renew server wants to give us differn IP?)
++	 *                  // if during renew server wants to give us different IP?)
+ 	 * uint32_t gateway_nip; // relay agent IP address
+ 	 * uint8_t chaddr[16]; // link-layer client hardware address (MAC)
+ 	 * TODO: export gateway_nip as $giaddr?
+-- 
+cgit v1.2.1
+

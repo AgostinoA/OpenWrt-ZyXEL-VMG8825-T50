@@ -1,0 +1,168 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2019-03-20 14:18:29.502351619 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2019-03-20 15:15:47.136813971 +0800
+@@ -80,11 +80,9 @@
+ 	{"IPAddress",			dalType_v4Addr,	0,	0,	NULL},
+ 	{"SubnetMask",			dalType_v4Mask,	0,	0,	NULL},
+ 	{"GatewayIPAddress",	dalType_v4Addr,	0,	0,	NULL},
+-	{"CurIPAddress",		dalType_v4Addr,	0,	0,	NULL, NULL, dalcmd_Forbid}, //read only
+ 	{"ip6Static",			dalType_boolean,	0,	0,	NULL},
+ 	{"IP6Address",			dalType_v6AddrPrefix,	0,	0,	NULL},
+ 	{"NextHop",				dalType_v6Addr,	0,	0,	NULL},
+-	{"CurIP6Address",		dalType_v6Addr,	0,	0,	NULL, NULL, dalcmd_Forbid}, //read only
+      /* __ZyXEL__, Albert, 20180209,Support IPv6 option IA_NA and IA_PD  */
+ 	{"IPv6Manual_IANA",		dalType_boolean,	0,	0,	NULL},
+ 	{"IPv6Manual_IAPD",		dalType_boolean,	0,	0,	NULL},	
+@@ -4201,7 +4199,7 @@
+ 	return ret;
+ }
+ 
+-zcfgRet_t getStaticInfo(struct json_object *pramJobj,objIndex_t ipIfaceIid, struct json_object *ipIfaceObj){
++zcfgRet_t getIpGatewayDnsInfo(struct json_object *pramJobj,objIndex_t ipIfaceIid, struct json_object *ipIfaceObj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *obj = NULL;
+ 	objIndex_t iid;
+@@ -4215,6 +4213,8 @@
+ 	const char *X_ZYXEL_Type;
+ 	const char *X_ZYXEL_LocalIPAddress;
+ 	const char *GatewayIPAddress;
++	const char *DestIPAddress;
++	const char *DestIPPrefix;
+ 	const char *IPAddress;
+ 	const char *SubnetMask;
+ 	const char *WanMacType;
+@@ -4242,7 +4242,15 @@
+ 	json_object_object_add(pramJobj, "option61Enable", json_object_new_boolean(false));
+ 	json_object_object_add(pramJobj, "option125Enable", json_object_new_boolean(false));
+ 
+-	//static ipv4 Addr
++	Jadds(pramJobj, "IPAddress", "");
++	Jadds(pramJobj, "SubnetMask", "");
++	Jadds(pramJobj, "GatewayIPAddress", "");
++	Jadds(pramJobj, "DNSServer", "");
++	Jadds(pramJobj, "IP6Address", "");
++	Jadds(pramJobj, "NextHop", "");
++	Jadds(pramJobj, "DNS6Server", "");
++
++	//ipv4 Addr
+ 	IID_INIT(v4AddrIid);
+ 	v4AddrIid.level = 2;
+ 	v4AddrIid.idx[0] = ipIfaceIid.idx[0];
+@@ -4253,12 +4261,11 @@
+ 		AddressingType = json_object_get_string(json_object_object_get(v4AddrObj, "AddressingType"));
+ 		Enable = json_object_get_boolean(json_object_object_get(v4AddrObj, "Enable"));
+         if(Enable == true){
+-            replaceParam(pramJobj, "CurIPAddress", v4AddrObj, "IPAddress");
++			replaceParam(pramJobj, "IPAddress", v4AddrObj, "IPAddress");
++			replaceParam(pramJobj, "SubnetMask", v4AddrObj, "SubnetMask");
+     		if(!strcmp(AddressingType, "Static") && strstr(CurrEncapsulation, "IP")){
+     			ipStatic = true;
+     			json_object_object_add(pramJobj, "ipStatic", json_object_new_boolean(true));
+-    			json_object_object_add(pramJobj, "IPAddress", JSON_OBJ_COPY(json_object_object_get(v4AddrObj, "IPAddress")));
+-    			json_object_object_add(pramJobj, "SubnetMask", JSON_OBJ_COPY(json_object_object_get(v4AddrObj, "SubnetMask")));
+     		}
+         }
+ 	}
+@@ -4269,14 +4276,32 @@
+ 		if(v4FwdObj) zcfgFeJsonObjFree(v4FwdObj);
+ 		while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &routerIid, &v4FwdIid, &v4FwdObj) == ZCFG_SUCCESS){
+ 			Interface = json_object_get_string(json_object_object_get(v4FwdObj, "Interface"));
++			DestIPAddress = Jgets(v4FwdObj, "DestIPAddress");
+ 			staticRoute =  json_object_get_boolean(json_object_object_get(v4FwdObj, "StaticRoute"));
+-			if(!strcmp(Interface, ipIfacePath) && staticRoute == true){
++			if(!strcmp(Interface, ipIfacePath) && !strcmp(DestIPAddress, "") &&staticRoute == true){
+ 				GatewayIPAddress= json_object_get_string(json_object_object_get(v4FwdObj, "GatewayIPAddress"));
+ 				json_object_object_add(pramJobj, "GatewayIPAddress", json_object_new_string(GatewayIPAddress));
++				zcfgFeJsonObjFree(v4FwdObj);
++				break;
+ 			}
+ 			zcfgFeJsonObjFree(v4FwdObj);
+ 		}
+ 	}else{
++		//GatewayIPAddress
++		IID_INIT(v4FwdIid);
++		if(v4FwdObj) zcfgFeJsonObjFree(v4FwdObj);
++		while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &routerIid, &v4FwdIid, &v4FwdObj) == ZCFG_SUCCESS){
++			Interface = json_object_get_string(json_object_object_get(v4FwdObj, "Interface"));
++			DestIPAddress = Jgets(v4FwdObj, "DestIPAddress");
++			if(!strcmp(Interface, ipIfacePath) && !strcmp(DestIPAddress, "")){
++				GatewayIPAddress= json_object_get_string(json_object_object_get(v4FwdObj, "GatewayIPAddress"));
++				json_object_object_add(pramJobj, "GatewayIPAddress", json_object_new_string(GatewayIPAddress));
++				zcfgFeJsonObjFree(v4FwdObj);
++				break;
++			}
++			zcfgFeJsonObjFree(v4FwdObj);
++		}
++		
+ 		//DHCP REQ OPT
+ 		IID_INIT(iid);
+ 		while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_DHCPV4_REQ_OPT, &v4ClientIid, &iid, &obj) == ZCFG_SUCCESS){
+@@ -4290,7 +4315,7 @@
+ 				json_object_object_add(pramJobj, "option120Enable", json_object_new_boolean(opt));
+ 			else if(tag == 121 )
+ 				json_object_object_add(pramJobj, "option121Enable", json_object_new_boolean(opt));
+-				zcfgFeJsonObjFree(obj);                                                                                           
++			zcfgFeJsonObjFree(obj);                                                                                           
+    		}
+ 		//DHCP SENT OPT
+ 		IID_INIT(iid);
+@@ -4345,11 +4370,10 @@
+ 		Origin = json_object_get_string(json_object_object_get(v6AddrObj, "Origin"));
+ 		Enable = json_object_get_boolean(json_object_object_get(v6AddrObj, "Enable"));
+ 		if(Enable == true){
+-            replaceParam(pramJobj, "CurIP6Address", v6AddrObj, "IPAddress");
++            replaceParam(pramJobj, "IP6Address", v6AddrObj, "IPAddress");
+             if(!strcmp(Origin, "Static")){
+ 			    ip6Static = true;
+ 			    json_object_object_add(pramJobj, "ip6Static", json_object_new_boolean(true));
+-			    json_object_object_add(pramJobj, "IP6Address", JSON_OBJ_COPY(json_object_object_get(v6AddrObj, "IPAddress")));
+             }
+ 		}
+ 	}
+@@ -4359,9 +4383,11 @@
+ 	while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V6_FWD, &routerIid, &v6FwdIid, &v6FwdObj) == ZCFG_SUCCESS){
+ 		Interface = json_object_get_string(json_object_object_get(v6FwdObj, "Interface"));
+ 		Origin = json_object_get_string(json_object_object_get(v6FwdObj, "Origin"));
+-		if(strstr(CurrEncapsulation, "IP") && ip6Static){
+-			if(!strcmp(Interface, ipIfacePath)){
++		DestIPPrefix = Jgets(v6FwdObj, "DestIPPrefix");
++		if(strstr(CurrEncapsulation, "IP")){
++			if(!strcmp(Interface, ipIfacePath) && (!strcmp(DestIPPrefix, "::/0") || !strcmp(DestIPPrefix, ""))){
+ 				json_object_object_add(pramJobj, "NextHop", JSON_OBJ_COPY(json_object_object_get(v6FwdObj, "NextHop")));
++				zcfgFeJsonObjFree(v6FwdObj);
+ 				break;
+ 			}
+ 		}
+@@ -4374,17 +4400,19 @@
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_DNS_CLIENT_SRV, &iid, &obj) == ZCFG_SUCCESS){
+ 		Interface = json_object_get_string(json_object_object_get(obj, "Interface"));
+ 		X_ZYXEL_Type = json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Type"));
+-		if(!strcmp(Interface, ipIfacePath) && !strcmp(X_ZYXEL_Type, "Static")){
++		if(!strcmp(Interface, ipIfacePath)){
+ 			DNSServer = json_object_get_string(json_object_object_get(obj, "DNSServer"));
+ 			if((strchr(DNSServer, ':') == NULL)) { //&& (dnsClientSrv4Obj == NULL)){
+ 				json_object_object_add(pramJobj, "DNSServer", json_object_new_string(DNSServer));
+ 				json_object_object_add(pramJobj, "ipDnsStatic", json_object_new_boolean(true));
+-				ipDnsStatic = true;
++				if(!strcmp(X_ZYXEL_Type, "Static"))
++					ipDnsStatic = true;
+ 			}
+ 			else {//if(dnsClientSrv6Obj == NULL){
+ 				json_object_object_add(pramJobj, "DNS6Server", json_object_new_string(DNSServer));
+ 				json_object_object_add(pramJobj, "ip6DnsStatic", json_object_new_boolean(true));
+-				ip6DnsStatic = true;
++				if(!strcmp(X_ZYXEL_Type, "Static"))
++					ip6DnsStatic = true;
+ 			}
+ 		}
+ 		/*else{
+@@ -4518,7 +4546,7 @@
+ #endif
+ 			if(strcmp(CurrMode, "IP_Bridged")){
+ 				getWanInfo(pramJobj, ipIfaceIid, ipIfObj);
+-				getStaticInfo(pramJobj, ipIfaceIid, ipIfObj);
++				getIpGatewayDnsInfo(pramJobj, ipIfaceIid, ipIfObj);
+ 			}
+ 			if(json_object_object_get(Jobj, "Index")){
+ 				index = json_object_get_int(json_object_object_get(Jobj, "Index"));

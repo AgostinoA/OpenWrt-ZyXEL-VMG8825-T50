@@ -1,0 +1,339 @@
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_account.c	2017-07-20 19:17:58.706384422 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2017-07-20 19:24:48.351811300 +0800
+@@ -159,13 +159,45 @@
+ 
+ void zcfgFeDalShowVoipLine(struct json_object *Jarray){
+ 	int len = 0, i;
+-	struct json_object *obj = NULL;
++	struct json_object *obj = NULL, *obj_idx = NULL;
+ 	if(json_object_get_type(Jarray) != json_type_array){
+ 		printf("wrong Jobj format!\n");
+ 		return;
+ 	}
+-	printf("%-10s %-10s %-15s %-20s %-10s \n","Index", "Status", "SIP Account", "Service Provider", "Account Number");
+ 	len = json_object_array_length(Jarray);
++	obj_idx = json_object_array_get_idx(Jarray, 0);
++	if(len == 1 && json_object_get_boolean(json_object_object_get(obj_idx, "ShowDetail"))){
++		obj = json_object_array_get_idx(Jarray, 0);
++		printf("%-35s %s \n","SIP Account Selection:", json_object_get_string(json_object_object_get(obj, "SipAccount")));
++		printf("%-35s %s \n","SIP Account Associated with:", json_object_get_string(json_object_object_get(obj, "Name")));
++		printf("%-35s %s \n","SIP Account:", json_object_get_string(json_object_object_get(obj, "Enable")));
++		printf("%-35s %s \n","SIP Account Number:", json_object_get_string(json_object_object_get(obj, "DirectoryNumber")));
++		printf("%-20s %s \n","Username:", json_object_get_string(json_object_object_get(obj, "AuthUserName")));
++		printf("%-20s %s \n","Password:", "********");
++		if(!strcmp("URL_Tel",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Url_Type"))))
++			printf("%-20s %s \n","URL Type:", "TEL");
++		else if(!strcmp("URL_Sip",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Url_Type"))))
++			printf("%-20s %s \n","URL Type:", "SIP");
++		printf("%-35s %s \n","Primary Compression Type:", json_object_get_string(json_object_object_get(obj, "primaryCodec")));
++		printf("%-35s %s \n","Secondary Compression Type:", json_object_get_string(json_object_object_get(obj, "secondarydCodec")));
++		printf("%-35s %s \n","Third Compression Type:", json_object_get_string(json_object_object_get(obj, "thirdCodec")));
++		if(json_object_get_string(json_object_object_get(obj, "TransmitGain")) == -3)
++			printf("%-35s %s \n","Speaking Volume Control:", "Minimum");
++		else if(json_object_get_string(json_object_object_get(obj, "TransmitGain")) == 0)
++			printf("%-35s %s \n","Speaking Volume Control:", "Middle");
++		else if(json_object_get_string(json_object_object_get(obj, "TransmitGain")) == 6)
++			printf("%-35s %s \n","Speaking Volume Control:", "Maximum");
++		if(json_object_get_string(json_object_object_get(obj, "ReceiveGain")) == -3)
++			printf("%-35s %s \n","Speaking Volume Control:", "Minimum");
++		else if(json_object_get_string(json_object_object_get(obj, "ReceiveGain")) == 0)
++			printf("%-35s %s \n","Speaking Volume Control:", "Middle");
++		else if(json_object_get_string(json_object_object_get(obj, "ReceiveGain")) == 6)
++			printf("%-35s %s \n","Speaking Volume Control:", "Maximum");
++		printf("%-40s %s \n","Enable G.168 (Echo Cancellation)", json_object_get_string(json_object_object_get(obj, "EchoCancellationEnable")));
++		printf("%-40s %s \n","Enable VAD (Voice Active Detector)", json_object_get_string(json_object_object_get(obj, "SilenceSuppression")));
++	}
++	else{
++	printf("%-10s %-10s %-15s %-20s %-10s \n","Index", "Status", "SIP Account", "Service Provider", "Account Number");
+ 	for(i=0;i<len;i++){
+ 		obj = json_object_array_get_idx(Jarray, i);
+ 		printf("%-10s %-10s %-15s %-20s %-10s \n",
+@@ -176,6 +208,7 @@
+ 			json_object_get_string(json_object_object_get(obj, "DirectoryNumber")));
+ 	}
+ }
++}
+ 
+ zcfgRet_t zcfgFeDalLineParaSet(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -1907,12 +1940,75 @@
+ 
+ zcfgRet_t zcfgFeDalVoipLineGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	int idx = 1;
++	int idx = 1, index = 0;
+ 
+ 	initLineGlobalObjects();
+ 	zcfgFeDalCustomizationflagGet();
+ 	sipAccountIdx = 1;
+ 	IID_INIT(lineIid);
++	if(json_object_object_get(Jobj, "Index")){
++		index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		ret = convertIndextoIid(index, &lineIid, RDM_OID_VOICE_LINE, NULL, NULL, replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_LINE, &lineIid, &lineObj) == ZCFG_SUCCESS) {
++			if(lineObj != NULL){
++				singleLineobj = json_object_new_object();
++				json_object_object_add(singleLineobj, "ShowDetail", json_object_new_boolean(true));
++				if(singleLineobj == NULL){
++					printf("%s:Create new json Obj fail \n", __FUNCTION__);
++					goto exit;
++				}
++
++				/*if((ret = zcfgFeDalparsePhyIntfObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Obj \n", __FUNCTION__);
++					goto exit;
++				}*/
++				sipAccountIdx = index;
++				if((ret = zcfgFeDalparseSingleLineObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseSingleLineSIPObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line SIP Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseSingleLineCallFeatureObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Call Feature Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseSingleLineCodecListObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Codec List Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseSingleLineProcessingObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Processing Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseMailcfgObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Processing Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseMailserviceObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Processing Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseProfileObj(singleLineobj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Line Processing Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				json_object_object_add(singleLineobj, "Index", json_object_new_int(idx));
++
++				if( ret == ZCFG_SUCCESS ){
++					json_object_array_add(Jarray, JSON_OBJ_COPY(singleLineobj));
++				}
++
++				zcfgFeJsonObjFree(singleLineobj);
++				zcfgFeJsonObjFree(lineObj);
++			}
++		}
++	}
++	else {
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_LINE, &lineIid, &lineObj) == ZCFG_SUCCESS) {
+ 		if(lineObj != NULL){
+ 			singleLineobj = json_object_new_object();
+@@ -1968,6 +2064,7 @@
+ 			zcfgFeJsonObjFree(singleLineobj);
+ 			sipAccountIdx++;
+ 			zcfgFeJsonObjFree(lineObj);
++			}
+ 		}
+ 	}
+ 	//printf("%s(): Jobj :%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_provider.c	2017-07-20 19:17:58.706384422 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c	2017-07-20 19:25:27.922811300 +0800
+@@ -175,24 +175,90 @@
+ 
+ void zcfgFeDalShowVoipProfile(struct json_object *Jarray){
+ 	int i, len = 0;
+-	struct json_object *obj;
+-	
++	struct json_object *obj = NULL, *obj_idx = NULL;
+ 	if(json_object_get_type(Jarray) != json_type_array){
+ 		printf("wrong Jobj format!\n");
+ 		return;
+ 	}
++	len = json_object_array_length(Jarray);
++	obj_idx = json_object_array_get_idx(Jarray, 0);
++	if(len == 1 && json_object_get_boolean(json_object_object_get(obj_idx, "ShowDetail"))){
++		obj = json_object_array_get_idx(Jarray, 0);
++		printf("SIP Service Provider Selection:\n");
++		printf("%-2s %-30s %-10s \n","", "Service Provider Selection:", json_object_get_string(json_object_object_get(obj, "ProfName")));
++		printf("General:\n");
++		printf("%-2s %-30s %-10s \n","", "SIP Service Provider:", json_object_get_string(json_object_object_get(obj, "ProfleEnable")));
++		printf("%-2s %-30s %-10s \n","", "SIP Service Provider Name:", json_object_get_string(json_object_object_get(obj, "ProfName")));
++		printf("%-2s %-30s %-10s \n","", "SIP Local Port:", json_object_get_string(json_object_object_get(obj, "UserAgentPort")));
++		printf("%-2s %-30s %-10s \n","", "SIP Proxy Server Address:", json_object_get_string(json_object_object_get(obj, "ProxyServer")));
++		printf("%-2s %-30s %-10s \n","", "SIP Proxy Server Port:", json_object_get_string(json_object_object_get(obj, "ProxyServerPort")));
++		printf("%-2s %-30s %-10s \n","", "SIP REGISTRAR Server Address:", json_object_get_string(json_object_object_get(obj, "RegistrarServer")));
++		printf("%-2s %-30s %-10s \n","", "SIP REGISTRAR Server Port:", json_object_get_string(json_object_object_get(obj, "RegistrarServerPort")));
++		printf("%-2s %-30s %-10s \n","", "SIP Service Domain:", json_object_get_string(json_object_object_get(obj, "UserAgentDomain")));
++		printf("RFC Support:\n");
++		printf("%-2s %-30s %-10s \n","", "PRACK (RFC 3262, Require: 100rel):", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Rfc3262Support")));
++		printf("VoIP IOP Flags:\n");
++		printf("%s %s %d \n",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_VoipIOPFlags")),__func__,__LINE__);
++
++		if(!strcmp("0",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_VoipIOPFlags")))){
++			printf("%-2s %-50s %-10s \n","", "Replace dial digit '#' to '%23' in SIP messages:", "Disable");
++			printf("%-2s %-50s %-10s \n","", "Remove the 'Route' header in SIP messages:", "Disable");
++		}
++		else if(!strcmp("1",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_VoipIOPFlags")))){
++			printf("%-2s %-40s %-10s \n","", "Replace dial digit '#' to '%23' in SIP messages:", "Enable");
++			printf("%-2s %-40s %-10s \n","", "Remove the 'Route' header in SIP messages:", "Disable");
++		}
++		else if(!strcmp("4",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_VoipIOPFlags")))){
++			printf("%-2s %-40s %-10s \n","", "Replace dial digit '#' to '%23' in SIP messages:", "Disable");
++			printf("%-2s %-40s %-10s \n","", "Remove the 'Route' header in SIP messages:", "Enable");
++		}
++		else if(!strcmp("5",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_VoipIOPFlags")))){
++			printf("%-2s %-40s %-10s \n","", "Replace dial digit '#' to '%23' in SIP messages:", "Enable");
++			printf("%-2s %-40s %-10s \n","", "Remove the 'Route' header in SIP messages:", "Enable");
++		}
++		printf("Bound Interface Name:\n");
++		if(!strcmp("Any_WAN",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_BoundIfName"))))
++			printf("%-2s %-30s %-10s \n","", "Bound Interface Name:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_BoundIfName")));
++		else if(!strcmp("Multi_WAN",json_object_get_string(json_object_object_get(obj, "X_ZYXEL_BoundIfName"))))
++			printf("%-2s %-30s %-10s %-10s\n","", "Bound Interface Name:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_BoundIfName")), json_object_get_string(json_object_object_get(obj, "BoundIfList")));
++		printf("Outbound Proxy:\n");
++		printf("%-2s %-30s %-10s \n","", "Outbound Proxy Address:", json_object_get_string(json_object_object_get(obj, "OutboundProxy")));
++		printf("%-2s %-30s %-10s \n","", "Outbound Proxy Port:", json_object_get_string(json_object_object_get(obj, "OutboundProxyPort")));
++		printf("%-2s %-30s %-10s \n","", "Use DHCP Option 120 First:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Option120Use")));
++		printf("RTP Port Range:\n");
++		printf("%-2s %-20s %-10s \n","", "Start Port:", json_object_get_string(json_object_object_get(obj, "LocalPortMin")));
++		printf("%-2s %-20s %-10s \n","", "End Port:", json_object_get_string(json_object_object_get(obj, "LocalPortMax")));
++		printf("SRTP Support:\n");
++		printf("%-2s %-20s %-10s \n","", "SRTP Support:", json_object_get_string(json_object_object_get(obj, "SRTPEnable")));
++		printf("%-2s %-20s %-10s \n","", "End Port:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Crypto_Suite_Name")));
++		printf("%-20s %-10s \n", "DTMF Mode:", json_object_get_string(json_object_object_get(obj, "DTMFMethod")));
++		printf("%-20s %-10s \n", "Transport Type:", json_object_get_string(json_object_object_get(obj, "ProxyServerTransport")));
++		printf("%-20s %-10s \n", "Ignore Direct IP:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_IgnoreDirectIP")));
++		printf("%-20s %-10s \n", "FAX Option:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_FaxMode")));
++		printf("QoS Tag:\n");
++		printf("%-2s %-30s %-10s \n","", "SIP DSCP Mark Setting:", json_object_get_string(json_object_object_get(obj, "DSCPMark")));
++		printf("%-2s %-30s %-10s \n","", "RTP DSCP Mark Setting:", json_object_get_string(json_object_object_get(obj, "RTPDSCPMark")));
++		printf("Timer Setting:\n");
++		printf("%-2s %-35s %-10s \n","", "SIP Register Expiration Duration:", json_object_get_string(json_object_object_get(obj, "RegisterExpires")));
++		printf("%-2s %-35s %-10s \n","", "SIP Register Fail Re-try Timer:", json_object_get_string(json_object_object_get(obj, "RegisterRetryInterval")));
++		printf("%-2s %-35s %-10s \n","", "Session Expires (SE):", json_object_get_string(json_object_object_get(obj, "InviteExpires")));
++		printf("%-2s %-35s %-10s \n","", "Min-SE:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_MinSE")));
++		printf("%-20s %-10d \n", "Dialing Interval Selection:", atoi(json_object_get_string(json_object_object_get(obj, "InterDigitTimerStd")))/1000);
++		printf("%-20s %-10s \n", "Enable DNS SRV:", json_object_get_string(json_object_object_get(obj, "X_ZYXEL_Rfc3263Support")));
++	}
++	else{
+ 	printf("%-10s %-30s %-30s %-30s %-10s\n",
+ 		"Index","SIP Service Provider Name","SIP Proxy Server Address","REGISTER Server Address","SIP Service Domain");
+-	len = json_object_array_length(Jarray);
+ 	for(i=0;i<len;i++){
+ 		obj = json_object_array_get_idx(Jarray, i);
+ 		printf("%-10s %-30s %-30s %-30s %-10s\n",
+-			json_object_get_string(json_object_object_get(obj, "profileIdx")),
++				json_object_get_string(json_object_object_get(obj, "Index")),
+ 			json_object_get_string(json_object_object_get(obj, "ProfName")),
+ 			json_object_get_string(json_object_object_get(obj, "ProxyServer")),
+ 			json_object_get_string(json_object_object_get(obj, "RegistrarServer")),
+ 			json_object_get_string(json_object_object_get(obj, "UserAgentDomain")));
+ 	}
++	}
+ 
+ }
+ 
+@@ -1048,6 +1114,7 @@
+ 	json_object_object_add(paserobj, "ProfleEnable", json_object_new_string(ProfleEnable));
+ 	json_object_object_add(paserobj, "X_ZYXEL_BoundIfName", json_object_new_string(X_ZYXEL_BoundIfName));
+ 	json_object_object_add(paserobj, "X_ZYXEL_BoundIfList", json_object_new_string(X_ZYXEL_BoundIfList));
++	json_object_object_add(paserobj, "BoundIfList", json_object_new_string(X_ZYXEL_BoundIfList));
+ 	json_object_object_add(paserobj, "DTMFMethodG711", json_object_new_string(DTMFMethodG711));
+ 	json_object_object_add(paserobj, "DTMFMethod", json_object_new_string(DTMFMethod));
+ 	if(SHOW_NOT_USE_OFTEN_VOIP_SETTING&flag1){
+@@ -1222,11 +1289,67 @@
+ 
+ zcfgRet_t zcfgFeDalVoipProfileGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	int idx = 1, index = 0;
+ 
+ 	zcfgFeDalCustomflagGet();
+ 	initProfGlobalObjects();
+ 
+ 	IID_INIT(profIid);
++	if(json_object_object_get(Jobj, "Index")){
++		index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		ret = convertIndextoIid(index, &profIid, RDM_OID_VOICE_PROF, NULL, NULL, replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_PROF, &profIid, &profObj) == ZCFG_SUCCESS) {
++			if(profObj != NULL){
++				singleProObj = json_object_new_object();
++				json_object_object_add(singleProObj, "ShowDetail", json_object_new_boolean(true));
++
++				if(singleProObj == NULL){
++					printf("%s:Create new json Obj fail \n", __FUNCTION__);
++					goto exit;
++				}
++				
++				if((ret = zcfgFeDalparseSingleProfObj(singleProObj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Prof Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseSingleProfSipObj(singleProObj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Prof SIP Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if((ret = zcfgFeDalparseSingleProfRTPObj(singleProObj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Prof RTP Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if(!(HIDE_VOICE_SRTP&flag1)){
++					if((ret = zcfgFeDalparseSingleProfRTPSRTPObj(singleProObj)) != ZCFG_SUCCESS){
++						printf("%s:(ERROR) fail to parse single Prof SRTP Obj \n", __FUNCTION__);
++						goto exit;
++					}
++				}
++				if((ret = zcfgFeDalparseSingleProfNumberingPlanObj(singleProObj)) != ZCFG_SUCCESS){
++					printf("%s:(ERROR) fail to parse single Prof numbering plan Obj \n", __FUNCTION__);
++					goto exit;
++				}
++				if(SHOW_NOT_USE_OFTEN_VOIP_SETTING&flag1){
++					if((ret = zcfgFeDalparseSingleProfNumberingPlanPrefixInfoObj(singleProObj)) != ZCFG_SUCCESS){
++						printf("%s:(ERROR) fail to parse single Prof numbering plan Obj \n", __FUNCTION__);
++						goto exit;
++					}
++				}
++				json_object_object_add(singleProObj, "Index", json_object_new_int(idx));
++				if( ret == ZCFG_SUCCESS ){
++					json_object_array_add(Jarray, JSON_OBJ_COPY(singleProObj));
++				}
++
++
++				zcfgFeJsonObjFree(singleProObj);
++				zcfgFeJsonObjFree(profObj);
++			}
++		}
++	}
++	else{
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_PROF, &profIid, &profObj) == ZCFG_SUCCESS) {
+ 		if(profObj != NULL){
+ 			singleProObj = json_object_new_object();
+@@ -1263,14 +1386,18 @@
+ 					goto exit;
+ 				}
+ 			}
++				json_object_object_add(singleProObj, "Index", json_object_new_int(idx));
+ 			if( ret == ZCFG_SUCCESS ){
+ 				json_object_array_add(Jarray, JSON_OBJ_COPY(singleProObj));
+ 			}
++				idx++;
+ 
+ 			zcfgFeJsonObjFree(singleProObj);
+ 			zcfgFeJsonObjFree(profObj);
+ 		}
+ 	}
++	}
++	
+ 
+ 	//printf("%s(): Jobj :%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+ exit:

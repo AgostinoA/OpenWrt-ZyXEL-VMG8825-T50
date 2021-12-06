@@ -1,0 +1,214 @@
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_account.c	2017-01-17 11:41:40.824356064 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_account.c	2017-01-21 02:40:27.127386219 +0800
+@@ -4,6 +4,7 @@
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_string.h"
+ #include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_schema.h"
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+@@ -110,6 +111,7 @@
+ unsigned int sipAccountIdx;
+ char* Codec;
+ unsigned int priority;
++bool CodecEnable;
+ 
+ unsigned int flag1;
+ 
+@@ -169,6 +171,40 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalVoipLineGetDefault(struct json_object* defaultJobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_LINE, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n", __FUNCTION__, RDM_OID_VOICE_LINE);
++		return ret;
++	}
++	enable = json_object_get_string(json_object_object_get(defaultJobj, "Enable"));
++	json_object_object_add(defaultJobj, "LineEnable", json_object_new_string(enable));//To avoid other voice obj use the same parameter name.
++	json_object_object_del(defaultJobj, "Enable");
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_LINE_SIP, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_LINE_SIP);
++		return ret;
++	}
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_LINE_CALLING_FEATURE, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_LINE_CALLING_FEATURE);
++		return ret;
++	}
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_LINE_PROCESSING, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_LINE_PROCESSING);
++		return ret;
++	}
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_LINE_CODEC_LIST, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_LINE_CODEC_LIST);
++		return ret;
++	}
++	CodecEnable = json_object_get_boolean(json_object_object_get(defaultJobj, "Enable"));
++	json_object_object_add(defaultJobj, "CodecEnable", json_object_new_boolean(CodecEnable));//To avoid other voice obj use the same parameter name.
++	json_object_object_del(defaultJobj, "Enable");
++
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalLineSchemaParaGet(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	return ret;
+@@ -705,7 +741,7 @@
+ 		goto exit;
+ 	}
+ 
+-	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++	if((ret = zcfgFeMultiObjJsonBlockedSet(multiJobj, NULL)) != ZCFG_SUCCESS){
+ 		printf("%s:(ERROR) zcfgFeMultiObjJsonSet fail!!\n", __FUNCTION__);
+ 		goto exit;
+ 	}
+@@ -1271,6 +1307,7 @@
+ zcfgRet_t zcfgFeDalVoipLine(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *defaultJobj = NULL;
+ 
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+@@ -1287,7 +1324,14 @@
+ 	else if(!strcmp(method, "GET")) {
+ 		ret = zcfgFeDalVoipLineGet(Jobj, NULL);
+ 	}
+-
++	else if(!strcmp(method, "DEFAULT")) {
++		defaultJobj = json_object_new_object();
++		ret = zcfgFeDalVoipLineGetDefault(defaultJobj, NULL);
++		if((ret == ZCFG_SUCCESS) && (defaultJobj!=NULL)){
++			json_object_array_add(Jobj, JSON_OBJ_COPY(defaultJobj));
++		}
++		json_object_put(defaultJobj);
++	}
+ 	return ret;
+ }
+ 
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_provider.c	2017-01-17 11:41:40.732357221 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c	2017-01-21 02:38:22.805266208 +0800
+@@ -4,6 +4,7 @@
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_string.h"
+ #include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_schema.h"
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+@@ -286,6 +287,52 @@
+ 	return;
+ }
+ 
++zcfgRet_t zcfgFeDalVoipProfileGetDefault(struct json_object* defaultJobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF);
++		return ret;
++	}
++	ProfleEnable = json_object_get_string(json_object_object_get(defaultJobj, "Enable"));
++	json_object_object_add(defaultJobj, "ProfEnable", json_object_new_string(ProfleEnable));//To avoid other voice obj use the same parameter name.
++	json_object_object_del(defaultJobj, "Enable");
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF_SIP, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF_SIP);
++		return ret;
++	}
++	DSCPMark = json_object_get_int(json_object_object_get(defaultJobj, "DSCPMark"));
++	json_object_object_add(defaultJobj, "SIPDSCPMark", json_object_new_int(DSCPMark));//To avoid other voice obj use the same parameter name.
++	json_object_object_del(defaultJobj, "DSCPMark");
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF_RTP, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF_RTP);
++		return ret;
++	}
++	RTPDSCPMark = json_object_get_int(json_object_object_get(defaultJobj, "DSCPMark"));
++	json_object_object_add(defaultJobj, "RTPDSCPMark", json_object_new_int(RTPDSCPMark));//To avoid other voice obj use the same parameter name.
++	json_object_object_del(defaultJobj, "DSCPMark");
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF_RTP_SRTP, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF_RTP_SRTP);
++		return ret;
++	}
++	SRTPEnable = json_object_get_boolean(json_object_object_get(defaultJobj, "Enable"));
++	json_object_object_add(defaultJobj, "SRTPEnable", json_object_new_boolean(SRTPEnable));//To avoid other voice obj use the same parameter name.
++	json_object_object_del(defaultJobj, "Enable");
++
++	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF_NUM_PLAN, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF_NUM_PLAN);
++		return ret;
++	}
++	/*if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF_FAX_T38, defaultJobj)) != ZCFG_SUCCESS){
++		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF_FAX_T38);
++		return ret;
++	}*/
++
++	return ret;
++}
+ 
+ zcfgRet_t zcfgFeDalProfObjAdd(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -668,8 +715,8 @@
+ 		}
+ 	}
+ 
+-	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_VOICE_PROF);
++	if((ret = zcfgFeMultiObjJsonBlockedSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set MultiObj %d\n", __FUNCTION__, RDM_OID_VOICE_PROF);
+ 		goto exit;
+ 	}
+ 
+@@ -964,12 +1011,13 @@
+ zcfgRet_t zcfgFeDalVoipProfile(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *defaultJobj = NULL;
+ 
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "POST")) {
+-		char buf[64] = {0};
++		char buf[16] = {0};
+ 		ret = zcfgFeDalVoipProfileAdd(Jobj, NULL);
+ 		if(ret == ZCFG_SUCCESS){
+ 			sprintf(buf,"VoiceProfile.%d",profIid.idx[1]);
+@@ -986,7 +1034,14 @@
+ 	else if(!strcmp(method, "GET")) {
+ 		ret = zcfgFeDalVoipProfileGet(Jobj, NULL);
+ 	}
+-
++	else if(!strcmp(method, "DEFAULT")) {
++		defaultJobj = json_object_new_object();
++		ret = zcfgFeDalVoipProfileGetDefault(defaultJobj, NULL);
++		if((ret == ZCFG_SUCCESS) && (defaultJobj!=NULL)){
++			json_object_array_add(Jobj, JSON_OBJ_COPY(defaultJobj));
++			json_object_put(defaultJobj);
++		}
++	}
+ 	return ret;
+ }
+ 
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-01-21 21:39:29.262925986 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-01-21 21:45:13.411681171 +0800
+@@ -1,7 +1,7 @@
+ CURRENT_DIR = $(shell pwd)
+ COMMON_ZCFG_INCLUDE_DIR = $(CURRENT_DIR)/../../../private/apps/zcfg/include
+ LIB_PATH = -L$(USRLIBDIR) -L$(INSTALL_DIR)/lib/public -L$(INSTALL_DIR)/lib/private
+-LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct
++LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct -lzcfg_fe_schema
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+ 
+ FE_PATH = ./

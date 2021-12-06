@@ -1,0 +1,123 @@
+Index: clinkc/src/cybergarage/http/chttp_authentication.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_authentication.c	2015-04-14 13:32:58.092509247 +0800
++++ clinkc/src/cybergarage/http/chttp_authentication.c	2015-04-14 13:38:55.849203531 +0800
+@@ -508,13 +508,16 @@
+ void cg_http_auth_header_parse(CgHttpPacket *httpPkt)
+ {
+ 	char headerArray[512]={0};
+-       char *headerPtr = NULL, *headerLine = NULL, *passphrase = NULL;
++	char nonce[512]={0};
++	char *headerPtr = NULL, *headerLine = NULL, *passphrase = NULL, *tmpBuf = NULL;
+ 	int statusCode = 0;
+-       char *p[32];
++	char *p[32], *q[32];
++	char *delim1=", ";
++	char *delim2="=\" ";
+ 	CgHttpHeader *subheader;
+-       char *name, *value, *authMethod;
+-       int i = 0, j = 0;
+-	BOOL isReq = FALSE;
++	char *name, *value, *authMethod;
++	int i = 0, j = 0, k =0, l = 0, num = 0, tmpNum = 0;
++	BOOL isReq = FALSE, isNonce = FALSE;
+ 
+ 	/*ckeck whether the input is http request or response*/
+ 	if(cg_http_request_isgetrequest((CgHttpRequest *)httpPkt) || cg_http_request_ispostrequest((CgHttpRequest *)httpPkt))
+@@ -536,19 +539,19 @@
+ 		}
+ 	}
+ 
+-       /*beacause strtok will modifies the string(char *header)we give it,
+-       so convert the input pointer to array and set to header pointer*/
+-       strcpy(headerArray, headerLine);
+-       headerPtr = headerArray;
++	/*because strtok will modifies the string(char *header)we give it,
++	so convert the input pointer to array and set to header pointer*/
++	strcpy(headerArray, headerLine);
++	headerPtr = headerArray;
+ 
+-       /*detach the authentication header as authentication method.
++	/*detach the authentication header as authentication method.
+ 	*it is noteworthy that "Basic" auth request header format is different below:
+ 	*	Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ (encode response string)
+ 	*/
+ 	authMethod = strtok(headerPtr, " ");
+ 	if(authMethod != NULL){
+ 		if(!isReq)
+-              	cg_http_packet_setheadervalue(httpPkt, CG_HTTP_WWW_AUTHENTICATION,  authMethod);
++			cg_http_packet_setheadervalue(httpPkt, CG_HTTP_WWW_AUTHENTICATION,  authMethod);
+ 		else if(!strcmp(authMethod, "Basic")){
+ 			cg_http_packet_setheadervalue(httpPkt, CG_HTTP_AUTHENTICATION,  authMethod);
+ 			passphrase = strtok(NULL, " ");
+@@ -561,21 +564,66 @@
+ 
+ 	/*detach the authentication header to extract subheaders*/
+ 	/*prepare header pair to array p[]*/
+-	while((p[i]= strtok(NULL, "=\", "))!=NULL)
++	while((p[i]= strtok(NULL, delim1))!=NULL)
+ 		i++;
+ 
++	for(k=0; k<i; k++){
++		tmpBuf = p[k];
++		if(strstr(p[k], "nonce")){
++			isNonce = TRUE;
++			while(tmpBuf != NULL){
++				num++;
++				tmpBuf++;
++				tmpBuf = strstr(tmpBuf, "=");
++			}
++			num = num - 2;
++			tmpNum = num;
++		}
++		q[j] = strtok(p[k],delim2);
++		j++;
++		while((q[j]=strtok(NULL,delim2))){
++			if(isNonce){
++				sprintf(nonce, "%s%s", nonce,q[j]);
++				if(tmpNum-- > 0)
++					strcat(nonce, "=");
++			}
++			j++;
++		}
++		isNonce = FALSE;
++	}
+ 	/*set header pair from retrieve p[]
+ 	for example, p[0]=name_#1 p[1]=value_#1, p[2]=name_#2 p[3]=value_#2 and so on */
+-	for(j=0;j<i;j+=2){
+-		if ((name=p[j]) != NULL) {
+-			if ((value=p[j+1]) == NULL)
++	while(l<j){
++		if ((name=q[l]) != NULL) {
++			if(!strcmp(name, "nonce")){/*to avoid key of nonce include "=", e.g: nonce="IKDcyqYTBQA=217ef1137ae17a7551ff68f2c2e68f201e0f663c"*/
++				if(num != 0){
++					value = nonce;
++				}
++				else if((value=q[l+1]) == NULL){
++					value = "";
++				}
++			}
++			else if((value=q[l+1]) == NULL){
+ 				value = "";
++			}
+ 
+ 			subheader = cg_http_header_new();
+ 			cg_http_header_setname(subheader, name);
+ 			cg_http_header_setvalue(subheader, value);
+ 			cg_http_packet_addheader(httpPkt, subheader);
+ 		}
++
++		if(!strcmp(name, "nonce")){
++			if(num != 0){
++				l = l + num + 2 ;
++			}
++			else{
++				l = l+2;
++			}
++		}
++		else{
++			l = l+2;
++		}
+ 	}
+ }
+ 

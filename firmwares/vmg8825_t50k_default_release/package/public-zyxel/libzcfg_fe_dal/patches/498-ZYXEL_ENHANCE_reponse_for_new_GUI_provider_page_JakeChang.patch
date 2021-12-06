@@ -1,0 +1,147 @@
+Index: libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/sip/zcfg_fe_dal_sip_provider.c	2018-03-09 10:11:07.999458291 +0800
++++ libzcfg_fe_dal-1.0/voip/sip/zcfg_fe_dal_sip_provider.c	2018-03-09 10:59:56.733280190 +0800
+@@ -85,6 +85,38 @@
+ 	{NULL,										0,				0,	0,	NULL},
+ };
+ 
++typedef struct parm_s {
++    char *DAL_FeatureKey;
++    char *RDM_FeatureKey;
++}parm_t;
++
++parm_t Call_Feature_param[] = {
++    {"CALL_RETURN",                 "X_ZYXEL_CALL_RETURN"           },
++    {"CLIR_DEACTIVATE",             "CLIR_DEACTIVATE"               },
++    {"CLIR_DEACTIVATE",             "CLIR_ACTIVATE"                 },
++    {"CA_ACTIVATE",                 "CA_ACTIVATE"                   },
++    {"CA_DISABLE",                  "X_ZYXEL_CA_DISABLE"            },
++    {"CW_ACTIVATE",                 "CW_ACTIVATE"                   },
++    {"CW_DEACTIVATE",               "CW_DEACTIVATE"                 },
++    {"IVR",                         "X_ZYXEL_IVR"                   },
++    {"INTERNALCALL",                "X_ZYXEL_INTERNALCALL"          },
++    {"TRANSFER_ACTIVE",             "X_ZYXEL_TRANSFER_ACTIVE"       },
++    {"CFU_ACTIVATE",                "CFU_ACTIVATE"                  },
++    {"CFU_DEACTIVATE",              "CFU_DEACTIVATE"                },
++    {"CFNR_ACTIVATE",               "CFNR_ACTIVATE"                 },
++    {"CFNR_DEACTIVATE",             "CFNR_DEACTIVATE"               },
++    {"CFB_ACTIVATE",                "CFB_ACTIVATE"                  },
++    {"CFB_DEACTIVATE",              "CFB_DEACTIVATE"                },
++    {"ONESHOT_CW_ACTIVATE",         "X_ZYXEL_ONESHOT_CW_ACTIVATE"   },
++    {"ONESHOT_CW_DEACTIVATE",       "X_ZYXEL_ONESHOT_CW_DEACTIVATE" },
++    {"DND_ENABLE",                  "X_ZYXEL_DND_ENABLE"            },
++    {"DND_DISABLE",                 "X_ZYXEL_DND_DISABLE"           },
++    {"CCBS_DEACTIVATE",             "CCBS_DEACTIVATE"               },
++    {"OUTGOING_SIP",                "X_ZYXEL_OUTGOING_SIP"          },
++    {"CALL_REDIAL",                 "X_ZYXEL_CALL_REDIAL"           },
++    {"X_SINGLE_INTERNAL_CALL",      "X_SINGLE_INTERNAL_CALL"        },
++};
++
+ const char* ProfName;
+ const char* ProfleEnable;
+ const char* X_ZYXEL_BoundIfName;
+@@ -459,6 +491,10 @@
+ 	const char *DSCPMark = NULL;
+ 	const char *RTPDSCPMark = NULL;
+ 	const char *SRTPEnable = NULL;
++    char facilityAction[1024] = {0};
++    char prefixRange[1024] = {0};
++
++    zcfgFeDalCustomflagGet();
+ 
+ 	if((ret = zcfgFeGetSchemaParameterByOid(RDM_OID_VOICE_PROF, defaultJobj)) != ZCFG_SUCCESS){
+ 		printf("%s(): Get Schma Default value fail, oid(=%d) \n ", __FUNCTION__, RDM_OID_VOICE_PROF);
+@@ -501,6 +537,19 @@
+ 		return ret;
+ 	}*/
+ 
++    if (SHOW_NOT_USE_OFTEN_VOIP_SETTING & flag1)
++    {
++        strcpy(facilityAction, "X_ZYXEL_CALL_RETURN,CLIR_DEACTIVATE,CLIR_ACTIVATE,CA_ACTIVATE,X_ZYXEL_CA_DISABLE,X_ZYXEL_INTERNALCALL,X_ZYXEL_TRANSFER_ACTIVE,CFU_ACTIVATE,CFU_DEACTIVATE,CFNR_ACTIVATE,CFNR_DEACTIVATE,CFB_ACTIVATE,CFB_DEACTIVATE,X_ZYXEL_CALL_REDIAL,X_SINGLE_INTERNAL_CALL,CW_ACTIVATE,CW_DEACTIVATE,X_ZYXEL_ONESHOT_CW_ACTIVATE,X_ZYXEL_ONESHOT_CW_DEACTIVATE,X_ZYXEL_DND_ENABLE,X_ZYXEL_DND_DISABLE,CCBS_DEACTIVATE,X_ZYXEL_OUTGOING_SIP,X_ZYXEL_IVR");
++        json_object_object_add(defaultJobj, "facilityAction", json_object_new_string(facilityAction));
++
++#ifdef WIND_ITALY_CUSTOMIZATION
++        strcpy(prefixRange, ",,,,,,,,,,,,,,,*43#,#43#,,,,,,,");
++#else
++        strcpy(prefixRange, ",,,,,####,*98#,,,,,,,,**,,,,,,,,,****");
++#endif
++        json_object_object_add(defaultJobj, "prefixRange", json_object_new_string(prefixRange));
++    }
++
+ 	return ret;
+ }
+ 
+@@ -807,7 +856,8 @@
+ 
+ zcfgRet_t zcfgFeDalProfNumberingPlanPrefixInfoObjEdit(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char* facilityAction = NULL;
++    char* facilityAction = NULL;
++    char* facilityAction_DAL = NULL;
+ 	const char* key = NULL;
+ 	struct json_object *setJson = NULL;
+ 	profNumPlanpInfoObj = NULL;
+@@ -818,10 +868,17 @@
+ 	while(zcfgFeSubInObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_PROF_NUM_PLAN_PREFIX_INFO, &profIid, &profPrefixInfoIid, &profNumPlanpInfoObj) == ZCFG_SUCCESS){
+ 		if(profNumPlanpInfoObj != NULL){
+ 			facilityAction = json_object_get_string(json_object_object_get(profNumPlanpInfoObj, "FacilityAction"));
+-			if(facilityAction != NULL)
+-				key = json_object_get_string(json_object_object_get(Jobj, facilityAction));
+-			if(key != NULL)
++
++            if(facilityAction != NULL)
++            {
++                facilityAction_DAL = NULL;
++                zcfgFeDalConvertFeatureKey(&facilityAction_DAL, &facilityAction);
++				key = json_object_get_string(json_object_object_get(Jobj, facilityAction_DAL));
++            }
++            if(key != NULL)
++            {
+ 				json_object_object_add(profNumPlanpInfoObj, "PrefixRange", json_object_new_string(key));
++            }
+ 
+ 			if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_PROF_NUM_PLAN_PREFIX_INFO, &profPrefixInfoIid, multiJobj, profNumPlanpInfoObj)) == NULL){
+ 				printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_PROF_NUM_PLAN_PREFIX_INFO);
+@@ -837,6 +894,41 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalConvertFeatureKey(char **DAL_key, char **RDM_key)
++{
++    int i;
++
++    if ((*DAL_key == NULL) && (*RDM_key == NULL))
++    {
++        return ZCFG_INVALID_PARAM_VALUE;
++    }
++
++    if (*DAL_key == NULL)
++    {
++        for (i = 0; Call_Feature_param[i].RDM_FeatureKey != NULL; i++)
++        {
++            if(!strcmp(Call_Feature_param[i].RDM_FeatureKey, *RDM_key))
++            {
++                *DAL_key = Call_Feature_param[i].DAL_FeatureKey;
++                break;
++            }
++        }
++    }
++    else if (*RDM_key == NULL)
++    {
++        for (i = 0; Call_Feature_param[i].RDM_FeatureKey != NULL; i++)
++        {
++            if(!strcmp(Call_Feature_param[i].DAL_FeatureKey, *DAL_key))
++            {
++                *RDM_key = Call_Feature_param[i].RDM_FeatureKey;
++                break;
++            }
++        }
++    }
++
++    return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t zcfgFeDalVoipProfileEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	//printf("%s(): Enter.. \n ",__FUNCTION__);

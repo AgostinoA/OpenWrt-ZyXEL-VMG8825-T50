@@ -1,0 +1,658 @@
+--- a/include/cybergarage/http/chttp_authentication.h
++++ b/include/cybergarage/http/chttp_authentication.h
+@@ -55,6 +55,18 @@ typedef enum
+    HTTP_AUTH_INVALID_PASSWORD,
+    HTTP_AUTH_NOT_EXIST
+ } authRet_t;
++
++/*the authentication data storage struct*/
++typedef struct authStorage_s{
++	struct authStorage_s *prev;
++	struct authStorage_s *next;
++	char ipaddr[48];
++	int port;
++	CgSocket *sock;
++	CgHttpHeaderList *authHeaderList;
++}authStorage_t, authStorageList_t;
++
++
+ /****************************************
+ * Function
+ ****************************************/
+@@ -79,7 +91,7 @@ typedef enum
+ #define cg_http_request_getusername(httpReq) cg_http_packet_getheadervalue((CgHttpPacket*)httpReq,CG_HTTP_USERNAME);
+ 
+ 
+-CgHttpResponse *cg_http_request_post_with_auth(CgHttpRequest *httpReq, char *ipaddr, int port, char *user, char *passwd);
++CgHttpResponse *cg_http_request_post_with_auth(CgHttpRequest *httpReq, char *ipaddr, int port, char *user, char *passwd, authStorageList_t *authStorageList);
+ void cg_http_auth_header_parse(CgHttpPacket *httpPkt);
+ 
+ /*basic authentication*/
+@@ -101,4 +113,19 @@ authRet_t cg_http_request_check_digest_a
+ char *cg_http_url_encode(char *str);
+ char *cg_http_url_decode(char *str);
+ 
++char* cg_http_request_generate_basicHeader( char *user, char *passwd);
++char *cg_http_request_generate_digestHeader(CgHttpRequest *httpReq, CgHttpResponse *httpRes, char *user, char *passwd);
++CgHttpHeaderList *cg_http_response_auth_header_backup( CgHttpResponse *httpRes);
++void cg_http_response_auth_header_copy( CgHttpPacket *httpPkt, CgHttpHeaderList *headerList);
++
++/*authentication data storage*/
++authStorage_t *cg_http_auth_storage_new(void);
++void cg_http_auth_storage_delete(authStorage_t *storage);
++authStorageList_t *cg_http_auth_storagelist_new(void);
++void cg_http_auth_storagelist_delete(authStorageList_t *storageList);
++int cg_http_auth_storagelist_add(authStorageList_t *storageList, authStorage_t *storage );
++void cg_http_auth_storagelist_remove(authStorageList_t *storageList, authStorage_t *storage );
++authStorage_t *cg_http_auth_storagelist_getbyaddr(authStorageList_t *storageList, char* ipaddr,  int port);
++authStorage_t *cg_http_auth_storagelist_getbysock(authStorageList_t * storageList,CgSocket * sock);
++
+ #endif /*_CG_HTTP_AUTHENTICATION_H_*/
+--- /dev/null
++++ b/src/cybergarage/http/chttp_auth_storage.c
+@@ -0,0 +1,101 @@
++#include <cybergarage/http/chttp_authentication.h>
++#include <string.h>
++
++/*support serise authentication, 201402, by charisse*/
++authStorage_t *cg_http_auth_storage_new(void){
++	authStorage_t *storage = NULL;
++
++	storage = (authStorage_t *)malloc(sizeof(authStorage_t));
++	memset(storage, '\0', sizeof(authStorage_t));
++
++	return storage;
++
++}
++
++void cg_http_auth_storage_delete(authStorage_t *storage){
++
++	if( storage == NULL) return;
++
++	cg_http_headerlist_delete(storage->authHeaderList);
++	free(storage);
++}
++
++authStorageList_t *cg_http_auth_storagelist_new(void){
++	authStorageList_t *storageList = NULL;
++
++	storageList = (authStorageList_t *)malloc(sizeof(authStorageList_t));
++	memset(storageList, '\0', sizeof(authStorageList_t));
++
++	return storageList;
++}
++
++void cg_http_auth_storagelist_delete(authStorageList_t *storageList){
++	authStorage_t *storage = NULL;
++
++	if(storageList == NULL ) return;
++
++	storage = storageList->next;
++	while( storage ){
++		 storageList->next = storage->next;
++		 if(storage->next)
++		 	storage->next->prev = storageList;
++		 cg_http_headerlist_delete(storage->authHeaderList);
++		 free(storage);
++		 storage = storageList->next;
++	}
++
++	cg_http_headerlist_delete(storageList->authHeaderList);
++	free(storageList);
++}
++
++int cg_http_auth_storagelist_add(authStorageList_t *storageList, authStorage_t *storage ){
++	if(storageList == NULL || storage == NULL)
++		return -1;
++
++	storage->next = storageList->next;
++	if(storage->next)
++		storage->next->prev = storage;
++
++	storage->prev = storageList;
++	storageList->next = storage;
++	return 0;
++}
++
++void cg_http_auth_storagelist_remove(authStorageList_t *storageList, authStorage_t *storage ){
++
++	if(storageList == NULL || storage == NULL) return;
++
++	if(storage->next)
++		storage->next->prev = storage->prev;
++	if(storage->prev)
++		storage->prev->next = storage->next;
++}
++
++authStorage_t *cg_http_auth_storagelist_getbyaddr(authStorageList_t *storageList, char* ipaddr,  int port){
++	authStorage_t *storage = NULL;
++
++	if(storageList == NULL) return NULL;
++
++	storage = storageList->next;
++	while( storage ){
++		if(strcmp(storage->ipaddr, ipaddr) == 0 && storage->port == port)
++			break;
++		storage = storage->next;
++	}
++	return storage;
++}
++
++authStorage_t *cg_http_auth_storagelist_getbysock(authStorageList_t *storageList, CgSocket *sock){
++	authStorage_t *storage = NULL;
++
++	if(storageList == NULL) return NULL;
++
++	storage = storageList->next;
++	while( storage ){
++		if( storage->sock == sock)
++			break;
++		storage = storage->next;
++	}
++	return storage;
++}
++
+--- a/src/cybergarage/http/chttp_authentication.c
++++ b/src/cybergarage/http/chttp_authentication.c
+@@ -112,21 +112,249 @@ static BOOL cg_http_digest_replace_entry
+ /****************************************************************************
+ * 									Function for client request
+ *****************************************************************************/
+-
+-CgHttpResponse *cg_http_request_post_with_auth(CgHttpRequest *httpReq, char *ipaddr, int port, char *user, char *passwd)
+-{
+-	CgHttpResponse *httpRes;
+-	char *authHeader;
++char* cg_http_request_generate_basicHeader( char *user, char *passwd){
+ 	int basicHeaderLen;
+-	CgHttpHeader *header = NULL;
+ 	char *basicHeader, *base64Encode;
+-	char *staleFlag, *entityBody, digestHeader[1024]={0}, algorithmHeader[64]={0}, opaqueHeader[128]={0};
+-	char *method = NULL, *uripath = NULL;
++
++	base64Encode = cg_http_base64encode(user, passwd);
++	basicHeaderLen = strlen(base64Encode)+strlen("Basic ")+1;
++	basicHeader = (char *)malloc((basicHeaderLen)*sizeof(char));
++	memset( basicHeader, 0, (basicHeaderLen)*sizeof(char) );
++	if(basicHeader == NULL)
++		printf("error: out of memory,%s,%d\n",__FUNCTION__,__LINE__);
++
++	snprintf(basicHeader, basicHeaderLen, "Basic %s",base64Encode);
++	if(basicHeader == NULL)
++		printf("error: base64 encode fail\n");
++
++	/*clean up*/
++	free(base64Encode);
++
++	return basicHeader;
++}
++
++char *cg_http_request_generate_digestHeader(CgHttpRequest *httpReq, CgHttpResponse *httpRes, char *user, char *passwd){
++	int DIGEST_SIZE = 1024;
+ 	CgHttpAuth *auth;
+ 	char md5Input[1024]={0}, ha1[CG_MD5_STRING_BUF_SIZE]={0}, ha2[CG_MD5_STRING_BUF_SIZE]={0}, digest[CG_MD5_STRING_BUF_SIZE]={0}, hEntity[CG_MD5_STRING_BUF_SIZE]={0};
+ 	char *tmp = NULL;
+ 	char *nonce = NULL;
++	char *method = NULL, *uripath = NULL;
++	char *entityBody, *digestHeader = NULL, algorithmHeader[64]={0}, opaqueHeader[128]={0};
++
++	auth = &httpRes->authData;
++	/*prepare value of digest headers*/
++	auth->realm 		= cg_http_response_getrealm(httpRes);
++	if(!auth->realm){
++		printf("error: can not get realm");
++		return NULL;
++	}
++
++	digestHeader = (char *)malloc(DIGEST_SIZE*sizeof(char));
++	memset(digestHeader, '\0', DIGEST_SIZE*sizeof(char));
++	nonce				= cg_http_response_getnonce(httpRes);
++	if( nonce != NULL)
++		strcpy(auth->nonce, nonce);
++	else{
++		printf("error: can not get nonce");
++		free(digestHeader);
++		return NULL;
++	}
++
++	tmp =  cg_http_response_getqop(httpRes);
++	if(!tmp)
++		auth->qop		= NULL;
++	else
++		auth->qop		= tmp;
++
++	tmp 				= cg_http_response_getalgorithm(httpRes);
++	if(!tmp)
++		auth->algorithm = NULL;
++	else
++		auth->algorithm = tmp;
++
++	tmp 				= cg_http_response_getopaque(httpRes);
++	if(!tmp)
++		auth->opaque	= NULL;
++	else
++		auth->opaque	= tmp;
++
++	method				= cg_http_request_getmethod(httpReq);
++	uripath 			= cg_http_request_geturi(httpReq);
++	auth->cnonce		= generateCnonce();
++	nc++;
++	auth->nc			= nc;
++	/*
++		if the algorithm is "MD5" or unspecified
++			ha1 = MD5( username:realm:passwd )
++
++		if the qop is "auth" or unspecified
++			ha2 = MD5( Method:digest-uri )
++	*/
++			memset(md5Input, '\0', sizeof(md5Input));
++			snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", user, auth->realm, passwd);
++			cg_str2md5(md5Input,ha1);
++			memset(md5Input, '\0', sizeof(md5Input));
++			snprintf(md5Input, sizeof(md5Input), "%s:%s", method, uripath);
++			cg_str2md5(md5Input,ha2);
++
++	/*
++		here we dicuss the different formula of digest response based on qop value.
++
++		if the qop is unspecified:
++		1. the hash function in here must be "MD5" or unspecified,
++		otherwise we don't support other hash function.
++
++		2. digest response= MD5(ha1:nonce:ha2)
++
++
++		if the qop is "auth" or "auth-int":
++		1.the hash function in here must be "MD5" or unspecified or "MD5-sess",
++		otherwise we don't support other hash function.
++
++		2.in particular, if the qop is "auth-int"
++			ha2 = MD5( Method:digest-uri:MD5(entity-body) )
++
++		3.in particular, if the algorithm is "MD5-sess"
++			ha1 = MD5( MD5( username:realm:passwd):nonce:cnonce )
++
++		4. digest response= MD5(ha1:nonce:nc:cnonce:qop:ha2)
++
++	*/
++	if (!(auth->qop)) {
++		if((auth->algorithm)&&(strcmp(auth->algorithm, "MD5") != 0)){
++			auth->result = AUTH_UNSUPPORT_ALGORITHM;
++			free(digestHeader);
++			return NULL;
++		}
++		memset(md5Input, '\0', sizeof(md5Input));
++		snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", ha1, auth->nonce, ha2);
++		cg_str2md5(md5Input,digest);
++		snprintf(digestHeader, DIGEST_SIZE,	"Digest username=\"%s\", "
++												"realm=\"%s\", "
++												"nonce=\"%s\", "
++												"uri=\"%s\", "
++												"response=\"%s\"",
++													user,
++													auth->realm,
++													auth->nonce,
++													uripath,
++													digest);
++		if((auth->algorithm)){
++			snprintf(algorithmHeader, sizeof(algorithmHeader), ", algorithm=%s", auth->algorithm);
++			strcat(digestHeader, algorithmHeader);
++		}
++		if(auth->opaque){
++			snprintf(opaqueHeader, sizeof(opaqueHeader), ", opaque=%s", auth->opaque);
++			strcat(digestHeader, opaqueHeader);
++		}
++	}
++	else{
++		if((auth->algorithm)&&(strcmp(auth->algorithm, "MD5") != 0)&&(strcmp(auth->algorithm,"MD5-sess") != 0)){
++			auth->result = AUTH_UNSUPPORT_ALGORITHM;
++			free(digestHeader);
++			return NULL;
++		}
++
++		if(strcmp(auth->qop, "auth-int") == 0){
++			entityBody = cg_http_request_getcontent(httpReq);
++			cg_str2md5(entityBody, hEntity);
++			snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", method, uripath, hEntity);
++			cg_str2md5(md5Input,ha2);
++		}
++
++		if((auth->algorithm) && (strcmp(auth->algorithm, "MD5-sess") == 0)){
++			snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", ha1, auth->nonce, auth->cnonce);
++			cg_str2md5(md5Input,ha1);
++		}
++
++		snprintf(md5Input, sizeof(md5Input), "%s:%s:%08x:%s:%s:%s",
++										ha1,
++										auth->nonce,
++										auth->nc,
++										auth->cnonce,
++										auth->qop,
++										ha2);
++		cg_str2md5(md5Input,digest);
++		snprintf(digestHeader, DIGEST_SIZE,	"Digest username=\"%s\", "
++												"realm=\"%s\", "
++												"nonce=\"%s\", "
++												"uri=\"%s\", "
++												"response=\"%s\", "
++												"qop=\"%s\", "
++												"nc=%08x, "
++												"cnonce=\"%s\"",
++													user,
++													auth->realm,
++													auth->nonce,
++													uripath,
++													digest,
++													auth->qop,
++													auth->nc,
++													auth->cnonce);
++
++		if(auth->algorithm){
++			snprintf(algorithmHeader, sizeof(algorithmHeader), ", algorithm=%s", auth->algorithm);
++			strcat(digestHeader, algorithmHeader);
++		}
++		if(auth->opaque){
++			snprintf(opaqueHeader, sizeof(opaqueHeader), ", opaque=\"%s\"", auth->opaque);
++			strcat(digestHeader, opaqueHeader);
++		}
++	}
++
++	return digestHeader;
++}
++
++
++/*support serise authentication, 201402, by charisse*/
++/* keep the previous auth header for the serise authentication*/
++CgHttpHeaderList *cg_http_response_auth_header_backup( CgHttpResponse *httpRes){
++	CgHttpHeaderList *headerList = NULL;
++	CgHttpHeader *tmpHeader = NULL;
++	char *headerNameList[] = {CG_HTTP_WWW_AUTHENTICATION, CG_HTTP_REALM, CG_HTTP_NONCE, CG_HTTP_QOP, CG_HTTP_OPAQUE, CG_HTTP_STALE, CG_HTTP_ALGORITHM, ""};
++	int count = 0;
++
++	headerList = cg_http_headerlist_new();
++
++	while( strcmp(headerNameList[count], "")!=0 ){
++		if( cg_http_packet_getheader((CgHttpPacket*)httpRes, headerNameList[count]) ){
++			cg_http_headerlist_set( headerList, headerNameList[count], cg_http_packet_getheadervalue((CgHttpPacket*)httpRes, headerNameList[count]));
++		}
++		count++;
++	}
+ 
++	return headerList;
++}
++
++CgHttpResponse *cg_http_request_post_with_auth(CgHttpRequest *httpReq, char *ipaddr, int port, char *user, char *passwd, authStorageList_t *authStorageList)
++{
++	CgHttpResponse *httpRes;
++	CgHttpResponse *httpResAuthTmp;
++	char *authHeader;
++	CgHttpHeader *header = NULL;
++	char *basicHeader, *digestHeader;
++	char *staleFlag;
++	CgHttpAuth *auth;
++	CgHttpHeaderList *bkAuthHeaderList = NULL;
++	authStorage_t *authStorage = NULL;
++	int isNewHttpRes = 0;
++
++
++	/*support serise authentication, 201402*/
++	if( (authStorage = cg_http_auth_storagelist_getbyaddr(authStorageList, ipaddr, port)) != NULL){
++		//assign the previous authentication data
++		httpResAuthTmp = cg_http_response_new();
++		httpResAuthTmp->headerList = authStorage->authHeaderList;
++		//remove the previous authentication data from storage list
++		authStorage->authHeaderList = NULL;
++		cg_http_auth_storagelist_remove( authStorageList, authStorage);
++		cg_http_auth_storage_delete(authStorage);
++		authStorage = NULL;
++		isNewHttpRes = 1;
++		httpRes = httpResAuthTmp ;
++		goto ACTIVE_SERIES_AUTH;
++	}
+ 	/*post http request*/
+ 	httpRes = cg_http_request_post(httpReq, ipaddr, port);
+ 
+@@ -134,22 +362,38 @@ CgHttpResponse *cg_http_request_post_wit
+ 	if ((cg_http_response_getstatuscode(httpRes)) != CG_HTTP_STATUS_UNAUTHORIZED)
+ 		return httpRes;
+ 
++	cg_http_auth_header_parse((CgHttpPacket*)httpRes);
++	ACTIVE_SERIES_AUTH:
+ 	/*get authentication header*/
+ 	auth = &httpRes->authData;
+-	cg_http_auth_header_parse((CgHttpPacket*)httpRes);
++	initDigestInfo(&auth);
+ 	authHeader = cg_http_response_getauth(httpRes);
++
++	/*support serise authentication, 201402*/
++	/*backup authentication data  to storage list*/
++	if((strcmp(authHeader, "Basic") == 0) || (strcmp(authHeader, "Digest") == 0)){
++		bkAuthHeaderList = cg_http_response_auth_header_backup(httpRes);
++		if( (authStorage = cg_http_auth_storagelist_getbyaddr(authStorageList, ipaddr, port))!=NULL){
++			cg_http_auth_storagelist_remove( authStorageList, authStorage);
++			cg_http_auth_storage_delete(authStorage);
++		}
++		authStorage = cg_http_auth_storage_new();
++		strcpy(authStorage->ipaddr, ipaddr);
++		authStorage->port = port;
++		authStorage->sock = httpReq->sock;
++		authStorage->authHeaderList = bkAuthHeaderList;
++		if(cg_http_auth_storagelist_add( authStorageList, authStorage)!=0)
++			cg_http_auth_storage_delete( authStorage );
++	}
++
+ 	if (strcmp(authHeader, "Basic") == 0)   /*basic authentication*/
+ 	{
+-		base64Encode = cg_http_base64encode(user, passwd);
+-		basicHeaderLen = strlen(base64Encode)+strlen("Basic ")+1;
+-		basicHeader = (char *)malloc((basicHeaderLen)*sizeof(char));
+-		memset( basicHeader, 0, (basicHeaderLen)*sizeof(char) );
+-		if(basicHeader == NULL)
+-			printf("error: out of memory,%s,%d\n",__FUNCTION__,__LINE__);
+-
+-		snprintf(basicHeader, basicHeaderLen, "Basic %s",base64Encode);
+-		if(basicHeader == NULL)
+-			printf("error: base64 encode fail\n");
++		basicHeader = cg_http_request_generate_basicHeader(user, passwd);
++		if(isNewHttpRes){
++			cg_http_response_clear(httpResAuthTmp);
++			cg_http_response_delete(httpResAuthTmp);
++			httpResAuthTmp = NULL;
++		}
+ 
+ 		/*add header to request*/
+ 		header = cg_http_header_new();
+@@ -161,13 +405,14 @@ CgHttpResponse *cg_http_request_post_wit
+ 			printf("error: http response fail\n");
+ 
+ 		/*clean up*/
+-		free(base64Encode);
+ 		free(basicHeader);
+ 
++		auth = &httpRes->authData;
++
+ 		/*authentication success*/
+-		if((cg_http_response_getstatuscode(httpRes)) == CG_HTTP_STATUS_OK)
++		if((cg_http_response_getstatuscode(httpRes)) == CG_HTTP_STATUS_OK){
+ 			auth->result = AUTH_OK;
+-
++		}
+ 		/*authentication fail if the 401 response is presented*/
+ 		if((cg_http_response_getstatuscode(httpRes)) == CG_HTTP_STATUS_UNAUTHORIZED)
+ 			auth->result = AUTH_WRONG_INPUT;
+@@ -176,158 +421,12 @@ CgHttpResponse *cg_http_request_post_wit
+ 	}
+ 	else if (strcmp(authHeader, "Digest") == 0)   /*digest authentication*/
+ 	{
+-		/*prepare value of digest headers*/
+-		auth->realm			= cg_http_response_getrealm(httpRes);
+-		if(!auth->realm){
+-			printf("error: can not get realm");
+-			return httpRes;
+-		}
+-
+-		nonce 				= cg_http_response_getnonce(httpRes);
+-		if( nonce != NULL)
+-			strcpy(auth->nonce, nonce);
+-		else{
+-			printf("error: can not get nonce");
+-			return httpRes;
+-		}
+-
+-		tmp =  cg_http_response_getqop(httpRes);
+-		if(!tmp)
+-			auth->qop		= NULL;
+-		else
+-			auth->qop		= tmp;
+-
+-		tmp 				= cg_http_response_getalgorithm(httpRes);
+-		if(!tmp)
+-			auth->algorithm	= NULL;
+-		else
+-			auth->algorithm	= tmp;
+-
+-		tmp 				= cg_http_response_getopaque(httpRes);
+-		if(!tmp)
+-			auth->opaque	= NULL;
+-		else
+-			auth->opaque	= tmp;
+-
+-		method				= cg_http_request_getmethod(httpReq);
+-		uripath				= cg_http_request_geturi(httpReq);
+-		auth->cnonce		= generateCnonce();
+-		nc++;
+-		auth->nc			= nc;
+-
+-/*
+-	if the algorithm is "MD5" or unspecified
+-		ha1 = MD5( username:realm:passwd )
+-
+-	if the qop is "auth" or unspecified
+-		ha2 = MD5( Method:digest-uri )
+-*/
+-		snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", user, auth->realm, passwd);
+-		cg_str2md5(md5Input,ha1);
+-		snprintf(md5Input, sizeof(md5Input), "%s:%s", method, uripath);
+-		cg_str2md5(md5Input,ha2);
+-
+-/*
+-	here we dicuss the different formula of digest response based on qop value.
+-
+-	if the qop is unspecified:
+-	1. the hash function in here must be "MD5" or unspecified,
+-	otherwise we don't support other hash function.
+-
+-	2. digest response= MD5(ha1:nonce:ha2)
+-
+-
+-	if the qop is "auth" or "auth-int":
+-	1.the hash function in here must be "MD5" or unspecified or "MD5-sess",
+-	otherwise we don't support other hash function.
+-
+-	2.in particular, if the qop is "auth-int"
+-		ha2 = MD5( Method:digest-uri:MD5(entity-body) )
+-
+-	3.in particular, if the algorithm is "MD5-sess"
+-		ha1 = MD5( MD5( username:realm:passwd):nonce:cnonce )
+-
+-	4. digest response= MD5(ha1:nonce:nc:cnonce:qop:ha2)
+-
+-*/
+-		if (!(auth->qop)) {
+-			if((auth->algorithm)&&(strcmp(auth->algorithm, "MD5") != 0)){
+-				auth->result = AUTH_UNSUPPORT_ALGORITHM;
+-				return httpRes;
+-			}
+-			snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", ha1, auth->nonce, ha2);
+-			cg_str2md5(md5Input,digest);
+-			snprintf(digestHeader, sizeof(digestHeader),	"Digest username=\"%s\", "
+-													"realm=\"%s\", "
+-													"nonce=\"%s\", "
+-													"uri=\"%s\", "
+-													"response=\"%s\"",
+-	               										user,
+-	               										auth->realm,
+-	               										auth->nonce,
+-	               										uripath,
+-	               										digest);
+-
+-			if((auth->algorithm)){
+-				snprintf(algorithmHeader, sizeof(algorithmHeader), ", algorithm=%s", auth->algorithm);
+-				strcat(digestHeader, algorithmHeader);
+-			}
+-			if(auth->opaque){
+-				snprintf(opaqueHeader, sizeof(opaqueHeader), ", opaque=%s", auth->opaque);
+-				strcat(digestHeader, opaqueHeader);
+-			}
+-		}
+-		else{
+-			if((auth->algorithm)&&(strcmp(auth->algorithm, "MD5") != 0)&&(strcmp(auth->algorithm,"MD5-sess") != 0)){
+-				auth->result = AUTH_UNSUPPORT_ALGORITHM;
+-				return httpRes;
+-			}
+-
+-			if(strcmp(auth->qop, "auth-int") == 0){
+-				entityBody = cg_http_request_getcontent(httpReq);
+-				cg_str2md5(entityBody, hEntity);
+-				snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", method, uripath, hEntity);
+-				cg_str2md5(md5Input,ha2);
+-			}
+-
+-			if((auth->algorithm) && (strcmp(auth->algorithm, "MD5-sess") == 0)){
+-				snprintf(md5Input, sizeof(md5Input), "%s:%s:%s", ha1, auth->nonce, auth->cnonce);
+-				cg_str2md5(md5Input,ha1);
+-			}
+-
+-			snprintf(md5Input, sizeof(md5Input), "%s:%s:%08x:%s:%s:%s",
+-											ha1,
+-											auth->nonce,
+-											auth->nc,
+-											auth->cnonce,
+-											auth->qop,
+-											ha2);
+-			cg_str2md5(md5Input,digest);
+-			snprintf(digestHeader, sizeof(digestHeader),	"Digest username=\"%s\", "
+-													"realm=\"%s\", "
+-													"nonce=\"%s\", "
+-													"uri=\"%s\", "
+-													"response=\"%s\", "
+-													"qop=\"%s\", "
+-													"nc=%08x, "
+-													"cnonce=\"%s\"",
+-	               										user,
+-	               										auth->realm,
+-	               										auth->nonce,
+-	               										uripath,
+-	               										digest,
+-	               										auth->qop,
+-	               										auth->nc,
+-	               										auth->cnonce);
+-
+-			if(auth->algorithm){
+-				snprintf(algorithmHeader, sizeof(algorithmHeader), ", algorithm=%s", auth->algorithm);
+-				strcat(digestHeader, algorithmHeader);
+-			}
+-			if(auth->opaque){
+-				snprintf(opaqueHeader, sizeof(opaqueHeader), ", opaque=\"%s\"", auth->opaque);
+-				strcat(digestHeader, opaqueHeader);
+-			}
++
++		digestHeader = cg_http_request_generate_digestHeader(httpReq, httpRes, user, passwd);
++		if(isNewHttpRes){
++			cg_http_response_clear(httpResAuthTmp);
++			cg_http_response_delete(httpResAuthTmp);
++			httpResAuthTmp = NULL;
+ 		}
+ 
+ 		/*add header to digest request*/
+@@ -339,6 +438,10 @@ CgHttpResponse *cg_http_request_post_wit
+ 		if(httpRes == NULL)
+ 			printf("error: http response fail\n");
+ 
++		free(digestHeader);
++
++		auth = &httpRes->authData;
++
+ 		/*authentication success*/
+ 		if((cg_http_response_getstatuscode(httpRes)) == CG_HTTP_STATUS_OK){
+ 			auth->result = AUTH_OK;

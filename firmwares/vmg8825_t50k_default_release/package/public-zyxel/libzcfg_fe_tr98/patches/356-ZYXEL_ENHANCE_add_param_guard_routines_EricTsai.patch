@@ -1,0 +1,460 @@
+Index: libzcfg_fe_tr98-1.0/qos.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.c	2016-08-23 19:11:05.988900086 +0800
++++ libzcfg_fe_tr98-1.0/qos.c	2016-08-23 19:11:05.996900086 +0800
+@@ -450,7 +450,14 @@
+ 	return ZCFG_SUCCESS;
+ 
+ }
++#ifdef ZCFG_TR98_PARAM_GUARD
++zcfgRet_t qMgmtQueParmGurd(const char *objpath, const char *parmname, struct json_object *spvparamobj, struct json_object *parmGurdObj, char **faultString)
++{
++	ztrdbg(ZTR_SL_INFO, "%s: %s\n", __FUNCTION__, parmname);
+ 
++	return ZCFG_SUCCESS;
++}
++#endif
+ zcfgRet_t qMgmtQueSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t qIid;
+@@ -908,7 +915,24 @@
+ 	}
+ 	return ZCFG_SUCCESS;
+ }
++#ifdef ZCFG_TR98_PARAM_GUARD
++zcfgRet_t qMgmtClsParmGurd(const char *objpath, const char *parmname, struct json_object *spvparamobj, struct json_object *parmGurdObj, char **faultString)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char tr181PathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 
++	ztrdbg(ZTR_SL_INFO, "%s: %s\n", __FUNCTION__, parmname);
++	if(!strcmp(parmname, "ClassInterface")){
++		const char *spv = json_object_get_string(spvparamobj);
++		//if(!strstr(spv, "WANDevice") && !strstr(spv, "LANDevice"))
++		if(!strstr(spv, "LANDevice"))
++			return ZCFG_INVALID_PARAM_VALUE;
++		ret = (zcfgFe98To181ObjMappingNameGet(spv, tr181PathName) == ZCFG_SUCCESS) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++	}
++
++	return ret;
++}
++#endif
+ zcfgRet_t qMgmtClsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag){
+ 	
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+Index: libzcfg_fe_tr98-1.0/qos.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.h	2016-08-23 19:11:05.684900080 +0800
++++ libzcfg_fe_tr98-1.0/qos.h	2016-08-23 19:11:05.996900086 +0800
+@@ -191,6 +191,7 @@
+ extern zcfgRet_t qMgmtQueNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int qMgmtQueAttrGet(char *, int, char *);
+ extern zcfgRet_t qMgmtQueAttrSet(char *, int, char *, int , struct json_object *);
++extern zcfgRet_t qMgmtQueParmGurd(const char *, const char *, struct json_object *, struct json_object *, char **);
+ 
+ extern zcfgRet_t qMgmtPolicerGet(char *, int , struct json_object **, bool );
+ extern zcfgRet_t qMgmtPolicerSet(char *, int , struct json_object *, struct json_object *, char *);
+@@ -205,6 +206,7 @@
+ extern zcfgRet_t qMgmtClsNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int qMgmtClsAttrGet(char *, int, char *);
+ extern zcfgRet_t qMgmtClsAttrSet(char *, int, char *, int , struct json_object *);
++extern zcfgRet_t qMgmtClsParmGurd(const char *, const char *, struct json_object *, struct json_object *, char **);
+ 
+ /* InternetGatewayDevice.QueueManagement.X_ZYXEL_Shaper.i */
+ extern zcfgRet_t qMgmtShaperObjGet(char *, int, struct json_object **, bool);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2016-08-23 19:11:05.812900083 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2016-08-23 19:11:05.996900086 +0800
+@@ -155,6 +155,14 @@
+ 	tr98Object_t *tr98Obj;
+ }tr98NameObj_t;
+ 
++typedef zcfgRet_t (*parmGurdRout)(const char *objpath, const char *parmname, struct json_object *spvobj, struct json_object *parmGurdObj, char **faultString);
++
++#define ZCFG_TR98_PARMGURD "/etc/zcfg_tr98_parmgurd.json"
++typedef struct tr98ParmRout_s {
++	zcfg98sn_t nameSeqNum;
++	parmGurdRout rout;
++}tr98ParmRout_t;
++
+ #define TR98_MAX_OBJ_NAME_LENGTH 257
+ #define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+ 
+@@ -163,14 +171,14 @@
+ 
+ zcfgRet_t zcfgFeTr98ObjGet(char *, struct json_object **);
+ zcfgRet_t zcfgFe98StaticNameTableInit(void);
+-zcfgRet_t zcfgFe98InfoDataSetInit(void);
+-zcfgRet_t ReplaceStaticWANDeviceIndex(const char *tr98ObjName, char *pathname);
+-#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+-zcfgRet_t zcfgFeTr98StaticWANDevSync(void *);
+-bool zcfgFe98StaticWanDevStatus(void);
+-#else
+-#define zcfgFeTr98StaticWANDevSync(param) do{}while(0)
+-#endif
++zcfgRet_t zcfgFe98InfoDataSetInit(void);
++zcfgRet_t ReplaceStaticWANDeviceIndex(const char *tr98ObjName, char *pathname);
++#ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
++zcfgRet_t zcfgFeTr98StaticWANDevSync(void *);
++bool zcfgFe98StaticWanDevStatus(void);
++#else
++#define zcfgFeTr98StaticWANDevSync(param) do{}while(0)
++#endif
+ zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid);
+ zcfgRet_t zcfgFe98To181ObjMappingNameGet(const char *tr98PathName, char *tr181PathName);
+ zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName);
+@@ -204,6 +212,16 @@
+ zcfgRet_t zcfgFeTr98ParamChk(char *, char *, char *);
+ zcfgSubObjNameList_t* zcfgFeTr98SubObjNameListGet(char *);
+ 
++#ifdef ZCFG_TR98_PARAM_GUARD
++zcfgRet_t zcfgTr98ParmGurdInit(void);
++zcfgRet_t zcfgTr98ParmGurdScan(const char *, const char *, struct json_object *, struct json_object *, char **);
++struct json_object *zcfgTr98RetrieveParmGurdObj(const char *);
++#else
++#define zcfgTr98ParmGurdInit() {}
++#define zcfgTr98ParmGurdScan(p, a, r, m, t) ZCFG_SUCCESS
++#define zcfgTr98RetrieveParmGurdObj(n) NULL
++#endif
++
+ struct json_object *zcfgFe98ParamGuardInit(const char *, void *);
+ zcfgRet_t zcfgFe98ParamGuard(struct json_object *, const char *, struct json_object *);
+ void zcfgFe98ParamGuardRelease(struct json_object *);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-08-23 19:11:05.968900086 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-08-23 19:11:05.996900086 +0800
+@@ -296,6 +296,308 @@
+ #endif
+ };
+ 
++static zcfgRet_t zcfgFeTr98ClassNameGet(char *objName, char *className);
++
++#ifdef ZCFG_TR98_PARAM_GUARD
++tr98ParmRout_t parmGurdRoutList[] = {
++{e_TR98_QUE, qMgmtQueParmGurd},
++{e_TR98_CLS, qMgmtClsParmGurd},
++{0, NULL}
++};
++
++static struct json_object *zcfgTr98ParmGurdObjs;
++
++zcfgRet_t zcfgTr98ParmGurdInit()
++{
++	struct json_object *parmGurdObj = NULL;
++	zcfg98sn_t seq;
++	int igdstrsz, n = 0;
++	const char *name, *reqObjName;
++
++	ztrdbg(ZTR_SL_INFO, "%s\n", __FUNCTION__);
++
++	zcfgTr98ParmGurdObjs = json_object_from_file(ZCFG_TR98_PARMGURD);
++	if(is_error(zcfgTr98ParmGurdObjs)) {
++		ztrdbg(ZTR_SL_INFO, "%s: Fail to Load %s\n", __FUNCTION__, ZCFG_TR98_PARMGURD);
++		zcfgTr98ParmGurdObjs = NULL;
++		return ZCFG_NOT_FOUND;
++	}
++
++	igdstrsz = strlen(TR98_IGD) + 1;
++
++	while(parmGurdRoutList[n].nameSeqNum){
++		seq = parmGurdRoutList[n].nameSeqNum;
++		seq -= e_TR98_START;
++		name = (tr98NameObjList[seq].tr98Obj)->name;
++		reqObjName = (strcmp(name, TR98_IGD)) ? (name + igdstrsz) : name;
++		ztrdbg(ZTR_SL_INFO, "%s: object name %s\n", __FUNCTION__, reqObjName);
++		parmGurdObj = json_object_object_get(zcfgTr98ParmGurdObjs, reqObjName);
++		if(!parmGurdObj){
++			n++;
++			continue;
++		}
++
++		json_object_object_add(parmGurdObj, "ParmGurdRout", json_object_new_int((int)(parmGurdRoutList[n].rout)));
++		n++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++struct json_object *zcfgTr98RetrieveParmGurdObj(const char *objpath)
++{
++	struct json_object *parmGurdObj = NULL;
++	int igdstrsz;
++	const char *reqObjName;
++	char tr98ClassName[256+1] = {0};
++
++	if(!zcfgTr98ParmGurdObjs || !objpath)
++		return NULL;
++
++	if(zcfgFeTr98ClassNameGet((char *)objpath, tr98ClassName) != ZCFG_SUCCESS)
++		return NULL;
++
++	igdstrsz = strlen(TR98_IGD) + 1;
++	reqObjName = (strcmp((const char *)tr98ClassName, TR98_IGD)) ? (const char *)(tr98ClassName + igdstrsz) : (const char *)tr98ClassName;
++	parmGurdObj = json_object_object_get(zcfgTr98ParmGurdObjs, reqObjName);
++	if(parmGurdObj)
++		ztrdbg(ZTR_SL_INFO, "%s\n", __FUNCTION__);
++
++	return parmGurdObj;
++}
++
++static zcfgRet_t zcfgTr98ParmGurdMinMax(struct json_object *spvparamobj, struct json_object *minmax)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	json_type datatype;
++
++	if(!spvparamobj || !minmax)
++		return ZCFG_SUCCESS;
++
++	const char *minmaxvalue = json_object_get_string(minmax);
++	if(!minmaxvalue || strlen(minmaxvalue) == 0)
++		return ZCFG_SUCCESS;
++
++	datatype = json_object_get_type(spvparamobj);
++	ztrdbg(ZTR_SL_INFO, "%s: datatype %d\n", __FUNCTION__, (int)datatype);
++
++	switch(datatype){
++	case json_type_int:
++	{
++		int value = json_object_get_int(spvparamobj);
++		int min = 0, max = 0;
++		sscanf(minmaxvalue, "(%d-%d)", &min, &max);
++		ztrdbg(ZTR_SL_INFO, "%s: minmax %d %d\n", __FUNCTION__, min, max);
++		ret = (value >= min && value <=max) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++	}
++	break;
++	case json_type_uint32:
++	{
++		uint32_t value = (uint32_t)json_object_get_int(spvparamobj);
++		uint32_t min = 0, max = 0;
++		sscanf(minmaxvalue, "(%u-%u)", &min, &max);
++		ztrdbg(ZTR_SL_INFO, "%s: minmax %u %u\n", __FUNCTION__, min, max);
++		ret = (value >= min && value <=max) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++	}
++	break;
++	default: break;
++	}
++
++	return ret;
++}
++
++static zcfgRet_t zcfgTr98ParmGurdCmp(struct json_object *spvparamobj, const char *value)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	json_type datatype = json_object_get_type(spvparamobj);
++
++	//!spvobj, !value
++
++	switch(datatype){
++	case json_type_int:
++	{
++		int spv = json_object_get_int(spvparamobj);
++		int intvalue = atoi(value);
++		ret = (spv == intvalue) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++	}
++	break;
++	case json_type_string:
++	{
++		const char *spv = json_object_get_string(spvparamobj);
++		if(value[0] == '\'' && value[1] == '\''){
++			ztrdbg(ZTR_SL_INFO, "%s: empty on acl\n", __FUNCTION__);
++			ret =  (!spv || strlen(spv) == 0) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++		}else{
++			ret = (!strcmp(spv, value)) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++		}
++	}
++	break;
++	default: break;
++	}
++
++	return ret;
++}
++
++static zcfgRet_t zcfgTr98ParmGurdACL(struct json_object *spvparamobj, struct json_object *yesacl, struct json_object *noacl)
++{
++	zcfgRet_t ret, retcmp;
++	const char *yes, *no;
++	char *buf = NULL;
++	char *paramPtr, *paramPos;
++	int yeslen, nolen;
++
++	if(!spvparamobj || (!yesacl && !noacl))
++		return ZCFG_SUCCESS;
++
++	ztrdbg(ZTR_SL_INFO, "%s\n", __FUNCTION__);
++
++	yes = json_object_get_string(yesacl);
++	no = json_object_get_string(noacl);
++
++	if(yes && (yeslen=strlen(yes))>0){
++		buf = malloc(yeslen+1);
++		strncpy(buf, yes, yeslen);
++		*(buf+yeslen) = '\0';
++		paramPtr = buf;
++		paramPos = strchr(buf, ',');
++		while(paramPos){
++			*paramPos = '\0';
++			retcmp = zcfgTr98ParmGurdCmp(spvparamobj, paramPtr);
++			if(retcmp == ZCFG_SUCCESS){
++				ret = retcmp;
++				goto complete;
++			}
++
++			paramPtr = paramPos+1;
++			paramPos = strchr(paramPtr, ',');
++		}
++
++		if(paramPtr){
++			retcmp = zcfgTr98ParmGurdCmp(spvparamobj, paramPtr);
++			if(retcmp == ZCFG_SUCCESS){
++				ret = retcmp;
++				goto complete;
++			}
++		}
++	}
++	if(buf){
++		free(buf);
++		buf = NULL;
++	}
++
++	if(no && (nolen=strlen(no))>0){
++		buf = malloc(nolen+1);
++		strncpy(buf, no, nolen);
++		*(buf+nolen) = '\0';
++		paramPtr = buf;
++		paramPos = strchr(buf, ',');
++		while(paramPos){
++			*paramPos = '\0';
++			retcmp = zcfgTr98ParmGurdCmp(spvparamobj, paramPtr);
++			if(retcmp == ZCFG_SUCCESS){
++				ret = ZCFG_INVALID_PARAM_VALUE;
++				goto complete;
++			}
++
++			paramPtr = paramPos+1;
++			paramPos = strchr(paramPtr, ',');
++		}
++
++		if(paramPtr){
++			retcmp = zcfgTr98ParmGurdCmp(spvparamobj, paramPtr);
++			if(retcmp == ZCFG_SUCCESS){
++				ret = ZCFG_INVALID_PARAM_VALUE;
++				goto complete;
++			}
++		}
++	}
++
++	if(yes && !no)
++		ret = ZCFG_INVALID_PARAM_VALUE;
++	else if(!yes && no)
++		ret = ZCFG_SUCCESS;
++	else{
++		//not yes,no
++		ret = ZCFG_NOT_FOUND;
++	}
++
++complete:
++	if(buf){
++		free(buf);
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgTr98ParmGurdScan(const char *objpath, const char *parmname, struct json_object *objParmGurd, struct json_object *spvobj, char **faultString)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramObj;
++	struct json_object *yesacl, *noacl;
++	const char *attr;
++	struct json_object *spvparamobj;
++
++	//!objpath || !parmname || !spvobj
++
++	if(!objParmGurd)
++		objParmGurd = zcfgTr98RetrieveParmGurdObj(objpath);
++
++	if(!objParmGurd)
++		return ZCFG_SUCCESS;
++
++	ztrdbg(ZTR_SL_INFO, "%s\n", __FUNCTION__);
++
++	paramObj = json_object_object_get(objParmGurd, parmname);
++	spvparamobj = json_object_object_get(spvobj, parmname);
++	if(!paramObj || !spvparamobj)
++		return ZCFG_SUCCESS;
++
++	attr = json_object_get_string(json_object_object_get(paramObj, "attr"));
++	if(!attr || strlen(attr) == 0)
++		return ZCFG_SUCCESS;
++
++	// it's possible minmax and acl
++	if(strstr(attr, "minmax")){
++		struct json_object *minmax = json_object_object_get(paramObj, "minmax");
++		ret = zcfgTr98ParmGurdMinMax(spvparamobj, minmax);
++		if(ret == ZCFG_SUCCESS)
++			return ret;
++
++		//add faultString
++	}
++
++	if(strstr(attr, "acl")){
++		yesacl = json_object_object_get(paramObj, "yes");
++		if(yesacl)
++			ztrdbg(ZTR_SL_INFO, "%s: %s %s has yes acl\n", __FUNCTION__, objpath, parmname);
++		noacl = json_object_object_get(paramObj, "no");
++		if(noacl)
++			ztrdbg(ZTR_SL_INFO, "%s: %s %s has no acl\n", __FUNCTION__, objpath, parmname);
++
++		ret = zcfgTr98ParmGurdACL(spvparamobj, yesacl, noacl);
++		if(ret == ZCFG_SUCCESS)
++			return ret;
++
++ 		if(ret == ZCFG_INVALID_PARAM_VALUE){
++			//add faultString
++			return ret;
++		}
++	}
++
++	if(strstr(attr, "rout")){
++		parmGurdRout rout;
++		rout = json_object_get_int(json_object_object_get(objParmGurd, "ParmGurdRout"));
++		if(rout != 0){
++			ztrdbg(ZTR_SL_INFO, "%s: %s %s has param guard routine\n", __FUNCTION__, objpath, parmname);
++			ret = rout(objpath, parmname, spvparamobj, paramObj, faultString);
++		}
++	}else if(ret != ZCFG_SUCCESS && ret != ZCFG_INVALID_PARAM_VALUE)
++		ret = ZCFG_INVALID_PARAM_VALUE;
++
++	return ret;
++}
++#endif
++
+ #ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+ #if 0
+ zcfgRet_t ReplaceWANDeviceIndex(char* pathname)
+@@ -819,6 +1121,8 @@
+ 	if(!parmList)
+ 		return NULL;
+ 
++	ztrdbg(ZTR_DL_INFO, "%s\n", __FUNCTION__);
++
+ 	if(addition)
+ 		ztrdbg(ZTR_DL_DEBUG,  "%s: has addition\n", __FUNCTION__);
+ 
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2016-08-23 19:11:05.832900083 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2016-08-23 19:11:05.996900086 +0800
+@@ -129,6 +129,10 @@
+ CFLAGS += -DZYXEL_LANDING_PAGE_FEATURE
+ endif
+ 
++ifeq ($(CONFIG_ZCFG_TR98_PARAM_GUARD),y)
++CFLAGS += -DZCFG_TR98_PARAM_GUARD
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98

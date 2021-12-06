@@ -1,0 +1,121 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-09-19 15:07:43.583349329 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-09-19 15:29:51.453578528 +0800
+@@ -216,6 +216,10 @@
+ CFLAGS += -DZYXEL_ELIMINATE_DHCP_LEASE
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_WLAN_MAXBITRATE),y)
++CFLAGS += -DZYXEL_WLAN_MAXBITRATE
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2017-09-19 15:07:43.563348995 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2017-09-19 15:27:49.937973027 +0800
+@@ -4226,7 +4226,7 @@
+ 		}
+ 
+ 		paramValue = json_object_object_get(radioJobj, paramList->name);
+-#if 0
++#ifdef ZYXEL_WLAN_MAXBITRATE /* Need MaxBitRate for Oi project, Bug #37690, Ian */
+ 		if((paramValue != NULL) && !strcmp(paramList->name, "MaxBitRate")) {
+ 			struct json_object *paramRate_1 = json_object_object_get(ssidJobj, "X_ZYXEL_UpstreamRate");
+ 			struct json_object *paramRate_2 = json_object_object_get(ssidJobj, "X_ZYXEL_DownstreamRate");
+@@ -4238,9 +4238,15 @@
+ 
+ 				maxBitRate = (rate_1 > rate_2) ? rate_1 : rate_2;
+ 				memset(tr98maxBitRate, 0, sizeof(tr98maxBitRate));
+-				sprintf(tr98maxBitRate, "%4.1f", (float)(maxBitRate/1000));
++				/* When MaxBitRate is set as 'Auto' */
++				if(maxBitRate == 0) {
++					sprintf(tr98maxBitRate, "%s", "Auto");
++				}
++				else {
++					sprintf(tr98maxBitRate, "%4.1f", (float)(maxBitRate/1000.0));
++				}
+ 				tr98maxBitRate[4] = '\0';
+-				printf("%s: tr98maxBitRate %s\n", __FUNCTION__, tr98maxBitRate);
++				zcfgLog(ZCFG_LOG_INFO, "%s: tr98maxBitRate %s\n", __FUNCTION__, tr98maxBitRate);
+ 				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tr98maxBitRate));
+ 			}
+ 			paramList++;
+@@ -4909,7 +4915,9 @@
+ 	ssidJobjBak = json_tokener_parse(json_object_to_json_string(ssidJobj));
+ 
+ 	paramGuardObj = zcfgFe98ParamGuardInit((const char *)TR98_PARM_LAN_DEV_WLAN_CFG, NULL);
+-
++#ifdef ZYXEL_WLAN_MAXBITRATE /* Need MaxBitRate for Oi project, Bug #37690, Ian */
++	int maxBitRateSet = 0;
++#endif
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+@@ -4926,21 +4934,29 @@
+ 			goto finish;
+ 		}
+ 
+-#if 0	
++#ifdef ZYXEL_WLAN_MAXBITRATE /* Need MaxBitRate for Oi project, Bug #37690, Ian */
+ 		if((paramValue != NULL) && !strcmp(paramList->name, "MaxBitRate")) {
+ 			struct json_object *paramRate_1 = json_object_object_get(ssidJobj, "X_ZYXEL_UpstreamRate");
+ 			struct json_object *paramRate_2 = json_object_object_get(ssidJobj, "X_ZYXEL_DownstreamRate");
+ 			const char *t98maxBitRate = json_object_get_string(paramValue);
+ 			uint32_t maxBitRate = 0;
+-			if(strcmp(t98maxBitRate, "Auto")) maxBitRate = atoi(t98maxBitRate);
+-			if(maxBitRate > WLAN_MAXBITRATE) maxBitRate = WLAN_MAXBITRATE;
+-			maxBitRate *= 1000;
++			uint32_t rate_1 = 0;
++			uint32_t rate_2 = 0;
++			rate_1 = json_object_get_int(paramRate_1);
++			rate_2 = json_object_get_int(paramRate_2);
++			float maxBitRate_f = 0;
++			if(strcmp(t98maxBitRate, "Auto")) maxBitRate_f = atof(t98maxBitRate);
++			if(maxBitRate_f > WLAN_MAXBITRATE) maxBitRate_f = WLAN_MAXBITRATE;
++			maxBitRate = maxBitRate_f * 1000;
++			if(maxBitRate != rate_1 && maxBitRate != rate_2) {
+ 			if(paramRate_1) {
+ 				json_object_object_add(ssidJobj, "X_ZYXEL_UpstreamRate", json_object_new_int(maxBitRate));
+ 			}
+ 			if(paramRate_2) {
+ 				json_object_object_add(ssidJobj, "X_ZYXEL_DownstreamRate", json_object_new_int(maxBitRate));
+ 			}
++				maxBitRateSet++;
++			}
+ 			paramList++;
+ 			continue;
+ 		}else if(!strcmp(paramList->name, "AutoRateFallBackEnabled")) {
+@@ -4954,6 +4970,14 @@
+ 		if(paramValue != NULL) {
+ 			tr181ParamValue = json_object_object_get(ssidJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
++#ifdef ZYXEL_WLAN_MAXBITRATE /* Need MaxBitRate for Oi project, Bug #37690, Ian */
++				if(!strcmp(paramList->name, "X_ZYXEL_UpstreamRate") || !strcmp(paramList->name, "X_ZYXEL_DownstreamRate")) {
++					if(maxBitRateSet) {
++						paramList++;
++						continue;
++					}
++				}
++#endif
+ 				json_object_object_add(ssidJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				paramList++;
+ 				continue;
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2017-09-19 15:07:43.535348528 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2017-09-19 15:29:24.234850735 +0800
+@@ -239,7 +239,9 @@
+ 	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+ 	{ "Name", PARAMETER_ATTR_READONLY, 17, json_type_string},
+ 	{ "BSSID", PARAMETER_ATTR_READONLY, 19, json_type_string},
+-	//{ "MaxBitRate", PARAMETER_ATTR_WRITE, 5, json_type_string},
++#ifdef ZYXEL_WLAN_MAXBITRATE
++	{ "MaxBitRate", PARAMETER_ATTR_WRITE, 5, json_type_string}, /* Need MaxBitRate for Oi project, Bug #37690, Ian */
++#endif
+ 	{ "Channel", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "AutoChannelEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "SSID", PARAMETER_ATTR_WRITE, 33, json_type_string},

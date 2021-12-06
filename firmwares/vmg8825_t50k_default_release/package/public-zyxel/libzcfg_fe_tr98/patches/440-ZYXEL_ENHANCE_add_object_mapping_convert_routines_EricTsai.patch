@@ -1,0 +1,474 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-03-22 09:53:06.237441575 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-03-22 09:53:06.249441575 +0800
+@@ -1685,6 +1685,436 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#ifdef TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
++//----------------------------------------------------------------------------------------------------
++// Tr98/Tr181 object mapping convert routines -- start
++static int tr98181mappingConvertDebug = 0;
++
++void zcfgMappingConvertDataOutput(int enable)
++{
++	tr98181mappingConvertDebug = enable;
++}
++
++struct json_object *zcfgTr98CreatePvsNewMapping()
++{
++	struct json_object *zcfgTr98MapSaveTable = NULL, *jObj;
++	const char *tr98PathName = NULL;
++	struct json_object *zcfgTr98PvsNew = NULL;
++	tr98NameObj_t *entry = NULL;
++	uint32_t seqnum, arrayIdx;
++
++	printf("%s\n", __FUNCTION__);
++
++	if(!(zcfgTr98MapSaveTable = json_object_from_file(ZCFG_TR98_MAP_ADDOBJNAME))) {
++		ztrdbg(ZTR_SDL_INFO, "%s: retrieve tr98 mapping save data fail\n", __FUNCTION__);
++		return NULL;
++	}
++
++	zcfgTr98PvsNew = json_object_new_array_list((e_TR98_LAST-e_TR98_START)+100);
++
++	seqnum = e_TR98_START;
++	while(seqnum != (e_TR98_LAST+100)){
++		arrayIdx = ARRAY_SEQNUM(seqnum);
++		jObj = json_object_array_get_idx(zcfgTr98MapSaveTable, arrayIdx);
++		if(!jObj){
++			seqnum++;
++			continue;
++		}
++
++		tr98PathName = json_object_get_string(json_object_object_get(jObj, "name"));
++		if(!tr98PathName || strlen(tr98PathName) == 0){
++			zcfgLog(ZCFG_LOG_INFO, "%s: %u SeqnumToName fail\n", __FUNCTION__, seqnum);
++			seqnum++;
++			continue;
++		}
++
++		entry = (tr98NameObj_t *)json_object_object_get(tr98StaticNameTable, (const char *)tr98PathName);
++		if(!entry){
++			//ZCFG_NO_SUCH_OBJECT;
++			seqnum++;
++			continue;
++		}
++
++		if(!IS_SEQNUM_RIGHT((entry->nameSeqNum))){
++			//ZCFG_NO_SUCH_OBJECT;
++			seqnum++;
++			continue;
++		}
++
++		zcfg_name_t newnum = (zcfg_name_t)entry->nameSeqNum;
++
++		struct json_object *newpathnameobj = json_object_new_object();
++		json_object_object_add(newpathnameobj, "new", json_object_new_int(newnum));
++		json_object_array_put_idx(zcfgTr98PvsNew, arrayIdx, newpathnameobj);
++
++		seqnum++;
++	}
++
++	if(tr98181mappingConvertDebug){
++		if(json_object_to_file(ZCFG_TR98_PATHNAME_PVSNEW, zcfgTr98PvsNew) < 0) {
++			ztrdbg(ZTR_SDL_INFO, "%s: save tr181 mapping data fail\n", __FUNCTION__);
++			json_object_put(zcfgTr98PvsNew);
++			json_object_put(zcfgTr98MapSaveTable);
++			return NULL;
++		}
++	}
++	json_object_put(zcfgTr98MapSaveTable);
++
++	return zcfgTr98PvsNew;
++}
++
++struct json_object *zcfgTr181CreatePvsNewMapping()
++{
++	struct json_object *zcfgTr181MapSaveTable = NULL;
++	struct json_object *zcfgTr181PvsNew = NULL;
++
++	printf("%s\n", __FUNCTION__);
++
++	if(!(zcfgTr181MapSaveTable = json_object_from_file(ZCFG_TR181_MAP_ADDOBJNAME))) {
++		ztrdbg(ZTR_SDL_INFO, "%s: retrieve tr181 mapping save data fail\n", __FUNCTION__);
++		return NULL;
++	}
++
++	zcfgTr181PvsNew = json_object_new_object();
++
++	json_object_object_foreach(zcfgTr181MapSaveTable, objnumStr, objnumJobj) {
++		if(!objnumJobj)
++			continue;
++
++		const char *pathname = json_object_get_string(json_object_object_get(objnumJobj, "name"));
++		if(!pathname)
++			continue;
++
++		uint32_t newTr181Objnum = zcfgTr181ObjNameOid((char *)pathname);
++
++		struct json_object *pathnameobj = json_object_new_object();
++		json_object_object_add(pathnameobj, "new", json_object_new_int(newTr181Objnum));
++		json_object_object_add(zcfgTr181PvsNew, objnumStr, pathnameobj);
++	}
++
++	if(tr98181mappingConvertDebug){
++		if(json_object_to_file(ZCFG_TR181_PATHNAME_PVSNEW, zcfgTr181PvsNew) < 0) {
++			ztrdbg(ZTR_SDL_INFO, "%s: save tr181 mapping data fail\n", __FUNCTION__);
++			json_object_put(zcfgTr181PvsNew);
++			json_object_put(zcfgTr181MapSaveTable);
++			return NULL;
++		}
++	}
++
++	json_object_put(zcfgTr181MapSaveTable);
++
++	return zcfgTr181PvsNew;
++}
++
++static uint32_t zcfgTr98QueryNewSeqnum(struct json_object *zcfgTr98PvsNew, uint32_t seqnum)
++{
++	uint32_t arrayIdx = ARRAY_SEQNUM(seqnum);
++	struct json_object *pvsSeqNumObj = json_object_array_get_idx(zcfgTr98PvsNew, arrayIdx);
++	uint32_t newTr98Seqnum = (uint32_t)json_object_get_int(json_object_object_get(pvsSeqNumObj, "new"));
++	return newTr98Seqnum;
++}
++
++static uint32_t zcfgTr181QueryNewSeqnum(struct json_object *zcfgTr181PvsNew, uint32_t objnum)
++{
++	struct json_object *pathnameobj;
++	char objnumStr[30] = {0};
++	sprintf(objnumStr, "%u", objnum);
++	pathnameobj = json_object_object_get(zcfgTr181PvsNew, objnumStr);
++	uint32_t newTr181Objnum = (uint32_t)json_object_get_int(json_object_object_get(pathnameobj, "new"));
++
++	return newTr181Objnum;
++}
++
++zcfgRet_t zcfgTr98MappingConvert(struct json_object *zcfgTr98PvsNew, struct json_object *zcfgTr181PvsNew)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	FILE *fmap, *fmapconvert;
++	char line[TR98_MAX_OBJ_NAME_LENGTH], lineOutput[TR98_MAX_OBJ_NAME_LENGTH];
++	char objStr[30] = {0}, idxstr[30] = {0};
++	char parmName[MAX_PARMNAME_LEN] = {0};
++	char *str, *str181mapping, *strmapping;
++	struct json_object *zcfgTr98MapConvert, *zcfgTr98MapConverted, *idxObj;
++	int complete = 0, arrayIdx = 0;
++
++	printf("%s\n", __FUNCTION__);
++	remove(ZCFG_TR98_MAP_CONVERTED);
++
++	fmap = fopen(ZCFG_TR98_MAP_ADDOBJNAME, "r");
++	fmapconvert = fopen(ZCFG_TR98_MAP_CONVERT, "w+");
++	if(!fmap || !fmapconvert){
++		printf("%s: open mapping files fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	while(!complete){
++		memset(line, 0, sizeof(line));
++		str = fgets(line, TR98_MAX_OBJ_NAME_LENGTH, fmap);
++		if(!str){
++			//empty
++			complete = 1;
++			continue;
++		}
++
++		if((str181mapping = strstr(line, "181mapping"))){
++			//181mapping":"
++			str181mapping += 13;
++			memset(objStr, 0, sizeof(objStr));
++			memset(idxstr, 0, sizeof(idxstr));
++			int n = sscanf(str181mapping, "%[^_]_%[^_]", objStr, idxstr);
++			if(n < 2){
++				if(tr98181mappingConvertDebug)
++					printf("%s: sscanf mapping string fail, %s\n", __FUNCTION__, line);
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			uint32_t objnum = (uint32_t)atol(objStr);
++			uint32_t newTr181Objnum = zcfgTr181QueryNewSeqnum(zcfgTr181PvsNew, objnum);
++			if(!newTr181Objnum){
++				if(tr98181mappingConvertDebug)
++					printf("%s: query %u new objnum fail, %s\n", __FUNCTION__, objnum, line);
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			sprintf(lineOutput, "      \"181mapping\":\"%u_%s", newTr181Objnum, idxstr);
++			fputs((const char *)lineOutput, fmapconvert);
++		}else if((strmapping = strstr(line, "\"mapping\""))){
++			//mapping":"
++			strmapping += 11;
++			memset(objStr, 0, sizeof(objStr));
++			memset(idxstr, 0, sizeof(idxstr));
++			memset(parmName, 0, sizeof(parmName));
++			int n = sscanf(strmapping, "%[^_]_%[^_]_%s", objStr, idxstr, parmName);
++			if(n < 3){
++				if(tr98181mappingConvertDebug)
++					printf("%s: sscanf mapping string fail, %s\n", __FUNCTION__, line);
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			uint32_t objnum = (uint32_t)atol(objStr);
++			uint32_t newTr181Objnum = zcfgTr181QueryNewSeqnum(zcfgTr181PvsNew, objnum);
++			if(!newTr181Objnum){
++				if(tr98181mappingConvertDebug)
++					printf("%s: query %u new objnum fail, %s\n", __FUNCTION__, objnum, line);
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			sprintf(lineOutput, "      \"mapping\":\"%u_%s_%s", newTr181Objnum, idxstr, parmName);
++			fputs((const char *)lineOutput, fmapconvert);
++		}else{
++			fputs((const char *)line, fmapconvert);
++		}
++	}
++
++	fclose(fmapconvert);
++	fclose(fmap);
++
++
++	if(!(zcfgTr98MapConvert = json_object_from_file(ZCFG_TR98_MAP_CONVERT))) {
++		printf("%s: retrieve tr98 tr181-objnum converted data fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	int arrayListEntryNum = e_TR98_LAST-e_TR98_START;
++	if(!(zcfgTr98MapConverted = json_object_new_array_list(arrayListEntryNum))) {
++		rst = ZCFG_INTERNAL_ERROR;
++		goto complete;
++	}
++
++	struct json_object *zcfgTr98MapAttrList = NULL, *attrListObj = NULL, *zcfgTr98MapAttrListConverted = NULL;
++
++	if(!(zcfgTr98MapAttrList = json_object_from_file(ZCFG_TR98_MAP_ATTR_LIST_PATH))) {
++		printf("%s: retrieve tr98 attr list fail\n", __FUNCTION__);
++	}else if(!(zcfgTr98MapAttrListConverted = json_object_new_array_list(arrayListEntryNum))) {
++		json_object_put(zcfgTr98MapAttrList);
++		rst = ZCFG_INTERNAL_ERROR;
++		goto complete;
++	}
++
++	int seqnum = e_TR98_START;
++	while(seqnum != (e_TR98_LAST+100)){
++		arrayIdx = ARRAY_SEQNUM(seqnum);
++		idxObj = json_object_array_pull_idx(zcfgTr98MapConvert, arrayIdx);
++		if(!idxObj){
++			seqnum++;
++			continue;
++		}
++
++		json_object_object_del(idxObj, "name");
++
++		uint32_t newTr98Seqnum = zcfgTr98QueryNewSeqnum(zcfgTr98PvsNew, seqnum);
++		if(!IS_SEQNUM_RIGHT(newTr98Seqnum)){
++			seqnum++;
++			continue;
++		}else{
++			uint32_t newArrayIdx = ARRAY_SEQNUM(newTr98Seqnum);
++			json_object_array_put_idx(zcfgTr98MapConverted, newArrayIdx, idxObj);
++			if(zcfgTr98MapAttrList && (attrListObj = json_object_array_pull_idx(zcfgTr98MapAttrList, arrayIdx)))
++				json_object_array_put_idx(zcfgTr98MapAttrListConverted, newArrayIdx, attrListObj);
++		}
++		seqnum++;
++	}
++
++
++	if(json_object_to_file(ZCFG_TR98_MAP_CONVERTED, zcfgTr98MapConverted) < 0) {
++		printf("%s: save tr98 tr181 data-converted fail\n", __FUNCTION__);
++		remove(ZCFG_TR98_MAP_CONVERTED);
++		rst = ZCFG_INTERNAL_ERROR;
++	}
++
++	if(zcfgTr98MapAttrListConverted){
++		remove(ZCFG_TR98_MAP_ATTR_LIST_PATH);
++		if(json_object_to_file(ZCFG_TR98_MAP_ATTR_LIST_PATH, zcfgTr98MapAttrListConverted) < 0) {
++			printf("%s: save tr98 attr list converted fail\n", __FUNCTION__);
++			rst = ZCFG_INTERNAL_ERROR;
++		}
++		json_object_put(zcfgTr98MapAttrList);
++		json_object_put(zcfgTr98MapAttrListConverted);
++	}
++
++complete:
++	if(!tr98181mappingConvertDebug)
++		remove(ZCFG_TR98_MAP_CONVERT);
++
++	json_object_put(zcfgTr98MapConvert);
++	json_object_put(zcfgTr98MapConverted);
++
++	return rst;
++}
++
++zcfgRet_t zcfgTr181MappingConvert(struct json_object *zcfgTr98PvsNew, struct json_object *zcfgTr181PvsNew)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	FILE *fmap, *fmapconvert;
++	char line[TR98_MAX_OBJ_NAME_LENGTH], lineOutput[TR98_MAX_OBJ_NAME_LENGTH];;
++	char objStr[30] = {0}, idxstr[30] = {0};
++	char parmName[MAX_PARMNAME_LEN] = {0};
++	char *str, *str98mapping, *strmapping;
++	int complete = 0;
++	char newTr181ObjNumStr[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++
++	printf("%s\n", __FUNCTION__);
++	remove(ZCFG_TR181_MAP_CONVERTED);
++
++	fmap = fopen(ZCFG_TR181_MAP_ADDOBJNAME, "r");
++	fmapconvert = fopen(ZCFG_TR181_MAP_CONVERT, "w+");
++	if(!fmap || !fmapconvert){
++		printf("%s: open mapping files fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	while(!complete){
++		memset(line, 0, sizeof(line));
++		str = fgets(line, TR98_MAX_OBJ_NAME_LENGTH, fmap);
++		if(!str){
++			complete = 1;
++			continue;
++		}
++
++		if((str98mapping = strstr(line, "98mapping"))){
++			//98mapping":"
++			str98mapping += 12;
++			memset(objStr, 0, sizeof(objStr));
++			memset(idxstr, 0, sizeof(idxstr));
++			int n = sscanf(str98mapping, "%[^_]_%[^_]", objStr, idxstr);
++			if(n < 2){
++				if(tr98181mappingConvertDebug)
++					printf("%s: sscanf mapping string fail, %s\n", __FUNCTION__, line);
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			uint32_t objnum = (uint32_t)atol(objStr);
++			uint32_t newTr98Objnum = zcfgTr98QueryNewSeqnum(zcfgTr98PvsNew, objnum);
++			if(!newTr98Objnum){
++				if(tr98181mappingConvertDebug)
++					printf("%s: query %u new tr98 objnum fail, %s\n", __FUNCTION__, objnum, line);
++				//rst = ZCFG_NO_SUCH_OBJECT;
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			sprintf(lineOutput, "      \"98mapping\":\"%u_%s", newTr98Objnum, idxstr);
++			fputs((const char *)lineOutput, fmapconvert);
++		}else if((strmapping = strstr(line, "\"mapping\""))){
++			//mapping":"
++			strmapping += 11;
++			memset(objStr, 0, sizeof(objStr));
++			memset(idxstr, 0, sizeof(idxstr));
++			memset(parmName, 0, sizeof(parmName));
++			int n = sscanf(strmapping, "%[^_]_%[^_]_%s", objStr, idxstr, parmName);
++			if(n < 3){
++				if(tr98181mappingConvertDebug)
++					printf("%s: sscanf mapping string fail, %s\n", __FUNCTION__, line);
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			uint32_t objnum = (uint32_t)atol(objStr);
++			uint32_t newTr98Objnum = zcfgTr98QueryNewSeqnum(zcfgTr98PvsNew, objnum);
++			if(!newTr98Objnum){
++				if(tr98181mappingConvertDebug)
++					printf("%s: query %u new tr98 objnum fail, %s\n", __FUNCTION__, objnum, line);
++				//rst = ZCFG_NO_SUCH_OBJECT;
++				fputs((const char *)line, fmapconvert);
++				continue;
++			}
++			sprintf(lineOutput, "      \"mapping\":\"%u_%s_%s", newTr98Objnum, idxstr, parmName);
++			fputs((const char *)lineOutput, fmapconvert);
++		}else{
++			fputs((const char *)line, fmapconvert);
++		}
++	}
++
++	fclose(fmapconvert);
++	fclose(fmap);
++
++	struct json_object *zcfgTr181MapConvert = NULL, *zcfgTr181MapConverted = NULL;
++
++	if(!(zcfgTr181MapConvert = json_object_from_file(ZCFG_TR181_MAP_CONVERT))) {
++		printf("%s: retrieve tr181 tr98-objnum converted data fail\n", __FUNCTION__);
++		rst = ZCFG_INTERNAL_ERROR;
++		goto complete;
++	}
++
++	zcfgTr181MapConverted = json_object_new_object();
++
++	json_object_object_foreach(zcfgTr181MapConvert, tr181ObjNumStr, objnumJobj) {
++		if(!objnumJobj || !strlen(tr181ObjNumStr))
++			continue;
++
++		json_object_object_del(objnumJobj, "name");
++
++		uint32_t objnum = (uint32_t)atol(tr181ObjNumStr);
++		uint32_t newTr181Objnum = zcfgTr181QueryNewSeqnum(zcfgTr181PvsNew, objnum);
++		if(!newTr181Objnum){
++			if(tr98181mappingConvertDebug)
++				printf("%s: query %u new tr181 objnum fail\n", __FUNCTION__, objnum);
++			rst = ZCFG_NO_SUCH_OBJECT;
++			continue;
++		}
++
++		json_object_object_pull(zcfgTr181MapConvert, tr181ObjNumStr);
++		sprintf(newTr181ObjNumStr, "%u", newTr181Objnum);
++		json_object_object_add(zcfgTr181MapConverted, newTr181ObjNumStr, objnumJobj);
++	}
++
++	json_object_put(zcfgTr181MapConvert);
++
++	if(json_object_to_file(ZCFG_TR181_MAP_CONVERTED, zcfgTr181MapConverted) < 0) {
++		printf("%s: save tr98 tr181 data-converted fail\n", __FUNCTION__);
++		remove(ZCFG_TR181_MAP_CONVERTED);
++		rst = ZCFG_INTERNAL_ERROR;
++	}
++
++complete:
++	if(!tr98181mappingConvertDebug)
++		remove(ZCFG_TR181_MAP_CONVERT);
++
++	json_object_put(zcfgTr181MapConverted);
++
++	return rst;
++}
++#endif
++// Tr98/Tr181 object mapping convert routines -- end
++//----------------------------------------------------------------------------------------------------
++
+ #ifdef ZCFG_PARM_NAMEMAPPING
+ zcfgRet_t zcfgFe98ParmMappingToName(const char *notifyName, char *tr98NotifyName)
+ {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-03-22 09:53:06.237441575 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-03-22 09:53:06.249441575 +0800
+@@ -196,6 +196,13 @@
+ zcfgRet_t zcfgFe98ParmMappingToName(const char *notifyName, char *tr98NotifyName);
+ zcfgRet_t zcfgTr98MapAddObjName();
+ zcfgRet_t zcfgTr181MapAddObjName();
++#ifdef TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
++void zcfgMappingConvertDataOutput(int enable);
++struct json_object *zcfgTr98CreatePvsNewMapping();
++struct json_object *zcfgTr181CreatePvsNewMapping();
++zcfgRet_t zcfgTr98MappingConvert(struct json_object *, struct json_object *);
++zcfgRet_t zcfgTr181MappingConvert(struct json_object *, struct json_object *);
++#endif
+ char *csvStringStripTerm(const char *csv, const char *term);
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );
+ zcfgRet_t zcfgFeTr98ObjNameObjGet(char *, struct json_object **);
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-03-22 09:53:06.237441575 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-03-22 09:53:06.249441575 +0800
+@@ -25,6 +25,10 @@
+ CFLAGS += -DZYXEL_EXT=1
+ CFLAGS += -DZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
+ 
++ifeq ($(CONFIG_ZCFG_TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT),y)
++CFLAGS += -DTR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
++endif
++
+ #Generic
+ ifneq ($(strip $(CONFIG_PACKAGE_ZyIMS)),)
+ CFLAGS += -DCONFIG_PACKAGE_ZyIMS

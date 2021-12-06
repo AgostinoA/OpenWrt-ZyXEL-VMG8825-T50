@@ -1,0 +1,860 @@
+Index: libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_log_setting.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/logsetting/zcfg_fe_dal_log_setting.c	2017-07-26 10:25:20.365673178 +0800
++++ libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_log_setting.c	2017-07-26 10:27:42.491595500 +0800
+@@ -13,27 +13,29 @@
+ 
+ dal_param_t LOG_SETTING_param[]={
+ 	{"Enable",								dalType_boolean,0,	0,	NULL},
+-	{"LogMode",								dalType_string,	0,	0,	NULL},
++	{"LogMode",								dalType_string,	0,	0,	NULL,	"Remote|Local|LocalRemote",	NULL},
+ 	{"LogServer",							dalType_string,	0,	0,	NULL},
+ 	{"UDPPort",								dalType_int,	0,	0,	NULL},
+-	{"Interval",							dalType_int,	0,	0,	NULL},
+-	{"category",							dalType_string,	0,	0,	NULL},
++
+ 	{"LogEnable",							dalType_boolean,0,	0,	NULL},
+-	{"AlarmEnable",							dalType_boolean,0,	0,	NULL},
+-	{"LogEvent",							dalType_string,	0,	0,	NULL},
+-	{"AlarmEvent",							dalType_string,	0,	0,	NULL},
++	{"LogSericeRef",						dalType_string,	0,	0,	NULL},
+ 	{"LogEmailSubject",						dalType_string,	0,	0,	NULL},
+ 	{"AlarmEmailSubject",					dalType_string,	0,	0,	NULL},
+-	{"LogEmailBody",						dalType_string,	0,	0,	NULL},
+-	{"AlarmEmailBody",						dalType_string,	0,	0,	NULL},
+ 	{"LogEmailTo",							dalType_string,	0,	0,	NULL},
+ 	{"AlarmEmailTo",						dalType_string,	0,	0,	NULL},
+-	{"LogSericeRef",						dalType_string,	0,	0,	NULL},
+-	{"AlarmSericeRef",						dalType_string,	0,	0,	NULL},
+-	{"LogIndex",							dalType_int,	0,	0,	NULL},
+-	{"AlarmIndex",							dalType_int,	0,	0,	NULL},
+-	{"islog",								dalType_boolean,0,	0,	NULL},
+-	{"islog",								dalType_boolean,0,	0,	NULL},
++	{"Interval",							dalType_int,	0,	0,	NULL},
++	{"category",							dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++
++	{"LogEvent",							dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"AlarmEvent",							dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"LogEmailBody",						dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"AlarmEmailBody",						dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	
++	{"AlarmEnable",							dalType_boolean,0,	0,	NULL,	NULL,	dalcmd_Forbid},	//	equivilent as LogEnable
++	{"AlarmSericeRef",						dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},	//	equivilent as LogSericeRef
++	{"LogIndex",							dalType_int,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"AlarmIndex",							dalType_int,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"islog",								dalType_boolean,0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ #ifdef ZYXEL_NAT_LOG
+ 	{"NatEnable",							dalType_boolean,0,	0,	NULL},
+ 	{"NatEvent",							dalType_string,	0,	0,	NULL},
+@@ -42,6 +44,21 @@
+ 	{"NatSericeRef",						dalType_string,	0,	0,	NULL},
+ 	{"NatLogIndex",							dalType_int,	0,	0,	NULL},
+ #endif
++	{"WAN-DHCP",							dalType_boolean,0,	0,	NULL},
++	{"DHCPServer",							dalType_boolean,0,	0,	NULL},
++	{"PPPoE",								dalType_boolean,0,	0,	NULL},
++	{"TR-069",								dalType_boolean,0,	0,	NULL},
++	{"HTTP",								dalType_boolean,0,	0,	NULL},
++	{"UPNP",								dalType_boolean,0,	0,	NULL},
++	{"System",								dalType_boolean,0,	0,	NULL},
++	{"xDSL",								dalType_boolean,0,	0,	NULL},
++	{"ACL",									dalType_boolean,0,	0,	NULL},
++	{"Wireless",							dalType_boolean,0,	0,	NULL},
++	{"Voice",								dalType_boolean,0,	0,	NULL},
++	{"Account",								dalType_boolean,0,	0,	NULL},
++	{"Attack",								dalType_boolean,0,	0,	NULL},
++	{"Firewall",							dalType_boolean,0,	0,	NULL},
++	{"MACFilter",							dalType_boolean,0,	0,	NULL},
+ 	{NULL,									dalType_int,	0,	0,	NULL},
+ 
+ };
+@@ -148,16 +165,6 @@
+ 	return;
+ }
+ 
+-void getMailEventIsAdd(struct json_object *Jobj){
+-	islog = json_object_get_boolean(json_object_object_get(Jobj, "islog"));
+-	isalarm = json_object_get_boolean(json_object_object_get(Jobj, "isalarm"));
+-
+-	#ifdef ZYXEL_NAT_LOG
+-	isnatlog = json_object_get_boolean(json_object_object_get(Jobj, "isnatlog"));
+-	#endif
+-	return;
+-}
+-
+ void getMailEvnetIid(struct json_object *Jobj){
+ 	LogIndex = json_object_get_int(json_object_object_get(Jobj, "LogIndex"));
+ 	AlarmIndex 	= json_object_get_int(json_object_object_get(Jobj, "AlarmIndex"));
+@@ -180,124 +187,277 @@
+ }
+ 
+ 
+-zcfgRet_t zcfgFeDaleMailEventLogCfg(objIndex_t Iid){
++zcfgRet_t zcfgFeDaleMailEventLogCfg(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailEventJobj)) != ZCFG_SUCCESS) {
+-		printf("%s:(ERROR) Get mail event Obj fail\n", __FUNCTION__);
+-		return ZCFG_INTERNAL_ERROR;
++	struct json_object *emailLogObj = NULL;
++	objIndex_t Iid = {0};
++	bool emailLog = false, curemailstatus = false;
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailLogObj) == ZCFG_SUCCESS){
++		if(!strcmp("MAILSEND_EVENT_SEND_LOG",json_object_get_string(json_object_object_get(emailLogObj, "Event")))){
++			zcfgFeJsonObjFree(emailLogObj);
++			emailLog = true;
++			break;			
++		}
++		zcfgFeJsonObjFree(emailLogObj);
++	}
++	if(emailLog){
++		if(zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailLogObj) == ZCFG_SUCCESS){
++			curemailstatus = json_object_get_boolean(json_object_object_get(emailLogObj, "Enable"));
++			if(json_object_object_get(Jobj, "LogEnable")){
++				if(LogEnable){
++					json_object_object_add(emailLogObj, "Enable", json_object_new_boolean(LogEnable));
++					if(json_object_object_get(Jobj, "LogEmailTo"))
++						json_object_object_add(emailLogObj, "EmailTo", json_object_new_string(LogEmailTo));
++					if(json_object_object_get(Jobj, "LogEmailSubject"))
++						json_object_object_add(emailLogObj, "EmailSubject", json_object_new_string(LogEmailSubject));
++					if(json_object_object_get(Jobj, "LogSericeRef"))
++						json_object_object_add(emailLogObj, "SericeRef", json_object_new_string(LogSericeRef));
++				}
++				else{
++					json_object_object_add(emailLogObj, "Enable", json_object_new_boolean(LogEnable));
++					json_object_object_add(emailLogObj, "EmailTo", json_object_new_string(""));
++					json_object_object_add(emailLogObj, "EmailSubject", json_object_new_string(""));
++					json_object_object_add(emailLogObj, "SericeRef", json_object_new_string(""));
++				}
++			}
++			else{
++				if(curemailstatus){
++					if(json_object_object_get(Jobj, "AlarmEmailTo"))
++						json_object_object_add(emailLogObj, "EmailTo", json_object_new_string(LogEmailTo));
++					if(json_object_object_get(Jobj, "AlarmEmailSubject"))
++						json_object_object_add(emailLogObj, "EmailSubject", json_object_new_string(LogEmailSubject));
++					if(json_object_object_get(Jobj, "LogSericeRef"))
++						json_object_object_add(emailLogObj, "SericeRef", json_object_new_string(LogSericeRef));
++				}
++				else{
++					json_object_object_add(emailLogObj, "EmailTo", json_object_new_string(""));
++					json_object_object_add(emailLogObj, "EmailSubject", json_object_new_string(""));
++					json_object_object_add(emailLogObj, "SericeRef", json_object_new_string(""));
++				}
++			}
++		}
+ 	}
+-
+-	if(emailEventJobj != NULL){
+-		if(LogEnable == true){
+-			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(LogEnable));
+-			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(LogEmailSubject));
+-			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(LogEmailTo));
+-			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(LogSericeRef));
+-			if(islog == true){//for add
+-				json_object_object_add(emailEventJobj, "Event", json_object_new_string(LogEvent));
+-				json_object_object_add(emailEventJobj, "EmailBody", json_object_new_string(LogEmailBody));
+-			}
+-
+-		}else{
+-			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(LogEnable));
+-			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(""));
+-			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(""));
+-			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(""));
++	else{
++		IID_INIT(Iid);
++		if(zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &Iid, NULL) == ZCFG_SUCCESS){
++			if(zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailLogObj) == ZCFG_SUCCESS){
++				json_object_object_add(emailLogObj, "Event", json_object_new_string("MAILSEND_EVENT_SEND_LOG"));
++				json_object_object_add(emailLogObj, "EmailBody", json_object_new_string("User send a email with log file."));
++				if(json_object_object_get(Jobj, "LogEnable"))
++					json_object_object_add(emailLogObj, "Enable", json_object_new_boolean(LogEnable));
++				if(json_object_object_get(Jobj, "LogEmailTo"))
++					json_object_object_add(emailLogObj, "EmailTo", json_object_new_string(LogEmailTo));
++				if(json_object_object_get(Jobj, "LogEmailSubject"))
++					json_object_object_add(emailLogObj, "EmailSubject", json_object_new_string(LogEmailSubject));
++				if(json_object_object_get(Jobj, "LogSericeRef"))
++					json_object_object_add(emailLogObj, "SericeRef", json_object_new_string(LogSericeRef));
++	}
++			}
+ 		}
+-
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailEventJobj, NULL)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailLogObj, NULL)) != ZCFG_SUCCESS)
+ 		{
+ 			printf("%s:(ERROR) Set email event fail\n", __FUNCTION__);
+ 			return ZCFG_INTERNAL_ERROR;
+ 		}
+-	}
++	zcfgFeJsonObjFree(emailLogObj);	
+ 
+ 	return ret;
+ }
+ 
+ 
+-zcfgRet_t zcfgFeDaleMailEventAlarmCfg(objIndex_t Iid){
++zcfgRet_t zcfgFeDaleMailEventAlarmCfg(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailEventJobj)) != ZCFG_SUCCESS) {
+-		printf("%s:(ERROR) Get mail event Obj fail\n", __FUNCTION__);
+-		return ZCFG_INTERNAL_ERROR;
++	struct json_object *emailAlarmObj = NULL;
++	objIndex_t Iid = {0};
++	bool emailAlarm = false, curemailstatus = false;
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailAlarmObj) == ZCFG_SUCCESS){
++		if(!strcmp("MAILSEND_EVENT_SEND_ALARM",json_object_get_string(json_object_object_get(emailAlarmObj, "Event")))){
++			zcfgFeJsonObjFree(emailAlarmObj);
++			emailAlarm = true;
++			break;			
++		}
++		zcfgFeJsonObjFree(emailAlarmObj);
++	}
++	if(emailAlarm){
++		if(zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailAlarmObj) == ZCFG_SUCCESS){
++			curemailstatus = json_object_get_boolean(json_object_object_get(emailAlarmObj, "Enable"));
++			if(json_object_object_get(Jobj, "LogEnable")){
++				if(LogEnable){
++					json_object_object_add(emailAlarmObj, "Enable", json_object_new_boolean(LogEnable));
++					if(json_object_object_get(Jobj, "AlarmEmailTo"))
++						json_object_object_add(emailAlarmObj, "EmailTo", json_object_new_string(AlarmEmailTo));
++					if(json_object_object_get(Jobj, "AlarmEmailSubject"))
++						json_object_object_add(emailAlarmObj, "EmailSubject", json_object_new_string(AlarmEmailSubject));
++					if(json_object_object_get(Jobj, "LogSericeRef"))
++						json_object_object_add(emailAlarmObj, "SericeRef", json_object_new_string(LogSericeRef));
++				}
++				else{
++					json_object_object_add(emailAlarmObj, "Enable", json_object_new_boolean(LogEnable));
++					json_object_object_add(emailAlarmObj, "EmailTo", json_object_new_string(""));
++					json_object_object_add(emailAlarmObj, "EmailSubject", json_object_new_string(""));
++					json_object_object_add(emailAlarmObj, "SericeRef", json_object_new_string(""));
++				}
++			}
++			else{
++				if(curemailstatus){
++					if(json_object_object_get(Jobj, "AlarmEmailTo"))
++						json_object_object_add(emailAlarmObj, "EmailTo", json_object_new_string(AlarmEmailTo));
++					if(json_object_object_get(Jobj, "AlarmEmailSubject"))
++						json_object_object_add(emailAlarmObj, "EmailSubject", json_object_new_string(AlarmEmailSubject));
++					if(json_object_object_get(Jobj, "LogSericeRef"))
++						json_object_object_add(emailAlarmObj, "SericeRef", json_object_new_string(LogSericeRef));
++				}
++				else{
++					json_object_object_add(emailAlarmObj, "EmailTo", json_object_new_string(""));
++					json_object_object_add(emailAlarmObj, "EmailSubject", json_object_new_string(""));
++					json_object_object_add(emailAlarmObj, "SericeRef", json_object_new_string(""));
++				}
++			}
++		}
+ 	}
+-
+-	if(emailEventJobj != NULL){
+-		if(AlarmEnable == true){
+-			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(AlarmEnable));
+-			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(AlarmEmailSubject));
+-			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(AlarmEmailTo));
+-			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(AlarmSericeRef));
+-			if(isalarm== true){//for add
+-				json_object_object_add(emailEventJobj, "Event", json_object_new_string(AlarmEvent));
+-				json_object_object_add(emailEventJobj, "EmailBody", json_object_new_string(AlarmEmailBody));
+-			}
+-		}else{
+-			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(AlarmEnable));
+-			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(""));
+-			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(""));
+-			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(""));
++	else{
++		IID_INIT(Iid);
++		if(zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &Iid, NULL) == ZCFG_SUCCESS){
++			if(zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailAlarmObj) == ZCFG_SUCCESS){
++				json_object_object_add(emailAlarmObj, "Event", json_object_new_string("MAILSEND_EVENT_SEND_ALARM"));
++				json_object_object_add(emailAlarmObj, "EmailBody", json_object_new_string("Your device is under attack."));
++				if(json_object_object_get(Jobj, "LogEnable"))
++					json_object_object_add(emailAlarmObj, "Enable", json_object_new_boolean(LogEnable));
++				if(json_object_object_get(Jobj, "AlarmEmailTo"))
++					json_object_object_add(emailAlarmObj, "EmailTo", json_object_new_string(AlarmEmailTo));
++				if(json_object_object_get(Jobj, "AlarmEmailSubject"))
++					json_object_object_add(emailAlarmObj, "EmailSubject", json_object_new_string(AlarmEmailSubject));
++				if(json_object_object_get(Jobj, "LogSericeRef"))
++					json_object_object_add(emailAlarmObj, "SericeRef", json_object_new_string(LogSericeRef));
++	}
++			}
+ 		}
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailEventJobj, NULL)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailAlarmObj, NULL)) != ZCFG_SUCCESS)
+ 		{
+ 			printf("%s:(ERROR) Set email event fail\n", __FUNCTION__);
+ 			return ZCFG_INTERNAL_ERROR;
+ 		}
+-	}
++	zcfgFeJsonObjFree(emailAlarmObj);	
+ 	return ret;
+ }
+ #ifdef ZYXEL_NAT_LOG
+-zcfgRet_t zcfgFeDaleMailEventNatLogCfg(objIndex_t Iid){
++zcfgRet_t zcfgFeDaleMailEventNatLogCfg(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailEventJobj)) != ZCFG_SUCCESS) {
+-		printf("%s:(ERROR) Get mail event Obj fail\n", __FUNCTION__);
+-		return ZCFG_INTERNAL_ERROR;
++	struct json_object *emailNatObj = NULL;
++	objIndex_t Iid = {0};
++	bool emailNat = false, curemailstatus = false;
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailNatObj) == ZCFG_SUCCESS){
++		if(!strcmp("MAILSEND_EVENT_SEND_NAT_LOG",json_object_get_string(json_object_object_get(emailNatObj, "Event")))){
++			zcfgFeJsonObjFree(emailNatObj);
++			emailNat = true;
++			break;			
++		}
++		zcfgFeJsonObjFree(emailNatObj);
++	}
++	if(emailNat){
++		if(zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailNatObj) == ZCFG_SUCCESS){
++			curemailstatus = json_object_get_boolean(json_object_object_get(emailNatObj, "Enable"));
++			if(json_object_object_get(Jobj, "LogEnable")){
++				if(LogEnable){
++					json_object_object_add(emailNatObj, "Enable", json_object_new_boolean(LogEnable));
++					if(json_object_object_get(Jobj, "NatEmailTo"))
++						json_object_object_add(emailNatObj, "EmailTo", json_object_new_string(NatEmailTo));
++					if(json_object_object_get(Jobj, "NatEmailSubject"))
++						json_object_object_add(emailNatObj, "EmailSubject", json_object_new_string(NatEmailSubject));
++					if(json_object_object_get(Jobj, "LogSericeRef"))
++						json_object_object_add(emailNatObj, "SericeRef", json_object_new_string(LogSericeRef));
++				}
++				else{
++					json_object_object_add(emailNatObj, "Enable", json_object_new_boolean(LogEnable));
++					json_object_object_add(emailNatObj, "EmailTo", json_object_new_string(""));
++					json_object_object_add(emailNatObj, "EmailSubject", json_object_new_string(""));
++					json_object_object_add(emailNatObj, "SericeRef", json_object_new_string(""));
++				}
++			}
++			else{
++				if(curemailstatus){
++					if(json_object_object_get(Jobj, "NatEmailTo"))
++						json_object_object_add(emailNatObj, "EmailTo", json_object_new_string(NatEmailTo));
++					if(json_object_object_get(Jobj, "NatEmailSubject"))
++						json_object_object_add(emailNatObj, "EmailSubject", json_object_new_string(NatEmailSubject));
++					if(json_object_object_get(Jobj, "LogSericeRef"))
++						json_object_object_add(emailNatObj, "SericeRef", json_object_new_string(LogSericeRef));
++				}
++				else{
++					json_object_object_add(emailNatObj, "EmailTo", json_object_new_string(""));
++					json_object_object_add(emailNatObj, "EmailSubject", json_object_new_string(""));
++					json_object_object_add(emailNatObj, "SericeRef", json_object_new_string(""));
++				}
++			}
++		}
+ 	}
+-
+-	if(emailEventJobj != NULL){
+-		if(NatEnable == true){
+-			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(NatEnable));
+-			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(NatEmailSubject));
+-			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(NatEmailTo));
+-			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(NatSericeRef));
+-			if(isnatlog == true){//for add
+-				json_object_object_add(emailEventJobj, "Event", json_object_new_string(NatEvent));
+-				json_object_object_add(emailEventJobj, "EmailBody", json_object_new_string(NatEmailBody));
+-			}
+-
+-		}else{
+-			json_object_object_add(emailEventJobj, "Enable", json_object_new_boolean(NatEnable));
+-			json_object_object_add(emailEventJobj, "EmailSubject", json_object_new_string(""));
+-			json_object_object_add(emailEventJobj, "EmailTo", json_object_new_string(""));
+-			json_object_object_add(emailEventJobj, "SericeRef", json_object_new_string(""));
++	else{
++		IID_INIT(Iid);
++		if(zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &Iid, NULL) == ZCFG_SUCCESS){
++			if(zcfgFeObjJsonGet(RDM_OID_MAIL_EVENT_CFG, &Iid, &emailNatObj) == ZCFG_SUCCESS){
++				json_object_object_add(emailNatObj, "Event", json_object_new_string("MAILSEND_EVENT_SEND_ALARM"));
++				json_object_object_add(emailNatObj, "EmailBody", json_object_new_string("Your device is under attack."));
++				if(json_object_object_get(Jobj, "LogEnable"))
++					json_object_object_add(emailNatObj, "Enable", json_object_new_boolean(LogEnable));
++				if(json_object_object_get(Jobj, "NatEmailTo"))
++					json_object_object_add(emailNatObj, "EmailTo", json_object_new_string(NatEmailTo));
++				if(json_object_object_get(Jobj, "NatEmailSubject"))
++					json_object_object_add(emailNatObj, "EmailSubject", json_object_new_string(NatEmailSubject));
++				if(json_object_object_get(Jobj, "LogSericeRef"))
++					json_object_object_add(emailNatObj, "SericeRef", json_object_new_string(LogSericeRef));
++	}
++			}
+ 		}
+-
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailEventJobj, NULL)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &Iid, emailNatObj, NULL)) != ZCFG_SUCCESS)
+ 		{
+ 			printf("%s:(ERROR) Set email event fail\n", __FUNCTION__);
+ 			return ZCFG_INTERNAL_ERROR;
+ 		}
+-	}
+-
++	zcfgFeJsonObjFree(emailNatObj);
+ 	return ret;
+ }
+ #endif
+ zcfgRet_t zcfgFeDalLogSettingcfg(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL, *objtmp = NULL;
+ 	getLogSettingBasicInfo(Jobj);
+ 	IID_INIT(logSettingIid);
+-
++	obj = json_object_new_array();
++	zcfgFeDalLogSettingGet(Jobj, obj, NULL);
++	objtmp = json_object_array_get_idx(obj, 0);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_LOG_SETTING, &logSettingIid, &logSettingJobj)) != ZCFG_SUCCESS) {
+ 		printf("%s:(ERROR) Get logsetting Obj fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
+ 	if(logSettingJobj != NULL){
++		if(json_object_object_get(Jobj, "Enable"))
+ 		json_object_object_add(logSettingJobj, "Enable", json_object_new_boolean(Enable));
+-		json_object_object_add(logSettingJobj, "LogMode", json_object_new_string(LogMode));
++		if(json_object_object_get(Jobj, "LogMode")){
++			if(!strcmp("Local",LogMode))
++				json_object_object_add(logSettingJobj, "LogMode", json_object_new_string("0"));
++			else if(!strcmp("Remote",LogMode))
++				json_object_object_add(logSettingJobj, "LogMode", json_object_new_string("1"));
++			else if(!strcmp("LocalRemote",LogMode))
++				json_object_object_add(logSettingJobj, "LogMode", json_object_new_string("2"));
++		}
++		if(json_object_object_get(Jobj, "LogMode")){
++			if(strcmp("Local",LogMode)){
++				if(json_object_object_get(Jobj, "LogServer"))
+ 		json_object_object_add(logSettingJobj, "LogServer", json_object_new_string(LogServer));
++				if(json_object_object_get(Jobj, "UDPPort"))
+ 		json_object_object_add(logSettingJobj, "UDPPort", json_object_new_int(UDPPort));
++			}
++		}
++		else{
++			if(strcmp("Local",json_object_get_string(json_object_object_get(objtmp, "LogMode")))){
++				if(json_object_object_get(Jobj, "LogServer"))
++					json_object_object_add(logSettingJobj, "LogServer", json_object_new_string(LogServer));
++				if(json_object_object_get(Jobj, "UDPPort"))
++					json_object_object_add(logSettingJobj, "UDPPort", json_object_new_int(UDPPort));
++			}
++		}
++		if(json_object_object_get(Jobj, "Interval"))
+ 		json_object_object_add(logSettingJobj, "Interval", json_object_new_int(Interval));
+ 
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_LOG_SETTING, &logSettingIid, logSettingJobj, NULL)) != ZCFG_SUCCESS)
+@@ -360,88 +520,22 @@
+ 	return ret;
+ }
+ 
+-zcfgRet_t zcfgFeDaleMailEventAdd(){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	if(islog == true){
+-		IID_INIT(mailEventIid);
+-		if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &mailEventIid, NULL)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) zcfgFeObjJsonAdd add line fail~ \n ",__FUNCTION__);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-
+-		if((ret = zcfgFeDaleMailEventLogCfg(mailEventIid)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) Mail event Log cfg fail~ \n ",__FUNCTION__);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-
+-	}
+-
+-	if(isalarm == true){
+-		IID_INIT(mailEventIid);
+-		if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &mailEventIid, NULL)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) zcfgFeObjJsonAdd add line fail~ \n ",__FUNCTION__);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-
+-		if((ret = zcfgFeDaleMailEventAlarmCfg(mailEventIid)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) Mail event Alarm cfg fail~ \n ",__FUNCTION__);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-
+-	}
+-#ifdef ZYXEL_NAT_LOG
+-	if(isnatlog == true){
+-		IID_INIT(mailEventIid);
+-		if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_MAIL_EVENT_CFG, &mailEventIid, NULL)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) zcfgFeObjJsonAdd add line fail~ \n ",__FUNCTION__);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-
+-		if((ret = zcfgFeDaleMailEventNatLogCfg(mailEventIid)) != ZCFG_SUCCESS){
+-			printf("%s():(ERROR) Mail event Log cfg fail~ \n ",__FUNCTION__);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-
+-	}
+-#endif
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDalLogSettingAdd(struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-
+-	getMailEventBasicInfo(Jobj);
+-	getMailEventIsAdd(Jobj);
+-
+-	if((ret = zcfgFeDaleMailEventAdd()) != ZCFG_SUCCESS) {
+-		printf("%s: Add mail event fail\n", __FUNCTION__);
+-		goto exit;
+-	}
+-
+-exit:
+-	freeAllLogSettingObjects();
+-	return ret;
+-}
+-
+ zcfgRet_t zcfgFeDaleMailEvent(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+ 	getMailEvnetIid(Jobj);
+ 	getMailEventBasicInfo(Jobj);
+ 
+-	if((ret = zcfgFeDaleMailEventLogCfg(logIid)) != ZCFG_SUCCESS) {
++	if((ret = zcfgFeDaleMailEventLogCfg(Jobj)) != ZCFG_SUCCESS) {
+ 		printf("%s: Set log category fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+-
+-	if((ret = zcfgFeDaleMailEventAlarmCfg(alarmIid)) != ZCFG_SUCCESS) {
++	if((ret = zcfgFeDaleMailEventAlarmCfg(Jobj)) != ZCFG_SUCCESS) {
+ 		printf("%s: Set log category fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ #ifdef ZYXEL_NAT_LOG
+-	if((ret = zcfgFeDaleMailEventNatLogCfg(natIid)) != ZCFG_SUCCESS) {
++	if((ret = zcfgFeDaleMailEventNatLogCfg(Jobj)) != ZCFG_SUCCESS) {
+ 		printf("%s: Set log category fail\n", __FUNCTION__);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+@@ -451,14 +545,16 @@
+ 
+ zcfgRet_t zcfgFeDalLogSettingEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-
+ 	initLogSettingGlobalObjects();
+-
++	if(json_object_object_get(Jobj, "category")){
+ 	if((ret = zcfgFeDalCategory(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s: config Category fail\n", __FUNCTION__);
+ 		goto exit;
+ 	}
++	}
++	else{
++		zcfgFeDalCLICategory(Jobj);
++	}
+ 
+ 	if((ret = zcfgFeDalLogSettingcfg(Jobj)) != ZCFG_SUCCESS){
+ 		printf("%s: config LogSetting fail\n", __FUNCTION__);
+@@ -475,6 +571,276 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalCLICategory(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *categoryObj = NULL;
++	objIndex_t categoryIid = {0};
++	if(json_object_object_get(Jobj, "WAN-DHCP")){
++		printf("%s \n",json_object_to_json_string(Jobj));
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"WAN-DHCP")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "WAN-DHCP")));
++				printf("%s \n",json_object_to_json_string(categoryObj));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "DHCPServer")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"DHCP Server")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "DHCP Server")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "PPPoE")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"PPPoE")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "PPPoE")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "TR-069")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"TR-069")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "TR-069")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "HTTP")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"HTTP")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "HTTP")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "UPNP")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"UPNP")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "UPNP")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "System")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"System")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "System")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "xDSL")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"xDSL")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "xDSL")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "ACL")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"ACL")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "ACL")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "Wireless")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"Wireless")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Wireless")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "Voice")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"Voice")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Voice")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "Account")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"Account")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Account")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "Attack")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"Attack")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Attack")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "Firewall")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"Firewall")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Firewall")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	IID_INIT(categoryIid);
++	if(json_object_object_get(Jobj, "MACFilter")){
++		while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &categoryIid, &categoryObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(categoryObj, "Describe")),"MAC Filter")){
++				json_object_object_add(categoryObj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "MAC Filter")));
++				zcfgFeObjJsonSetWithoutApply(RDM_OID_LOG_CATEGORY, &categoryIid, categoryObj, NULL);
++				zcfgFeJsonObjFree(categoryObj);
++			}
++			zcfgFeJsonObjFree(categoryObj);
++		}
++	}
++	return ret;	
++}
++
++zcfgRet_t zcfgFeDalLogSettingGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL, *LogJobj = NULL, *MailJobj = NULL, *CategoryObj = NULL;
++	objIndex_t LogIid = {0}, MailIid = {0}, CategoryIid = {0};
++	paramJobj = json_object_new_object();
++	if(zcfgFeObjJsonGet(RDM_OID_LOG_SETTING, &LogIid, &LogJobj) == ZCFG_SUCCESS){
++		json_object_object_add(paramJobj, "LogEnable", JSON_OBJ_COPY(json_object_object_get(LogJobj, "Enable")));
++		if(!strcmp("0",json_object_get_string(json_object_object_get(LogJobj, "LogMode"))))
++			json_object_object_add(paramJobj, "LogMode", json_object_new_string("Local"));
++		else if(!strcmp("1",json_object_get_string(json_object_object_get(LogJobj, "LogMode"))))
++			json_object_object_add(paramJobj, "LogMode", json_object_new_string("Remote"));
++		else if(!strcmp("2",json_object_get_string(json_object_object_get(LogJobj, "LogMode"))))
++			json_object_object_add(paramJobj, "LogMode", json_object_new_string("LocalRemote"));
++		json_object_object_add(paramJobj, "LogServer", JSON_OBJ_COPY(json_object_object_get(LogJobj, "LogServer")));
++		json_object_object_add(paramJobj, "UDPPort", JSON_OBJ_COPY(json_object_object_get(LogJobj, "UDPPort")));
++		json_object_object_add(paramJobj, "Interval", JSON_OBJ_COPY(json_object_object_get(LogJobj, "Interval")));
++		zcfgFeJsonObjFree(LogJobj);
++	}
++	while(zcfgFeObjJsonGetNext(RDM_OID_MAIL_EVENT_CFG, &MailIid, &MailJobj) == ZCFG_SUCCESS){
++		if(!strcmp("MAILSEND_EVENT_SEND_LOG",json_object_get_string(json_object_object_get(MailJobj, "Event")))){
++			json_object_object_add(paramJobj, "MailEnable", JSON_OBJ_COPY(json_object_object_get(MailJobj, "Enable")));
++			json_object_object_add(paramJobj, "MailTo", JSON_OBJ_COPY(json_object_object_get(MailJobj, "EmailTo")));
++			json_object_object_add(paramJobj, "MailSubject", JSON_OBJ_COPY(json_object_object_get(MailJobj, "EmailSubject")));
++			json_object_object_add(paramJobj, "MailRef", JSON_OBJ_COPY(json_object_object_get(MailJobj, "SericeRef")));
++		}
++		if(!strcmp("MAILSEND_EVENT_SEND_ALARM",json_object_get_string(json_object_object_get(MailJobj, "Event")))){
++			json_object_object_add(paramJobj, "AlarmTo", JSON_OBJ_COPY(json_object_object_get(MailJobj, "EmailTo")));
++			json_object_object_add(paramJobj, "AlarmSubject", JSON_OBJ_COPY(json_object_object_get(MailJobj, "EmailSubject")));
++		}
++#ifdef ZYXEL_NAT_LOG
++		if(!strcmp("MAILSEND_EVENT_SEND_ALARM",json_object_get_string(json_object_object_get(MailJobj, "Event")))){
++			json_object_object_add(paramJobj, "NatTo", JSON_OBJ_COPY(json_object_object_get(MailJobj, "EmailTo")));
++			json_object_object_add(paramJobj, "NatSubject", JSON_OBJ_COPY(json_object_object_get(MailJobj, "EmailSubject")));
++		}
++#endif
++		zcfgFeJsonObjFree(MailJobj);
++	}
++	while(zcfgFeObjJsonGetNext(RDM_OID_LOG_CATEGORY, &CategoryIid, &CategoryObj) == ZCFG_SUCCESS){
++		json_object_object_add(paramJobj, json_object_get_string(json_object_object_get(CategoryObj, "Describe")), JSON_OBJ_COPY(json_object_object_get(CategoryObj, "Enable")));
++		zcfgFeJsonObjFree(CategoryObj);
++	}
++	
++
++	
++	json_object_array_add(Jarray, paramJobj);
++	return ret;
++}
++
++void zcfgFeDalShowLogSetting(struct json_object *Jarray){
++	struct json_object *obj = NULL;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray, 0);
++	printf("%s \n",json_object_to_json_string(Jarray));
++	printf("Syslog Setting \n");
++	printf("%-2s %-20s %-10s \n", "", "Syslog Logging:", json_object_get_string(json_object_object_get(obj, "LogEnable")));
++	printf("%-2s %-20s %-10s \n", "", "Mode:", json_object_get_string(json_object_object_get(obj, "LogMode")));
++	printf("%-2s %-20s %-10s \n", "", "Syslog Server:", json_object_get_string(json_object_object_get(obj, "LogServer")));
++	printf("%-2s %-20s %-10s \n", "", "UDP Port:", json_object_get_string(json_object_object_get(obj, "UDPPort")));
++	printf("E-mail Log Settings \n");
++	printf("%-2s %-20s %-10s \n", "", "E-mail Log Settings:", json_object_get_string(json_object_object_get(obj, "MailEnable")));
++	printf("%-2s %-20s %-10s \n", "", "Mail Account:", json_object_get_string(json_object_object_get(obj, "MailRef")));
++	printf("%-2s %-20s %-10s \n", "", "System Log Mail Subject:", json_object_get_string(json_object_object_get(obj, "MailSubject")));
++	printf("%-2s %-20s %-10s \n", "", "Security Log Mail Subject:", json_object_get_string(json_object_object_get(obj, "AlarmSubject")));
++#ifdef ZYXEL_NAT_LOG
++	printf("%-2s %-20s %-10s \n", "", "Nat Log Mail Subject:", json_object_get_string(json_object_object_get(obj, "NatSubject")));
++#endif
++	printf("%-2s %-20s %-10s \n", "", "Send Log to:", json_object_get_string(json_object_object_get(obj, "MailTo")));
++	printf("%-2s %-20s %-10s \n", "", "Send Alarm to:", json_object_get_string(json_object_object_get(obj, "AlarmTo")));
++#ifdef ZYXEL_NAT_LOG
++	printf("%-2s %-20s %-10s \n", "", "Send Nat to:", json_object_get_string(json_object_object_get(obj, "NatTo")));
++#endif
++	printf("%-2s %-20s %-10s \n", "", "Alarm Interval:", json_object_get_string(json_object_object_get(obj, "Interval")));
++	printf("Active Log \n");
++	printf("%-2s System Log \n","");
++	printf("%-4s %-12s %-10s\n", "", "WAN-DHCP", json_object_get_string(json_object_object_get(obj, "WAN-DHCP")));
++	printf("%-4s %-12s %-10s\n", "", "DHCP Server", json_object_get_string(json_object_object_get(obj, "DHCP Server")));
++	printf("%-4s %-12s %-10s\n", "", "PPPoE", json_object_get_string(json_object_object_get(obj, "PPPoE")));
++	printf("%-4s %-12s %-10s\n", "", "TR-069", json_object_get_string(json_object_object_get(obj, "TR-069")));
++	printf("%-4s %-12s %-10s\n", "", "HTTP", json_object_get_string(json_object_object_get(obj, "HTTP")));
++	printf("%-4s %-12s %-10s\n", "", "UPNP", json_object_get_string(json_object_object_get(obj, "UPNP")));
++	printf("%-4s %-12s %-10s\n", "", "System", json_object_get_string(json_object_object_get(obj, "System")));
++	printf("%-4s %-12s %-10s\n", "", "xDSL", json_object_get_string(json_object_object_get(obj, "xDSL")));
++	printf("%-4s %-12s %-10s\n", "", "ACL", json_object_get_string(json_object_object_get(obj, "ACL")));
++	printf("%-4s %-12s %-10s\n", "", "Wireless", json_object_get_string(json_object_object_get(obj, "Wireless")));
++	printf("%-4s %-12s %-10s\n", "", "Voice", json_object_get_string(json_object_object_get(obj, "Voice")));
++	
++	printf("%-2s Security Log \n","");
++	printf("%-4s %-12s %-10s\n", "", "Account", json_object_get_string(json_object_object_get(obj, "Account")));
++	printf("%-4s %-12s %-10s\n", "", "Attack", json_object_get_string(json_object_object_get(obj, "Attack")));
++	printf("%-4s %-12s %-10s\n", "", "Firewall", json_object_get_string(json_object_object_get(obj, "Firewall")));
++	printf("%-4s %-12s %-10s\n", "", "MAC Filter", json_object_get_string(json_object_object_get(obj, "MAC Filter")));
++}
++
++
+ zcfgRet_t zcfgFeDalLogSetting(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -484,8 +850,8 @@
+ 
+ 	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalLogSettingEdit(Jobj, NULL);
+-	}else if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalLogSettingAdd(Jobj, NULL);
++	}else if(!strcmp(method,"GET")){
++		ret = zcfgFeDalLogSettingGet(Jobj, Jarray, NULL);
+ 	}
+ 
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-26 10:25:20.549673174 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-26 10:26:25.478895000 +0800
+@@ -212,6 +212,8 @@
+ extern void zcfgFeDalShowQosPolicer(struct json_object *Jarray);
+ extern void zcfgFeDalShowWwanBackup(struct json_object *Jarray);
+ extern void zcfgFeDalShowMailNotification(struct json_object *Jarray);
++extern void zcfgFeDalShowLogSetting(struct json_object *Jarray);
++
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -270,7 +272,7 @@
+ {"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock,NULL,						"edit",				""},//Call_Rule
+ #endif
+ {"email_ntfy",		MAIL_NOTIFICATION_param,zcfgFeDalMailNotification,zcfgFeDalShowMailNotification,	"add|delete|get", 		"Email_Notify"},//Email_Notify
+-{"LOGSETTING",		LOG_SETTING_param,	zcfgFeDalLogSetting,	NULL,						"add|edit", 		""}, //Log
++{"logset",			LOG_SETTING_param,	zcfgFeDalLogSetting,	zcfgFeDalShowLogSetting,	"get|edit", 		"Log"}, //Log
+ {"PINGTEST",		PING_TEST_param,	zcfgFeDalPingTest,		NULL,						"edit",				""},//
+ {"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag,			NULL,						"edit",				""},//Diagnostic_Result
+ {"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah,			NULL,						"edit",				""},//Diagnostic_Result

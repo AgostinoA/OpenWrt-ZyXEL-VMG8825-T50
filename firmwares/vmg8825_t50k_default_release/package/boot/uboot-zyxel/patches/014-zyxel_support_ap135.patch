@@ -1,0 +1,215 @@
+Index: u-boot-2009.11/cpu/mips/start.S
+===================================================================
+--- u-boot-2009.11.orig/cpu/mips/start.S	2013-01-15 19:38:04.286515816 +0800
++++ u-boot-2009.11/cpu/mips/start.S	2013-01-15 19:39:26.945476654 +0800
+@@ -25,10 +25,13 @@
+ #include <config.h>
+ #include <asm/regdef.h>
+ #include <asm/mipsregs.h>
+-#if defined(CONFIG_AR7240)
++#if defined(CONFIG_ATHEROS)
++  #include <asm/addrspace.h>
++  #include <atheros.h>
++#elif defined(CONFIG_AR7240)
+   #include <asm/addrspace.h>
+   #include <ar7240_soc.h>
+-  #define AR7100_SPI_CLOCK  0xbf000004
++  #define ATH_SPI_CLOCK  0xbf000004
+ #endif
+ 
+ 	/*
+@@ -256,6 +259,56 @@
+ 	mtc0	zero, $14
+ 	mtc0	zero, $15
+ 	mtc0	zero, $16
++
++#ifdef CONFIG_MACH_QCA955x
++/*
++ * Workaround recommnded by MIPS for the Scorpion Freeze issue
++ */
++#define CONFIG_SCO_JRCD		1
++#define CONFIG_SCO_IAGN		!CONFIG_SCO_JRCD
++
++#if CONFIG_SCO_IAGN && CONFIG_SCO_JRCD
++#error Both CONFIG_SCO_IAGN and CONFIG_SCO_JRCD set
++#endif
++
++#if CONFIG_SCO_JRCD
++	/*
++	 * JR Cache Prediction Disable. Disables JR target address prediction.
++	 * Bit [0], CP0 Register 16, Select 6
++	 *	0 - JR cache target address prediction is enabled.
++	 *	1 - JR cache target address prediction is not enabled.
++	 */
++	mfc0	t0,	$16,	6
++	li	t1,	(1 << 0)
++	or	t0,	t0,	t1
++	mtc0	t0,	$16,	6
++#endif
++
++#if CONFIG_SCO_IAGN
++	/*
++	 * Bit [25], CP0 Register 16, Select 7
++	 * Selective control of out-of-order behavior: issue ALU-side or
++	 * load/store-side instructions (respectively) in program order.
++	 */
++	mfc0	t0,	$16,	7
++	li	t1,	(1 << 25)
++	or	t0,	t0,	t1
++	mtc0	t0,	$16,	7
++#endif
++#endif /* CONFIG_MACH_QCA955x */
++
++#define pref_on		0
++
++#if pref_on
++#define prefetch_val	3
++	mfc0	t0,	$16,	7
++	li	t1,	~(3 << 11)
++	and	t0,	t0,	t1
++	li	t1,	(prefetch_val << 11)
++	or	t0,	t0,	t1
++	mtc0	t0,	$16,	7
++#endif
++
+ #if !defined(CONFIG_WASP_SUPPORT)
+ 	mtc0	zero, $17
+ #endif
+@@ -274,7 +327,7 @@
+ 	mtc0	zero, $26
+ 	mtc0	zero, $27
+ 	mtc0	zero, $28
+-#ifdef CONFIG_WASP_SUPPORT
++#if defined(CONFIG_WASP_SUPPORT) || defined(CONFIG_MACH_QCA955x)
+ 	mtc0	zero, $29	# C0_TagHi
+ 	mtc0	zero, $28, 2	# C0_DTagLo
+ 	mtc0	zero, $29, 2	# C0_DTagHi
+@@ -352,7 +405,7 @@
+ #if !defined(CONFIG_SKIP_LOWLEVEL_INIT)
+ 	/* Initialize any external memory.
+ 	 */
+-#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+ 	la      t9, lowlevel_init
+ 	jalr    t9
+ 	nop
+@@ -369,8 +422,10 @@
+ 
+ rel_start:
+ 	/* REMAP_DISABLE */
+-	li	a0, AR7100_SPI_CLOCK
+-#ifdef CONFIG_WASP_SUPPORT
++	li	a0, KSEG1ADDR(ATH_SPI_CLOCK)
++#if defined(CONFIG_MACH_QCA955x)
++	li	t0, 0x246
++#elif defined(CONFIG_WASP_SUPPORT)
+ 	li	t0, 0x243
+ #else
+ 	li	t0, 0x43
+@@ -429,7 +484,7 @@
+ 	nop
+ #endif
+ 
+-#ifdef CONFIG_WASP_SUPPORT
++#if defined(CONFIG_WASP_SUPPORT) || defined(CFG_INIT_STACK_IN_SRAM)
+ 	li	t0, 0xbd007000	/* Setup stack in SRAM */
+ #else
+ 	li	t0, CONFIG_SYS_SDRAM_BASE + CONFIG_SYS_INIT_SP_OFFSET
+Index: u-boot-2009.11/lib_mips/board.c
+===================================================================
+--- u-boot-2009.11.orig/lib_mips/board.c	2013-01-15 19:38:04.286515816 +0800
++++ u-boot-2009.11/lib_mips/board.c	2013-01-15 19:38:04.378514660 +0800
+@@ -53,7 +53,7 @@
+ 
+ extern int incaip_set_cpuclk(void);
+ 
+-#ifdef CONFIG_WASP_SUPPORT
++#if defined(CONFIG_WASP_SUPPORT) || defined(CONFIG_MACH_QCA955x)
+ extern void ath_set_tuning_caps(void);
+ #endif
+ 
+@@ -461,7 +461,7 @@
+ 	ath_nand_init();
+ #endif
+ 
+-#ifdef CONFIG_WASP_SUPPORT
++#if defined(CONFIG_WASP_SUPPORT) || defined(CONFIG_MACH_QCA955x)
+         ath_set_tuning_caps(); /* Needed here not to mess with Ethernet clocks */
+ #endif
+ 
+Index: u-boot-2009.11/lib_mips/bootm.c
+===================================================================
+--- u-boot-2009.11.orig/lib_mips/bootm.c	2013-01-15 19:38:04.286515816 +0800
++++ u-boot-2009.11/lib_mips/bootm.c	2013-01-15 19:38:04.378514660 +0800
+@@ -62,7 +62,7 @@
+ 
+ int do_bootm_linux(int flag, int argc, char *argv[], bootm_headers_t *images)
+ {
+-#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+     int flash_size_mbytes;
+ 	void (*theKernel) (int, char **, char **, int);
+ #else
+@@ -76,7 +76,7 @@
+ 		return 1;
+ 
+ 	/* find kernel entry point */
+-#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+ 	theKernel = (void (*)(int, char **, char **, int))images->ep;
+ #else
+ 	theKernel = (void (*)(int, char **, char **, int *))images->ep;
+@@ -126,11 +126,11 @@
+ 	/* we assume that the kernel is in place */
+ 	printf ("\nStarting kernel ...\n\n");
+ 
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+ #ifdef CONFIG_WASP_SUPPORT
+ 	wasp_set_cca();
+ #endif
+ 
+-#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
+     /* Pass the flash size as expected by current Linux kernel for AR7100 */
+     flash_size_mbytes = gd->bd->bi_flashsize/(1024 * 1024);
+ 	theKernel (linux_argc, linux_argv, linux_env, flash_size_mbytes);
+@@ -144,7 +144,7 @@
+ static void linux_params_init (ulong start, char *line)
+ {
+ 	char *next, *quote, *argp;
+-#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240)
++#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+ 	char memstr[32];
+ #endif
+ 
+@@ -154,7 +154,7 @@
+ 	argp = (char *) (linux_argv + LINUX_MAX_ARGS);
+ 
+ 	next = line;
+-#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240)
++#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+ 	if (strstr(line, "mem=")) {
+ 		memstr[0] = 0;
+ 	} else {
+@@ -205,7 +205,7 @@
+ 		line = next;
+ 	}
+ 
+-#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240)
++#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240) || defined(CONFIG_ATHEROS)
+ 	/* Add mem size to command line */
+ 	if (memstr[0]) {
+ 		sprintf(memstr, "mem=%uM", gd->ram_size >> 20);
+Index: u-boot-2009.11/net/eth.c
+===================================================================
+--- u-boot-2009.11.orig/net/eth.c	2013-01-15 19:38:04.342515113 +0800
++++ u-boot-2009.11/net/eth.c	2013-01-15 19:38:04.378514660 +0800
+@@ -221,6 +221,9 @@
+ #if defined (CONFIG_ARC_EMAC)
+ 	arc_eth_init(bis);
+ #endif
++#if defined(CONFIG_ATHEROS) && !defined(CONFIG_ATH_EMULATION)
++	ath_gmac_enet_initialize(bis);
++#endif
+ 
+ 	if (!eth_devices) {
+ 		puts ("No ethernet found.\n");

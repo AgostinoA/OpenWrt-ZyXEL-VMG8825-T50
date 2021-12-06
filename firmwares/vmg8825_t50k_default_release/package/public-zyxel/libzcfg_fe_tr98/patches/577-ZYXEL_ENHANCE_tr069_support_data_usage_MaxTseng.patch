@@ -1,0 +1,332 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2018-05-30 13:52:14.037510077 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2018-05-30 13:54:15.889508006 +0800
+@@ -85,6 +85,11 @@
+ CFLAGS += -DZyXEL_DHCP_OPTION125
+ endif
+ 
++#TR69 Data Usage
++ifeq ($(CONFIG_ZYXEL_TR69_DATA_USAGE),y)
++CFLAGS += -DZYXEL_TR69_DATA_USAGE
++endif
++
+ #CBT
+ ifeq ($(CONFIG_CBT_CUSTOMIZATION),y)
+ CFLAGS += -DCBT_CUSTOMIZATION
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2018-05-30 13:52:13.901510079 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2018-05-30 13:55:49.245506420 +0800
+@@ -342,6 +342,11 @@
+ {e_TR98_SAMBA		            , &tr98Obj[e_TR98_SAMBA		              -e_TR98_START]},
+ {e_TR98_UPNP	           		, &tr98Obj[e_TR98_UPNP		              -e_TR98_START]},
+ {e_TR98_IGMP                    , &tr98Obj[e_TR98_IGMP                    -e_TR98_START]},
++#ifdef ZYXEL_TR69_DATA_USAGE
++{e_TR98_DATA_USAGE	           		, &tr98Obj[e_TR98_DATA_USAGE		              -e_TR98_START]},
++{e_TR98_DATA_USAGE_LAN                              , &tr98Obj[e_TR98_DATA_USAGE_LAN                          -e_TR98_START]},
++{e_TR98_DATA_USAGE_WAN                              , &tr98Obj[e_TR98_DATA_USAGE_WAN                          -e_TR98_START]},
++#endif
+ #if defined(SUNRISE_RANDOM_PASSWORD) || defined(SOL_TR69_LOGINACCOUNT) || defined(ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT)
+ {e_TR98_LOG_CFG           		 , &tr98Obj[e_TR98_LOG_CFG 				  -e_TR98_START]},
+ {e_TR98_LOG_CFG_GP           	 , &tr98Obj[e_TR98_LOG_CFG_GP             -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2018-05-30 13:52:13.853510080 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2018-05-30 13:57:26.829504761 +0800
+@@ -297,6 +297,12 @@
+ #define TR98_ONESSID                  "InternetGatewayDevice.X_ZYXEL_EXT.X_ZYXEL_ONESSID"
+ #endif 
+ 
++#ifdef ZYXEL_TR69_DATA_USAGE
++#define TR98_DATA_USAGE                  "InternetGatewayDevice.X_ZYXEL_DataUsage"
++#define TR98_DATA_USAGE_LAN                  "InternetGatewayDevice.X_ZYXEL_DataUsage.Lan.i"
++#define TR98_DATA_USAGE_WAN                  "InternetGatewayDevice.X_ZYXEL_DataUsage.Wan.i"
++#endif
++
+ #ifdef ZYXEL_IPV6SPEC
+ #define TR98_IPV6SPEC					"InternetGatewayDevice.IPv6Specific"
+ #define TR98_IPV6_PPP					"InternetGatewayDevice.IPv6Specific.PPP"
+@@ -696,6 +702,11 @@
+ #ifdef ZYXEL_ONESSID
+ {TR98_ONESSID,					0,				para_OneSsid,			zyExtOneSsidObjGet,				zyExtOneSsidObjSet,			NULL,			NULL,		NULL,	NULL,	NULL},
+ #endif
++#ifdef ZYXEL_TR69_DATA_USAGE
++{TR98_DATA_USAGE,         		    0,              para_DataUsage,	   		    zyExtDataUsageObjGet, 	     zyExtDataUsageObjSet,		NULL,             NULL,            NULL, NULL, NULL},
++{TR98_DATA_USAGE_LAN,                           ATTR_INDEX_CREA,              para_DataUsageLan,                         zyExtDataUsageLanObjGet,            NULL,              NULL,             NULL,            NULL, NULL, NULL},
++{TR98_DATA_USAGE_WAN,                           ATTR_INDEX_CREA,              para_DataUsageWan,                         zyExtDataUsageWanObjGet,            NULL,              NULL,             NULL,            NULL, NULL, NULL},
++#endif
+ {NULL,                          0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2018-05-30 13:52:13.853510080 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2018-05-30 13:59:46.537502387 +0800
+@@ -8000,4 +8000,200 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
+-#endif //#ifdef ZYXEL_ONESSID
+\ No newline at end of file
++#endif //#ifdef ZYXEL_ONESSID
++
++#ifdef ZYXEL_TR69_DATA_USAGE
++/*
++ *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_DataUsage
++ *
++ *   Related object in TR181:
++ *   Device.X_ZYXEL_DataUsage
++ *   RDM_OID_ZY_DATA_USAGE
++ */
++
++zcfgRet_t zyExtDataUsageObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dataUsageJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_ZY_DATA_USAGE, &objIid, &dataUsageJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;	
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dataUsageJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(dataUsageJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtDataUsageObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dataUsageJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_DATA_USAGE, &objIid, &dataUsageJobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = dataUsageJobj;
++		dataUsageJobj = NULL;
++		dataUsageJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_DATA_USAGE, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(dataUsageJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(dataUsageJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_DATA_USAGE, &objIid, dataUsageJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(dataUsageJobj);
++			return ret;
++		}
++		json_object_put(dataUsageJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++/*
++ *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_DataUsage.Lan.i
++ *
++ *   Related object in TR181:
++ *   Device.X_ZYXEL_DataUsage.Lan.i
++ *   RDM_OID_ZY_DATA_USAGE_LAN
++ */
++zcfgRet_t zyExtDataUsageLanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dataUsageLanJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_DataUsage.Lan.%hhu", &objIid.idx[0]);
++
++	if((ret = feObjJsonGet(RDM_OID_ZY_DATA_USAGE_LAN, &objIid, &dataUsageLanJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dataUsageLanJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(dataUsageLanJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++/*
++ *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_DataUsage.Wan.i
++ *
++ *   Related object in TR181:
++ *   Device.X_ZYXEL_DataUsage.Wan.i
++ *   RDM_OID_ZY_DATA_USAGE_WAN
++ */
++zcfgRet_t zyExtDataUsageWanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *dataUsageWanJobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_DataUsage.Wan.%hhu", &objIid.idx[0]);
++
++	if((ret = feObjJsonGet(RDM_OID_ZY_DATA_USAGE_WAN, &objIid, &dataUsageWanJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(dataUsageWanJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(dataUsageWanJobj);
++
++	return ZCFG_SUCCESS;
++}
++#endif
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2018-05-30 13:52:13.853510080 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2018-05-30 14:02:33.413499552 +0800
+@@ -72,6 +72,12 @@
+ extern tr98Parameter_t para_OneSsid[];
+ #endif
+ 
++#ifdef ZYXEL_TR69_DATA_USAGE
++extern tr98Parameter_t para_DataUsage[];
++extern tr98Parameter_t para_DataUsageLan[];
++extern tr98Parameter_t para_DataUsageWan[];
++#endif
++
+ /*Handler Function*/
+ 
+ //InternetGatewayDevice.X_ZYXEL_EXT.
+@@ -351,4 +357,12 @@
+ #ifdef ZYXEL_ONESSID
+ extern zcfgRet_t zyExtOneSsidObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtOneSsidObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+-#endif
+\ No newline at end of file
++#endif
++
++#ifdef ZYXEL_TR69_DATA_USAGE
++extern zcfgRet_t zyExtDataUsageObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtDataUsageObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++extern zcfgRet_t zyExtDataUsageLanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtDataUsageWanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++#endif
++
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2018-05-30 13:52:13.973510078 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2018-05-30 14:01:12.385500928 +0800
+@@ -457,4 +457,25 @@
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ NULL, 0, 0, 0}
+ };
+-#endif //#ifdef ZYXEL_ONESSID
+\ No newline at end of file
++#endif //#ifdef ZYXEL_ONESSID
++
++#ifdef ZYXEL_TR69_DATA_USAGE
++tr98Parameter_t para_DataUsage[] = {
++	{ "DataUsageUpdate", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_DataUsageLan[] = {
++	{ "Timestamp", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "Upload_Mbps", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "Download_Mbps", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_DataUsageWan[] = {
++	{ "Timestamp", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "Upload_Mbps", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "Download_Mbps", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++#endif

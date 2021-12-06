@@ -1,0 +1,140 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2014-02-25 19:55:27.347998869 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2014-02-25 19:58:01.703132913 +0800
+@@ -86,3 +86,7 @@
+ ifneq ($(strip $(CONFIG_SUNRISE_STB_PROVISION)),)
+ CFLAGS += -DSUNRISE_STB_PROVISION
+ endif
++ifneq ($(strip $(CONFIG_SUNRISE_TR98_CUSTOMIZATION)),)
++CFLAGS += -DSUNRISE_TR98_CUSTOMIZATION
++endif
++
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2014-02-25 19:46:54.000000000 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2014-02-25 19:58:22.124206146 +0800
+@@ -103,6 +103,17 @@
+ 	printf("Enter %s\n", __FUNCTION__);
+ 	
+       if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++#ifdef SUNRISE_TR98_CUSTOMIZATION
++		//check if there are Ethernet.VLANTermination.i. 
++		char tr98vlanPathName[128];
++		sprintf(tr98vlanPathName, "%s.%s", tr98FullPathName, "VLAN.1");
++		printf("tr98vlanPathName=%s\n",tr98vlanPathName);
++		if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mappingPathName)) == ZCFG_SUCCESS){
++			printf("mappingPathName=%s\n",mappingPathName);
++			*tr98Jobj = json_object_new_object();
++			return ret;
++		}
++#endif
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+        }
+@@ -757,6 +768,31 @@
+ 		}
+ 
+ 		/*special case*/
++#ifdef SUNRISE_TR98_CUSTOMIZATION
++		if(!strcmp(paramList->name, "VLANName")) {
++			paramValue = json_object_object_get(vlanJobj, "X_ZYXEL_VLANName");
++			if(paramValue != NULL) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}
++			else{
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			}
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "VLANEnable")) {
++			paramValue = json_object_object_get(vlanJobj, "Enable");
++			if(paramValue != NULL) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}
++			else{
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			}
++			paramList++;
++			continue;
++		}
++		
++#endif
+ 		
+ 		/*Not defined in tr181, give it a default value*/
+ 		printf("Can't find parameter %s in TR181\n", paramList->name);
+@@ -815,6 +851,28 @@
+ 		}
+ 
+ 		/*special case*/
++#ifdef SUNRISE_TR98_CUSTOMIZATION
++		if(!strcmp(paramList->name, "VLANName")){
++			tr181ParamValue = json_object_object_get(vlanJobj, "X_ZYXEL_VLANName");
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(vlanJobj, "X_ZYXEL_VLANName", JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "VLANEnable")){
++			tr181ParamValue = json_object_object_get(vlanJobj, "Enable");
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(vlanJobj, "Enable", JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++			paramList++;
++			continue;
++		}
++#endif
+ 		paramList++;	
+ 	} /*Edn while*/
+ 
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2014-02-25 19:48:30.000000000 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2014-02-25 19:57:51.243634218 +0800
+@@ -1580,6 +1580,19 @@
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise, special case: the same parameter name.
++		if(!strcmp(paramList->name, "Name")) {
++			paramValue = json_object_object_get(ipIfaceJobj, "X_ZYXEL_SrvName");
++			if(paramValue != NULL) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}
++			else{
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			}
++			paramList++;
++			continue;
++		}
++#endif
+ 		paramValue = json_object_object_get(ipIfaceJobj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -1859,8 +1872,20 @@
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			/*Write value from WANIPConnection to Device.IP.Interface.i*/
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise
++			if(!strcmp(paramList->name, "Name")){
++				tr181ParamValue = json_object_object_get(ipIfaceJobj, "X_ZYXEL_SrvName");
++			}
++			else
++#endif
+ 			tr181ParamValue = json_object_object_get(ipIfaceJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
++#ifdef SUNRISE_TR98_CUSTOMIZATION // Sunrise
++				if(!strcmp(paramList->name, "Name")){
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_SrvName", JSON_OBJ_COPY(paramValue));
++				}
++				else
++#endif
+ 				json_object_object_add(ipIfaceJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				paramList++;
+ 				continue;

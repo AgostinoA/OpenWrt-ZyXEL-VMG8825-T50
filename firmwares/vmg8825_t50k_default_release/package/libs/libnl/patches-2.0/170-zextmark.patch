@@ -1,0 +1,234 @@
+Index: libnl-2.0/include/linux/netfilter/nfnetlink_queue.h
+===================================================================
+--- libnl-2.0.orig/include/linux/netfilter/nfnetlink_queue.h	2018-07-12 19:28:24.923750700 +0800
++++ libnl-2.0/include/linux/netfilter/nfnetlink_queue.h	2018-07-13 16:30:57.578801500 +0800
+@@ -45,6 +45,7 @@
+ 	NFQA_IFINDEX_PHYSOUTDEV,	/* u_int32_t ifindex */
+ 	NFQA_HWADDR,			/* nfqnl_msg_packet_hw */
+ 	NFQA_PAYLOAD,			/* opaque data payload */
++	NFQA_ZEXTMARK,			/* u_int32_t nfmark */
+ 
+ 	__NFQA_MAX
+ };
+Index: libnl-2.0/include/netlink-types.h
+===================================================================
+--- libnl-2.0.orig/include/netlink-types.h	2010-10-13 22:43:44.000000000 +0800
++++ libnl-2.0/include/netlink-types.h	2018-07-17 15:11:15.883139200 +0800
+@@ -753,6 +753,7 @@
+ 	uint32_t		ct_status_mask;
+ 	uint32_t		ct_timeout;
+ 	uint32_t		ct_mark;
++	uint32_t		ct_zextmark;
+ 	uint32_t		ct_use;
+ 	uint32_t		ct_id;
+ 
+@@ -814,6 +815,7 @@
+ 	uint16_t		queue_msg_hwproto;
+ 	uint32_t		queue_msg_packetid;
+ 	uint32_t		queue_msg_mark;
++	uint32_t		queue_msg_zextmark;	//Zyxel, Rune
+ 	struct timeval		queue_msg_timestamp;
+ 	uint32_t		queue_msg_indev;
+ 	uint32_t		queue_msg_outdev;
+Index: libnl-2.0/lib/netfilter/queue_msg.c
+===================================================================
+--- libnl-2.0.orig/lib/netfilter/queue_msg.c	2010-10-13 22:43:45.000000000 +0800
++++ libnl-2.0/lib/netfilter/queue_msg.c	2018-07-12 19:32:15.828250700 +0800
+@@ -47,6 +47,9 @@
+ 		.minlen	= sizeof(struct nfqnl_msg_verdict_hdr),
+ 	},
+ 	[NFQA_MARK]			= { .type = NLA_U32 },
++#ifdef ZYXEL_EXT_MARK
++	[NFQA_ZEXTMARK]			= { .type = NLA_U32 },
++#endif
+ 	[NFQA_TIMESTAMP]		= {
+ 		.minlen = sizeof(struct nfqnl_msg_packet_timestamp),
+ 	},
+@@ -95,6 +98,11 @@
+ 	if (attr)
+ 		nfnl_queue_msg_set_mark(msg, ntohl(nla_get_u32(attr)));
+ 
++#ifdef ZYXEL_EXT_MARK
++	attr = tb[NFQA_ZEXTMARK];
++	if (attr)
++		nfnl_queue_msg_set_zextmark(msg, ntohl(nla_get_u32(attr)));
++#endif
+ 	attr = tb[NFQA_TIMESTAMP];
+ 	if (attr) {
+ 		struct nfqnl_msg_packet_timestamp *timestamp = nla_data(attr);
+@@ -183,6 +191,12 @@
+ 			ntohl(nfnl_queue_msg_get_mark(msg))) < 0)
+ 		goto nla_put_failure;
+ 
++#ifdef ZYXEL_EXT_MARK
++	if (nfnl_queue_msg_test_zextmark(msg) &&
++	    nla_put_u32(nlmsg, NFQA_ZEXTMARK,
++			ntohl(nfnl_queue_msg_get_zextmark(msg))) < 0)
++		goto nla_put_failure;
++#endif
+ 	return nlmsg;
+ 
+ nla_put_failure:
+Index: libnl-2.0/lib/netfilter/queue_msg_obj.c
+===================================================================
+--- libnl-2.0.orig/lib/netfilter/queue_msg_obj.c	2010-10-13 22:43:45.000000000 +0800
++++ libnl-2.0/lib/netfilter/queue_msg_obj.c	2018-07-12 19:32:56.695250700 +0800
+@@ -30,6 +30,7 @@
+ #define QUEUE_MSG_ATTR_HWADDR		(1UL << 11)
+ #define QUEUE_MSG_ATTR_PAYLOAD		(1UL << 12)
+ #define QUEUE_MSG_ATTR_VERDICT		(1UL << 13)
++#define QUEUE_MSG_ATTR_ZEXTMARK		(1UL << 14)		//Zyxel, Rune
+ /** @endcond */
+ 
+ static void nfnl_queue_msg_free_data(struct nl_object *c)
+@@ -285,6 +286,23 @@
+ 	return msg->queue_msg_mark;
+ }
+ 
++#ifdef ZYXEL_EXT_MARK
++void nfnl_queue_msg_set_zextmark(struct nfnl_queue_msg *msg, uint32_t zextmark)
++{
++	msg->queue_msg_zextmark = zextmark;
++	msg->ce_mask |= QUEUE_MSG_ATTR_ZEXTMARK;
++}
++
++int nfnl_queue_msg_test_zextmark(const struct nfnl_queue_msg *msg)
++{
++	return !!(msg->ce_mask & QUEUE_MSG_ATTR_ZEXTMARK);
++}
++
++uint32_t nfnl_queue_msg_get_zextmark(const struct nfnl_queue_msg *msg)
++{
++	return msg->queue_msg_zextmark;
++}
++#endif
+ void nfnl_queue_msg_set_timestamp(struct nfnl_queue_msg *msg,
+ 				  struct timeval *tv)
+ {
+@@ -466,6 +484,9 @@
+ 	__ADD(QUEUE_MSG_ATTR_HWADDR,		hwaddr)
+ 	__ADD(QUEUE_MSG_ATTR_PAYLOAD,		payload)
+ 	__ADD(QUEUE_MSG_ATTR_VERDICT,		verdict)
++#ifdef ZYXEL_EXT_MARK
++	__ADD(QUEUE_MSG_ATTR_ZEXTMARK,		zextmark)
++#endif
+ };
+ 
+ static char *nfnl_queue_msg_attrs2str(int attrs, char *buf, size_t len)
+Index: libnl-2.0/lib/route/rule.c
+===================================================================
+--- libnl-2.0.orig/lib/route/rule.c	2010-10-13 22:43:46.000000000 +0800
++++ libnl-2.0/lib/route/rule.c	2018-07-12 19:35:36.423250700 +0800
+@@ -37,6 +37,7 @@
+ #define RULE_ATTR_SRC_LEN	0x0400
+ #define RULE_ATTR_DST_LEN	0x0800
+ #define RULE_ATTR_SRCMAP	0x1000
++#define RULE_ATTR_ZEXTMARK		0x2000
+ 
+ static struct nl_cache_ops rtnl_rule_ops;
+ static struct nl_object_ops rule_obj_ops;
+@@ -305,6 +306,9 @@
+ 	__ADD(RULE_ATTR_FAMILY, family)
+ 	__ADD(RULE_ATTR_PRIO, prio)
+ 	__ADD(RULE_ATTR_MARK, mark)
++#ifdef ZYXEL_EXT_MARK
++	__ADD(RULE_ATTR_ZEXTMARK, zextmark)
++#endif
+ 	__ADD(RULE_ATTR_IIF, iif)
+ 	__ADD(RULE_ATTR_REALMS, realms)
+ 	__ADD(RULE_ATTR_SRC, src)
+Index: libnl-2.0/lib/netfilter/ct.c
+===================================================================
+--- libnl-2.0.orig/lib/netfilter/ct.c	2010-10-13 22:43:45.000000000 +0800
++++ libnl-2.0/lib/netfilter/ct.c	2018-07-17 15:09:20.830633300 +0800
+@@ -329,6 +329,10 @@
+ 		nfnl_ct_set_timeout(ct, ntohl(nla_get_u32(tb[CTA_TIMEOUT])));
+ 	if (tb[CTA_MARK])
+ 		nfnl_ct_set_mark(ct, ntohl(nla_get_u32(tb[CTA_MARK])));
++#ifdef ZYXEL_EXT_MARK
++	if (tb[CTA_ZEXTMARK])
++		nfnl_ct_set_mark(ct, ntohl(nla_get_u32(tb[CTA_ZEXTMARK])));	
++#endif
+ 	if (tb[CTA_USE])
+ 		nfnl_ct_set_use(ct, ntohl(nla_get_u32(tb[CTA_USE])));
+ 	if (tb[CTA_ID])
+Index: libnl-2.0/lib/netfilter/ct_obj.c
+===================================================================
+--- libnl-2.0.orig/lib/netfilter/ct_obj.c	2010-10-13 22:43:45.000000000 +0800
++++ libnl-2.0/lib/netfilter/ct_obj.c	2018-07-17 15:10:08.223109900 +0800
+@@ -51,6 +51,7 @@
+ #define CT_ATTR_REPL_ICMP_CODE	(1UL << 23)
+ #define CT_ATTR_REPL_PACKETS	(1UL << 24)
+ #define CT_ATTR_REPL_BYTES	(1UL << 25)
++#define CT_ATTR_ZEXTMARK		(1UL << 26)
+ /** @endcond */
+ 
+ static void ct_free_data(struct nl_object *c)
+@@ -289,6 +290,9 @@
+ 	diff |= CT_DIFF_VAL(TCP_STATE,		ct_protoinfo.tcp.state);
+ 	diff |= CT_DIFF_VAL(TIMEOUT,		ct_timeout);
+ 	diff |= CT_DIFF_VAL(MARK,		ct_mark);
++#ifdef ZYXEL_EXT_MARK
++	diff |= CT_DIFF_VAL(ZEXTMARK,		ct_zextmark);
++#endif
+ 	diff |= CT_DIFF_VAL(USE,		ct_use);
+ 	diff |= CT_DIFF_VAL(ID,			ct_id);
+ 	diff |= CT_DIFF_ADDR(ORIG_SRC,		ct_orig.src);
+@@ -330,6 +334,9 @@
+ 	__ADD(CT_ATTR_STATUS,		status)
+ 	__ADD(CT_ATTR_TIMEOUT,		timeout)
+ 	__ADD(CT_ATTR_MARK,		mark)
++#ifdef ZYXEL_EXT_MARK
++	__ADD(CT_ATTR_ZEXTMARK,		zextmark)
++#endif
+ 	__ADD(CT_ATTR_USE,		use)
+ 	__ADD(CT_ATTR_ID,		id)
+ 	__ADD(CT_ATTR_ORIG_SRC,		origsrc)
+@@ -529,6 +536,23 @@
+ 	return ct->ct_mark;
+ }
+ 
++#ifdef ZYXEL_EXT_MARK //Rune
++void nfnl_ct_set_zextmark(struct nfnl_ct *ct, uint32_t mark)
++{
++	ct->ct_zextmark = mark;
++	ct->ce_mask |= CT_ATTR_ZEXTMARK;
++}
++
++int nfnl_ct_test_zextmark(const struct nfnl_ct *ct)
++{
++	return !!(ct->ce_mask & CT_ATTR_ZEXTMARK);
++}
++
++uint32_t nfnl_ct_get_zextmark(const struct nfnl_ct *ct)
++{
++	return ct->ct_zextmark;
++}
++#endif
+ void nfnl_ct_set_use(struct nfnl_ct *ct, uint32_t use)
+ {
+ 	ct->ct_use = use;
+Index: libnl-2.0/include/linux/netfilter/nfnetlink_conntrack.h
+===================================================================
+--- libnl-2.0.orig/include/linux/netfilter/nfnetlink_conntrack.h	2010-10-13 22:43:44.000000000 +0800
++++ libnl-2.0/include/linux/netfilter/nfnetlink_conntrack.h	2018-07-17 15:13:16.869331600 +0800
+@@ -31,6 +31,7 @@
+ #define CTA_NAT	CTA_NAT_SRC	/* backwards compatibility */
+ 	CTA_TIMEOUT,
+ 	CTA_MARK,
++	CTA_ZEXTMARK,
+ 	CTA_COUNTERS_ORIG,
+ 	CTA_COUNTERS_REPLY,
+ 	CTA_USE,
+Index: libnl-2.0/include/linux/netfilter/nfnetlink_log.h
+===================================================================
+--- libnl-2.0.orig/include/linux/netfilter/nfnetlink_log.h	2010-10-13 22:43:44.000000000 +0800
++++ libnl-2.0/include/linux/netfilter/nfnetlink_log.h	2018-07-17 15:13:52.339924300 +0800
+@@ -40,6 +40,7 @@
+ 	NFULA_UNSPEC,
+ 	NFULA_PACKET_HDR,
+ 	NFULA_MARK,			/* u_int32_t nfmark */
++	NFULA_ZEXTMARK,			/* u_int32_t nfzextmark */
+ 	NFULA_TIMESTAMP,		/* nfulnl_msg_packet_timestamp */
+ 	NFULA_IFINDEX_INDEV,		/* u_int32_t ifindex */
+ 	NFULA_IFINDEX_OUTDEV,		/* u_int32_t ifindex */

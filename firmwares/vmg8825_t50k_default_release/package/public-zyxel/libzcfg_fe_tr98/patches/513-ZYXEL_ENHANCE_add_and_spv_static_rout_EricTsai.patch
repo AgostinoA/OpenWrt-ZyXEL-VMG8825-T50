@@ -1,0 +1,187 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2017-10-12 16:22:52.812660975 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2017-10-12 16:23:24.580660514 +0800
+@@ -3098,6 +3098,8 @@
+ 	const char *lowerLayer = NULL;
+ 	bool staticDnsType = false;
+ 	char tr181DnsType[45+1] = {0};
++	bool runSpvValid;
++
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -3227,6 +3228,8 @@
+ 	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
+ 	connType = json_object_get_string(paramValue);
+ 
++	runSpvValid = zcfgFeTr98StatusRunSpvValid(multiJobj);
++
+ 	IID_INIT(rtIid);
+ 	rtIid.level = 1;
+ 	rtIid.idx[0] = 1;
+@@ -3246,7 +3249,8 @@
+ 	}
+ 
+ 	IID_INIT(rtIpIid);
+-	if(defaultRtGetObj((const char *)ipIface, &rtIpIid, (struct json_object **)&rtIpJobj, addrType) != ZCFG_SUCCESS) {
++	if(!strcmp(connType, "IP_Routed") &&
++		!runSpvValid && defaultRtGetObj((const char *)ipIface, &rtIpIid, (struct json_object **)&rtIpJobj, addrType) != ZCFG_SUCCESS) {
+ 		printf("%s : Retrieve routing ip fail\n", __FUNCTION__);
+ 		json_object_put(ipIfaceJobj);
+ 		json_object_put(vlanTermJobj);
+@@ -3354,9 +3358,10 @@
+ 			json_object_put(tmpObj);
+ 			zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_IP_IFACE, &ipIfaceIid, "apply", json_object_new_boolean(true));
+ 		}
+-#ifdef ISKON_CUSTOMIZATION 
++
++//#ifdef ISKON_CUSTOMIZATION
+ 	if(rtIpJobj)
+-#endif
++//#endif
+ 		{
+ 			tmpObj = rtIpJobj;
+ 			rtIpJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, multiJobj, tmpObj);
+@@ -3507,7 +3512,41 @@
+ 				paramList++;
+ 				continue;
+ 			}
+-			else if(!strcmp(paramList->name, "DefaultGateway")){
++			else if(!strcmp(paramList->name, "DefaultGateway") && rtIpJobj){
++				const char *defaultRt = json_object_get_string(json_object_object_get(tr98SpvObj, "DefaultGateway"));
++				const char *spvAddrType = json_object_get_string(json_object_object_get(tr98SpvObj, "AddressingType"));
++				if(defaultRt && strcmp(spvAddrType, "Static") && strcmp(addrType, "Static")){
++					sprintf(paramfault, "Can't modify DefaultGateway");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++
++				if(defaultRt && !strcmp(defaultRt, "")) {
++					json_object_object_add(rtIpJobj, "GatewayIPAddress", json_object_new_string(""));
++					json_object_object_add(rtIpJobj, "Enable", json_object_new_boolean(false));
++					json_object_object_add(rtIpJobj, "StaticRoute", json_object_new_boolean(true));
++					json_object_object_add(rtIpJobj, "Origin", json_object_new_string("Static"));
++					zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, "skipReadOnlyCheck", json_object_new_boolean(true));
++					defaultRtModify = true;
++				}
++				else if(defaultRt && strcmp(defaultRt, "")) {
++					json_object_object_add(rtIpJobj, "GatewayIPAddress", json_object_new_string(defaultRt));
++					json_object_object_add(rtIpJobj, "Enable", json_object_new_boolean(true));
++					json_object_object_add(rtIpJobj, "StaticRoute", json_object_new_boolean(true));
++					json_object_object_add(rtIpJobj, "Origin", json_object_new_string("Static"));
++					zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, "skipReadOnlyCheck", json_object_new_boolean(true));
++					defaultRtModify = true;
++				}else if(spvAddrType && !strcmp(spvAddrType, "Static")){
++					json_object_object_add(rtIpJobj, "StaticRoute", json_object_new_boolean(true));
++					json_object_object_add(rtIpJobj, "Origin", json_object_new_string("Static"));
++					zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, "skipReadOnlyCheck", json_object_new_boolean(true));
++					defaultRtModify = true;
++				}else if(spvAddrType && !strcmp(spvAddrType, "DHCP")){
++					json_object_object_add(rtIpJobj, "StaticRoute", json_object_new_boolean(false));
++					json_object_object_add(rtIpJobj, "Origin", json_object_new_string("DHCPv4"));
++					zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, "skipReadOnlyCheck", json_object_new_boolean(true));
++					defaultRtModify = true;
++				}
++#if 0
+ 				const char *defaultRt = json_object_get_string(paramValue);
+ 				const char *defaultRtAddr = json_object_get_string(json_object_object_get(rtIpJobj, "GatewayIPAddress"));
+ 				if(!strcmp(defaultRt, "") && strcmp(defaultRtAddr, "")) {
+@@ -3533,7 +3572,7 @@
+ 					zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIpIid, "skipReadOnlyCheck", json_object_new_boolean(true));
+ 					defaultRtModify = true;
+ 				}
+-
++#endif
+ 				paramList++;
+ 				continue;
+ 			}
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2017-10-12 16:22:52.188660984 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2017-10-12 16:23:03.088660826 +0800
+@@ -163,21 +163,18 @@
+ 
+ 	if(!ipIface || !rtIpIid || !rtIpObj) return ZCFG_INTERNAL_ERROR;
+ 
++	*rtIpObj = NULL;
++
++
+ 	IID_INIT(rtIid);
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_ROUTING_ROUTER_V4_FWD, &rtIid, (struct json_object **)&rtObj) == ZCFG_SUCCESS) {
+ 		const char *rtIntfName = json_object_get_string(json_object_object_get(rtObj, "Interface"));
+ 		const char *dstIP = json_object_get_string(json_object_object_get(rtObj, "DestIPAddress"));
++		const char *dstSubnetMask = json_object_get_string(json_object_object_get(rtObj, "DestSubnetMask"));
++		const char *routAdder = json_object_get_string(json_object_object_get(rtObj, "X_ZYXEL_RoutAdder"));
+ 		const char *rtIP = json_object_get_string(json_object_object_get(rtObj, "GatewayIPAddress"));
+ 		bool rtStaticRoute = json_object_get_boolean(json_object_object_get(rtObj, "StaticRoute"));
+-		if(!strcmp(rtIntfName, "")) {
+- 			if(!emptyObj) {
+-				emptyObj = rtObj;
+-				rtObj = NULL;
+-				memcpy(&emptyIid, &rtIid, sizeof(objIndex_t));
+-				continue;
+-			}
+-		}
+-		else if(!strcmp(rtIntfName, ipIface)) {
++		if(!strcmp(rtIntfName, ipIface) && !strcmp(dstIP, "") && !strcmp(dstSubnetMask, "") && strcmp(routAdder, "acsaddobject")) {
+ 			if(!strcmp(addrType, "Static") && rtStaticRoute == true && dstIP[0] == '\0' && strlen(rtIP))
+ 				hasStaticRt = 1;
+ 			else if(!strcmp(addrType, "DHCP") && rtStaticRoute != true && dstIP[0] == '\0' && strlen(rtIP))
+@@ -199,6 +195,15 @@
+ 		}
+ 			continue;
+ 		}
++		else if(!strcmp(rtIntfName, "") && strcmp(routAdder, "acsaddobject")) {
++ 			if(!emptyObj) {
++				emptyObj = rtObj;
++				rtObj = NULL;
++				memcpy(&emptyIid, &rtIid, sizeof(objIndex_t));
++				continue;
++			}
++		}
++
+ 		json_object_put(rtObj);
+ 	}
+ 
+@@ -206,6 +211,8 @@
+ 		*rtIpObj = rtObj = rtIntfObj;
+ 		memcpy(rtIpIid, &rtIntfIid, sizeof(objIndex_t));
+ 		json_object_put(emptyObj);
++		printf("%s: Ip route retrieved\n", __FUNCTION__);
++		return ZCFG_SUCCESS;
+ 	}
+ 	else if(emptyObj) {
+ 		*rtIpObj = rtObj = emptyObj;
+@@ -231,8 +238,11 @@
+ 		*rtIpObj = rtObj;
+ 		memcpy(rtIpIid, &emptyIid, sizeof(objIndex_t));
+ 	}
+-
+ 	json_object_object_add(rtObj, "Interface", json_object_new_string(ipIface));
++	ret = zcfgFeObjJsonSetWithoutApply(RDM_OID_ROUTING_ROUTER_V4_FWD, rtIpIid, rtObj, NULL);
++	if(ret != ZCFG_SUCCESS && ret != ZCFG_DELAY_APPLY)
++		return ret;
++
+ 	printf("%s: Ip route return\n", __FUNCTION__);
+ 
+ 	return ZCFG_SUCCESS;
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2017-10-12 16:22:52.712660976 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2017-10-12 16:23:03.088660826 +0800
+@@ -532,6 +532,15 @@
+ 		return ret;
+ 	}
+ 
++	struct json_object *rtObj;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid, &rtObj)) != ZCFG_SUCCESS){
++
++	}
++
++	json_object_object_add(rtObj, "X_ZYXEL_RoutAdder", json_object_new_string("acsaddobject"));
++	zcfgFeObjJsonSetWithoutApply(RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid, rtObj, NULL);
++	json_object_put(rtObj);
++
+ #ifndef ZCFG_DYNAMIC_NAMEMAPPING
+ 	*idx = objIid.idx[1];
+ #else

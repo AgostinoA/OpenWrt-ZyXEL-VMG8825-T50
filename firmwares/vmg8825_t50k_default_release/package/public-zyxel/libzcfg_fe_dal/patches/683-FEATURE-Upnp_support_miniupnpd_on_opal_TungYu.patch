@@ -1,0 +1,168 @@
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_lanadv.c	2019-06-27 14:08:45.982977455 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c	2019-06-27 14:09:45.486976810 +0800
+@@ -13,6 +13,10 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ 
++#ifdef MINIUPNPD
++#define MINIUPNP_RULE_PATH        "/tmp/miniupnpd_rule"
++#endif
++
+ dal_param_t LANADV_param[]={
+ 	{"STBVendorID1", dalType_string,	0,	0,	NULL},
+ 	{"STBVendorID2", dalType_string,	0,	0,	NULL},
+@@ -47,6 +51,7 @@
+ 	printf("UPnP: %s \n",json_object_get_string(json_object_object_get(obj, "UPnPEnable")));
+ 	printf("UPnP NAT-T: %s \n",json_object_get_string(json_object_object_get(obj, "NATTEnable")));
+ 	if(json_object_get_boolean(json_object_object_get(obj, "UPnPEnable")) && json_object_get_boolean(json_object_object_get(obj, "NATTEnable"))){
++#ifdef CONFIG_PACKAGE_zupnp
+ 		upnpArray = json_object_array_get_idx(Jarray, 1);
+ 		if(upnpArray){
+ 			printf("%-6s %-60s %-25s %15s %-15s %-10s \n", "Index", "Description", "Destination IP Address", "External Port", "Internal Port", "Protocol");	
+@@ -63,10 +68,93 @@
+ 				count++;
+ 			}
+ 		}
++#endif
++#ifdef MINIUPNPD
++		char tmpStr[256] = {'\0'};
++		char proto[16] = {'\0'}, destIP[16] = {'\0'};
++		int ExternalPort = 0, InternalPort = 0;
++		FILE *fp = NULL;
++
++		printf("%-6s %-60s %-25s %15s %-15s %-10s \n", "Index", "Description", "Destination IP Address", "External Port", "Internal Port", "Protocol");
++		sprintf(tmpStr ,"iptables -t nat -n -L MINIUPNPD > %s", MINIUPNP_RULE_PATH);
++		system(tmpStr);
++
++		fp = fopen(MINIUPNP_RULE_PATH, "r");
++		if (fp != NULL) {
++			memset(tmpStr, '\0', sizeof(tmpStr));
++			while (fgets(tmpStr, 255, fp) != NULL) {
++				// skip first and second line
++				if (!strstr(tmpStr, "DNAT"))
++					continue;
++
++				sscanf(tmpStr, "DNAT       %s  --  %*s      %*s            %*s dpt:%d to:%[^:]:%d", proto, &ExternalPort, destIP, &InternalPort);
++				printf("%-6d %-60s %-25s %15d %-15d %-10s \n", count, "", destIP, ExternalPort, InternalPort, proto);
++				count ++;
++			}
++			fclose(fp);
++			unlink(MINIUPNP_RULE_PATH);
++		}
++#endif
+ 	}
+ 
+ }
++#ifdef MINIUPNPD
++/*!
++ *  Get NAT-T port mapping list from miniupnpd daemon.
++ *
++ *  @param [out] retObj         NAT-T port mapping list
++ *  @param [out] replyMsg       A preserved variable
++ *
++ *  @return ZCFG_SUCCESS                successfully send and get reply
++ *          others                      failed
++ *
++ *  @note
++ *          - retObj and replyMsg should both be initiated and freed by caller
++ *          - retObj format: {"list":[{"Enable":,"Protocol":,"Destination":,"ExternalPort":,"InternalPort":,"Description":}]}
++ */
++zcfgRet_t zcfgFeDal_miniupnpd_NATTPortMap_GET(struct json_object *retObj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *pramJobj = NULL;
++	struct json_object *Jarray = NULL;
++	char tmpStr[256] = {'\0'};
++	char proto[16] = {'\0'}, destIP[16] = {'\0'};
++	int ExternalPort = 0, InternalPort = 0, count = 1;
++	FILE *fp = NULL;
++
++	Jarray = json_object_new_array();
++
++	sprintf(tmpStr ,"iptables -t nat -n -L MINIUPNPD > %s", MINIUPNP_RULE_PATH);
++	system(tmpStr);
++
++	fp = fopen(MINIUPNP_RULE_PATH, "r");
++	if (fp != NULL) {
++		memset(tmpStr, '\0', sizeof(tmpStr));
++		while (fgets(tmpStr, 255, fp) != NULL) {
++			// skip first and second line
++			if (!strstr(tmpStr, "DNAT"))
++				continue;
++
++			pramJobj = json_object_new_object();
++			sscanf(tmpStr, "DNAT       %s  --  %*s      %*s            %*s dpt:%d to:%[^:]:%d", proto, &ExternalPort, destIP, &InternalPort);
++			json_object_object_add(pramJobj, "Enable", json_object_new_boolean(true));
++			json_object_object_add(pramJobj, "Protocol", json_object_new_string(proto));
++			json_object_object_add(pramJobj, "Destination", json_object_new_string(destIP));
++			json_object_object_add(pramJobj, "ExternalPort", json_object_new_int(ExternalPort));
++			json_object_object_add(pramJobj, "InternalPort", json_object_new_int(InternalPort));
++			json_object_object_add(pramJobj, "Description", json_object_new_string(""));
++			count ++;
++			json_object_array_add(Jarray, pramJobj);
++		}
++		fclose(fp);
++		unlink(MINIUPNP_RULE_PATH);
++	}
++	json_object_object_add(retObj, "list", Jarray);
+ 
++	return ret;
++}
++#endif
++
++#ifdef CONFIG_PACKAGE_zupnp
+ /*!
+  *  Get NAT-T port mapping list from zupnp daemon.
+  *
+@@ -103,12 +191,13 @@
+ 		recv_str = (char *)malloc(payloadLen);
+ 		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
+ 		obj = json_tokener_parse(recv_str);
+-		json_object_object_add(retObj, "list", JSON_OBJ_COPY(obj));
++		json_object_object_add(retObj, "list", obj);
+ 		ZOS_FREE(recvBuf);
+ 	}
+ 
+ 	return ret;
+ }
++#endif
+ 
+ zcfgRet_t zcfgFeDal_LanAdv_GET(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -146,9 +235,12 @@
+ 		json_object_object_add(obj, "UPnPEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "Enable")));
+ 		json_object_object_add(obj, "NATTEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable")));
+ 		if(json_object_get_boolean(json_object_object_get(upnpObj, "Enable")) && json_object_get_boolean(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable"))){
+-
++#ifdef MINIUPNPD
++			ret_portmap = zcfgFeDal_miniupnpd_NATTPortMap_GET(portMapObj,replyMsg);
++#endif
++#ifdef CONFIG_PACKAGE_zupnp
+ 			ret_portmap = zcfgFeDal_NATTPortMap_GET(portMapObj,replyMsg);
+-
++#endif
+ 			/* Ignore error of acquiring NAT-T port mapping list. */
+ 			if (ret_portmap != ZCFG_SUCCESS){
+ 				dbg_printf("%s: Get NAT-T Port Mapping List fail. Please try again later.\n",__FUNCTION__);
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2019-06-27 14:08:45.982977455 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2019-06-26 16:22:28.019826710 +0800
+@@ -301,6 +301,16 @@
+ CFLAGS += -DZCFG_EMG6726_B10A_Generic
+ endif
+ 
++# zupnp
++ifeq ($(CONFIG_PACKAGE_zupnp),y)
++CFLAGS += -DCONFIG_PACKAGE_zupnp
++endif
++
++# miniupnpd
++ifeq ($(CONFIG_PACKAGE_miniupnpd),y)
++CFLAGS += -DMINIUPNPD
++endif
++
+ #cyberSecurity
+ ifeq ($(CONFIG_ZYXEL_HOME_CYBER_SECURITY_FSECURE),y)
+ CFLAGS += -DZYXEL_HOME_CYBER_SECURITY_FSECURE

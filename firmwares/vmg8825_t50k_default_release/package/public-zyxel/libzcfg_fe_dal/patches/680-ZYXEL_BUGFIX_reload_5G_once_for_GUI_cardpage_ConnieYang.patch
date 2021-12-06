@@ -1,0 +1,180 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2019-06-05 11:04:16.986749696 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2019-06-06 11:20:44.864884973 +0800
+@@ -495,6 +495,24 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t setAllWlObjectsWithoutApply(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++#ifdef ZYXEL_ONESSID
++	if(wifiOneSsidObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ONE_SSID, &wifiOneSsidIid, wifiOneSsidObj, NULL);
++#endif
++	if(wifiApObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT, &wifiApIid, wifiApObj, NULL);
++	if(wifiSecObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &wifiSecIid, wifiSecObj, NULL);
++	if(wifiRadioObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_RADIO, &wifiRadioIid, wifiRadioObj, NULL);
++	if(wifiSchedObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WLAN_SCHEDULER, &wifiSchedIid, wifiSchedObj, NULL);
++	if(wifiSsidObj)zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_SSID, &wifiSsidIid, wifiSsidObj, NULL);
++	if(wifiSubnetObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_DHCPV4_SRV_SUBNET, &wifiSubnetIid, wifiSubnetObj, NULL);
++#ifdef WIFI_ONESSID_SECURITY_SYNC
++	if(syncWifiSecObj) zcfgFeObjJsonSetWithoutApply(RDM_OID_WIFI_ACCESS_POINT_SEC, &syncWifiSecIid, syncWifiSecObj, NULL);
++#endif //WIFI_ONESSID_SECURITY_SYNC
++	return ret;
++}
++
+ zcfgRet_t freeAllWlObjects(){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+@@ -1327,7 +1345,7 @@
+ }
+ */
+ 
+-zcfgRet_t zcfgFeDalWifiGeneralEdit(struct json_object *Jobj, char *replyMsg){
++zcfgRet_t zcfgFeDalWifiGeneralEdit(struct json_object *Jobj, char *replyMsg, bool apply){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *tmpRadioObj = NULL;
+ 	objIndex_t tmpRadioIid;
+@@ -1431,7 +1449,12 @@
+ 			goto dalwlan_edit_fail;
+ 	}
+ 	
+-	setAllWlObjects(Jobj);
++	if (apply) {
++		setAllWlObjects(Jobj);
++	}
++	else {
++		setAllWlObjectsWithoutApply(Jobj);
++	}
+ 
+ dalwlan_edit_fail:
+ 	freeAllWlObjects();
+@@ -2250,22 +2273,112 @@
+ 	return;
+ }
+ 
++zcfgRet_t check_band(struct json_object *Jobj, char *BAND) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t ssidIid, radioIid;
++	struct json_object *ssidObj = NULL;
++	struct json_object *radioObj = NULL;
++	const char *LowerLayer = NULL;
++	const char *OperaBand = NULL;
++	uint8_t radioIndex = 0;
++	int ssidIndex = 0;
++
++	// get index
++	ssidIndex = json_object_get_int(json_object_object_get(Jobj,"Index"));
++
++	// get ssid obj
++	IID_INIT(ssidIid);
++	ssidIid.level = 1;
++	ssidIid.idx[0] = ssidIndex;
++	if(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &ssidIid, &ssidObj) == ZCFG_SUCCESS) {
++		LowerLayer = json_object_get_string(json_object_object_get(ssidObj, "LowerLayers"));
++		sscanf(LowerLayer, "WiFi.Radio.%hhu", &radioIndex);
++		json_object_put(ssidObj);
++		ssidObj = NULL;
++	}
++	else {
++		printf("%s(%d) : Get RDM_OID_WIFI_SSID object failed, ssidIndex = %d.\n",__FUNCTION__, __LINE__, ssidIndex);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	// get radio obj
++	IID_INIT(radioIid);
++	radioIid.level = 1;
++	radioIid.idx[0] = radioIndex;
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_RADIO, &radioIid, &radioObj)) == ZCFG_SUCCESS) {
++		OperaBand = json_object_get_string(json_object_object_get(radioObj, "OperatingFrequencyBand"));
++		strcpy(BAND, OperaBand);
++	}
++	else {
++		printf("%s(%d) : Get RDM_OID_WIFI_RADIO object failed, radioIndex = %d.\n", __FUNCTION__, __LINE__, radioIndex);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++	printf("%s(%d): BAND = %s\n", __FUNCTION__, __LINE__, BAND);
++	return ret;
++}
++
++zcfgRet_t check_5G_setting_apply(struct json_object *Jobj, bool *apply) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	bool one_ssid_enable = false;
++
++#ifdef ZYXEL_ONESSID
++	if(json_object_object_get(Jobj, "oneSsidEnable") != NULL){
++		one_ssid_enable = json_object_get_boolean(json_object_object_get(Jobj, "oneSsidEnable"));
++	}
++	else {
++		one_ssid_enable = json_object_get_boolean(json_object_object_get(wifiOneSsidObj, "oneSsidEnable"));
++	}
++#endif
++
++	if (one_ssid_enable){
++		/* apply both 2.4G and 5G in cardpage when onessid enable, so 5G don't need reload */
++		*apply = false;
++	}
++	else {
++		*apply = true;
++	}
++
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalWifiGeneral(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	int arrLen=0;
+ 	int idx=0;
+ 	struct json_object *obj = NULL;
++	bool apply = true;
++	char BAND[8] = {0};
+ 
+ 	// for new gui
+ 	if ((json_object_get_type(Jobj) == json_type_array) && (!strcmp(method, "PUT")))
+ 	{
+ 		arrLen = json_object_array_length(Jobj);
+-		for (idx = 0; idx < arrLen; idx++)
+-		{
+-			obj = json_object_array_get_idx(Jobj,idx);
+-			ret = zcfgFeDalWifiGeneralEdit(obj,NULL);
+-			if (ret!=ZCFG_SUCCESS)
+-				return ret;
++		if(arrLen == 1) {
++			apply = true;
++			ret = zcfgFeDalWifiGeneralEdit(Jobj, NULL, apply);
++		}
++		else {
++			for (idx = 0; idx < arrLen; idx++) {
++				/* Find 5G obj and set first (don't reload if onessid enabled) */
++				obj = json_object_array_get_idx(Jobj,idx);
++				if((check_band(obj, BAND) == ZCFG_SUCCESS) && (!strcmp(BAND, "5GHz"))) {
++					check_5G_setting_apply(obj, &apply); 
++					ret = zcfgFeDalWifiGeneralEdit(obj, NULL, apply);
++				}
++			}
++			for (idx = 0; idx < arrLen; idx++) {
++				/* Find 2.4G obj and set, then reload 2.4G */
++				/* zcfg_be will copy config to 5G then reload 5G if onessid enabled */
++				obj = json_object_array_get_idx(Jobj,idx);
++				if((check_band(obj, BAND) == ZCFG_SUCCESS) && (!strcmp(BAND, "2.4GHz"))) {
++					/* find 2.4G and reload */
++					apply = true;
++					ret = zcfgFeDalWifiGeneralEdit(obj, NULL, apply);
++				}
++			}
++			if(apply == false) {
++				printf("%s(%d): Have not apply wifi setting yet!!!!!!\n", __FUNCTION__, __LINE__);
++			}
+ 		}
+ 	}
+ 	else
+@@ -2273,7 +2386,7 @@
+ 		//if(!strcmp(method, "POST"))
+ 			//ret = zcfgFeDalWifiGeneralAdd(Jobj, NULL);
+ 		if(!strcmp(method, "PUT")) {
+-			ret = zcfgFeDalWifiGeneralEdit(Jobj, NULL);
++			ret = zcfgFeDalWifiGeneralEdit(Jobj, NULL, apply);
+ 		}
+ 		else if(!strcmp(method, "GET"))
+ 			ret = zcfgFeDalWifiGeneralGet(Jobj, Jarray, NULL);

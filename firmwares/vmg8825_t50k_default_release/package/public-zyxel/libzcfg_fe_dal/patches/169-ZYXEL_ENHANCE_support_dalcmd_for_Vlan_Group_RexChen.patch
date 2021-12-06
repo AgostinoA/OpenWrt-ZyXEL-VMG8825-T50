@@ -1,0 +1,363 @@
+Index: libzcfg_fe_dal-1.0/network/vlanGroup/zcfg_fe_dal_vlan_group.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/vlanGroup/zcfg_fe_dal_vlan_group.c	2017-05-04 15:16:43.262132427 +0800
++++ libzcfg_fe_dal-1.0/network/vlanGroup/zcfg_fe_dal_vlan_group.c	2017-05-04 15:17:23.847316100 +0800
+@@ -14,25 +14,150 @@
+ 
+ dal_param_t VLANGRP_param[] =
+ {
+-	{"Index", 		dalType_int, 	0, 	0, 	NULL},
+-	{"Enable", 		dalType_boolean, 	0, 	0, 	NULL},
+-	{"GroupName", 	dalType_string, 	0, 	0, 	NULL},
+-	{"VlanId", 		dalType_int, 	0, 	0, 	NULL},
+-	{"TagList", 	dalType_string,		0,	0,	NULL},
+-	{"IntfList", 	dalType_string,		0,	0,	NULL},
++	{"Index", 		dalType_int, 		0, 	0, 	NULL,	NULL,	dal_Delete|dal_Edit},
++	{"Enable", 		dalType_boolean, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
++	{"type", 		dalType_string, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
++	{"GroupName", 	dalType_string, 	0, 	0, 	NULL,	NULL,	dal_Add},
++	{"VlanId", 		dalType_int, 		0, 	0, 	NULL,	NULL,	dal_Add},
++	{"IntfList", 	dalType_IntfGrpLanPortListNoWiFi,		0,	0,	NULL,	NULL,	dal_Add},
++	{"TagList", 	dalType_IntfGrpLanPortListNoWiFi,		0,	0,	NULL,	NULL,	dal_Add},
+ 	{NULL, 			0, 					0, 	0, 	NULL}
+ };
++void zcfgFeDalShowVlanGroup(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj = NULL;
++	const char *taglist = NULL;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-10s %-20s %-20s %-20s %-10s\n",
++		"Index", "Group Name", "VLAN ID", "Interface", "TAG");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "TAG")),""))
++			taglist = "N/A";
++		else
++			taglist = json_object_get_string(json_object_object_get(obj, "TAG"));
++		printf("%-10s %-20s %-20s %-20s %-10s\n",
++		json_object_get_string(json_object_object_get(obj, "Index")),
++		json_object_get_string(json_object_object_get(obj, "GroupName")),
++		json_object_get_string(json_object_object_get(obj, "VLANID")),
++		json_object_get_string(json_object_object_get(obj, "Interface")),
++		taglist);
++	}
++}
++
++char* dalcmdLanListParse(const char *parseparam, char vlanarray[]){		// for dalcmd use
++	const char *LanPort = NULL;
++	char buff[32] = {0};
++	char *tmp = NULL, *tmp1 = NULL;
++	strcpy(buff, parseparam);
++	if(strstr(buff, ",")){	
++		if(strstr(buff, " ")){
++			strcpy(vlanarray, parseparam);
++		}	
++		else{
++			LanPort = strtok_r(buff, ",", &tmp);
++			while(LanPort != NULL){
++				strcat(vlanarray, LanPort);
++				strcat(vlanarray, ", ");
++				LanPort = strtok_r(tmp, ",", &tmp);
++			}
++			if(vlanarray[strlen(vlanarray)-2] == ',')
++				vlanarray[strlen(vlanarray)-2] = '\0';
++		}
++	}
++	else
++		strcpy(vlanarray, parseparam);
++	return vlanarray;
++	
++}
++
++zcfgRet_t dalcmdTagCheck(char unTagLan[], char TagLan[], char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char buff[32] = {0};
++	char *lan = NULL, *tmp = NULL;
++	
++	strcpy(buff, TagLan);
++	lan = strtok_r(buff, ", ",&tmp);
++	while(lan != NULL){
++		if(strstr(unTagLan, lan) == NULL){
++			strcpy(replyMsg, "Parameter error!!!");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++		lan = strtok_r(tmp, ", ", &tmp);
++	}
++	return ret;
++}
++
++zcfgRet_t VlanIdDuplicateIntf(int VlanId, const char *IntfLanPort, int idx, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *vlanGrpObj = NULL;
++	objIndex_t vlanGrpIid = {0};
++	int OrigVlanID = 0;
++	const char *OrigIntfLan = NULL;
++	char buff[32] = {0};
++	char *lan = NULL, *tmp = NULL;
++	
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &vlanGrpIid, &vlanGrpObj) == ZCFG_SUCCESS){
++		if(idx == vlanGrpIid.idx[0]){
++			zcfgFeJsonObjFree(vlanGrpObj);
++			continue;
++		}
++		OrigVlanID = json_object_get_int(json_object_object_get(vlanGrpObj, "VlanId"));
++		if(VlanId == OrigVlanID){
++			OrigIntfLan = json_object_get_string(json_object_object_get(vlanGrpObj, "IntfList"));
++			strcpy(buff, IntfLanPort);
++			lan = strtok_r(buff, ", ",&tmp);
++			while(lan != NULL){
++				if(strcmp(strstr(OrigIntfLan, lan),"")){
++					zcfgFeJsonObjFree(vlanGrpObj);
++					strcpy(replyMsg, "LAN Interface cannot duplicate if Vlan ID is the same.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++				lan = strtok_r(tmp, ", ", &tmp);
++			}
++		}
++		zcfgFeJsonObjFree(vlanGrpObj);
++	}
++
++	return ret;
++}
+ 
+ zcfgRet_t zcfgFeDal_VlanGroup_Add(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *vlanGrpObj = NULL;
+ 	objIndex_t vlanGrpIid = {0};
+ 	const char *groupName = NULL;
+-	int vlanID;
++	int vlanID, idx = 0;
+ 	const char *tagList = NULL;
+ 	const char *intfList = NULL;
++	char untag[32] = {0}, tag[32] = {0};
++	zcfg_offset_t oid;
+ 
+ 	IID_INIT(vlanGrpIid);
++
++	groupName = json_object_get_string(json_object_object_get(Jobj, "GroupName"));
++	vlanID = json_object_get_int(json_object_object_get(Jobj, "VlanId"));
++	tagList = json_object_get_string(json_object_object_get(Jobj, "TagList"));
++	intfList = json_object_get_string(json_object_object_get(Jobj, "IntfList"));
++	dalcmdLanListParse(intfList, untag);
++	dalcmdLanListParse(tagList, tag);
++	if(!json_object_object_get(Jobj, "type")){
++		ret = dalcmdTagCheck(untag, tag, replyMsg);
++		if (ret != ZCFG_SUCCESS)	
++			return ret;
++		ret = VlanIdDuplicateIntf(vlanID, intfList, idx, replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		oid = RDM_OID_VLAN_GROUP;
++		ret = dalcmdParamCheck(groupName, oid, "GroupName", replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++	}
+ 	ret = zcfgFeObjJsonAdd(RDM_OID_VLAN_GROUP, &vlanGrpIid, NULL);
+ 	if(ret == ZCFG_SUCCESS){
+ 		ret = zcfgFeObjJsonGet(RDM_OID_VLAN_GROUP, &vlanGrpIid, &vlanGrpObj);
+@@ -40,16 +165,11 @@
+ 		printf("Add VLAN GROUP fail = %d\n",ret);
+ 
+ 	if(ret == ZCFG_SUCCESS){
+-		groupName = json_object_get_string(json_object_object_get(Jobj, "GroupName"));
+-		vlanID = json_object_get_int(json_object_object_get(Jobj, "VlanId"));
+-		tagList = json_object_get_string(json_object_object_get(Jobj, "TagList"));
+-		intfList = json_object_get_string(json_object_object_get(Jobj, "IntfList"));
+-		
+ 		json_object_object_add(vlanGrpObj, "Enable", json_object_new_boolean(true));
+ 		json_object_object_add(vlanGrpObj, "VlanId", json_object_new_int(vlanID));
+ 		json_object_object_add(vlanGrpObj, "GroupName", json_object_new_string(groupName));
+-		json_object_object_add(vlanGrpObj, "TagList", json_object_new_string(tagList));
+-		json_object_object_add(vlanGrpObj, "IntfList", json_object_new_string(intfList));
++		json_object_object_add(vlanGrpObj, "TagList", json_object_new_string(tag));
++		json_object_object_add(vlanGrpObj, "IntfList", json_object_new_string(untag));
+ 		
+ 		ret = zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &vlanGrpIid, vlanGrpObj, NULL);
+ 	}
+@@ -62,37 +182,51 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *vlanGrpObj = NULL;
+ 	objIndex_t vlanGrpIid = {0};
+-	const char *groupName = NULL;
+-	int vlanID;
++	int vlanID, idx = 0;
+ 	const char *tagList = NULL;
+ 	const char *intfList = NULL;
+-	int index = 0, count = 0;
+-	bool found = false;
++	char untag[32] = {0}, tag[32] = {0};
+ 
+-	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	idx = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	vlanGrpIid.level = 1;
++	vlanGrpIid.idx[0] = idx;
+ 
+-	IID_INIT(vlanGrpIid);
+-	while(zcfgFeObjJsonGetNext(RDM_OID_VLAN_GROUP, &vlanGrpIid, &vlanGrpObj) == ZCFG_SUCCESS) {
+-		if(count == index){
+-			found = true;
+-			break;
+-		}
+-		else
+-			count++;
+-	}
+-	
+-	if(found){
+-		groupName = json_object_get_string(json_object_object_get(Jobj, "GroupName"));
+ 		vlanID = json_object_get_int(json_object_object_get(Jobj, "VlanId"));
+ 		tagList = json_object_get_string(json_object_object_get(Jobj, "TagList"));
+ 		intfList = json_object_get_string(json_object_object_get(Jobj, "IntfList"));
+-		
++	if(!json_object_object_get(Jobj, "type")){
++		if((json_object_object_get(Jobj, "TagList") && !json_object_object_get(Jobj, "IntfList"))){
++			strcpy(replyMsg, "IntfLise and TagList are necessary parameter if modify TagList or IntfList.");
++				return ZCFG_INVALID_PARAM_VALUE;
++		}
++		else if((!json_object_object_get(Jobj, "TagList") && json_object_object_get(Jobj, "IntfList"))){
++			dalcmdLanListParse(intfList, untag);
++		}
++		else if(json_object_object_get(Jobj, "TagList") && json_object_object_get(Jobj, "IntfList")){
++			dalcmdLanListParse(intfList, untag);
++			dalcmdLanListParse(tagList, tag);
++			ret = dalcmdTagCheck(untag, tag, replyMsg);
++			if (ret != ZCFG_SUCCESS)	
++				return ret;
++		}
++		if(json_object_object_get(Jobj, "VlanId") && json_object_object_get(Jobj, "IntfList")){
++			ret = VlanIdDuplicateIntf(vlanID, intfList, idx, replyMsg);
++			if(ret != ZCFG_SUCCESS)
++				return ret;
++		}
++	}
++	else{
++		dalcmdLanListParse(intfList, untag);
++		dalcmdLanListParse(tagList, tag);
++	}
++	if(zcfgFeObjJsonGet(RDM_OID_VLAN_GROUP, &vlanGrpIid, &vlanGrpObj) == ZCFG_SUCCESS){
+ 		json_object_object_add(vlanGrpObj, "Enable", json_object_new_boolean(true));
++		if(json_object_object_get(Jobj, "VlanId"))
+ 		json_object_object_add(vlanGrpObj, "VlanId", json_object_new_int(vlanID));
+-		json_object_object_add(vlanGrpObj, "GroupName", json_object_new_string(groupName));
+-		json_object_object_add(vlanGrpObj, "TagList", json_object_new_string(tagList));
+-		json_object_object_add(vlanGrpObj, "IntfList", json_object_new_string(intfList));
+-
++		if(json_object_object_get(Jobj, "TagList"))
++			json_object_object_add(vlanGrpObj, "TagList", json_object_new_string(tag));
++		if(json_object_object_get(Jobj, "IntfList"))
++			json_object_object_add(vlanGrpObj, "IntfList", json_object_new_string(untag));
+ 		ret = zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &vlanGrpIid, vlanGrpObj, NULL);
+ 	}
+ 
+@@ -101,30 +235,32 @@
+ }
+ zcfgRet_t zcfgFeDal_VlanGroup_Delete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *vlanGrpObj = NULL;
+ 	objIndex_t vlanGrpIid = {0};
+-	int index = 0, count = 0;
+-	bool found = false;
+ 
+-	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+-
+-	IID_INIT(vlanGrpIid);
+-	while(zcfgFeObjJsonGetNext(RDM_OID_VLAN_GROUP, &vlanGrpIid, &vlanGrpObj) == ZCFG_SUCCESS) {
+-		if(count == index){
+-			found = true;
+-			break;
++	vlanGrpIid.level = 1;
++	vlanGrpIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = zcfgFeObjJsonDel(RDM_OID_VLAN_GROUP, &vlanGrpIid, NULL);
++	return ret;
+ 		}
+-		else
+-			count++;
++zcfgRet_t zcfgFeDal_VlanGroup_Get(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *VlanJobj = NULL;
++	objIndex_t VlanIid = {0};
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &VlanIid, &VlanJobj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index", json_object_new_int(VlanIid.idx[0]));
++		json_object_object_add(paramJobj, "GroupName", JSON_OBJ_COPY(json_object_object_get(VlanJobj, "GroupName")));
++		json_object_object_add(paramJobj, "VLANID", JSON_OBJ_COPY(json_object_object_get(VlanJobj, "VlanId")));
++		json_object_object_add(paramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(VlanJobj, "IntfList")));
++		json_object_object_add(paramJobj, "TAG", JSON_OBJ_COPY(json_object_object_get(VlanJobj, "TagList")));
++		json_object_array_add(Jobj, paramJobj);
++		zcfgFeJsonObjFree(VlanJobj);
+ 	}
+-
+-	if(found){
+-		ret = zcfgFeObjJsonDel(RDM_OID_VLAN_GROUP, &vlanGrpIid, NULL);
++	return ret;
+ 	}
+ 	
+-	zcfgFeJsonObjFree(vlanGrpObj);
+-	return ret;
+-}
+ 
+ zcfgRet_t zcfgFeDalVlanGroup(const char *method, struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -132,13 +268,15 @@
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+-	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDal_VlanGroup_Edit(Jobj, NULL);
+-	}else if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDal_VlanGroup_Add(Jobj, NULL);
+-	}else if(!strcmp(method, "DELETE")) {
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_VlanGroup_Edit(Jobj, replyMsg);
++	else if(!strcmp(method, "POST"))
++		ret = zcfgFeDal_VlanGroup_Add(Jobj, replyMsg);
++	else if(!strcmp(method, "DELETE"))
+ 		ret = zcfgFeDal_VlanGroup_Delete(Jobj, NULL);
+-	}else
++	else if(!strcmp(method,"GET"))
++		ret = zcfgFeDal_VlanGroup_Get(Jobj, NULL);
++	else
+ 		printf("Unknown method:%s\n", method);
+ 
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-04 15:16:45.250132436 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-04 15:18:13.138316100 +0800
+@@ -172,6 +172,7 @@
+ extern void zcfgFeDalShowAddnl(struct json_object *Jarray);
+ extern void zcfgFeDalShowUsbFilesharing(struct json_object *Jarray);
+ extern void zcfgFeDalShowUsbSamba(struct json_object *Jarray);
++extern void zcfgFeDalShowVlanGroup(struct json_object *Jarray);
+ extern void zcfgFeDalShowMACFilter(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+@@ -199,7 +200,7 @@
+ {"STB",				STB_param, 			zcfgFeDalSTBVendorID,	zcfgFeDalShowSTBVendorID,	"edit|get",			"Home_Networking"},
+ {"IpAlias",			SUBNET_param,		zcfgFeDalAddnlSubnet,	zcfgFeDalShowAddnl,			"get|edit" ,			"Home_Networking"},//Home_Networking
+ {"STATICDHCP",		STATIC_DHCP_param,	zcfgFeDalStaticDHCP,	zcfgFeDalShowStaticDHCP,	"get|add|edit|delete",	"Home_Networking"},//Home_Networking
+-{"VLANGRP", 		VLANGRP_param,		zcfgFeDalVlanGroup,		NULL,						"add|edit|delete",	""},//Vlan_Group
++{"VLANGRP", 		VLANGRP_param,		zcfgFeDalVlanGroup,		zcfgFeDalShowVlanGroup,		"get|add|edit|delete",	"Vlan Group"},//Vlan_Group
+ {"IGMPMLD", 		IGMPMLD_param,		zcfgFeDalIGMPMLD,		zcfgFeDalShowIGMPMLD,		"get|edit",			"IGMP/MLD"},//IGMP_MLD
+ {"FIREWALL",		FIREWALL_param, 	zcfgFeDalFirewall,		NULL,						"add|edit",			""}, //Firewall
+ {"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	NULL,						"edit",				""},//Firewall
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-05-04 15:16:45.138132436 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-05-04 15:17:58.610316100 +0800
+@@ -47,7 +47,8 @@
+ 	dalType_Lan,
+ 	dalType_LanName,
+ 	dalType_IntfGrpWanList,
+-	dalType_IntfGrpLanPortList
++	dalType_IntfGrpLanPortList,
++	dalType_IntfGrpLanPortListNoWiFi
+ };
+ 
+ 

@@ -1,0 +1,94 @@
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_static_dhcp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_static_dhcp.c	2018-02-07 18:00:44.665851734 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_static_dhcp.c	2018-02-07 18:01:45.721957847 +0800
+@@ -13,7 +13,6 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ 
+-
+ dal_param_t STATIC_DHCP_param[] =
+ {
+ 	{"Index", 		dalType_int, 		0, 	0,	NULL,	NULL, 	dal_Edit|dal_Delete},
+@@ -41,8 +40,8 @@
+ 		printf("%-10s %-10d %-30s %-30s \n",
+ 		    json_object_get_string(json_object_object_get(obj, "Index")),
+ 		    json_object_get_boolean(json_object_object_get(obj, "Enable")),
+-		    json_object_get_string(json_object_object_get(obj, "MAC_Address")),
+-		    json_object_get_string(json_object_object_get(obj, "IP_Address")));
++		    json_object_get_string(json_object_object_get(obj, "MACAddr")),
++		    json_object_get_string(json_object_object_get(obj, "IPAddr")));
+ 	}
+ 	
+ }
+@@ -179,25 +178,56 @@
+ 	
+ }
+ 
+-zcfgRet_t zcfgFeDalStatic_DHCP_Get(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *paramJobj = NULL;	//Array
+-	struct json_object *dhcpSrvObj = NULL;	//Get data model parameter
+-	objIndex_t dhcpSrvIid = {0};
+-	int count = 1;
+-	while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvIid, &dhcpSrvObj) == ZCFG_SUCCESS){
++void getBrName(int iid, char *brName){
++	struct json_object *brObj = NULL;	
++	objIndex_t brIid = {0};
++	IID_INIT(brIid);
++	memset(brName, 0, sizeof(brName));
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_BR, &brIid, &brObj) == ZCFG_SUCCESS) {
++		if(iid == brIid.idx[0] ){
++			strcpy(brName, json_object_get_string(json_object_object_get(brObj, "X_ZYXEL_BridgeName")));
++		}
++		zcfgFeJsonObjFree(brObj);
++	}
++}
++
++void getStaticDHCPObj(int count, int iid, struct json_object *dhcpSrvAddrObj, struct json_object *Jarray){
++		struct json_object *paramJobj = NULL;
++		char *brName[33] = {0};
++
+ 		paramJobj = json_object_new_object();
++		getBrName(iid, brName);
+ 		json_object_object_add(paramJobj, "Index", json_object_new_int(count));
+-		json_object_object_add(paramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(dhcpSrvObj,"Enable")));
+-		json_object_object_add(paramJobj, "MAC_Address", JSON_OBJ_COPY(json_object_object_get(dhcpSrvObj,"Chaddr")));
+-		json_object_object_add(paramJobj, "IP_Address", JSON_OBJ_COPY(json_object_object_get(dhcpSrvObj,"Yiaddr")));
++		json_object_object_add(paramJobj, "BrWan", json_object_new_string(brName));
++		json_object_object_add(paramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(dhcpSrvAddrObj,"Enable")));
++		json_object_object_add(paramJobj, "MACAddr", JSON_OBJ_COPY(json_object_object_get(dhcpSrvAddrObj,"Chaddr")));
++		json_object_object_add(paramJobj, "IPAddr", JSON_OBJ_COPY(json_object_object_get(dhcpSrvAddrObj,"Yiaddr")));
+ 		json_object_array_add(Jarray, paramJobj);
+-		count++;
+-		zcfgFeJsonObjFree(dhcpSrvObj);
+-	}
++		zcfgFeJsonObjFree(dhcpSrvAddrObj);
++}
+ 
++zcfgRet_t zcfgFeDalStatic_DHCP_Get(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *dhcpSrvAddrObj = NULL;	//Get data model parameter
++	objIndex_t dhcpSrvAddrIid = {0};
++	int index = 0;
++
++	IID_INIT(dhcpSrvAddrIid);
++	if(json_object_object_get(Jobj, "Index")){ //for New GUI get single obj
++		index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		ret = convertIndextoIid(index, &dhcpSrvAddrIid, RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, NULL, NULL, replyMsg);		
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvAddrIid , &dhcpSrvAddrObj) == ZCFG_SUCCESS){
++			getStaticDHCPObj(index, dhcpSrvAddrIid.idx[0], dhcpSrvAddrObj, Jarray);
++		}
++	}else{
++		while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpSrvAddrIid, &dhcpSrvAddrObj) == ZCFG_SUCCESS){
++			index ++;
++			getStaticDHCPObj(index, dhcpSrvAddrIid.idx[0], dhcpSrvAddrObj, Jarray);
++		}
++	}
+ 	return ret;
+-	
+ }
+ 
+ 

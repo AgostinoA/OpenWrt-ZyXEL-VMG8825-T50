@@ -1,0 +1,235 @@
+diff -Naur libzcfg_fe_tr98-1.0.orig/zyExt.c libzcfg_fe_tr98-1.0/zyExt.c
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2015-08-20 13:52:05.830909600 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2015-08-20 14:28:40.473770700 +0800
+@@ -13,14 +13,6 @@
+ #include "zcfg_fe_tr98.h"
+ #include "zyExt_parameter.h"
+ 
+-#ifdef ONECONNECT
+-#define DOWNLOAD_FORMAT "SpeedTest -c %d -a %s -p %d -s %s -u %s &"
+-#define MDOWNLOAD_FORMAT "SpeedTest -c %d -f %s -p %d -s %s -u %s &"
+-#define UPLOAD_FORMAT "SpeedTest -c %d -a %s -p %d -s %s -l %d &"
+-#define MUPLOAD_FORMAT "SpeedTest -c %d -f %s -p %d -s %s -l %d &"
+-#define RESULT_FILE_DIR "/tmp/SpeedTestInfo"
+-#endif
+-
+ extern tr98Object_t tr98Obj[];
+ 
+ /*
+@@ -5675,136 +5667,97 @@
+ }
+ 
+ #ifdef ONECONNECT
+-/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTest */
++/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTestInfo */
+ zcfgRet_t zyExtSpeedTestInfoObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *speedTestInfoJobj = NULL;
++	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char url[256] = {0}, action[256] = {0}, condition[32] = {0}, downSpeed[16] = {0}, upSpeed[16] = {0};
+-	char line[512] = {0};
+-	int fin = 1;
+-	FILE *fp = NULL;
+-	
++
+ 	printf("%s : Enter\n", __FUNCTION__);
+-	
+-	fp = fopen(RESULT_FILE_DIR, "r");
+ 
+-	if(fp != NULL){
+-		while(fgets(line, sizeof(line), fp)){
+-			if(strstr(line, "URL") != 0){
+-				sscanf(line, "%*[^ ]%s", url);
+-			}
+-			else if(strstr(line, "action") != 0){
+-				sscanf(line, "%*[^ ]%s", action);
+-			}
+-			else if(strstr(line, "condition") != 0){
+-				sscanf(line, "%*[^ ]%s", condition);
+-				if(strncmp(condition, "running", sizeof(condition)) == 0)
+-					fin = 0;
+-			}
+-			else if(strstr(line, "upload speed") != 0){
+-				sscanf(line, "%*[^:]%*[^ ]%s", upSpeed);
+-			}
+-			else if(strstr(line, "download speed") != 0){
+-				sscanf(line, "%*[^:]%*[^ ]%s", downSpeed);
+-			}
+-		}
+-	
+-		fclose(fp);
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_SPEED_TEST, &objIid, &speedTestInfoJobj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
+ 	}
+-	
++
++	/*fill up tr98 object from related tr181 objects*/
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+-
+-	while(paramList->name != NULL) {
+-		if(!strcmp(paramList->name, "URL")) {
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(url));
+-			paramList++;
+-			continue;
+-		}
+-		else if(!strcmp(paramList->name, "ActionType")) {
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(action));
+-			paramList++;
+-			continue;
+-		}
+-		else if(!strcmp(paramList->name, "End")) {
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(fin));
+-			paramList++;
+-			continue;
+-		}
+-		else if(!strcmp(paramList->name, "UploadSpeed")) {
+-			if(strcmp(upSpeed, "") == 0)
+-				strcpy(upSpeed, "0");
+-				
+-			sprintf(upSpeed, "%s Mbits", upSpeed);
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(upSpeed));
+-			paramList++;
+-			continue;
+-		}
+-		else if(!strcmp(paramList->name, "DownloadSpeed")) {
+-			if(strcmp(downSpeed, "") == 0)
+-				strcpy(downSpeed, "0");
+-				
+-			sprintf(downSpeed, "%s Mbits", downSpeed);
+-			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(downSpeed));
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(speedTestInfoJobj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 			paramList++;
+ 			continue;
+ 		}
+-		
+-		paramList++;
+-	}
+ 
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++	
++	json_object_put(speedTestInfoJobj);
++	
+ 	return ZCFG_SUCCESS;
+ }
+ 
+-/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTest */
++/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTestInfo */
+ zcfgRet_t zyExtSpeedTestInfoObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *speedTestInfoJobj = NULL;
++	struct json_object *tmpObj = NULL;
+ 	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	int limitedTestCount = 10, protocol = 80, start = 0 , end = 0;
+-	unsigned int testFileLength = 5;
+-	char url_Tmp[256] = {0}, host[256] = {0}, fileName[256] = {0}, action[256] = {0}, cmd[512];
+-	char *front = NULL, *rear = NULL;
+ 
+ 	printf("%s : Enter\n", __FUNCTION__);
+ 
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_SPEED_TEST, &objIid, &speedTestInfoJobj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = speedTestInfoJobj;
++		speedTestInfoJobj = NULL;
++		speedTestInfoJobj = zcfgFeJsonMultiObjAppend(RDM_OID_SPEED_TEST, &objIid, multiJobj, tmpObj);
++	}
++
+ 	paramList = tr98Obj[handler].parameter;
+-	while(paramList->name != NULL) {
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-		if(paramValue != NULL) {
+-			if(strcmp(paramList->name, "URL") == 0){
+-				strcpy(url_Tmp, json_object_get_string(paramValue));
+-				sscanf(url_Tmp, "http://%n%*[^/]%n", &start, &end);
+-				
+-				front = url_Tmp + start;
+-				rear =  url_Tmp + end;
+-				
+-				strncpy(fileName, rear, sizeof(fileName) - 1);
+-				
+-				if(*rear != '\0')
+-					*rear = '\0';
+-				
+-				strncpy(host, front, sizeof(host) - 1);	
+-			}
+-			else if(strcmp(paramList->name, "ActionType") == 0){
+-				strcpy(action, json_object_get_string(paramValue));
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(speedTestInfoJobj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(speedTestInfoJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
+ 			}
+ 		}
+-		paramList++;
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
+ 	}
+-	
+-	
+-	if(strncasecmp(action, "Upload", sizeof(action) - 1) == 0){
+-		sprintf(cmd, UPLOAD_FORMAT, limitedTestCount, host, protocol, "up", testFileLength);	
++
++	if(multiJobj){
++		json_object_put(tmpObj);
+ 	}
+-	else if(strncasecmp(action, "Download", sizeof(action) - 1) == 0){
+-		sprintf(cmd, DOWNLOAD_FORMAT, limitedTestCount, host, protocol, "down", fileName);
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_SPEED_TEST, &objIid, speedTestInfoJobj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(speedTestInfoJobj);
++			return ret;
++		}
++		json_object_put(speedTestInfoJobj);
+ 	}
+-	else
+-		return ZCFG_INVALID_ARGUMENTS;
+-	
+-	printf("%s:cmd is %s\n", __FUNCTION__, cmd);
+-	system(cmd);
+ 	
+ 	return ZCFG_SUCCESS;
+ }
+diff -Naur libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h libzcfg_fe_tr98-1.0/zyExt_parameter.h
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2015-08-20 13:52:05.834909600 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2015-08-20 13:57:57.728477800 +0800
+@@ -168,11 +168,9 @@
+ 
+ #ifdef ONECONNECT
+ tr98Parameter_t para_SpeedTestInfo[] = {
+-	{ "URL", PARAMETER_ATTR_WRITE, 256, json_type_string},
+-	{ "ActionType", PARAMETER_ATTR_WRITE, 256, json_type_string},
+-	{ "End", PARAMETER_ATTR_READONLY, 0, json_type_int},
+-	{ "UploadSpeed", PARAMETER_ATTR_READONLY, 256, json_type_string},
+-	{ "DownloadSpeed", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "Start", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "UploadSpeedResult", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ "DownloadSpeedResult", PARAMETER_ATTR_WRITE, 16, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+ #endif

@@ -1,0 +1,514 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2016-02-17 10:25:58.841707611 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2016-02-17 10:32:30.893579206 +0800
+@@ -10703,3 +10703,387 @@
+ }
+ #endif/*CONFIG_XPON_SUPPORT*/
+ 
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig  |  Device.X_ZYXEL_WWAN_BACKUP*/
++zcfgRet_t wwanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	char pppIf[128] = {0};
++	uint32_t  wwanOid = 0, wwanPPPOid = 0;
++	objIndex_t wwanIid, wwanPPPIid;
++	struct json_object *wwanObj = NULL;
++	struct json_object *wwanPPPObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	ztrdbg(ZTR_DL_DEBUG, "%s : Enter\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(wwanIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	wwanOid = zcfgFeObjNameToObjId(tr181Obj, &wwanIid);
++	if((ret = feObjJsonGet(wwanOid, &wwanIid, &wwanObj, updateFlag)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	paramValue = json_object_object_get(wwanObj, "PPPInterface");
++	if (paramValue == NULL) {
++		json_object_put(wwanObj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++	strcpy(pppIf, json_object_get_string(paramValue));
++ 	if (strlen(pppIf) == 0) {
++		json_object_put(wwanObj);
++		return ZCFG_INTERNAL_ERROR;
++ 	}
++	IID_INIT(wwanPPPIid);
++	wwanPPPIid.level = 1;
++ 	sscanf(pppIf, "PPP.Interface.%hhu", &wwanPPPIid.idx[0]);
++ 	if((ret = feObjJsonGet(RDM_OID_PPP_IFACE, &wwanPPPIid, &wwanPPPObj, updateFlag)) != ZCFG_SUCCESS) {
++		json_object_put(wwanObj);
++		return ret;
++	}
++
++	/*fill up tr98 mgmtSrv object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if (strcmp(paramList->name, "AccessPointName") == 0)
++			paramValue = json_object_object_get(wwanObj, "APN");
++		else if (strcmp(paramList->name, "PhoneNumber") == 0)
++			paramValue = json_object_object_get(wwanObj, "DialNumber");
++		else if (strcmp(paramList->name, "PINCode") == 0)
++			paramValue = json_object_object_get(wwanObj, "PIN");
++		else if (strcmp(paramList->name, "PUKCode") == 0)
++			paramValue = json_object_object_get(wwanObj, "PUK");
++		else if (strcmp(paramList->name, "ConnectionUpTime") == 0) {
++			paramValue = json_object_object_get(wwanObj, "Status");
++			if (strcmp("Up", json_object_get_string(paramValue)) == 0)
++				paramValue = json_object_object_get(wwanPPPObj, "LastChange");
++			else {
++				json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_int(0));
++				paramList++;
++				continue;
++			}
++		}
++		else paramValue = json_object_object_get(wwanObj, paramList->name);
++
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		/*Not defined in tr181, give it a default value*/
++		ztrdbg(ZTR_DL_DEBUG, "Can't find parameter %s in TR181\n", paramList->name);
++		json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++		paramList++;
++	}
++	json_object_put(wwanObj);
++	json_object_put(wwanPPPObj);
++
++	return ZCFG_SUCCESS;
++}
++
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig  |  Device.X_ZYXEL_WWAN_BACKUP*/
++zcfgRet_t wwanObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  wwanOid = 0;
++	objIndex_t wwanIid;
++	tr98Parameter_t *paramList = NULL;
++	struct json_object *wwanObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++
++	ztrdbg(ZTR_DL_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++
++	IID_INIT(wwanIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	wwanOid = zcfgFeObjNameToObjId(tr181Obj, &wwanIid);
++	if((ret = zcfgFeObjJsonGet(wwanOid, &wwanIid, &wwanObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if(multiJobj){
++		tmpObj = wwanObj;
++		wwanObj = NULL;
++		wwanObj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanIid, multiJobj, tmpObj);	
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if (strcmp(paramList->name, "AccessPointName") == 0)
++				tr181ParamValue = json_object_object_get(wwanObj, "APN");
++			else if (strcmp(paramList->name, "PhoneNumber") == 0)
++				tr181ParamValue = json_object_object_get(wwanObj, "DialNumber");
++			else if (strcmp(paramList->name, "PINCode") == 0)
++				tr181ParamValue = json_object_object_get(wwanObj, "PIN");
++			else if (strcmp(paramList->name, "PUKCode") == 0)
++				tr181ParamValue = json_object_object_get(wwanObj, "PUK");
++			else tr181ParamValue = json_object_object_get(wwanObj, paramList->name);
++
++			if(tr181ParamValue != NULL) {
++				if (strcmp(paramList->name, "AccessPointName") == 0)
++					json_object_object_add(wwanObj, "APN", JSON_OBJ_COPY(paramValue));
++				else if (strcmp(paramList->name, "PhoneNumber") == 0)
++					json_object_object_add(wwanObj, "DialNumber", JSON_OBJ_COPY(paramValue));
++				else if (strcmp(paramList->name, "PINCode") == 0)
++					json_object_object_add(wwanObj, "PIN", JSON_OBJ_COPY(paramValue));
++				else if (strcmp(paramList->name, "PUKCode") == 0)
++					json_object_object_add(wwanObj, "PUK", JSON_OBJ_COPY(paramValue));
++				else json_object_object_add(wwanObj, paramList->name, JSON_OBJ_COPY(paramValue));
++
++				paramList++;
++				continue;
++			}
++		}
++		paramList++;	
++	} /*Edn while*/
++	
++	/*Set Device.X_ZYXEL_WWAN_BACKUP*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanIid, wwanObj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(wwanObj);
++			return ret;
++		}
++		json_object_put(wwanObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig.Stats  |  Device.X_ZYXEL_WWAN_BACKUP.Stats*/
++zcfgRet_t wwanObjStatsGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	char pppIf[128] = {0};
++	uint32_t  wwanCfgOid = 0, wwanStatsOid = 0, wwanPPPOid = 0, wwanPPPStatOid = 0;
++	objIndex_t wwanCfgIid, wwanStatsIid, wwanPPPIid, wwanPPPStatsIid;
++	struct json_object *wwanStatsObj = NULL;
++	struct json_object *wwanPPPStatsObj = NULL;
++	struct json_object *wwanPPPObj = NULL;
++	struct json_object *wwanCfgObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	ztrdbg(ZTR_DL_DEBUG, "%s : Enter\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++
++	IID_INIT(wwanCfgIid);
++	IID_INIT(wwanPPPIid);
++	IID_INIT(wwanPPPStatsIid);
++	if((ret = feObjJsonGet(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanCfgIid, &wwanCfgObj, updateFlag)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	paramValue = json_object_object_get(wwanCfgObj, "PPPInterface");
++	if (paramValue == NULL) {
++		json_object_put(wwanCfgObj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++	strcpy(pppIf, json_object_get_string(paramValue));
++	json_object_put(wwanCfgObj);
++	if (strlen(pppIf) == 0) 
++		return ZCFG_INTERNAL_ERROR;
++	wwanPPPIid.level = 1;
++	wwanPPPStatsIid.level = 1;
++	sscanf(pppIf, "PPP.Interface.%hhu", &wwanPPPIid.idx[0]);
++	wwanPPPStatsIid.idx[0] = wwanPPPIid.idx[0];
++	if((ret = feObjJsonGet(RDM_OID_PPP_IFACE, &wwanPPPIid, &wwanPPPObj, updateFlag)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = feObjJsonGet(RDM_OID_PPP_IFACE_STAT, &wwanPPPStatsIid, &wwanPPPStatsObj, updateFlag)) != ZCFG_SUCCESS) {
++		json_object_put(wwanPPPObj);
++		return ret;
++	}
++
++
++	IID_INIT(wwanStatsIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	wwanStatsOid = zcfgFeObjNameToObjId(tr181Obj, &wwanStatsIid);
++	if((ret = feObjJsonGet(wwanStatsOid, &wwanStatsIid, &wwanStatsObj, updateFlag)) != ZCFG_SUCCESS) {
++		json_object_put(wwanPPPObj);
++		json_object_put(wwanPPPStatsObj);
++		return ret;
++	}
++
++
++	/*fill up tr98 mgmtSrv object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if (strcmp(paramList->name, "DeviceManufacturer") == 0)
++			paramValue = json_object_object_get(wwanStatsObj, "Manufacturer");
++		else if (strcmp(paramList->name, "DeviceModelName") == 0)
++			paramValue = json_object_object_get(wwanStatsObj, "Model");
++		else if (strcmp(paramList->name, "DeviceFirmwareVersion") == 0)
++			paramValue = json_object_object_get(wwanStatsObj, "FWVersion");
++		else if (strcmp(paramList->name, "SIMCardIMSI") == 0)
++			paramValue = json_object_object_get(wwanStatsObj, "SIMIMSI");
++		else if (strcmp(paramList->name, "CellsSent") == 0)
++			paramValue = json_object_object_get(wwanPPPStatsObj, "PacketsSent");
++		else if (strcmp(paramList->name, "CellsReceived") == 0)
++			paramValue = json_object_object_get(wwanPPPStatsObj, "PacketsReceived");
++		else paramValue = json_object_object_get(wwanStatsObj, paramList->name);
++
++		if (paramValue == NULL)
++			paramValue = json_object_object_get(wwanPPPObj, paramList->name);
++		if (paramValue == NULL)
++			paramValue = json_object_object_get(wwanPPPStatsObj, paramList->name);
++
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		/*Not defined in tr181, give it a default value*/
++		ztrdbg(ZTR_DL_DEBUG, "Can't find parameter %s in TR181\n", paramList->name);
++		json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++		paramList++;
++	}
++	json_object_put(wwanStatsObj);
++	json_object_put(wwanPPPObj);
++	json_object_put(wwanPPPStatsObj);
++	return ZCFG_SUCCESS;
++}
++
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig.Email.i    |    Device.X_ZYXEL_EmailNotification.EmailEventConfig.i    */
++zcfgRet_t wwanEmailObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  wwanEmailOid = 0;
++	objIndex_t wwanEmailIid;
++	struct json_object *wwanEmailObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	ztrdbg(ZTR_DL_DEBUG, "%s : Enter\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(wwanEmailIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	wwanEmailOid = zcfgFeObjNameToObjId(tr181Obj, &wwanEmailIid);
++	if((ret = feObjJsonGet(wwanEmailOid, &wwanEmailIid, &wwanEmailObj, updateFlag)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	/*fill up tr98 mgmtSrv object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if (strcmp(paramList->name, "EmailEnable") == 0)
++			paramValue = json_object_object_get(wwanEmailObj, "Enable");
++		else if (strcmp(paramList->name, "EmailTitle") == 0)
++			paramValue = json_object_object_get(wwanEmailObj, "EmailSubject");
++		else paramValue = json_object_object_get(wwanEmailObj, paramList->name);
++
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		/*Not defined in tr181, give it a default value*/
++		ztrdbg(ZTR_DL_DEBUG, "Can't find parameter %s in TR181\n", paramList->name);
++		json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++		paramList++;
++	}
++	json_object_put(wwanEmailObj);
++
++	return ZCFG_SUCCESS;
++}
++
++/* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig.Email.i    |    Device.X_ZYXEL_EmailNotification.EmailEventConfig.i    */
++zcfgRet_t wwanEmailObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  wwanEmailOid = 0;
++	objIndex_t wwanEmailIid;
++	tr98Parameter_t *paramList = NULL;
++	struct json_object *wwanEmailObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++
++	ztrdbg(ZTR_DL_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++
++	IID_INIT(wwanEmailIid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	wwanEmailOid = zcfgFeObjNameToObjId(tr181Obj, &wwanEmailIid);
++	if((ret = zcfgFeObjJsonGet(wwanEmailOid, &wwanEmailIid, &wwanEmailObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if(multiJobj){
++		tmpObj = wwanEmailObj;
++		wwanEmailObj = NULL;
++		wwanEmailObj = zcfgFeJsonMultiObjAppend(RDM_OID_MAIL_EVENT_CFG, &wwanEmailIid, multiJobj, tmpObj);	
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if (strcmp(paramList->name, "EmailEnable") == 0)
++				tr181ParamValue = json_object_object_get(wwanEmailObj, "Enable");
++			else if (strcmp(paramList->name, "EmailTitle") == 0)
++				tr181ParamValue = json_object_object_get(wwanEmailObj, "EmailSubject");
++			else tr181ParamValue = json_object_object_get(wwanEmailObj, paramList->name);
++
++			if(tr181ParamValue != NULL) {
++				if (strcmp(paramList->name, "EmailEnable") == 0)
++					json_object_object_add(wwanEmailObj, "Enable", JSON_OBJ_COPY(paramValue));
++				else if (strcmp(paramList->name, "EmailTitle") == 0) {
++					json_object_object_add(wwanEmailObj, "EmailSubject", JSON_OBJ_COPY(paramValue));
++				}
++				else { 
++					json_object_object_add(wwanEmailObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				}
++
++				paramList++;
++				continue;
++			}
++		}
++		paramList++;	
++	} /*Edn while*/
++	
++	/*Set Device.X_ZYXEL_WWAN_BACKUP*/
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_MAIL_EVENT_CFG, &wwanEmailIid, wwanEmailObj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(wwanEmailObj);
++			return ret;
++		}
++		json_object_put(wwanEmailObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2016-02-17 10:25:58.497707611 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2016-02-17 10:33:28.987554125 +0800
+@@ -58,6 +58,10 @@
+ extern tr98Parameter_t para_WANPonIntfConfStat[];
+ #endif
+ 
++extern tr98Parameter_t para_WANWwanIntfConf[];
++extern tr98Parameter_t para_WANWwanIntfStatsConf[] ;
++extern tr98Parameter_t para_WANWwanEmailConf[] ;
++
+ /*Handler Function*/
+ extern zcfgRet_t WANDeviceObjGet(char *, int, struct json_object **, bool);
+ #ifdef SOL_TR69_3G_Backup
+@@ -239,3 +243,10 @@
+ /* InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig.Stats*/
+ extern zcfgRet_t WANPonIfaceCfgStObjGet(char *, int, struct json_object **, bool);
+ #endif
++extern zcfgRet_t wwanObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t wwanObjSet(char *, int, struct json_object *, struct json_object *, char *);
++extern zcfgRet_t wwanObjStatsGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t wwanEmailObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t wwanEmailObjSet(char *, int, struct json_object *, struct json_object *, char *);
++
++
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2016-02-17 10:25:58.857707611 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2016-02-17 10:34:32.089953253 +0800
+@@ -911,6 +911,53 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_WANWwanIntfConf[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	//{ "Status", PARAMETER_ATTR_READONLY, 32, json_type_string},
++	//{ "BandSelection", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "AccessPointName", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "PhoneNumber", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "PINCode", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "PUKCode", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "Status", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	//{ "Ready3g", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "ConnectionUpTime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	//{ "CheckingTime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	//{ "PowerUpTimeout", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_WANWwanIntfStatsConf[] = {
++	{ "ServiceProvider", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "DeviceStatus", PARAMETER_ATTR_READONLY, 32, json_type_string},
++	{ "SignalStrength", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "SignalQuality", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "DeviceManufacturer", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "DeviceModelName", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "DeviceFirmwareVersion", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "DeviceIMEI", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "SIMCardIMSI", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "DeviceESN", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "ValidErrorPINTimes", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "ValidErrorPUKTimes", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "BytesSent", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "BytesReceived", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "CellsSent", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "CellsReceived", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "ErrorsSent", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "ErrorsReceived", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "DongleMode", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_WANWwanEmailConf[] = {
++	{ "EmailEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	//{ "EmailServerAddr", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "EmailTo", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "EmailTitle", PARAMETER_ATTR_WRITE, 128, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
+ #ifdef CONFIG_XPON_SUPPORT
+ tr98Parameter_t para_WANPonIntfConf[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-02-17 10:25:58.769707611 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-02-17 10:35:01.143720315 +0800
+@@ -218,6 +218,9 @@
+ #ifdef IPV6RD_PROFILE
+ {e_TR98_WAN_PPP_CONN_IPV6RD      , &tr98Obj[e_TR98_WAN_PPP_CONN_IPV6RD      -e_TR98_START]},
+ #endif
++{e_TR98_WWAN_INTERFACE_CONFIG   ,&tr98Obj[e_TR98_WWAN_INTERFACE_CONFIG        -e_TR98_START]},
++{e_TR98_WWAN_INTERFACE_CONFIG_STATUS	,&tr98Obj[e_TR98_WWAN_INTERFACE_CONFIG_STATUS		-e_TR98_START]},
++{e_TR98_WWAN_EMAIL_CONFIG   ,&tr98Obj[e_TR98_WWAN_EMAIL_CONFIG        -e_TR98_START]},
+ #ifdef CONFIG_XPON_SUPPORT
+ {e_TR98_WAN_PON_INTF_CONF      , &tr98Obj[e_TR98_WAN_PON_INTF_CONF            -e_TR98_START]},
+ {e_TR98_WAN_PON_INTF_CONF_STAT      , &tr98Obj[e_TR98_WAN_PON_INTF_CONF_STAT  -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-02-17 10:25:58.641707611 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-02-17 10:35:51.219848963 +0800
+@@ -176,6 +176,9 @@
+ #ifdef IPV6RD_PROFILE
+ #define TR98_WAN_PPP_CONN_IPV6RD       "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_IPv6rd"
+ #endif
++#define TR98_WWAN_INTERFACE_CONFIG       "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig"
++#define TR98_WWAN_INTERFACE_CONFIG_STATUS       "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig.Stats"
++#define TR98_WWAN_EMAIL_CONFIG               "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.X_ZYXEL_WWANInterfaceConfig.Email.i"
+ #ifdef CONFIG_XPON_SUPPORT
+ #define TR98_WAN_PON_INTF_CONF        "InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig"
+ #define TR98_WAN_PON_INTF_CONF_STAT   "InternetGatewayDevice.WANDevice.i.X_ZYZEL_WANPonInterfaceConfig.Stats"
+@@ -418,6 +421,9 @@
+ #ifdef IPV6RD_PROFILE
+ {TR98_WAN_PPP_CONN_IPV6RD,      0,				para_WANPppv6Rd,        WANPppv6RdObjGet,         WANPppv6RdObjSet,        NULL,             NULL,            NULL},
+ #endif
++{TR98_WWAN_INTERFACE_CONFIG,	0,	para_WANWwanIntfConf,	wwanObjGet,   wwanObjSet,   NULL,             NULL,            NULL},
++{TR98_WWAN_INTERFACE_CONFIG_STATUS,	0,	para_WANWwanIntfStatsConf,	wwanObjStatsGet,   NULL,   NULL,             NULL,            NULL},
++{TR98_WWAN_EMAIL_CONFIG,	ATTR_INDEXNODE,	para_WANWwanEmailConf,	wwanEmailObjGet,   wwanEmailObjSet,   NULL,             NULL,            NULL},
+ #ifdef CONFIG_XPON_SUPPORT
+ {TR98_WAN_PON_INTF_CONF,        0,				para_WANPonIntfConf,     WANPonIfaceCfgObjGet,   WANPonIfaceCfgObjSet,   NULL,             NULL,            NULL},
+ {TR98_WAN_PON_INTF_CONF_STAT,   0,			    para_WANPonIntfConfStat, WANPonIfaceCfgStObjGet, NULL,                   NULL,             NULL,            NULL},

@@ -1,0 +1,59 @@
+Index: udhcp-0.9.8/script.c
+===================================================================
+--- udhcp-0.9.8.orig/script.c	2016-01-11 13:47:28.185584933 +0800
++++ udhcp-0.9.8/script.c	2016-01-12 10:13:39.720872422 +0800
+@@ -93,6 +93,26 @@
+ 	return ret;
+ }
+ 
++bool getDefaultRouteFromOption121(unsigned char *option, char *gateway){
++	int i = 0;
++	int dest_len_byte = 0;
++
++	i = OPT_DATA;
++	while(i < option[OPT_LEN] + 2){
++		if(option[i] == 0){
++			sprintf(gateway, "%d.%d.%d.%d", option[i+1], option[i+2], option[i+3], option[i+4]);
++			return true;
++		}
++		else{
++			dest_len_byte = option[i]/8 + ((option[i]%8 != 0)?1:0);
++			i = i + 1 + dest_len_byte + 4;
++		}
++	}
++
++	return false;
++}
++
++
+ static int upper_length(int length, struct dhcp_option *option)
+ {
+ 	return max_option_length[option->flags & TYPE_MASK] *
+@@ -161,6 +181,12 @@
+ #if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
+ 			/* DHCP option 43 */
+ 			if(type_p->code == 0x2b || type_p->code == 0x79){
++				if(type_p->code == 0x79){
++					//RFC3442, if option 121 contain default route, the priority is higher than option3.
++					if(getDefaultRouteFromOption121((char *)(option - 2), optStr) == true)
++						json_object_object_add(dhcpc_opt, "router", json_object_new_string(optStr));
++				}
++				
+ 				hexOptionToString((char *)(option - 2), optStr);
+ 				json_object_object_add(dhcpc_opt, type_p->name, json_object_new_string(optStr));
+ 			}
+@@ -307,6 +333,14 @@
+ 		}
+ 	}
+ 
++	//if there is no option 3 or no default route in option121, get giaddr as router ip
++	if(json_object_object_get(dhcpc_opt, "router") == NULL){
++		tmpIp = (unsigned char *) &packet->giaddr;
++		sprintf(ip, "%d.%d.%d.%d", tmpIp[0], tmpIp[1], tmpIp[2], tmpIp[3]);
++		json_object_object_add(dhcpc_opt, "router", json_object_new_string(ip));
++		printf("dhcp msg giaddr =%s\n",  ip);
++	}
++
+ 	if (packet->siaddr) {
+ 		//envp[j] = xmalloc(sizeof("siaddr=255.255.255.255"));
+ 		//sprintip(envp[j++], "siaddr=", (unsigned char *) &packet->siaddr);

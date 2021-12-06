@@ -1,0 +1,164 @@
+Index: udhcp-0.9.8/clientpacket.c
+===================================================================
+--- udhcp-0.9.8.orig/clientpacket.c	2014-04-30 18:23:08.120670171 +0800
++++ udhcp-0.9.8/clientpacket.c	2014-04-29 14:12:47.908997200 +0800
+@@ -152,7 +152,7 @@
+ 
+ 
+ /* Unicasts or broadcasts a DHCP renew message */
+-int send_renew(unsigned long xid, unsigned long server, unsigned long ciaddr)
++int send_renew(unsigned long xid, unsigned long server, unsigned long ciaddr, char *inf)
+ {
+ 	struct dhcpMessage packet;
+ 	int ret = 0;
+@@ -164,7 +164,7 @@
+ 	add_requests(&packet);
+ 	LOG(LOG_DEBUG, "Sending renew...");
+ 	if (server) 
+-		ret = kernel_packet(&packet, ciaddr, CLIENT_PORT, server, SERVER_PORT);
++		ret = kernel_packet(&packet, ciaddr, CLIENT_PORT, server, SERVER_PORT, inf);
+ 	else ret = raw_packet(&packet, INADDR_ANY, CLIENT_PORT, INADDR_BROADCAST,
+ 				SERVER_PORT, MAC_BCAST_ADDR, client_config.ifindex);
+ 	return ret;
+@@ -172,7 +172,7 @@
+ 
+ 
+ /* Unicasts a DHCP release message */
+-int send_release(unsigned long server, unsigned long ciaddr)
++int send_release(unsigned long server, unsigned long ciaddr, char *inf)
+ {
+ 	struct dhcpMessage packet;
+ 
+@@ -184,7 +184,7 @@
+ 	add_simple_option(packet.options, DHCP_SERVER_ID, server);
+ 
+ 	LOG(LOG_DEBUG, "Sending release...");
+-	return kernel_packet(&packet, ciaddr, CLIENT_PORT, server, SERVER_PORT);
++	return kernel_packet(&packet, ciaddr, CLIENT_PORT, server, SERVER_PORT, inf);
+ }
+ 
+ 
+Index: udhcp-0.9.8/clientpacket.h
+===================================================================
+--- udhcp-0.9.8.orig/clientpacket.h	2001-08-11 09:30:47.000000000 +0800
++++ udhcp-0.9.8/clientpacket.h	2014-04-29 14:28:05.446011800 +0800
+@@ -4,9 +4,9 @@
+ unsigned long random_xid(void);
+ int send_discover(unsigned long xid, unsigned long requested);
+ int send_selecting(unsigned long xid, unsigned long server, unsigned long requested);
+-int send_renew(unsigned long xid, unsigned long server, unsigned long ciaddr);
+-int send_renew(unsigned long xid, unsigned long server, unsigned long ciaddr);
+-int send_release(unsigned long server, unsigned long ciaddr);
++int send_renew(unsigned long xid, unsigned long server, unsigned long ciaddr, char *inf);
++int send_renew(unsigned long xid, unsigned long server, unsigned long ciaddr, char *inf);
++int send_release(unsigned long server, unsigned long ciaddr, char *inf);
+ int get_raw_packet(struct dhcpMessage *payload, int fd);
+ 
+ #endif
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2014-04-30 18:23:08.168670171 +0800
++++ udhcp-0.9.8/dhcpc.c	2014-04-29 14:26:36.072286600 +0800
+@@ -239,7 +239,7 @@
+ 		json_object_put(dhcpc_opt);
+ 						
+ #endif
+-		send_release(server_addr, requested_ip); /* unicast */
++		send_release(server_addr, requested_ip, client_config.interface); /* unicast */
+ 
+ 		run_script(NULL, "deconfig");
+ 	}
+@@ -516,7 +516,7 @@
+ 				if (packet_num < 3) {
+ 					/* send request packet */
+ 					if (state == RENEW_REQUESTED)
+-						send_renew(xid, server_addr, requested_ip); /* unicast */
++						send_renew(xid, server_addr, requested_ip, client_config.interface); /* unicast */
+ 					else send_selecting(xid, server_addr, requested_ip); /* broadcast */
+ 					
+ 					timeout = now + ((packet_num == 2) ? 10 : 2);
+@@ -545,7 +545,7 @@
+ 					DEBUG(LOG_INFO, "Entering rebinding state");
+ 				} else {
+ 					/* send a request packet */
+-					send_renew(xid, server_addr, requested_ip); /* unicast */
++					send_renew(xid, server_addr, requested_ip, client_config.interface); /* unicast */
+ 					
+ 					t1 = (t2 - t1) / 2 + t1;
+ 					timeout = t1 + start;
+@@ -585,7 +585,7 @@
+ 					change_mode(LISTEN_RAW);
+ 				} else {
+ 					/* send a request packet */
+-					send_renew(xid, 0, requested_ip); /* broadcast */
++					send_renew(xid, 0, requested_ip, client_config.interface); /* broadcast */
+ 
+ 					t2 = (lease - t2) / 2 + t2;
+ 					timeout = t2 + start;
+Index: udhcp-0.9.8/packet.c
+===================================================================
+--- udhcp-0.9.8.orig/packet.c	2002-08-28 02:23:14.000000000 +0800
++++ udhcp-0.9.8/packet.c	2014-04-29 14:04:50.191959800 +0800
+@@ -13,6 +13,7 @@
+ #include <linux/if_ether.h>
+ #endif
+ #include <errno.h>
++#include <net/if.h>
+ 
+ #include "packet.h"
+ #include "debug.h"
+@@ -168,11 +169,12 @@
+ 
+ /* Let the kernel do all the work for packet generation */
+ int kernel_packet(struct dhcpMessage *payload, u_int32_t source_ip, int source_port,
+-		   u_int32_t dest_ip, int dest_port)
++		   u_int32_t dest_ip, int dest_port, char *inf)
+ {
+ 	int n = 1;
+ 	int fd, result;
+ 	struct sockaddr_in client;
++	struct ifreq boundIf;
+ 	
+ 	if ((fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0)
+ 		return -1;
+@@ -180,6 +182,14 @@
+ 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *) &n, sizeof(n)) == -1)
+ 		return -1;
+ 
++	// need to bind interface in unicast case, must co-operate with iptables and routing table
++	if ( inf != NULL && strlen(inf) > 0){
++		strncpy(boundIf.ifr_name, inf, IFNAMSIZ);
++		if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE,(char *)&boundIf, sizeof(boundIf)) < 0) {
++			DEBUG(LOG_INFO, "dhcpc bind to %s fail", inf);
++		}
++	}
++
+ 	memset(&client, 0, sizeof(client));
+ 	client.sin_family = AF_INET;
+ 	client.sin_port = htons(source_port);
+Index: udhcp-0.9.8/packet.h
+===================================================================
+--- udhcp-0.9.8.orig/packet.h	2002-04-03 06:49:33.000000000 +0800
++++ udhcp-0.9.8/packet.h	2014-04-29 14:25:21.945248100 +0800
+@@ -35,7 +35,7 @@
+ int raw_packet(struct dhcpMessage *payload, u_int32_t source_ip, int source_port,
+ 		   u_int32_t dest_ip, int dest_port, unsigned char *dest_arp, int ifindex);
+ int kernel_packet(struct dhcpMessage *payload, u_int32_t source_ip, int source_port,
+-		   u_int32_t dest_ip, int dest_port);
++		   u_int32_t dest_ip, int dest_port, char *inf);
+ 
+ 
+ #endif
+Index: udhcp-0.9.8/serverpacket.c
+===================================================================
+--- udhcp-0.9.8.orig/serverpacket.c	2002-04-03 06:49:33.000000000 +0800
++++ udhcp-0.9.8/serverpacket.c	2014-04-29 14:25:06.075687200 +0800
+@@ -37,7 +37,7 @@
+ 	DEBUG(LOG_INFO, "Forwarding packet to relay");
+ 
+ 	return kernel_packet(payload, server_config.server, SERVER_PORT,
+-			payload->giaddr, SERVER_PORT);
++			payload->giaddr, SERVER_PORT, NULL);
+ }
+ 
+ 

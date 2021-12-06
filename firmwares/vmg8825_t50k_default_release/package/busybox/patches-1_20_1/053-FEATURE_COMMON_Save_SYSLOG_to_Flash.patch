@@ -1,0 +1,213 @@
+Index: busybox-1_20_1/init/init.c
+===================================================================
+--- busybox-1_20_1.orig/init/init.c	2015-09-10 21:39:28.331218228 +0800
++++ busybox-1_20_1/init/init.c	2015-09-10 21:40:30.782066045 +0800
+@@ -207,6 +207,183 @@
+ 	L_CONSOLE = 0x2,
+ };
+ 
++/* __ZyXEL__, Albert, 20150909, Save System and Security Log to Flash. */
++#ifdef ZYXEL_SAVE_LOG_TO_FLASH
++
++#define LOG_FILE_PATH "/var/log/"
++#define FLASH_LOG_FILE_PATH "/data/"
++#define FLASH_LOG_FILE_SYSLOG "syslog.log"
++#define FLASH_LOG_FILE_SECURITY "security.log"
++#define LOG_ROTATE 2
++
++void rotateLog(char *flashLogFilePath, int logFileRotate)
++{
++	int i;
++	char oldFile[(strlen(flashLogFilePath)+3)], newFile[(strlen(flashLogFilePath)+3)];
++	FILE *fp;
++
++	for(i=logFileRotate-1;i>0;i--) {
++		sprintf(oldFile, "%s%d", flashLogFilePath, i-1);
++		sprintf(newFile, "%s%d", flashLogFilePath, i);
++		rename(oldFile, newFile);
++	}
++}
++
++void copyLogToFlash(char *logFilePath, char *flashLogFilePath, unsigned int logFileSize, int logFileRotate)
++{
++	char cmd[128];
++	char *tempFile = "/var/log/temp.log";
++	int fd;
++	FILE *fp;
++	char buffer[1024];
++	int index=0;
++	int logRemainSize=0;
++
++	//If there is no any log stored in flash, copy /log/system.log to /data/log/system0.log
++	FILE *dummyFP, *rotateFP;
++
++	char log_0_file[128];
++	char log_1_file[128];
++
++	sprintf(log_1_file, "%s.%d", logFilePath, 1);
++
++	if((rotateFP = fopen(log_1_file,"r")) != NULL){
++		fclose(rotateFP);
++		printf("move %s to flash\n", log_1_file);
++		sprintf(cmd,"cp %s %s%d", log_1_file, flashLogFilePath, 1);
++		system(cmd);
++		printf("move %s to flash\n", logFilePath);
++		sprintf(cmd,"cp %s %s%d", logFilePath, flashLogFilePath, 0);
++		system(cmd);
++
++        unlink(log_1_file);
++        unlink(logFilePath);
++        return;
++    }
++
++	sprintf(log_0_file, "%s%d", flashLogFilePath, 0);
++	
++	struct stat st;	
++	struct stat stflash;	
++	
++    stat(logFilePath, &st); 
++    stat(flashLogFilePath, &stflash); 
++	
++	if((dummyFP = fopen(logFilePath,"r")) == NULL){
++	    printf("Error: dummyFP == NULL \n");			
++		return;
++	}
++	else if((dummyFP = fopen(log_0_file,"r")) == NULL){
++		printf("move %s to flash\n", logFilePath);
++		sprintf(cmd,"cp %s %s%d", logFilePath, flashLogFilePath, 0);
++		system(cmd);
++        unlink(logFilePath);
++	}
++	else{
++		fclose(dummyFP);
++		printf("save %s to flash\n", logFilePath);
++
++		//Copy /data/log/system0.log to /log/temp.log
++		sprintf(cmd,"cp %s%d %s", flashLogFilePath, 0, tempFile);
++		system(cmd);
++
++		//Calculate the remained size of /log/temp.log (/data/log/system0.log)
++		fd = device_open(tempFile, O_RDONLY);
++		logRemainSize = logFileSize - 1024 - lseek(fd,0,SEEK_END);
++		close(fd);
++
++		//Write logs in /log/system.log to /log/temp.log
++		if((fp = fopen(logFilePath,"r")) != NULL){
++            fseek(fp,0L,SEEK_END);
++            int logFilesize = ftell(fp)+1;
++            int moveAll = FALSE;            
++
++            if(logFilesize >= 150000 ){ /* 150k */
++                moveAll = TRUE;
++			    rotateLog(flashLogFilePath, logFileRotate);
++
++			    //Copy /log/system.log to /data/log/system0.log
++        		printf("move %s to flash\n", logFilePath);			    
++        		sprintf(cmd,"cp %s %s%d", logFilePath, flashLogFilePath, 0);
++		        system(cmd);
++
++            }else if((logFilesize < 150000) && (logFilesize > 20000)){ /* 150k -30k */
++                if(logRemainSize < logFilesize){
++                    moveAll = TRUE;
++    			    rotateLog(flashLogFilePath, logFileRotate);
++
++			        //Copy /log/system.log to /data/log/system0.log
++            		printf("move %s to flash\n", logFilePath);				        
++            		sprintf(cmd,"cp %s %s%d", logFilePath, flashLogFilePath, 0);
++		            system(cmd);
++
++                }else{
++                    moveAll = TRUE;
++            		printf("save %s to flash\n", logFilePath);	                    
++        		    sprintf(cmd,"cat %s %s >> %s%d", tempFile, logFilePath, flashLogFilePath, 0);
++		            system(cmd);
++                }             
++            }
++
++            if(moveAll){
++			    fclose(fp);
++
++         		//Remove /log/temp.log
++	        	unlink(tempFile);
++         		//Remove /log/system.log
++    	    	unlink(logFilePath);
++                return;
++            }
++
++			fseek(fp, 0, SEEK_SET);
++			index = 0;
++			while (index < logRemainSize){
++				if(!fgets(buffer, 1024, fp))
++					break;
++				buffer[strlen(buffer)-1] = '\0';
++				sprintf(cmd, "echo \"%s\" >> %s", buffer, tempFile);
++				system(cmd);
++				index += strlen(buffer);
++			}
++		}
++		else{
++			printf("syslogd can not open %s\n", logFilePath);
++			return;
++		}
++
++		//Copy back /log/temp.log to /data/log/system0.log
++		sprintf(cmd,"cp %s %s%d", tempFile, flashLogFilePath, 0);
++		system(cmd);
++
++		if(index >= logRemainSize){
++			rotateLog(flashLogFilePath, logFileRotate);
++
++			//Write remains logs in /log/system.log to /log/temp.log
++			//Clear /log/temp.log
++			fd = device_open(tempFile, O_WRONLY);
++			ftruncate( fd, 0 );
++			close(fd);
++			//Write logs into /log/temp.log
++			while(fgets(buffer, 1024, fp)){
++				buffer[strlen(buffer)-1] = '\0';
++				sprintf(cmd, "echo \"%s\" >> %s", buffer, tempFile);
++				system(cmd);
++			}
++			fclose(fp);
++
++			//Copy /log/temp.log to /data/log/system0.log
++			sprintf(cmd,"cp %s %s%d", tempFile, flashLogFilePath, 0);
++			system(cmd);
++		}
++		//Remove /log/temp.log
++		unlink(tempFile);
++
++		//Remove /log/system.log
++		unlink(logFilePath);
++	}
++}
++#endif 
++
+ /* Print a message to the specified device.
+  * "where" may be bitwise-or'd from L_LOG | L_CONSOLE
+  * NB: careful, we can be called after vfork!
+@@ -808,6 +985,24 @@
+ 	 *  while true; do reboot; done
+ 	 * Preventing it:
+ 	 */
++
++/* __ZyXEL__, Albert, 20150909, Save System and Security Log to Flash. */
++#ifdef ZYXEL_SAVE_LOG_TO_FLASH
++        if (sig == SIGTERM) {
++
++            char tmpfilename[64] = {0};   
++            char tmpflashfilename[64] = {0};  
++
++			sprintf(tmpfilename,"%s%s",LOG_FILE_PATH, FLASH_LOG_FILE_SYSLOG);
++			sprintf(tmpflashfilename,"%s%s",FLASH_LOG_FILE_PATH, FLASH_LOG_FILE_SYSLOG);
++            copyLogToFlash(tmpfilename, tmpflashfilename, 200*1024, LOG_ROTATE);	            
++
++			sprintf(tmpfilename,"%s%s",LOG_FILE_PATH, FLASH_LOG_FILE_SECURITY);
++			sprintf(tmpflashfilename,"%s%s",FLASH_LOG_FILE_PATH, FLASH_LOG_FILE_SECURITY);
++            copyLogToFlash(tmpfilename, tmpflashfilename, 200*1024, LOG_ROTATE);	            
++			}
++#endif               
++    
+ 	reset_sighandlers_and_unblock_sigs();
+ 
+ 	run_shutdown_and_kill_processes();

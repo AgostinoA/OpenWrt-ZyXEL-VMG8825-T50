@@ -1,0 +1,455 @@
+diff -Naur dnsmasq-2.67-orig/.gitignore dnsmasq-2.67/.gitignore
+--- dnsmasq-2.67-orig/.gitignore	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/.gitignore	1970-01-01 08:00:00.000000000 +0800
+@@ -1,14 +0,0 @@
+-src/*.o
+-src/*.mo
+-src/dnsmasq.pot
+-src/dnsmasq
+-src/dnsmasq_baseline
+-src/.configured
+-contrib/wrt/dhcp_lease_time
+-contrib/wrt/dhcp_release
+-debian/base/
+-debian/daemon/
+-debian/files
+-debian/substvars
+-debian/utils-substvars
+-debian/utils/
+diff -Naur dnsmasq-2.67-orig/Makefile dnsmasq-2.67/Makefile
+--- dnsmasq-2.67-orig/Makefile	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/Makefile	2014-01-09 14:42:06.621110009 +0800
+@@ -44,6 +44,15 @@
+ PO  = po
+ MAN = man
+ 
++#USERSPACE_ZCFG_DIR = $(BUILD_DIR)/userspace/zyxel/private/apps/zcfg
++#USERSPACE_ZCFG_INCLUDE = $(USERSPACE_ZCFG_DIR)/include
++#USERSPACE_ZCMD_INCLUDE = $(BUILD_DIR)/userspace/zyxel/private/apps/esmd
++ZYXEL_CFLAGS += -DZYXEL_DHCP
++ZYXEL_OBJS += extern.o
++#ZYXEL_INCDIR += -I$(USERSPACE_ZCMD_INCLUDE) -I$(USERSPACE_ZCFG_INCLUDE)
++ZYXEL_LIBS =  -lzcfg_msg
++#ZYXEL_LIBDIR += -L$(INSTALL_DIR)/lib/public
++
+ #################################################################
+ 
+ # pmake way. (NB no spaces to keep gmake 3.82 happy)
+@@ -65,7 +74,7 @@
+ objs = cache.o rfc1035.o util.o option.o forward.o network.o \
+        dnsmasq.o dhcp.o lease.o rfc2131.o netlink.o dbus.o bpf.o \
+        helper.o tftp.o log.o conntrack.o dhcp6.o rfc3315.o \
+-       dhcp-common.o outpacket.o radv.o slaac.o auth.o ipset.o domain.o
++       dhcp-common.o outpacket.o radv.o slaac.o auth.o ipset.o domain.o $(ZYXEL_OBJS)
+ 
+ hdrs = dnsmasq.h config.h dhcp-protocol.h dhcp6-protocol.h \
+        dns-protocol.h radv-protocol.h
+@@ -73,8 +82,8 @@
+ all : $(BUILDDIR)
+ 	@cd $(BUILDDIR) && $(MAKE) \
+  top="$(top)" \
+- build_cflags="$(version) $(dbus_cflags) $(idn_cflags) $(ct_cflags) $(lua_cflags)" \
+- build_libs="$(dbus_libs) $(idn_libs) $(ct_libs) $(lua_libs) $(sunos_libs)" \
++ build_cflags="$(version) $(dbus_cflags) $(idn_cflags) $(ct_cflags) $(lua_cflags) $(ZYXEL_CFLAGS)" \
++ build_libs="$(dbus_libs) $(idn_libs) $(ct_libs) $(lua_libs) $(sunos_libs) $(ZYXEL_LIBS)" \
+  -f $(top)/Makefile dnsmasq 
+ 
+ mostly_clean :
+@@ -92,6 +101,7 @@
+ 	$(INSTALL) -d $(DESTDIR)$(BINDIR) -d $(DESTDIR)$(MANDIR)/man8
+ 	$(INSTALL) -m 644 $(MAN)/dnsmasq.8 $(DESTDIR)$(MANDIR)/man8 
+ 	$(INSTALL) -m 755 $(BUILDDIR)/dnsmasq $(DESTDIR)$(BINDIR)
++#	$(INSTALL) -m 755 $(SRC)/dnsmasq $(INSTALL_DIR)/bin
+ 
+ all-i18n : $(BUILDDIR)
+ 	@cd $(BUILDDIR) && $(MAKE) \
+@@ -143,10 +153,10 @@
+ 	ln -s $(top)/$(SRC)/$@ .
+ 
+ .c.o:
+-	$(CC) $(CFLAGS) $(COPTS) $(i18n) $(build_cflags) $(RPM_OPT_FLAGS) -c $<	
++	$(CC) $(CFLAGS) $(COPTS) $(i18n) $(build_cflags) $(BUILD_CFLAGS) $(RPM_OPT_FLAGS) -c $<	
+ 
+ dnsmasq : .configured $(hdrs) $(objs)
+-	$(CC) $(LDFLAGS) -o $@ $(objs) $(build_libs) $(LIBS) 
++	$(CC) $(LDFLAGS) -o $@ $(objs) $(build_libs) $(BUILD_CFLAGS) $(LIBS) 
+ 
+ dnsmasq.pot : $(objs:.o=.c) $(hdrs)
+ 	$(XGETTEXT) -d dnsmasq --foreign-user --omit-header --keyword=_ -o $@ -i $(objs:.o=.c)
+diff -Naur dnsmasq-2.67-orig/.new dnsmasq-2.67/.new
+--- dnsmasq-2.67-orig/.new	1970-01-01 08:00:00.000000000 +0800
++++ dnsmasq-2.67/.new	2014-01-09 14:10:39.529029357 +0800
+@@ -0,0 +1 @@
++shlibs:Depends=libc6 (>= 2.1)
+diff -Naur dnsmasq-2.67-orig/src/dhcp.c dnsmasq-2.67/src/dhcp.c
+--- dnsmasq-2.67-orig/src/dhcp.c	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/dhcp.c	2014-01-09 14:10:39.281029363 +0800
+@@ -331,6 +331,11 @@
+       iov.iov_len = dhcp_reply(parm.current, ifr.ifr_name, iface_index, (size_t)sz, 
+ 			       now, unicast_dest, &is_inform, pxe_fd, iface_addr);
+       lease_update_file(now);
++
++#ifdef ZYXEL_DHCP
++      handle_STB_Vendor_ID_request();
++#endif 
++
+       lease_update_dns(0);
+       
+       if (iov.iov_len == 0)
+diff -Naur dnsmasq-2.67-orig/src/dnsmasq.c dnsmasq-2.67/src/dnsmasq.c
+--- dnsmasq-2.67-orig/src/dnsmasq.c	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/dnsmasq.c	2014-01-09 14:10:39.277029368 +0800
+@@ -64,6 +64,10 @@
+   textdomain("dnsmasq");
+ #endif
+ 
++#ifdef ZYXEL_DHCP /* register to zyxel zcfg, by charisse*/
++  dnsmasq_eid_register();  
++#endif
++
+   sigact.sa_handler = sig_handler;
+   sigact.sa_flags = 0;
+   sigemptyset(&sigact.sa_mask);
+diff -Naur dnsmasq-2.67-orig/src/dnsmasq.h dnsmasq-2.67/src/dnsmasq.h
+--- dnsmasq-2.67-orig/src/dnsmasq.h	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2014-01-09 14:10:39.285029353 +0800
+@@ -232,6 +232,12 @@
+ #define MS_TFTP LOG_USER
+ #define MS_DHCP LOG_DAEMON 
+ 
++#ifdef ZYXEL_DHCP
++	#define DHCP_CLIENT_NUM 34
++	#define VENDORID_LENGTH 100
++	#define MAC_LENGTH 18
++#endif
++
+ struct all_addr {
+   union {
+     struct in_addr addr4;
+@@ -1309,3 +1315,12 @@
+ time_t periodic_slaac(time_t now, struct dhcp_lease *leases);
+ void slaac_ping_reply(struct in6_addr *sender, unsigned char *packet, char *interface, struct dhcp_lease *leases);
+ #endif
++
++/* extern.c */
++#ifdef ZYXEL_DHCP
++extern void dnsmasq_eid_register(void);
++extern void handle_op125_request(unsigned char *oui,unsigned char *serial,unsigned char *pclass);
++extern void send_dhcp_option_request(char *ifName, char *vendorID, unsigned char *chaddr, char reply[]);
++extern void handle_STB_Vendor_ID_request();
++#endif
++
+diff -Naur dnsmasq-2.67-orig/src/extern.c dnsmasq-2.67/src/extern.c
+--- dnsmasq-2.67-orig/src/extern.c	1970-01-01 08:00:00.000000000 +0800
++++ dnsmasq-2.67/src/extern.c	2014-01-09 14:10:39.285029353 +0800
+@@ -0,0 +1,133 @@
++#ifdef ZYXEL_DHCP
++#include <stdio.h>
++#include <string.h>
++#include <stddef.h>
++
++#include "dnsmasq.h"
++
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include <json/json.h>
++
++/*ZyXEL esmd*/
++#include "esmd_mgabdev.h"
++#include "esmd_connection.h"
++
++void dnsmasq_eid_register( void ){	
++	zcfgRet_t retzcfg;
++
++	/*Register dnsmasq eid which is defined in zcfg_eid.h*/
++	zcfgEidInit(ZCFG_EID_DNSMASQ, NULL);
++	
++	/*init message server*/
++	retzcfg = zcfgMsgServerInit();
++	if(retzcfg != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "Dnsmasq message  server init fail\n");
++		return 0;
++	}	
++}
++
++zcfgRet_t dnsmasq_msg_send(int msg_type, int payloadLen, const char *payload, char reply[])
++{
++	zcfgRet_t ret = 0;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_DNSMASQ;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr,  (zcfgMsg_t **)&recvBuf, 0);
++	if(ret == ZCFG_SUCCESS) {
++		recvMsgHdr = (zcfgMsg_t*)recvBuf;
++		if(recvMsgHdr){
++			if(recvMsgHdr->type == RESPONSE_SUCCESS) {
++				recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++				strcpy(reply, recv_str);
++			}
++			free(recvBuf);
++		}
++	}
++		
++	return ret;
++}
++
++void handle_op125_request(unsigned char *oui , unsigned char *serial, unsigned char *pclass)
++{
++	zcfgRet_t ret;
++	mgabDev_t mgabdev;
++	my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
++
++	memset(&mgabdev, '\0', sizeof(mgabdev));
++
++	if(oui){
++		strncpy(mgabdev.ManufacturerOUI, (char *)(&oui[2]), oui[1]);
++	}
++	if(serial){
++		strncpy(mgabdev.SerialNumber, (char *)(&serial[2]), serial[1]);
++	}
++	if(pclass){
++		strncpy(mgabdev.ProductClass, (char *)(&pclass[2]), pclass[1]);
++	}
++
++	/* send ZCFG_MSG_MGABDEV_DETECT to ESMD for notification  */
++	ret = dnsmasq_msg_send(ZCFG_MSG_MGABDEV_DETECT, sizeof(mgabDev_t), (const char*)&mgabdev, NULL);
++	if(ret != ZCFG_SUCCESS && ret != ZCFG_SUCCESS_AND_NO_REPLY)
++		my_syslog(MS_DHCP | LOG_ERR, "%s dnsmasq_msg_send fail,ret=%d", __func__, ret);
++
++}
++
++void send_dhcp_option_request(char *ifName, char *vendorID, unsigned char *chaddr, char reply[])
++{
++	zcfgRet_t ret = 0;
++	dnsmasqOption_t dnsmasqInfo;
++	
++	my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
++
++	memset(&dnsmasqInfo, '\0', sizeof(dnsmasqInfo));
++	
++	if(ifName)
++		strncpy(dnsmasqInfo.ifName, (char *)ifName, sizeof(dnsmasqInfo.ifName));
++	
++	if(chaddr)
++		memcpy(dnsmasqInfo.chaddr, (char *)chaddr, 32);
++	
++	if(vendorID)
++		strncpy(dnsmasqInfo.op60, (char *)vendorID, sizeof(dnsmasqInfo.op60));
++
++	/* send ZCFG_MSG_DHCPD_OPTION to ESMD for DHCP option  */
++	ret = dnsmasq_msg_send(ZCFG_MSG_DHCPD_OPTION, sizeof(dnsmasqOption_t), (const char *)&dnsmasqInfo, reply);
++	my_syslog(MS_DHCP | LOG_INFO, "%s esmd reply=%s", __func__, reply);
++	
++	if(ret != ZCFG_SUCCESS && ret != ZCFG_SUCCESS_AND_NO_REPLY){
++		my_syslog(MS_DHCP | LOG_ERR, "%s dnsmasq_msg_send fail,ret=%d", __func__, ret);
++		strcpy(reply, "accept");//default pass any port any service 
++	}
++}
++
++void handle_STB_Vendor_ID_request()
++{
++	zcfgRet_t ret;
++	my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
++
++	/* send ZCFG_MSG_MGABDEV_DETECT to ESMD for notification  */
++	ret = dnsmasq_msg_send(ZCFG_MSG_STB_VENDOR_ID_FIND, 0, NULL, NULL);
++	if(ret != ZCFG_SUCCESS && ret != ZCFG_SUCCESS_AND_NO_REPLY)
++		my_syslog(MS_DHCP | LOG_ERR, "%s ZCFG_MSG_STB_VENDOR_ID_FIND fail,ret=%d", __func__, ret);
++
++}
++#endif
+diff -Naur dnsmasq-2.67-orig/src/lease.c dnsmasq-2.67/src/lease.c
+--- dnsmasq-2.67-orig/src/lease.c	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/lease.c	2014-01-09 14:10:39.277029368 +0800
+@@ -18,6 +18,11 @@
+ 
+ #ifdef HAVE_DHCP
+ 
++#ifdef ZYXEL_DHCP
++extern char vendorid[DHCP_CLIENT_NUM][VENDORID_LENGTH];
++extern int dhcpclientnum;
++#endif
++
+ static struct dhcp_lease *leases = NULL, *old_leases = NULL;
+ static int dns_dirty, file_dirty, leases_left;
+ 
+@@ -214,6 +219,9 @@
+   struct dhcp_lease *lease;
+   time_t next_event;
+   int i, err = 0;
++#ifdef ZYXEL_DHCP
++  int j = 0;
++#endif
+ 
+   if (file_dirty != 0 && daemon->lease_stream)
+     {
+@@ -254,10 +262,17 @@
+ 	    {
+ 	      for (i = 0; i < lease->clid_len - 1; i++)
+ 		ourprintf(&err, "%.2x:", lease->clid[i]);
+-	      ourprintf(&err, "%.2x\n", lease->clid[i]);
++	      ourprintf(&err, "%.2x ", lease->clid[i]);
+ 	    }
+ 	  else
+-	    ourprintf(&err, "*\n");	  
++	    ourprintf(&err, "* ");
++
++#ifdef ZYXEL_DHCP	  
++	  my_syslog(LOG_INFO, _("dhcpclientnum = %d"), dhcpclientnum);
++	  my_syslog(LOG_INFO, _("j = %d , Vendor-ID = %s"), j, vendorid[dhcpclientnum - j - 1]);
++	  ourprintf(&err, "%s\n", vendorid[dhcpclientnum - j - 1]);
++	  j++;
++#endif
+ 	}
+       
+ #ifdef HAVE_DHCP6  
+diff -Naur dnsmasq-2.67-orig/src/rfc2131.c dnsmasq-2.67/src/rfc2131.c
+--- dnsmasq-2.67-orig/src/rfc2131.c	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2014-01-09 14:10:39.281029363 +0800
+@@ -18,6 +18,12 @@
+ 
+ #ifdef HAVE_DHCP
+ 
++#ifdef ZYXEL_DHCP
++char vendorid[DHCP_CLIENT_NUM][VENDORID_LENGTH] = {};
++char clientmac[DHCP_CLIENT_NUM][MAC_LENGTH] = {};
++int dhcpclientnum = 0;
++#endif
++
+ #define option_len(opt) ((int)(((unsigned char *)(opt))[1]))
+ #define option_ptr(opt, i) ((void *)&(((unsigned char *)(opt))[2u+(unsigned int)(i)]))
+ 
+@@ -93,7 +99,12 @@
+   struct dhcp_opt *o;
+   unsigned char pxe_uuid[17];
+   unsigned char *oui = NULL, *serial = NULL, *class = NULL;
+-
++#ifdef ZYXEL_DHCP
++  char *s_ret = NULL, *macEmpty = NULL;
++  int j;
++  char vendorId[256] = "";
++  char intfGrpOptionCheck[16] = "";
++#endif
+   subnet_addr.s_addr = override.s_addr = 0;
+ 
+   /* set tag with name == interface */
+@@ -117,6 +128,63 @@
+ 	return 0;
+       
+       mess_type = option_uint(opt, 0, 1);
++
++#ifdef ZYXEL_DHCP
++      if ((opt = option_find(mess, sz, OPTION_VENDOR_ID, 2))){ //get dhcp option 60
++	emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
++      	vendor_class_len = option_len(opt);
++	memset(daemon->dhcp_buff3, '\0', strlen(daemon->dhcp_buff3));
++	memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
++	strncpy(vendorId, option_ptr(opt, 0), option_len(opt));
++	for(j=0; j<dhcpclientnum; j++){
++           my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++           my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
++	   s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len)); //get client MAC Address
++	   if(s_ret != NULL) //client MAC already exist in mac table
++		break;
++	}
++	my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
++
++	my_syslog(LOG_INFO, _("daemon->dhcp_buff3 = %s"), vendorId);
++	my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++	
++	my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
++	my_syslog(MS_DHCP | LOG_WARNING, _("inet_ntoa(mess->giaddr)=%s"),inet_ntoa(mess->giaddr));
++	
++	macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
++	if(s_ret == NULL && macEmpty == NULL){ //client MAC doesn't exist in mac table, means this client is newer
++	   strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
++	   if(strcmp(daemon->dhcp_buff3, ""))
++	   	strcpy(vendorid[dhcpclientnum], daemon->dhcp_buff3);
++	   else
++	 	strcpy(vendorid[dhcpclientnum], "*");
++	   my_syslog(LOG_INFO, _("dhcp client number ++"));
++	   dhcpclientnum++; //means total number that connect to DHCP server
++	}
++	my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
++	my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
++      }
++      else{ //DHCP packet don't have option 60
++	for(j=0; j<dhcpclientnum; j++){
++	   my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++	   my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);	
++           s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len));
++           if(s_ret != NULL)
++                break;
++        }
++        my_syslog(LOG_INFO, _("s_ret = %s"), s_ret);
++	macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
++        if(s_ret == NULL && macEmpty == NULL){
++           strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
++           strcpy(vendorid[dhcpclientnum], "*");
++	   my_syslog(LOG_INFO, _("dhcp client number ++"));
++           dhcpclientnum++;
++        }
++	my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
++	my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
++	my_syslog(LOG_INFO, _("option 60 doesn't exist"));
++      }
++#endif
+       
+       /* two things to note here: expand_buf may move the packet,
+ 	 so reassign mess from daemon->packet. Also, the size
+@@ -157,6 +225,10 @@
+ 		  oui = option_find1(x, y, 1, 1);
+ 		  serial = option_find1(x, y, 2, 1);
+ 		  class = option_find1(x, y, 3, 1);
++
++#ifdef ZYXEL_DHCP /*save the DHCP option to Gateway , by charisse*/
++		  handle_op125_request( oui, serial, class);
++#endif
+ 		  
+ 		  /* If TR069-id is present set the tag "cpewan-id" to facilitate echoing 
+ 		     the gateway id back. Note that the device class is optional */
+@@ -905,7 +977,25 @@
+       memcpy(req_options, option_ptr(opt, 0), option_len(opt));
+       req_options[option_len(opt)] = OPTION_END;
+     }
+-  
++ 
++#ifdef ZYXEL_DHCP
++	my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
++	
++	my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
++	my_syslog(MS_DHCP | LOG_WARNING, _("vendorId=%s"),  vendorId);
++  /*send option 60 information for any port any service*/
++if(strcmp(vendorId, "")){
++	send_dhcp_option_request(iface_name, vendorId, emac, intfGrpOptionCheck);
++my_syslog(MS_DHCP | LOG_WARNING, _("intfGrpOptionCheck=%s"),  intfGrpOptionCheck);
++	  /*check interface grouping creteria*/
++	if((intfGrpOptionCheck != NULL) && (strcmp(intfGrpOptionCheck, ""))){
++		if(!strcmp(intfGrpOptionCheck, "decline") || !strcmp(intfGrpOptionCheck, "redirect"))
++			return 0;
++	}
++}
++
++#endif
++ 
+   switch (mess_type)
+     {
+     case DHCPDECLINE:

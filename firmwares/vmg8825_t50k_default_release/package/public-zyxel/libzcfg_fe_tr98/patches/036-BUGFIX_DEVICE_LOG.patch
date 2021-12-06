@@ -1,0 +1,93 @@
+Index: libzcfg_fe_tr98-1.0/devInfo.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo.c	2014-05-15 14:11:07.431211782 +0800
++++ libzcfg_fe_tr98-1.0/devInfo.c	2014-05-15 13:35:32.311838000 +0800
+@@ -1,4 +1,5 @@
+ #include <json/json.h>
++#include <unistd.h>
+ 
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_access.h"
+@@ -14,6 +15,11 @@
+ 
+ extern tr98Object_t tr98Obj[];
+ 
++#define FILE_SIZE 32768
++#define SYSLOG_FILE_1 "/var/log/syslog.log.1"
++#define SYSLOG_FILE "/var/log/syslog.log"
++
++
+ /* InternetGatewayDevice.DeviceInfo */
+ zcfgRet_t devInfoObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+@@ -25,6 +31,11 @@
+ 	struct json_object *devInfoObj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
++	char log[FILE_SIZE] = {0};
++	int filelen1 = 0, filelen2 = 0;
++	FILE *fd1 = NULL;
++	FILE *fd2 = NULL;
++	char *lst = calloc(256, sizeof(char));
+ 
+ 	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
+ 
+@@ -51,6 +62,58 @@
+ 			continue;		
+ 		}
+ 		
++		if(strcmp(paramList->name, "DeviceLog") == 0){
++			if(access(SYSLOG_FILE_1, F_OK) == 0){
++				fd1 = fopen(SYSLOG_FILE_1, "r");
++			}
++			if(access(SYSLOG_FILE, F_OK) == 0){
++				if((fd2 = fopen(SYSLOG_FILE, "r")) == NULL ){
++					printf("TR69 open log file fail!!\n");
++				}
++			}
++			strcpy(log, "");
++			if((fd1 != NULL) || (fd2 != NULL)){
++				if(fd1 != NULL){
++					fseek(fd1, 0, SEEK_END);
++					filelen1 = ftell(fd1);
++					fseek(fd1, 0, SEEK_SET);
++				}
++				if(fd2 != NULL){
++					fseek(fd2, 0, SEEK_END);
++					filelen2 = ftell(fd2);
++					fseek(fd2, 0, SEEK_SET);
++				}
++				if(filelen2 > FILE_SIZE){
++					fseek(fd2, ((filelen2%FILE_SIZE) + (filelen2/FILE_SIZE - 1)*FILE_SIZE), SEEK_SET);
++					fgets(lst, 256, fd2);
++					while((fgets(lst, 256, fd2)) != NULL) {
++						strcat(log, lst);	
++					}
++				}else{
++					if(fd1 != NULL){
++						fseek(fd1, (filelen1 - (FILE_SIZE - filelen2)), SEEK_SET);
++						fgets(lst, 256, fd1);
++						while((fgets(lst, 256, fd1)) != NULL) {
++							strcat(log, lst);	
++						}
++					}
++					while((fgets(lst, 256, fd2)) != NULL) {
++						strcat(log, lst);	
++					}
++				}
++				if(fd1 != NULL){
++					fclose(fd1);
++				}
++				if(fd2 != NULL){
++					fclose(fd2);
++				}
++			}
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(json_object_new_string(log)));
++			paramList++;
++			free(lst);
++			continue;	
++		}
++		
+ 		paramValue = json_object_object_get(devInfoObj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));

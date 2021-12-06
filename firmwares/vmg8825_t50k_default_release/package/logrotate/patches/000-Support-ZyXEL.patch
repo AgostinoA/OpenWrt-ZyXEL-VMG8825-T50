@@ -1,0 +1,280 @@
+diff -Naur logrotate-3.7.1-orig/config.c logrotate-3.7.1/config.c
+--- logrotate-3.7.1-orig/config.c	2003-08-07 19:13:14.000000000 +0800
++++ logrotate-3.7.1/config.c	2013-10-01 14:32:08.637308000 +0800
+@@ -931,13 +931,21 @@
+ 			configFile, lineNum);
+ 		return 1;
+ 	    }
++	    for (argNum = 0; argNum < argc; argNum++) {
++		    message(MESS_ERROR, "%s:%d glob failed for %s\n",
++			    configFile, lineNum, argv[argNum]);
++	    }
+ 
+ 	    /* XXX this leaks the result of the glob <shrug> */
+ 	    newlog->files = NULL;
+ 	    newlog->numFiles = 0;
+ 	    for (argNum = 0; argNum < argc; argNum++) {
+ 		rc = glob(argv[argNum], GLOB_NOCHECK, globerr, &globResult);
+-		if (rc == GLOB_ABORTED) {
++		for (i = 0; i < globResult.gl_pathc; i++) {
++            		message(MESS_ERROR, "%s:%d globResult %s\n",
++			    configFile, lineNum, globResult.gl_pathv[i]);
++		}
++/*		if (rc == GLOB_ABORTED) {
+ 		    if(newlog->flags & LOG_FLAG_MISSINGOK)
+ 		        continue;
+ 
+@@ -945,7 +953,7 @@
+ 			    configFile, lineNum, argv[argNum]);
+ 		    return 1;
+ 		}
+-
++*/
+ 		newlog->files = realloc(newlog->files, sizeof(*newlog->files) * 
+ 				   (newlog->numFiles + globResult.gl_pathc));
+ 
+diff -Naur logrotate-3.7.1-orig/logrotate.c logrotate-3.7.1/logrotate.c
+--- logrotate-3.7.1-orig/logrotate.c	2004-10-20 05:41:24.000000000 +0800
++++ logrotate-3.7.1/logrotate.c	2013-10-01 14:32:08.637308000 +0800
+@@ -22,6 +22,7 @@
+ #include "log.h"
+ #include "logrotate.h"
+ 
++
+ typedef struct {
+     char * fn;
+     struct tm lastRotated;	/* only tm.mon, tm_mday, tm_year are good! */
+@@ -1002,13 +1003,15 @@
+ 	}
+ 	
+ 	/* Hack to hide earlier bug */
++ 	/*Added by Zyxel staven*/
++	#ifdef LogZyxel 
+ 	if ((year != 1900) && (year < 1996 || year > 2100)) {
+ 	    message(MESS_ERROR, "bad year %d for file %s in state file %s\n",
+ 		    year, argv[0], stateFilename);
+ 	    fclose(f);
+ 	    return 1;
+ 	}
+-	
++	#endif
+ 	if (month < 1 || month > 12) {
+ 	    message(MESS_ERROR, "bad month %d for file %s in state file %s\n",
+ 		    month, argv[0], stateFilename);
+diff -Naur logrotate-3.7.1-orig/logrotate.conf logrotate-3.7.1/logrotate.conf
+--- logrotate-3.7.1-orig/logrotate.conf	1970-01-01 08:00:00.000000000 +0800
++++ logrotate-3.7.1/logrotate.conf	2013-10-01 14:32:08.637308000 +0800
+@@ -0,0 +1,7 @@
++create
++/var/log/*.log
++{
++ copytruncate
++ size=50k
++ rotate 1
++}
+diff -Naur logrotate-3.7.1-orig/Makefile logrotate-3.7.1/Makefile
+--- logrotate-3.7.1-orig/Makefile	2003-10-10 04:05:07.000000000 +0800
++++ logrotate-3.7.1/Makefile	2014-01-17 14:06:48.783637422 +0800
+@@ -3,10 +3,14 @@
+ CVSTAG = r$(subst .,-,$(VERSION))
+ OS_NAME = $(shell uname -s)
+ LFS = $(shell echo `getconf LFS_CFLAGS 2>/dev/null`)
++
+ CFLAGS = -Wall -D_GNU_SOURCE -D$(OS_NAME) -DVERSION=\"$(VERSION)\" $(RPM_OPT_FLAGS) $(LFS)
+ PROG = logrotate
+ MAN = logrotate.8
+-LOADLIBES = -lpopt
++
++#Develp by Zyxel
++LOADLIBES += -lpopt
++
+ 
+ ifeq ($(WITH_SELINUX),yes)
+ CFLAGS += -DWITH_SELINUX
+@@ -64,7 +68,7 @@
+ 
+ #--------------------------------------------------------------------------
+ 
+-OBJS = logrotate.o log.o config.o basenames.o
++OBJS = log.o config.o basenames.o logrotate.o
+ SOURCES = $(subst .o,.c,$(OBJS) $(LIBOBJS))
+ 
+ ifeq ($(RPM_OPT_FLAGS),)
+@@ -72,11 +76,11 @@
+ LDFLAGS = -g
+ endif
+ 
+-ifeq (.depend,$(wildcard .depend))
++#ifeq (.depend,$(wildcard .depend))
+ TARGET=$(PROG)
+-else
+-TARGET=depend $(PROG)
+-endif
++#else
++#TARGET=depend $(PROG)
++#endif
+ 
+ RCSVERSION = $(subst .,-,$(VERSION))
+ 
+@@ -95,17 +99,31 @@
+ 	(cd test; ./test)
+ 
+ install:
+-	[ -d $(PREFIX)/$(BINDIR) ] || mkdir -p $(PREFIX)/$(BINDIR)
+-	[ -d $(PREFIX)/$(MANDIR) ] || mkdir -p $(PREFIX)/$(MANDIR)
+-	[ -d $(PREFIX)/$(MANDIR)/man8 ] || mkdir -p $(PREFIX)/$(MANDIR)/man8
++	[ -d $(INSTALL_DIR)/$(BINDIR) ] || mkdir -p $(INSTALL_DIR)/$(BINDIR)
++	[ -d $(INSTALL_DIR)/$(MANDIR) ] || mkdir -p $(INSTALL_DIR)/$(MANDIR)
++	[ -d $(INSTALL_DIR)/$(MANDIR)/man8 ] || mkdir -p $(INSTALL_DIR)/$(MANDIR)/man8
+ 
+ 	if [ "$(OS_NAME)" = HP-UX ]; then \
+-	$(INSTALL) $(PROG) $(PREFIX)/$(BINDIR) 0755 bin bin; \
+-	$(INSTALL) $(MAN) $(PREFIX)/$(MANDIR)/man`echo $(MAN) | sed "s/.*\.//"` 0644 bin bin; \
++	$(INSTALL) $(PROG) $(INSTALL_DIR)/$(BINDIR) 0755 bin bin; \
++	$(INSTALL) $(MAN) $(INSTALL_DIR)/$(MANDIR)/man`echo $(MAN) | sed "s/.*\.//"` 0644 bin bin; \
+ 	else \
+-	$(INSTALL) -m 755 $(PROG) $(PREFIX)/$(BINDIR); \
+-	$(INSTALL) -m 644 $(MAN) $(PREFIX)/$(MANDIR)/man`echo $(MAN) | sed "s/.*\.//"`/$(MAN); \
++	$(INSTALL) -m 755 $(PROG) $(INSTALL_DIR)$(BINDIR); \
++	$(INSTALL) -m 644 $(MAN) $(INSTALL_DIR)$(MANDIR)/man`echo $(MAN) | sed "s/.*\.//"`/$(MAN); \
++	fi
++	if [ ! -d $(INSTALL_DIR)/etc/logrotate.d ]; then \
++		mkdir -m 755 -p $(INSTALL_DIR)/etc/logrotate.d ; \
++	fi
++	install -m 755 ./zyxel.etc/sys_logrotate.conf $(INSTALL_DIR)/etc/logrotate.d
++	install -m 755 ./zyxel.etc/voip_logrotate.conf $(INSTALL_DIR)/etc/logrotate.d
++	if [ ! -f $(INSTALL_DIR)/etc/crontab ]; then \
++		touch $(INSTALL_DIR)/etc/crontab ; \
++	fi
++	if [ -z "`cat $(INSTALL_DIR)/etc/crontab | grep sys_logrotate.conf`" ]; then \
++		echo "0,30 */1 * * * /usr/sbin/logrotate /etc/logrotate.d/sys_logrotate.conf " >> $(INSTALL_DIR)/etc/crontab; \
+ 	fi
++#	if [ -z "`cat $(INSTALL_DIR)/etc/crontab | grep voip_logrotate.conf`" ]; then \
++#		echo "0 */1 * * * /usr/sbin/logrotate /etc/logrotate.d/voip_logrotate.conf " >> $(INSTALL_DIR)/etc/crontab; \
++#	fi
+ 
+ co:
+ 	co RCS/*,v
+diff -Naur logrotate-3.7.1-orig/Makefile.ZyXEL logrotate-3.7.1/Makefile.ZyXEL
+--- logrotate-3.7.1-orig/Makefile.ZyXEL	1970-01-01 08:00:00.000000000 +0800
++++ logrotate-3.7.1/Makefile.ZyXEL	2013-10-01 14:32:08.637308000 +0800
+@@ -0,0 +1,88 @@
++#/******************************************************************************/
++#/*
++#* Copyright (C) ZyXEL Communications, Corp.
++#* All Rights Reserved.
++#*
++#* ZyXEL Confidential; Need to Know only.
++#* Protected as an unpublished work.
++#*
++#* The computer program listings, specifications and documentation
++#* herein are the property of ZyXEL Communications, Corp. and
++#* shall not be reproduced, copied, disclosed, or used in whole or
++#* in part for any reason without the prior express written permission of
++#* ZyXEL Communications, Corp.
++#*/
++#/******************************************************************************/
++include $(ZLD_PRODUCT_ROOT_DIR)/Make.config
++
++export PATH=
++export PATH=${GNUTOOL_OLD}:${TOOL_CHAIN_PATH}
++
++export CC=${CROSS_COMPILE}gcc
++export AR=${CROSS_COMPILE}ar
++export AS=${CROSS_COMPILE}as
++export LD=${CROSS_COMPILE}ld
++export NM=${CROSS_COMPILE}nm
++export GCC=${CROSS_COMPILE}gcc
++export CXX=${CROSS_COMPILE}g++
++export CPP=${CROSS_COMPILE}cpp
++export RANLIB=${CROSS_COMPILE}ranlib
++export STRIP=$(CROSS_STRIP)
++
++ifeq ($(SUPPORT_EXTFS), yes)
++   INSTALL_PATH=$(ZLD_EXTFS_INSTALL_DIR)
++   INITDIR=/script/init.d
++else
++   INSTALL_PATH=$(ZLD_ROOTFS_INSTALL_DIR)
++   INITDIR=/etc/init.d
++endif
++
++DEPENDENCY := popt-1.14
++APP_SRC_DIR := $(shell pwd)
++APP_OBJ_DIR := $(ZLD_APPS_BUILD_DIR)/$(shell basename `pwd`)
++
++APP_POPT_OBJ_DIR := $(ZLD_APPS_BUILD_DIR)/popt-1.14
++
++#/************************* Start your Makefile *******************************/
++
++all: _dependency _clone _cross
++
++_cross: 
++	$(MAKE) -C $(APP_OBJ_DIR) INCLUDE="-I $(APP_POPT_OBJ_DIR)/" LOADLIBES="$(APP_POPT_OBJ_DIR)/.libs/libpopt.a"
++
++install:
++	$(STRIP) $(APP_OBJ_DIR)/logrotate
++	install -m 755 $(APP_OBJ_DIR)/logrotate $(INSTALL_PATH)/usr/sbin
++	if [ ! -d $(ZLD_ROOTFS_INSTALL_DIR)/etc/logrotate.d ]; then \
++		mkdir -m 755 -p $(ZLD_ROOTFS_INSTALL_DIR)/etc/logrotate.d ; \
++	fi
++	install -m 755 $(APP_OBJ_DIR)/zyxel.etc/sys_logrotate.conf $(ZLD_ROOTFS_INSTALL_DIR)/etc/logrotate.d
++	install -m 755 $(APP_OBJ_DIR)/zyxel.etc/voip_logrotate.conf $(ZLD_ROOTFS_INSTALL_DIR)/etc/logrotate.d
++	if [ ! -f $(ZLD_ROOTFS_INSTALL_DIR)/etc/crontab ]; then \
++		touch $(ZLD_ROOTFS_INSTALL_DIR)/etc/crontab ; \
++	fi
++	if [ -z "`cat $(ZLD_ROOTFS_INSTALL_DIR)/etc/crontab | grep sys_logrotate.conf`" ]; then \
++		echo "0,30 */1 * * * /usr/sbin/logrotate /etc/logrotate.d/sys_logrotate.conf " >> $(ZLD_ROOTFS_INSTALL_DIR)/etc/crontab; \
++	fi
++	if [ -z "`cat $(ZLD_ROOTFS_INSTALL_DIR)/etc/crontab | grep voip_logrotate.conf`" ]; then \
++		echo "0 */1 * * * /usr/sbin/logrotate /etc/logrotate.d/voip_logrotate.conf " >> $(ZLD_ROOTFS_INSTALL_DIR)/etc/crontab; \
++	fi
++	if [ ! -d $(ZLD_ROOTFS_INSTALL_DIR)/var/spool/cron/crontabs ]; then \
++		mkdir -m 755 -p $(ZLD_ROOTFS_INSTALL_DIR)/var/spool/cron/crontabs ; \
++	fi
++	if [ ! -d $(ZLD_ROOTFS_INSTALL_DIR)/var/lib ]; then \
++		mkdir -m 755 -p $(ZLD_ROOTFS_INSTALL_DIR)/var/lib ; \
++	fi
++
++clean distclean:
++	@rm -rf $(APP_OBJ_DIR)
++
++install_compile_phase:
++
++
++.PHONY: all _cross _configure clean distclean install_compile_phase
++.NOTPARALLEL: all install
++
++#/************************* End your Makefile *******************************/
++
++include $(ZLD_PRODUCT_ROOT_DIR)/Make.misc
+diff -Naur logrotate-3.7.1-orig/zyxel.etc/sys_logrotate.conf logrotate-3.7.1/zyxel.etc/sys_logrotate.conf
+--- logrotate-3.7.1-orig/zyxel.etc/sys_logrotate.conf	1970-01-01 08:00:00.000000000 +0800
++++ logrotate-3.7.1/zyxel.etc/sys_logrotate.conf	2013-10-01 14:32:08.637308000 +0800
+@@ -0,0 +1,8 @@
++create
++/var/log/*.log
++{
++ copytruncate
++ size=300k
++ rotate 1
++}
++
+diff -Naur logrotate-3.7.1-orig/zyxel.etc/voip_logrotate.conf logrotate-3.7.1/zyxel.etc/voip_logrotate.conf
+--- logrotate-3.7.1-orig/zyxel.etc/voip_logrotate.conf	1970-01-01 08:00:00.000000000 +0800
++++ logrotate-3.7.1/zyxel.etc/voip_logrotate.conf	2013-10-01 14:32:08.637308000 +0800
+@@ -0,0 +1,15 @@
++create
++/var/log/voip/*.log
++{
++ copytruncate
++ size=300k
++ rotate 1
++ postrotate
++ /bin/cat /dev/null > /var/log/voip/voip.log
++ /bin/cat /dev/null > /var/log/voip/voip_call_statistics.log
++ /bin/cat /dev/null > /var/log/voip/voip_sip_call_signaling.log
++ /bin/cat /dev/null > /var/log/voip/voip_sip_registrations.log
++ /bin/cat /dev/null > /var/log/voip/voip_phone_event.log
++ /bin/cat /dev/null > /var/log/voip/voip_misc.log
++ endscript
++}

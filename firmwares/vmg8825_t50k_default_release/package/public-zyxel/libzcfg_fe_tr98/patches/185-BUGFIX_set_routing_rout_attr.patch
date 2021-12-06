@@ -1,0 +1,212 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2015-08-03 21:09:03.389451445 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2015-08-03 21:09:03.621451450 +0800
+@@ -324,22 +324,22 @@
+ {
+ 	zcfgFeSetParmAttr_t *setParmAttr = NULL;
+ 	uint32_t seqnum = 0, oid = 0, attr = 0;
+-	objIndex_t tr98ObjIid, objIid;
++	objIndex_t tr98ObjIid, tr181ObjIid;
+ 
+-	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
+ 
+ 	if(!strcmp(paramName, "GatewayIPAddress")) {
+ 		IID_INIT(tr98ObjIid);
+ 		if(zcfgFe98NameToSeqnum((const char *)tr98FullPathName, &seqnum, &tr98ObjIid) != ZCFG_SUCCESS)
+ 			return ZCFG_NO_SUCH_PARAMETER;
+ 
+-		attr = newNotify | PARAMETER_ATTR_TR98;
++		attr = PARAMETER_ATTR_SET_TR98(newNotify);
+ 		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
+ 		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+-		IID_INIT(objIid);
+-		if(zcfgFe98To181ObjMappingGet(seqnum, &tr98ObjIid, &oid, &objIid) == ZCFG_SUCCESS) {
+-			attr = newNotify;
+-			setParmAttr = zcfgFeTr98ParamAttrSetByName(oid, &objIid, paramName, seqnum, &tr98ObjIid, paramName, attr);
++		IID_INIT(tr181ObjIid);
++		if(zcfgFe98To181ObjMappingGet(seqnum, &tr98ObjIid, &oid, &tr181ObjIid) == ZCFG_SUCCESS) {
++			attr = PARAMETER_ATTR_SET_TR181(newNotify);
++			setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, paramName, seqnum, &tr98ObjIid, paramName, attr);
+ 			json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+ 		}
+ 	}
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-08-03 21:09:03.561451448 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-08-03 21:09:03.621451450 +0800
+@@ -3607,7 +3607,19 @@
+ 		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_ZY_IGMP, &tr181ObjIid, "Interface", seqnum, &tr98ObjIid, paramName, attr);
+ 		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
+ 	}
+-	
++	else if(!strcmp(paramName, "DefaultGateway")) {
++		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++
++		json_object_put(jobj);
++		attr = PARAMETER_ATTR_SET_TR98(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++		attr = PARAMETER_ATTR_SET_TR181(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, "GatewayIPAddress", seqnum, &tr98ObjIid, paramName, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++	}
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+@@ -5792,6 +5804,94 @@
+ 	return ret;
+ }
+ 
++/*  TR98 Object Name : 
++   InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i
++   InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i
++*/
++zcfgRet_t WANIpPppConnObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgFeSetParmAttr_t *setParmAttr = NULL;
++	uint32_t seqnum = 0;
++	objIndex_t tr98ObjIid, tr181ObjIid;
++	uint32_t attr = 0;
++	struct json_object *jobj = NULL;
++	char ipIfaceName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	printf("%s: parm %s\n", __FUNCTION__, paramName);
++
++	if(zcfgFe98NameToSeqnum((const char *)tr98FullPathName, &seqnum, &tr98ObjIid) != ZCFG_SUCCESS)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	IID_INIT(tr181ObjIid);
++	if(seqnum == e_TR98_WAN_PPP_CONN) {
++		zcfg_offset_t oid = 0;
++		char pppIfaceName[MAX_TR181_PATHNAME] = {0};
++		// PPP.Interface mapping
++		if(zcfgFe98To181ObjMappingGet(seqnum, &tr98ObjIid, &oid, &tr181ObjIid) != ZCFG_SUCCESS)	{
++			printf("%s: no WANPPPConnection mapping\n", __FUNCTION__);
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++		if(oid != RDM_OID_PPP_IFACE)
++			return ZCFG_NO_SUCH_OBJECT;
++
++		sprintf(pppIfaceName, "PPP.Interface.%hhu", tr181ObjIid.idx[0]);
++		if(zcfgFeTr181IfaceStackHigherLayerGet(pppIfaceName, ipIfaceName) != ZCFG_SUCCESS) {
++			printf("%s: retrieve PPP.Interface higher layer fail\n", __FUNCTION__);
++			return ZCFG_NO_SUCH_OBJECT;
++		}
++		printf("%s: WANPPPConn ipIface: %s\n", __FUNCTION__, ipIfaceName);
++	}else if(seqnum == e_TR98_WAN_IP_CONN) {
++		if(zcfgFe98To181MappingNameGet(tr98FullPathName, ipIfaceName) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++
++		printf("%s: WANIPConn ipIface %s\n", __FUNCTION__, ipIfaceName);			
++	}
++	else
++		return ZCFG_NO_SUCH_OBJECT;
++	
++	// DNSEnabled, DNSServers, X_ZYXEL_IPv6DNSEnabled, X_ZYXEL_IPv6DNSServers, DefaultGateway
++	if(!strcmp(paramName, "DNSEnabled") || !strcmp(paramName, "X_ZYXEL_IPv6DNSEnabled")) {
++		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++
++		json_object_put(jobj);
++		attr = PARAMETER_ATTR_SET_TR98(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++		attr = PARAMETER_ATTR_SET_TR181(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, "Enable", seqnum, &tr98ObjIid, paramName, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++	}
++	else if(!strcmp(paramName, "DNSServers") || !strcmp(paramName, "X_ZYXEL_IPv6DNSServers")) {
++		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++
++		json_object_put(jobj);
++		attr = PARAMETER_ATTR_SET_TR98(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++		attr = PARAMETER_ATTR_SET_TR181(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_DNS_CLIENT_SRV, &tr181ObjIid, "DNSServer", seqnum, &tr98ObjIid, paramName, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++	}
++	else if(!strcmp(paramName, "DefaultGateway")) {
++		if(retrieveJobjWithIpIface(ipIfaceName, RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, &jobj) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++
++		json_object_put(jobj);
++		attr = PARAMETER_ATTR_SET_TR98(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, 0, NULL, NULL, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++		attr = PARAMETER_ATTR_SET_TR181(newNotify);
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, &tr181ObjIid, "GatewayIPAddress", seqnum, &tr98ObjIid, paramName, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
+ /*  
+  *   TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_MLD
+  * 						InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_MLD
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_msg.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_msg.h	2015-08-03 21:09:03.393451445 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_msg.h	2015-08-03 21:09:03.621451450 +0800
+@@ -39,8 +39,8 @@
+ 
+ #define zcfgFeParmUpdateMsgSend() zcfgFeReqSend(ZCFG_MSG_UPDATE_PARAMETER_NOTIFY, NULL)
+ 
+-#define zcfgFe98To181ObjMappingGet(seqnum, tr98ObjIid, oid, objIid)  zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR98_MAPPING, seqnum, tr98ObjIid, oid, objIid)
+-#define zcfgFe181To98ObjMappingGet(oid, objIid, seqnum, tr98ObjIid)  zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR181_MAPPING, oid, objIid, seqnum, tr98ObjIid)
++#define zcfgFe98To181ObjMappingGet(seqnum, tr98ObjIid, oid, objIid)  zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR98_OBJMAPPING, seqnum, tr98ObjIid, oid, objIid)
++#define zcfgFe181To98ObjMappingGet(oid, objIid, seqnum, tr98ObjIid)  zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR181_OBJMAPPING, oid, objIid, seqnum, tr98ObjIid)
+ 
+ zcfgRet_t zcfg98To181ObjMappingAdd(zcfg_name_t seqnum, objIndex_t *tr98ObjIid, zcfg_offset_t oid, objIndex_t *objIid);
+ zcfgRet_t zcfgObjMappingGet(uint32_t msgType, uint32_t num_1, objIndex_t *objIdxData_1, uint32_t *num_2, objIndex_t *objIdxData_2);
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2015-08-03 21:09:03.529451448 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2015-08-03 21:09:03.621451450 +0800
+@@ -124,6 +124,7 @@
+ extern zcfgRet_t WANPppConnObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int WANPppConnObjAttrGet(char *, int, char *);
+ extern zcfgRet_t WANPppConnObjAttrSet(char *, int, char *, int , struct json_object *);
++extern zcfgRet_t WANIpPppConnObjAttrSet(char *, int , char *, int , struct json_object *);
+ 
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_MLD */
+ /* InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANPPPConnection.i.X_ZYXEL_MLD */
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-08-03 21:09:03.601451449 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-08-03 21:10:02.764454800 +0800
+@@ -147,7 +147,7 @@
+ #define TR98_REQ_DHCP_OPT             "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.DHCPClient.ReqDHCPOption.i"
+ #define TR98_WAN_IP_PORT_MAP          "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.PortMapping.i"
+ #define TR98_WAN_IP_CONN_STAT         "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.Stats"
+-#define TR98_WAN_IP_CONN_MLD		  "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_MLD"
++#define TR98_WAN_IP_CONN_MLD		  "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_MLD"
+ #ifdef IPV6INTERFACE_PROFILE
+ #define TR98_WAN_IP_CONN_IPV6ADDR     "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_IPv6Address.i"
+ #define TR98_WAN_IP_CONN_IPV6PREFIX	  "InternetGatewayDevice.WANDevice.i.WANConnectionDevice.i.WANIPConnection.i.X_ZYXEL_IPv6Prefix.i"
+@@ -371,7 +371,7 @@
+ {TR98_WAN_PTM_LINK_CONF_STAT,   0,              para_WANPtmLinkConfStat,WANPtmLinkConfStObjGet,  NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_ETH_LINK_CONF,        0,              para_WANEthLinkConf,    WANEthLinkConfObjGet,    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_WAN_POTS_LINK_CONF,       0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_WAN_IP_CONN,              ATTR_INDEX_CREA,para_WANIpConn,         WANIpConnObjGet,         WANIpConnObjSet,        WANIpConnObjAdd,  WANIpConnObjDel, WANIpConnObjNotify, WANIpConnObjAttrGet, WANIpConnObjAttrSet},
++{TR98_WAN_IP_CONN,              ATTR_INDEX_CREA,para_WANIpConn,         WANIpConnObjGet,         WANIpConnObjSet,        WANIpConnObjAdd,  WANIpConnObjDel, WANIpConnObjNotify, WANIpConnObjAttrGet, WANIpPppConnObjAttrSet},
+ {TR98_WAN_IP_CONN_MLD,	        0,              para_WANIpConnMld,      WANConnMldObjGet,        WANConnMldObjSet,       NULL, 			   NULL, 			WANConnMldObjNotify, WANConnMldObjAttrGet, WANConnMldObjAttrSet},
+ {TR98_DHCP_CLIENT,              0,              para_DhcpClient,        DhcpClientObjGet,        NULL,                   NULL,             NULL, DhcpClientObjNotify, DhcpClientObjAttrGet, DhcpClientObjAttrSet},
+ {TR98_SENT_DHCP_OPT,            ATTR_INDEX_CREA, para_SentDhcpOpt,      DhcpClientSentOptObjGet, DhcpClientSentOptObjSet, DhcpClientSentOptObjAdd, DhcpClientSentOptObjDel, DhcpClientOptObjNotify, DhcpClientSentOptObjAttrGet, DhcpClientSentOptObjAttrSet},
+@@ -388,7 +388,7 @@
+ #ifdef IPV6RD_PROFILE
+ {TR98_WAN_IP_CONN_IPV6RD,       0,              para_WANIpv6Rd,     	WANIpv6RdObjGet,         WANIpv6RdObjSet,        NULL,             NULL,            NULL},
+ #endif
+-{TR98_WAN_PPP_CONN,             ATTR_INDEX_CREA,para_WANPppConn,        WANPppConnObjGet,        WANPppConnObjSet,       WANPppConnObjAdd, WANPppConnObjDel, WANPppConnObjNotify, /*NULL, NULL*/ WANPppConnObjAttrGet, WANPppConnObjAttrSet},
++{TR98_WAN_PPP_CONN,             ATTR_INDEX_CREA,para_WANPppConn,        WANPppConnObjGet,        WANPppConnObjSet,       WANPppConnObjAdd, WANPppConnObjDel, WANPppConnObjNotify, WANPppConnObjAttrGet, WANIpPppConnObjAttrSet},
+ {TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,    WANPortMappingSet,      WANPortMappingAdd, WANPortMappingDel, WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},	
+ {TR98_WAN_PPP_CONN_STAT,        0,              para_WANPppConnStat,    WANConnStObjGet,         NULL,                   NULL,   NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+ {TR98_WAN_PPP_CONN_MLD,	        0,              para_WANPppConnMld,      WANConnMldObjGet,        WANConnMldObjSet,       NULL, 			   NULL, 			WANConnMldObjNotify, WANConnMldObjAttrGet, WANConnMldObjAttrSet},

@@ -1,0 +1,585 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2017-08-30 15:00:42.472047105 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2017-08-30 15:01:04.894505194 +0800
+@@ -8,6 +8,8 @@
+ #include "zcfg_fe_dal_common.h"
+ 
+ #define CWMP_SOAP_MSG_DEBUG (1 << 1)
++#define isEmptyIns(obj) json_object_get_boolean(json_object_object_get(obj, "emptyIns"))
++
+ 
+ dal_param_t NETWORK_MAP_param[] = 
+ {
+@@ -55,7 +57,522 @@
+ 	
+ }
+ 
++void getDHCPStatus(char *status, char *tr181Path, const char *type, const char *ipIfacePath, struct json_object *dhcp4PoolJarray, struct json_object *dhcp4ClientJarray){
++	int len, i;
++	const char *Interface = NULL, *DHCPStatus = NULL;
++	struct json_object *dhcp4PoolJobj, *dhcp4ClientJobj;
++
++	strcpy(status, "Disable");
++	strcpy(tr181Path, "");
++
++	if(!strcmp(type, "LAN")){
++		len = json_object_array_length(dhcp4PoolJarray);
++		for(i=0;i<len;i++){
++			dhcp4PoolJobj = json_object_array_get_idx(dhcp4PoolJarray, i);
++			Interface = Jgets(dhcp4PoolJobj, "Interface");
++			if(Interface == NULL)
++				continue;
++
++			if(!strcmp(ipIfacePath, Interface)){
++				sprintf(tr181Path, "Device.DHCPv4.Server.Pool.%d", i+1);
++				if(Jgetb(dhcp4PoolJobj, "Enable"))
++					strcpy(status, "Server");
++				break;
++			}
++		}
++	}
++	else{
++		len = json_object_array_length(dhcp4ClientJarray);
++		for(i=0;i<len;i++){
++			dhcp4ClientJobj = json_object_array_get_idx(dhcp4ClientJarray, i);
++			Interface = Jgets(dhcp4ClientJobj, "Interface");
++			if(Interface == NULL)
++				continue;
++
++			if(!strcmp(ipIfacePath, Interface)){
++				sprintf(tr181Path, "Device.DHCPv4.Client.%d", i+1);
++				DHCPStatus = Jgets(dhcp4ClientJobj, "DHCPStatus");
++				if(DHCPStatus == NULL)
++					strcpy(status, "");
++				else
++					strcpy(status, DHCPStatus);
++				break;
++			}
++		}
++	}
++}
++
++/*
++ * return WLAN and ETH Port list in Jason Array.
++ * Format:Jarray.i.NAME = Name
++ *		 Jarray.i.SSID = Name
++ *           Jarray.i.IntfPath : Ethernet.Interface.i|WiFi.SSID.i
++ *           Jarray.i.X_ZYXEL_LanPort
++ *           Jarray.i.Status : Up|Down
++ *           Jarray.i.Channel :
++ *           Jarray.i.AutoChannelEnable :
++ *           Jarray.i.OperatingStandards : b,g,n,a,ac
++ *           Jarray.i.ModeEnabled : None|WEP-64|WEP-128|WPA-Personal|WPA2-Personal|WPA-WPA2-Personal
++ *           Jarray.i.WPSEnable : true|false
++ *           Jarray.i.X_ZYXEL_MainSSID : true|false
++ */
++zcfgRet_t getWifiInfo(struct json_object **Jarray){
++	objIndex_t iid;	
++	struct json_object *ethIfaceObj = NULL;
++	struct json_object *Jobj = NULL;
++	struct json_object *wifiRadioJarray, *wifiRadioObj, *wifiRadioStObj, *wifiSsidJarray, *wifiSsidObj;
++	struct json_object *wifiApJarray, *wifiApObj, *wifiApSecObj, *wifiApWpsObj;
++	char intfPath[64] = {0}, brPortPath[64] = {0};
++	const char *LowerLayers, *X_ZYXEL_LanPort, *SSID, *SSIDReference;
++	unsigned char idx;
++	int len, i;
++
++	//update RDM_OID_WIFI_RADIO and RDM_OID_WIFI_RADIO_ST
++	wifiRadioJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_WIFI_RADIO, &iid, &wifiRadioObj) == ZCFG_SUCCESS) {
++		json_object_array_add(wifiRadioJarray, wifiRadioObj);
++		zcfgFeObjJsonGet(RDM_OID_WIFI_RADIO_ST, &iid, &wifiRadioStObj);
++		json_object_object_add(wifiRadioObj, "Stats", wifiRadioStObj);
++	}
++
++	zcfgFeWholeObjJsonGet("Device.WiFi.AccessPoint", &wifiApJarray);
++	zcfgFeWholeObjJsonGet("Device.WiFi.SSID", &wifiSsidJarray);
++	
++	*Jarray = json_object_new_array();
++
++	len = json_object_array_length(wifiApJarray);
++	for(i=0;i<len;i++){
++		wifiApObj = json_object_array_get_idx(wifiApJarray, i);
++		wifiApSecObj = Jget(wifiApObj, "Security");
++		wifiApWpsObj = Jget(wifiApObj, "WPS");
++		SSIDReference = Jgets(wifiApObj, "SSIDReference");
++		sscanf(SSIDReference, "WiFi.SSID.%hhu", &idx);
++		wifiSsidObj = json_object_array_get_idx(wifiSsidJarray, idx-1);
++		
++		sprintf(intfPath, "WiFi.SSID.%u", idx);
++		SSID = json_object_get_string(json_object_object_get(wifiSsidObj, "SSID"));
++		LowerLayers = json_object_get_string(json_object_object_get(wifiSsidObj, "LowerLayers"));
++		sscanf(LowerLayers, "WiFi.Radio.%hhu", &idx);
++		wifiRadioObj = json_object_array_get_idx(wifiRadioJarray, idx-1);
++		wifiRadioStObj = Jget(wifiRadioObj, "Stats");
++
++#if	0
++		BrPortPath = json_object_get_string(json_object_object_get(mappingObj, intfPath));
++		if(BrPortPath == NULL)
++			BrPortPath = "";
++#endif
++		
++		Jobj = json_object_new_object();
++		json_object_object_add(Jobj, "SSID", json_object_new_string(SSID));
++		//json_object_object_add(Jobj, "BrPortPath", json_object_new_string(BrPortPath));
++		json_object_object_add(Jobj, "IntfPath", json_object_new_string(intfPath));
++		replaceParam(Jobj, "Enable", wifiSsidObj, "Enable");
++		replaceParam(Jobj, "MACAddress", wifiSsidObj, "MACAddress");
++		replaceParam(Jobj, "X_ZYXEL_MainSSID", wifiSsidObj, "X_ZYXEL_MainSSID");
++
++		replaceParam(Jobj, "OperatingFrequencyBand", wifiRadioObj, "OperatingFrequencyBand");
++		replaceParam(Jobj, "OperatingChannelBandwidth", wifiRadioObj, "OperatingChannelBandwidth");
++		replaceParam(Jobj, "Channel", wifiRadioObj, "Channel");
++		replaceParam(Jobj, "AutoChannelEnable", wifiRadioObj, "AutoChannelEnable");
++		replaceParam(Jobj, "OperatingStandards", wifiRadioObj, "OperatingStandards");
++		replaceParam(Jobj, "X_ZYXEL_Wireless_Mode", wifiRadioObj, "X_ZYXEL_Wireless_Mode");
++		replaceParam(Jobj, "X_ZYXEL_Rate", wifiRadioStObj, "X_ZYXEL_Rate");
++		replaceParam(Jobj, "ModeEnabled", wifiApSecObj, "ModeEnabled");
++		replaceParam(Jobj, "WPSEnable", wifiApWpsObj, "Enable");
++			
++		json_object_array_add(*Jarray, Jobj);
++	}
++	
++	json_object_put(wifiRadioJarray);
++	json_object_put(wifiApJarray);
++	json_object_put(wifiSsidJarray);
++	return ZCFG_SUCCESS;
++}
++
++
++/*
++ * return WAN and LAN list in Jason Array.
++ * Format:Jarray.i.NAME = Name
++ *           Jarray.i.IpIfacePath = IP.Interface.i
++ *           Jarray.i.wanInx
++ *           Jarray.i.wanpppIdx
++ *           Jarray.i.X_ZYXEL_Type = WAN| LAN
++ *           Jarray.i.LinkType = ATM|PTM|ETH|PON|USB (For WAN only)
++ *           Jarray.i.X_ZYXEL_ConnectionType = IP_Routed|IP_Bridged (For WAN only)
++ *           Jarray.i.Encapsulation = IPoE|IPoA|PPPoE|PPPoA (For WAN only, NUL if LinkType is USB))
++ *           Jarray.i.BindToIntfGrp = true|false (For WAN only)
++ *           Jarray.i.Group_WAN_IpIface = IP.Interface.i,IP.Interface.i,IP.Interface.i,... (For LAN only)
++ *           Jarray.i.BridgingBrPath = Bridging.Bridge.i (For LAN only)
++ *
++ *		 Jarray.i.IPAddress = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.SubnetMask = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.MACAddress = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.PrimaryDNSserver = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.SecondaryDNSserver = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.IPAddress = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.DHCP = Bridging.Bridge.i (For LAN only)
++ *		 Jarray.i.LowerlayerUp (For PPPoE or PPPoA case)
++ *		 Jarray.i.pppConnectionStatus (For PPP)
++ *		 Jarray.i.wanpppIdx (For PPP)
++ *		 Jarray.i.DHCPtr181Path
++ */
++zcfgRet_t getWanLanList_ext(struct json_object **Jarray){
++	struct json_object *ipIfaceJarray, *pppIfaceJarray, *v4AddrJarray, *v6AddrJarray, *vlanTermJarray, *atmLinkJarray, *bridgeBrJarray, *dhcp4PoolJarray, *dhcp4ClientJarray;
++	struct json_object *ipIfaceObj, *pppIfaceObj, *v4AddrObj, *v6AddrObj, *vlanTermObj, *ethLinkObj = NULL, *atmLinkObj, *bridgeBrObj;
++	struct json_object *Jobj = NULL;
++	struct json_object *addrJarray;
++	char ifacePath[32] = {0}, BridgingBrPath[32] = {0};
++	int len, len2, i, j;
++	unsigned char idx;
++	const char *X_ZYXEL_BridgeName, *X_ZYXEL_SrvName, *X_ZYXEL_ConnectionType, *X_ZYXEL_IfName, *X_ZYXEL_Group_WAN_IpIface, *LowerLayers;
++	const char *X_ZYXEL_Type;
++	char intfGrpWANList[256] = {0};
++	char *intf = NULL, *tmp_ptr = NULL;
++	const char *IpIfacePath = NULL;
++	char DHCPStatus[16] = {0}, DHCPtr181Path[32] = {0};
++	objIndex_t iid;	
++
++	zcfgFeWholeObjJsonGet("Device.IP.Interface.", &ipIfaceJarray);
++	zcfgFeWholeObjJsonGet("Device.PPP.Interface.", &pppIfaceJarray);
++	zcfgFeWholeObjJsonGet("Device.Ethernet.VLANTermination.", &vlanTermJarray);
++	zcfgFeWholeObjJsonGet("Device.ATM.Link.", &atmLinkJarray);
++	zcfgFeWholeObjJsonGet("Device.Bridging.Bridge.", &bridgeBrJarray);
++	zcfgFeWholeObjJsonGet("Device.DHCPv4.Server.Pool.", &dhcp4PoolJarray);
++	zcfgFeWholeObjJsonGet("Device.DHCPv4.Client.", &dhcp4ClientJarray);
++
++	if(ipIfaceJarray==NULL||pppIfaceJarray==NULL||vlanTermJarray==NULL||bridgeBrJarray==NULL)
++		return ZCFG_INTERNAL_ERROR;
++
++	*Jarray = json_object_new_array();
++
++	len = json_object_array_length(ipIfaceJarray);
++	for(i=0;i<len;i++){
++		ipIfaceObj = json_object_array_get_idx(ipIfaceJarray, i);
++		X_ZYXEL_SrvName = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_SrvName"));
++		X_ZYXEL_ConnectionType = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_ConnectionType"));
++		LowerLayers = json_object_get_string(json_object_object_get(ipIfaceObj, "LowerLayers"));
++		X_ZYXEL_Group_WAN_IpIface = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_Group_WAN_IpIface"));
++		sprintf(ifacePath, "IP.Interface.%u", i+1);
++		if(X_ZYXEL_SrvName==NULL || X_ZYXEL_ConnectionType==NULL || LowerLayers==NULL){
++			continue;
++		}
++		
++		Jobj = json_object_new_object();
++		Jadds(Jobj, "IpIfacePath", ifacePath);
++		Jaddi(Jobj, "wanInx", i+1);
++		Jaddb(Jobj, "BindToIntfGrp", false);
++		Jadds(Jobj, "X_ZYXEL_Type", "WAN");
++		Jadds(Jobj, "Encapsulation", "");
++		Jadds(Jobj, "MACAddress", "");
++		Jadds(Jobj, "LowerlayerUp", "");
++		Jadds(Jobj, "pppConnectionStatus", "");
++		Jaddi(Jobj, "wanpppIdx", 0);
++		Jadds(Jobj, "DHCPtr181Path", "");
++		replaceParam(Jobj, "Status", ipIfaceObj, "Status");
++		replaceParam(Jobj, "X_ZYXEL_ConnectionType", ipIfaceObj, "X_ZYXEL_ConnectionType");
++		replaceParam(Jobj, "X_ZYXEL_SrvName", ipIfaceObj, "X_ZYXEL_SrvName");
++		replaceParam(Jobj, "Name", ipIfaceObj, "Name");
++		replaceParam(Jobj, "Type", ipIfaceObj, "Type");
++		replaceParam(Jobj, "IPv4Enable", ipIfaceObj, "IPv4Enable");
++		replaceParam(Jobj, "IPv6Enable", ipIfaceObj, "IPv6Enable");
++		replaceParam(Jobj, "X_ZYXEL_IfName", ipIfaceObj, "X_ZYXEL_IfName");
++		replaceParam(Jobj, "IPv4Enable", ipIfaceObj, "IPv4Enable");
++		replaceParam(Jobj, "IPv6Enable", ipIfaceObj, "IPv6Enable");
++		Jadds(Jobj, "X_ZYXEL_IPv6LocalAddress", "");
++		replaceParam(Jobj, "X_ZYXEL_IPv6LocalAddress", ipIfaceObj, "X_ZYXEL_IPv6LocalAddress");
++
++		/*Address info*/
++		addrJarray =  json_object_new_array();
++		json_object_object_add(Jobj, "IPv4Address", addrJarray);
++		v4AddrJarray = Jget(ipIfaceObj, "IPv4Address");
++		if(v4AddrJarray != NULL){
++			len2 = json_object_array_length(v4AddrJarray);
++			for(j=0;j<len2;j++){
++				v4AddrObj = json_object_array_get_idx(v4AddrJarray, j);
++				if(isEmptyIns(v4AddrObj))
++					continue;
++				Jaddi(v4AddrObj, "ipIfaceIdx", i+1);
++				json_object_array_add(addrJarray, JSON_OBJ_COPY(v4AddrObj));
++				break;
++			}
++		}
++
++		addrJarray =  json_object_new_array();
++		json_object_object_add(Jobj, "IPv6Address", addrJarray);
++		v6AddrJarray = Jget(ipIfaceObj, "IPv6Address");
++		if(v6AddrJarray != NULL){
++			len2 = json_object_array_length(v6AddrJarray);
++			for(j=0;j<len2;j++){
++				v6AddrObj = json_object_array_get_idx(v6AddrJarray, j);
++				if(isEmptyIns(v6AddrObj))
++					continue;
++				Jaddi(v4AddrObj, "ipIfaceIdx", i+1);
++				json_object_array_add(addrJarray, JSON_OBJ_COPY(v6AddrObj));
++				break;
++			}
++		}
++
++		int count = 0;
++		const char *HigherLayer = "IP.Interface.";
++		while(count < 4){
++			count++;
++
++			if(LowerLayers == NULL){
++				json_object_put(Jobj);
++				Jobj = NULL;
++				break;
++			}
++
++			if(!strncmp(HigherLayer, "IP.Interface.", 13)){
++				if(!strncmp(LowerLayers, "PPP.Interface.", 14)){
++					sscanf(LowerLayers, "PPP.Interface.%hhu", &idx);
++					pppIfaceObj = json_object_array_get_idx(pppIfaceJarray, idx-1);
++					HigherLayer = LowerLayers;
++					LowerLayers = json_object_get_string(json_object_object_get(pppIfaceObj, "LowerLayers"));
++					replaceParam(Jobj, "pppConnectionStatus", pppIfaceObj, "ConnectionStatus");
++					Jaddi(Jobj, "wanpppIdx", idx);
++				}
++				else if(!strncmp("Ethernet.VLANTermination.", LowerLayers, 25)){
++					sscanf(LowerLayers, "Ethernet.VLANTermination.%hhu", &idx);
++					vlanTermObj = json_object_array_get_idx(vlanTermJarray, idx-1);
++					HigherLayer = LowerLayers;
++					LowerLayers = json_object_get_string(json_object_object_get(vlanTermObj, "LowerLayers"));
++					
++					json_object_object_add(Jobj, "Encapsulation", json_object_new_string("IPoE"));
++				}
++				else if(!strncmp("Ethernet.Link.", LowerLayers, 14)){
++					if(ethLinkObj){
++						zcfgFeJsonObjFree(ethLinkObj);
++					}
++					IID_INIT(iid);
++					iid.level = 1;
++					sscanf(LowerLayers, "Ethernet.Link.%hhu", &(iid.idx[0]));
++					zcfgFeObjJsonGet(RDM_OID_ETH_LINK, &iid, &ethLinkObj);
++					HigherLayer = LowerLayers;
++					LowerLayers = json_object_get_string(json_object_object_get(ethLinkObj, "LowerLayers"));
++					replaceParam(Jobj, "MACAddress", ethLinkObj, "MACAddress");
++				}
++				else if(!strncmp("ATM.Link.", LowerLayers, 9) && !strcmp("IP_Routed", X_ZYXEL_ConnectionType)){
++					json_object_object_add(Jobj, "Encapsulation", json_object_new_string("IPoA"));
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("ATM"));
++					break;
++				}
++				else{
++					json_object_put(Jobj);
++					Jobj = NULL;
++					break;
++				}
++			}
++			else if(!strncmp(HigherLayer, "PPP.Interface.", 14)){
++				if(!strncmp("Ethernet.VLANTermination.", LowerLayers, 25)){
++					sscanf(LowerLayers, "Ethernet.VLANTermination.%hhu", &idx);
++					vlanTermObj = json_object_array_get_idx(vlanTermJarray, idx-1);
++					HigherLayer = LowerLayers;
++					LowerLayers = json_object_get_string(json_object_object_get(vlanTermObj, "LowerLayers"));
++					json_object_object_add(Jobj, "Encapsulation", json_object_new_string("PPPoE"));
++					replaceParam(Jobj, "LowerlayerUp", vlanTermObj, "Status");
++				}
++				else if(!strncmp("ATM.Link.", LowerLayers, 9)){
++					sscanf(LowerLayers, "ATM.Link.%hhu", &idx);
++					atmLinkObj = json_object_array_get_idx(atmLinkJarray, idx-1);
++					json_object_object_add(Jobj, "Encapsulation", json_object_new_string("PPPoA"));
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("ATM"));
++					replaceParam(Jobj, "LowerlayerUp", atmLinkObj, "Status");
++					break;
++				}
++				else if(!strncmp("USB.Interface.", LowerLayers, 14)){
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("USB"));
++					break;
++				}
++				else{
++					json_object_put(Jobj);
++					Jobj = NULL;
++					break;
++				}
++			}
++			else if(!strncmp("Ethernet.VLANTermination.", HigherLayer, 25)){
++				if(!strncmp("Ethernet.Link.", LowerLayers, 14)){
++					if(ethLinkObj){
++						zcfgFeJsonObjFree(ethLinkObj);
++					}
++					IID_INIT(iid);
++					iid.level = 1;
++					sscanf(LowerLayers, "Ethernet.Link.%hhu", &(iid.idx[0]));
++					zcfgFeObjJsonGet(RDM_OID_ETH_LINK, &iid, &ethLinkObj);
++					HigherLayer = LowerLayers;
++					LowerLayers = json_object_get_string(json_object_object_get(ethLinkObj, "LowerLayers"));
++					replaceParam(Jobj, "MACAddress", ethLinkObj, "MACAddress");
++				}
++				else{
++					json_object_put(Jobj);
++					Jobj = NULL;
++					break;
++				}
++			}
++			else if(!strncmp("Ethernet.Link.", HigherLayer, 14)){
++				if(!strncmp("ATM.Link.", LowerLayers, 9)){
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("ATM"));
++					break;
++				}
++				else if(!strncmp("PTM.Link.", LowerLayers, 9)){
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("PTM"));
++					break;
++				}
++				else if(!strncmp("Ethernet.Interface.", LowerLayers, 19)){
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("ETH"));
++					break;
++				}
++				else if(!strncmp("Optical.Interface.", LowerLayers, 18)){
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("PON"));
++					break;
++				}
++				else if(!strncmp("USB.Interface.", LowerLayers, 14)){
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("USB"));
++					break;
++				}
++				else if(!strncmp("Bridging.Bridge.", LowerLayers, 16)){
++					sscanf(LowerLayers, "Bridging.Bridge.%hhu.Port.1", &idx);
++					bridgeBrObj = json_object_array_get_idx(bridgeBrJarray, idx-1);
++					X_ZYXEL_BridgeName = json_object_get_string(json_object_object_get(bridgeBrObj, "X_ZYXEL_BridgeName"));
++					if(X_ZYXEL_BridgeName == NULL){
++						json_object_put(Jobj);
++						Jobj = NULL;
++						break;
++					}
++					if(X_ZYXEL_Group_WAN_IpIface == NULL)
++						X_ZYXEL_Group_WAN_IpIface = "";
++						
++					sprintf(BridgingBrPath, "Bridging.Bridge.%u", idx);
++					json_object_object_add(Jobj, "X_ZYXEL_SrvName", json_object_new_string(X_ZYXEL_BridgeName));
++					Jadds(Jobj, "X_ZYXEL_Type", "LAN");
++					json_object_object_add(Jobj, "BridgingBrPath", json_object_new_string(BridgingBrPath));
++					json_object_object_add(Jobj, "Group_WAN_IpIface", json_object_new_string(X_ZYXEL_Group_WAN_IpIface));
++					strcat(intfGrpWANList, X_ZYXEL_Group_WAN_IpIface);
++					strcat(intfGrpWANList, ",");
++					break;
++				}
++				else if(!strcmp("", LowerLayers)){
++					if(ethLinkObj){
++						zcfgFeJsonObjFree(ethLinkObj);
++					}
++					IID_INIT(iid);
++					iid.level = 1;
++					sscanf(HigherLayer, "Ethernet.Link.%hhu", &(iid.idx[0]));
++					zcfgFeObjJsonGet(RDM_OID_ETH_LINK, &iid, &ethLinkObj);
++					if(json_object_get_boolean(json_object_object_get(ethLinkObj, "X_ZYXEL_OrigEthWAN")) == false){
++						json_object_put(Jobj);
++						Jobj = NULL;
++						break;
++					}
++					json_object_object_add(Jobj, "LinkType", json_object_new_string("ETH"));
++					break;
++				}
++				else{
++					json_object_put(Jobj);
++					Jobj = NULL;
++					break;
++				}
++			}
++		}
++
++		if(Jobj != NULL){
++
++			X_ZYXEL_Type = Jgets(Jobj, "X_ZYXEL_Type");
++			getDHCPStatus(DHCPStatus, DHCPtr181Path, X_ZYXEL_Type, ifacePath, dhcp4PoolJarray, dhcp4ClientJarray);
++			Jadds(Jobj, "DHCPStatus", DHCPStatus);
++			Jadds(Jobj, "DHCPtr181Path", DHCPtr181Path);
++			json_object_array_add(*Jarray, Jobj);
++		}
++	}
++
++	if(strcmp(intfGrpWANList, "")){
++		intf = strtok_r(intfGrpWANList, ",", &tmp_ptr);
++		while(intf != NULL){
++			if(*intf != '\0'){
++				len = json_object_array_length(*Jarray);
++				for(i=0;i<len;i++){
++					Jobj = json_object_array_get_idx(*Jarray, i);
++					IpIfacePath = json_object_get_string(json_object_object_get(Jobj, "IpIfacePath"));
++					if(!strcmp(IpIfacePath, intf)){
++						json_object_object_add(Jobj, "BindToIntfGrp", json_object_new_boolean(true));
++					}
++				}
++			}
++			intf = strtok_r(NULL, ",", &tmp_ptr);
++		}
++	}
++
++	json_object_put(ipIfaceJarray);
++	json_object_put(pppIfaceJarray);
++	json_object_put(vlanTermJarray);
++	json_object_put(atmLinkJarray);
++	json_object_put(bridgeBrJarray);
++	json_object_put(dhcp4PoolJarray);
++	json_object_put(dhcp4ClientJarray);
++	json_object_put(ethLinkObj);
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFeDalStatusGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++	struct json_object *statusJobj = NULL;
++	struct json_object *firewallInfoObj = NULL, *firewallLevelObj = NULL;
++	struct json_object *ssidJarray = NULL;
++	struct json_object *wanLanJarray = NULL;
++	struct json_object *ethIfaceJarray = NULL, *ethIfaceObj = NULL;
++	objIndex_t iid;	
++	struct json_object *devInfoObj = NULL, *sysInfoObj = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	IID_INIT(iid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DEV_INFO, &iid, &devInfoObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalStatusGetFail;
++	IID_INIT(iid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SYSTEM_INFO, &iid, &sysInfoObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalStatusGetFail;
++	IID_INIT(iid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FIREWALL, &iid, &firewallInfoObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalStatusGetFail;
++	IID_INIT(iid);
++	iid.level = 1;
++	iid.idx[0] = 1;
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_FIREWALL_LEVEL, &iid, &firewallLevelObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalStatusGetFail;
++	replaceParam(firewallInfoObj, "X_ZYXEL_DefaultConfig", firewallLevelObj, "X_ZYXEL_DefaultConfig");
++
++
++	ethIfaceJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &iid, &ethIfaceObj) == ZCFG_SUCCESS) {
++		json_object_array_add(ethIfaceJarray, ethIfaceObj);
++	}
++
++	getWifiInfo(&ssidJarray);
++	getWanLanList_ext(&wanLanJarray);
+ 	
++	statusJobj = json_object_new_object();
++	json_object_array_add(Jarray, statusJobj);
++	json_object_object_add(statusJobj, "DeviceInfo", devInfoObj);
++	json_object_object_add(statusJobj, "SystemInfo", sysInfoObj);
++	json_object_object_add(statusJobj, "FirewallInfo", firewallInfoObj);
++	json_object_object_add(statusJobj, "LanPortInfo", ethIfaceJarray);
++	json_object_object_add(statusJobj, "WiFiInfo", ssidJarray);
++	json_object_object_add(statusJobj, "WanLanInfo", wanLanJarray);
++	return ZCFG_SUCCESS;
++
++zcfgFeDalStatusGetFail:
++	json_object_put(devInfoObj);
++	json_object_put(sysInfoObj);
++	json_object_put(firewallInfoObj);
++	json_object_put(firewallLevelObj);
++
++	return ret;
++
++}
++
++
+ void zcfgFeDalShowNetworkMAP(struct json_object *Jarray){
+ 	int i, len = 0, len1 = 0;
+ 	struct json_object *obj = NULL;
+@@ -407,6 +924,19 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray,char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "GET")){
++		ret = zcfgFeDalStatusGet(Jobj, Jarray, NULL);
++	}
++
++	return ret;
++}
+ 
+ 
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-30 15:00:42.528047106 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-30 15:00:42.588047108 +0800
+@@ -168,6 +168,7 @@
+ extern zcfgRet_t zcfgFeDalQuickStart(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNetworkMAP(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ 
+ extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowRip(struct json_object *Jarray);
+@@ -308,6 +309,7 @@
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				""},//root_only
+ {"user_account",	USER_ACCOUNT_param, zcfgFeDalUserAccount,	zcfgFeDalShowUserAccount,	"get|add|edit|delete",	"User_Account"}, //temporarily root_only //User_Account
+ {"lanhosts",		NETWORK_MAP_param, zcfgFeDalNetworkMAP,	zcfgFeDalShowNetworkMAP,		"get",				"Status"},
++{"status",			NETWORK_MAP_param, zcfgFeDalStatus, 		NULL,						"",					""}, //temporarily GUI only
+ {NULL,				NULL,				NULL, 					NULL,						NULL,				 NULL}
+ };
+ 
+@@ -1024,7 +1026,7 @@
+ 		if(BrPortPath == NULL)
+ 			BrPortPath = "";
+ 		Jobj = json_object_new_object();
+-		json_object_object_add(Jobj, "Name", json_object_new_string(SSID ));
++		json_object_object_add(Jobj, "Name", json_object_new_string(SSID));
+ 		json_object_object_add(Jobj, "BrPortPath", json_object_new_string(BrPortPath));
+ 		json_object_object_add(Jobj, "IntfPath", json_object_new_string(intfPath));
+ 		json_object_object_add(Jobj, "Type", json_object_new_string("WiFiSSID"));

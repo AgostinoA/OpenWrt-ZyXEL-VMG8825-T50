@@ -1,0 +1,325 @@
+Index: u-boot-2009.11/common/cmd_mii.c
+===================================================================
+--- u-boot-2009.11.orig/common/cmd_mii.c	2012-11-29 11:05:11.773855080 +0800
++++ u-boot-2009.11/common/cmd_mii.c	2012-11-29 11:07:41.804950602 +0800
+@@ -359,6 +359,21 @@
+ 		}
+ 
+ 		for (j = start; j <= end; j++) {
++	#ifdef CONFIG_COMCERTO_1000
++			if (miiphy_info (devname, j, &oui, &model, &rev) == 0) {
++				printf("PHY 0x%02X: "
++					"OUI = 0x%04X, "
++					"Model = 0x%02X, "
++					"Rev = 0x%02X, "
++					"%3dbase%s, %s\n",
++					j, oui, model, rev,
++					miiphy_speed (devname, j),
++					miiphy_supports_1000base_t (devname, j)
++						? "X" : "T",
++					(miiphy_duplex (devname, j) == FULL)
++						? "FDX" : "HDX");
++			}
++	#else
+ 			if (miiphy_info (devname, j, &oui, &model, &rev) == 0) {
+ 				printf("PHY 0x%02X: "
+ 					"OUI = 0x%04X, "
+@@ -372,6 +387,7 @@
+ 					(miiphy_duplex (devname, j) == FULL)
+ 						? "FDX" : "HDX");
+ 			}
++	#endif
+ 		}
+ 	} else if (op[0] == 'r') {
+ 		for (addr = addrlo; addr <= addrhi; addr++) {
+Index: u-boot-2009.11/common/miiphyutil.c
+===================================================================
+--- u-boot-2009.11.orig/common/miiphyutil.c	2012-11-29 10:56:48.261095238 +0800
++++ u-boot-2009.11/common/miiphyutil.c	2012-11-29 11:16:13.657809942 +0800
+@@ -328,6 +328,170 @@
+ 	return (0);
+ }
+ 
++#ifdef CONFIG_COMCERTO_1000
++int miiphy_supports_1000base_t (char *devname, unsigned char addr)
++{
++	unsigned short reg;
++
++	if (miiphy_read (devname, addr, PHY_BMSR, &reg)) {
++		puts ("PHY bmsr read failed, assuming no 1000bT support\n");
++		return (0);
++	}
++
++	if (reg & PHY_BMSR_EXT_STAT) {
++		if (miiphy_read (devname, addr, PHY_EXSR, &reg)) {
++			puts ("PHY exsr read failed, assuming no 1000bT support\n");
++			return (0);
++		}
++
++		if (reg & (PHY_EXSR_1000TF | PHY_EXSR_1000TH))
++			return (1);
++	}
++
++	return (0);
++}
++
++int miiphy_wait_autonegotiation_complete (char *devname, unsigned char addr)
++{
++	unsigned short bmsr;
++	int count = 0;
++
++	while (count++ < 50000) {
++		if (miiphy_read (devname, addr, PHY_BMSR, &bmsr)) {
++			puts ("PHY bmsr read failed\n");
++			return (-1);
++		}
++
++		if (bmsr & PHY_BMSR_AUTN_COMP)
++			return 0;
++
++		udelay(100);
++	}
++
++	return (-1);
++}
++
++int miiphy_speed_duplex (char *devname, unsigned char addr, int *speed, int *duplex)
++{
++	unsigned short bmcr, btcr, btsr, anlpar, anar;
++
++	/* Check Basic Management Control Register first. */
++	if (miiphy_read (devname, addr, PHY_BMCR, &bmcr)) {
++		puts ("PHY bmcr read failed\n");
++		return -1;
++	}
++
++	/* Check if auto-negotiation is on. */
++	if (bmcr & PHY_BMCR_AUTON) {
++
++		if (miiphy_wait_autonegotiation_complete(devname, addr)) {
++			puts ("PHY autonegotiation error\n");
++			return -1;
++		}
++
++		if (miiphy_supports_1000base_t(devname, addr)) {
++
++			if (miiphy_read (devname, addr, PHY_1000BTCR, &btcr)) {
++				puts ("PHY btcr read failed\n");
++				return -1;
++			}
++
++			if (miiphy_read (devname, addr, PHY_1000BTSR, &btsr)) {
++				puts ("PHY btsr read failed\n");
++				return -1;
++			}
++
++			if ((btcr & PHY_1000BTCR_1000FD) && (btsr & PHY_1000BTSR_1000FD)) {
++				*speed = _1000BASET;
++				*duplex = FULL;
++				return 0;
++			}
++
++ 			if ((btcr & PHY_1000BTCR_1000HD) && (btsr & PHY_1000BTSR_1000HD)) {
++				*speed = _1000BASET;
++				*duplex = HALF;
++				return 0;
++			}
++		}
++
++		/* Get link partner abilities results. */
++		if (miiphy_read (devname, addr, PHY_ANLPAR, &anlpar)) {
++			puts ("PHY anlpar read failed\n");
++			return -1;
++		}
++
++		/* Get advertised abilities. */
++		if (miiphy_read (devname, addr, PHY_ANAR, &anar)) {
++			puts ("PHY anar register read failed\n");
++			return -1;
++		}
++
++		if ((anlpar & anar & PHY_ANLPAR_TXFD)) {
++			*speed = _100BASET;
++			*duplex = FULL;
++		} else if ((anlpar & anar & PHY_ANLPAR_TX)) {
++			*speed = _100BASET;
++			*duplex = HALF;
++		} else if ((anlpar & anar & PHY_ANLPAR_10FD)) {
++			*speed = _10BASET;
++			*duplex = FULL;
++		} else {
++			*speed = _10BASET;
++			*duplex = HALF;
++		}
++
++		return 0;
++	}
++
++	/* Get speed from basic control settings. */
++	if ((bmcr & PHY_BMCR_SPEED_MASK) == PHY_BMCR_1000_MBPS)
++		*speed = _1000BASET;
++	else if ((bmcr & PHY_BMCR_SPEED_MASK) == PHY_BMCR_100_MBPS)
++		*speed = _100BASET;
++	else
++		*speed = _10BASET;
++
++	if (bmcr & PHY_BMCR_DPLX)
++		*duplex = FULL;
++	else
++		*duplex = HALF;
++
++	return 0;
++}
++
++/*****************************************************************************
++ *
++ * Determine the ethernet speed (10/100).
++ */
++int miiphy_speed (char *devname, unsigned char addr)
++{
++	int speed, duplex;
++
++	if (miiphy_speed_duplex(devname, addr, &speed, &duplex)) {
++		puts ("PHY speed read failed, assuming 10bT\n");
++		return (_10BASET);
++	}
++
++	return speed;
++}
++
++
++/*****************************************************************************
++ *
++ * Determine full/half duplex.
++ */
++int miiphy_duplex (char *devname, unsigned char addr)
++{
++	int speed, duplex;
++
++	if (miiphy_speed_duplex(devname, addr, &speed, &duplex)) {
++		puts ("PHY duplex read failed, assuming half duplex\n");
++		return HALF;
++	}
++
++	return duplex;
++}
++#else
+ /*****************************************************************************
+  *
+  * Determine the ethernet speed (10/100/1000).  Return 10 on error.
+@@ -461,6 +625,7 @@
+ 	return 0;
+ #endif
+ }
++#endif
+ 
+ #ifdef CONFIG_SYS_FAULT_ECHO_LINK_DOWN
+ /*****************************************************************************
+Index: u-boot-2009.11/drivers/mtd/cfi_flash.c
+===================================================================
+--- u-boot-2009.11.orig/drivers/mtd/cfi_flash.c	2012-11-29 11:10:29.080937680 +0800
++++ u-boot-2009.11/drivers/mtd/cfi_flash.c	2012-11-29 11:11:19.564912134 +0800
+@@ -76,7 +76,11 @@
+ # define CFI_MAX_FLASH_BANKS	CONFIG_SYS_MAX_FLASH_BANKS
+ #endif
+ 
++#ifdef CONFIG_COMCERTO
++extern flash_info_t flash_info[CFI_MAX_FLASH_BANKS];	/* FLASH chips info */
++#else
+ flash_info_t flash_info[CFI_MAX_FLASH_BANKS];	/* FLASH chips info */
++#endif
+ 
+ /*
+  * Check if chip width is defined. If not, start detecting with 8bit.
+@@ -147,6 +151,13 @@
+ #define flash_read64	__flash_read64
+ #endif
+ 
++#ifdef CONFIG_COMCERTO
++void cfi_flash_print_info (flash_info_t *);
++int cfi_flash_erase (flash_info_t *, int, int);
++int cfi_write_buff (flash_info_t * info, uchar * src, ulong addr, ulong cnt);
++int cfi_flash_real_protect (flash_info_t * info, long sector, int prot);
++#endif
++
+ /*-----------------------------------------------------------------------
+  */
+ #if defined(CONFIG_ENV_IS_IN_FLASH) || defined(CONFIG_ENV_ADDR_REDUND) || (CONFIG_SYS_MONITOR_BASE >= CONFIG_SYS_FLASH_BASE)
+@@ -263,7 +274,7 @@
+ 	uchar retval;
+ 
+ 	cp = flash_map (info, 0, offset);
+-#if defined(__LITTLE_ENDIAN) || defined(CONFIG_SYS_WRITE_SWAPPED_DATA)
++#if defined(__LITTLE_ENDIAN) || defined(CONFIG_SYS_WRITE_SWAPPED_DATA) || (defined(CONFIG_COMCERTO) && defined(BE8_MODE))
+ 	retval = flash_read8(cp);
+ #else
+ 	retval = flash_read8(cp + info->portwidth - 1);
+@@ -308,7 +319,7 @@
+ 		debug ("addr[%x] = 0x%x\n", x, flash_read8(addr + x));
+ 	}
+ #endif
+-#if defined(__LITTLE_ENDIAN) || defined(CONFIG_SYS_WRITE_SWAPPED_DATA)
++#if defined(__LITTLE_ENDIAN) || defined(CONFIG_SYS_WRITE_SWAPPED_DATA) || (defined(CONFIG_COMCERTO) && defined(BE8_MODE))
+ 	retval = ((flash_read8(addr) << 16) |
+ 		  (flash_read8(addr + info->portwidth) << 24) |
+ 		  (flash_read8(addr + 2 * info->portwidth)) |
+@@ -930,7 +941,11 @@
+ 
+ /*-----------------------------------------------------------------------
+  */
++#ifdef CONFIG_COMCERTO
++int cfi_flash_erase (flash_info_t * info, int s_first, int s_last)
++#else
+ int flash_erase (flash_info_t * info, int s_first, int s_last)
++#endif
+ {
+ 	int rcode = 0;
+ 	int prot;
+@@ -1014,7 +1029,11 @@
+ 
+ /*-----------------------------------------------------------------------
+  */
++#ifdef CONFIG_COMCERTO
++void cfi_flash_print_info (flash_info_t * info)
++#else
+ void flash_print_info (flash_info_t * info)
++#endif
+ {
+ 	int i;
+ 
+@@ -1141,7 +1160,11 @@
+  * 1 - write timeout
+  * 2 - Flash not erased
+  */
++#ifdef CONFIG_COMCERTO
++int cfi_write_buff (flash_info_t * info, uchar * src, ulong addr, ulong cnt)
++#else
+ int write_buff (flash_info_t * info, uchar * src, ulong addr, ulong cnt)
++#endif
+ {
+ 	ulong wp;
+ 	uchar *p;
+@@ -1256,7 +1279,11 @@
+  */
+ #ifdef CONFIG_SYS_FLASH_PROTECTION
+ 
++#ifdef CONFIG_COMCERTO
++int cfi_flash_real_protect (flash_info_t * info, long sector, int prot)
++#else
+ int flash_real_protect (flash_info_t * info, long sector, int prot)
++#endif
+ {
+ 	int retcode = 0;
+ 
+@@ -1895,7 +1922,11 @@
+ 
+ /*-----------------------------------------------------------------------
+  */
++#ifdef CONFIG_COMCERTO
++unsigned long cfi_flash_init (void)
++#else
+ unsigned long flash_init (void)
++#endif
+ {
+ 	unsigned long size = 0;
+ 	int i;

@@ -1,0 +1,222 @@
+--- a/Makefile
++++ b/Makefile
+@@ -144,3 +144,6 @@ endif
+ ifeq ($(CONFIG_SOL_TR69_3G_Backup),y)
+ CFLAGS += -DSOL_TR69_3G_Backup
+ endif
++ifeq ($(CONFIG_SOL_TR69_TRUSTDOMAIN),y)
++CFLAGS += -DSOL_TR69_TRUSTDOMAIN
++endif
+--- a/zcfg_fe_tr98.c
++++ b/zcfg_fe_tr98.c
+@@ -219,6 +219,9 @@ tr98NameObj_t tr98NameObjList[] =
+ {e_TR98_SCHEDULE                , &tr98Obj[e_TR98_SCHEDULE                -e_TR98_START]},
+ {e_TR98_REMO_MGMT               , &tr98Obj[e_TR98_REMO_MGMT               -e_TR98_START]},
+ {e_TR98_REMO_SRV                , &tr98Obj[e_TR98_REMO_SRV                -e_TR98_START]},
++#ifdef SOL_TR69_TRUSTDOMAIN
++{e_TR98_REMO_TRUSTDOMAIN        , &tr98Obj[e_TR98_REMO_TRUSTDOMAIN                -e_TR98_START]},
++#endif
+ {e_TR98_IGMP                    , &tr98Obj[e_TR98_IGMP                    -e_TR98_START]},
+ #ifdef SUNRISE_RANDOM_PASSWORD
+ {e_TR98_LOG_CFG           		 , &tr98Obj[e_TR98_LOG_CFG           		 -e_TR98_START]},
+--- a/zcfg_fe_tr98_handle.h
++++ b/zcfg_fe_tr98_handle.h
+@@ -171,6 +171,9 @@
+ #define TR98_D_DNS                    "InternetGatewayDevice.X_ZYXEL_EXT.DynamicDNS"
+ #define TR98_REMO_MGMT                "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement"
+ #define TR98_REMO_SRV                 "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.Service.i"
++#ifdef SOL_TR69_TRUSTDOMAIN
++#define TR98_REMO_TRUSTDOMAIN		"InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.i"
++#endif
+ #define TR98_IGMP                     "InternetGatewayDevice.X_ZYXEL_EXT.IGMP"
+ #define TR98_LOG_SETTING              "InternetGatewayDevice.X_ZYXEL_EXT.Log_Setting"
+ #define TR98_LOG_CLASSIFY             "InternetGatewayDevice.X_ZYXEL_EXT.Log_Setting.LogClassify.i"
+@@ -389,6 +392,9 @@ tr98Object_t tr98Obj[] = {
+ {TR98_SCHEDULE,                 ATTR_INDEX_CREA,para_Schedule,          scheduleObjGet,          scheduleObjSet,         scheduleObjAdd,   scheduleObjDel,  scheduleObjNotify, scheduleObjAttrGet, scheduleObjAttrSet},
+ {TR98_REMO_MGMT,				0,				NULL,					NULL,					 NULL,					 NULL,				NULL,			NULL},
+ {TR98_REMO_SRV, 			    ATTR_INDEX_CREA,para_RemoSrv,		    zyExtRemoteMgmtSrvObjGet,		 zyExtRemoteMgmtSrvObjSet,		 zyExtRemoteMgmtSrvObjAdd, zyExtRemoteMgmtSrvObjDel, NULL},
++#ifdef SOL_TR69_TRUSTDOMAIN
++{TR98_REMO_TRUSTDOMAIN,         ATTR_INDEX_CREA,para_RemoTrustDomain,   zyExtRemoteMgmtTrustDomainObjGet,                    zyExtRemoteMgmtTrustDomainObjSet,                   zyExtRemoteMgmtTrustDomainObjAdd,            zyExtRemoteMgmtTrustDomainObjDel,            NULL},
++#endif
+ {TR98_IGMP,                    0,              para_Igmp,              zyExtIgmpObjGet,         zyExtIgmpObjSet,        NULL,             NULL,            NULL, NULL, NULL},
+ #ifdef SUNRISE_RANDOM_PASSWORD
+ {TR98_LOG_CFG,                    0,              NULL,              NULL,         NULL,        NULL,             NULL,            NULL, NULL, NULL},
+--- a/zyExt.c
++++ b/zyExt.c
+@@ -627,6 +627,132 @@ zcfgRet_t zyExtRemoteMgmtSrvObjDel(char
+ 	return zcfgFeObjStructDel(RDM_OID_REMO_SRV, &objIid, NULL);;
+ }
+ 
++#ifdef SOL_TR69_TRUSTDOMAIN
++zcfgRet_t zyExtRemoteMgmtTrustDomainObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++        zcfgRet_t ret;
++        objIndex_t objIid;
++        struct json_object *RemoteMgmtTrustDomainJobj = NULL;
++        struct json_object *paramValue = NULL;
++        tr98Parameter_t *paramList = NULL;
++
++        printf("%s : Enter\n", __FUNCTION__);
++
++        /*Get related tr181 objects*/
++        IID_INIT(objIid);
++        objIid.level = 1;
++        sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.%hhu", &objIid.idx[0]);
++
++        if((ret = feObjJsonGet(RDM_OID_REMO_MGMT_TRUST_DOMAIN, &objIid, &RemoteMgmtTrustDomainJobj, updateFlag)) != ZCFG_SUCCESS)
++                return ret;
++
++        /*fill up tr98 object from related tr181 objects*/
++        *tr98Jobj = json_object_new_object();
++        paramList = tr98Obj[handler].parameter;
++        while(paramList->name != NULL) {
++                /*Write parameter value from tr181 objects to tr98 object*/
++                paramValue = json_object_object_get(RemoteMgmtTrustDomainJobj, paramList->name);
++                if(paramValue != NULL) {
++                        json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++                        paramList++;
++                        continue;
++                }
++
++                /*Not defined in tr181, give it a default value*/
++                printf("Can't find parameter %s in TR181\n", paramList->name);
++                paramList++;
++        }
++
++        json_object_put(RemoteMgmtTrustDomainJobj);
++
++        return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtRemoteMgmtTrustDomainObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *RemoteMgmtTrustDomainJobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	objIid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.%hhu", &objIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_REMO_MGMT_TRUST_DOMAIN, &objIid, &RemoteMgmtTrustDomainJobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = RemoteMgmtTrustDomainJobj;
++		RemoteMgmtTrustDomainJobj = NULL;
++		RemoteMgmtTrustDomainJobj = zcfgFeJsonMultiObjAppend(RDM_OID_REMO_MGMT_TRUST_DOMAIN, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(RemoteMgmtTrustDomainJobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(RemoteMgmtTrustDomainJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_REMO_MGMT_TRUST_DOMAIN, &objIid, RemoteMgmtTrustDomainJobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(RemoteMgmtTrustDomainJobj);
++			return ret;
++		}
++		json_object_put(RemoteMgmtTrustDomainJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtRemoteMgmtTrustDomainObjAdd(char *tr98FullPathName, int *idx)
++{
++        zcfgRet_t ret;
++        objIndex_t objIid;
++
++        printf("%s : Enter\n", __FUNCTION__);
++
++        IID_INIT(objIid);
++        ret = zcfgFeObjStructAdd(RDM_OID_REMO_MGMT_TRUST_DOMAIN, &objIid, NULL);
++        *idx = objIid.idx[0];                                                                                                                                           
++        return ret;
++}                                                        
++
++zcfgRet_t zyExtRemoteMgmtTrustDomainObjDel(char *tr98FullPathName)
++{
++        objIndex_t objIid;
++
++        printf("%s : Enter\n", __FUNCTION__);
++
++        IID_INIT(objIid);
++        objIid.level = 1;
++        sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.%hhu", &objIid.idx[0]);
++
++        return zcfgFeObjStructDel(RDM_OID_REMO_MGMT_TRUST_DOMAIN, &objIid, NULL);;
++}
++#endif
++
+ #endif
+ 
+ /*
+--- a/zyExt.h
++++ b/zyExt.h
+@@ -2,6 +2,9 @@
+ extern tr98Parameter_t para_DnsRtEntry[];
+ extern tr98Parameter_t para_DDns[];
+ extern tr98Parameter_t para_RemoSrv[];
++#ifdef SOL_TR69_TRUSTDOMAIN
++extern tr98Parameter_t para_RemoTrustDomain[];
++#endif
+ extern tr98Parameter_t para_Igmp[];
+ #ifdef SUNRISE_RANDOM_PASSWORD
+ extern tr98Parameter_t para_LogCfgGp[];
+@@ -37,6 +40,14 @@ extern zcfgRet_t zyExtRemoteMgmtSrvObjSe
+ extern zcfgRet_t zyExtRemoteMgmtSrvObjAdd(char *tr98FullPathName, int *idx);
+ extern zcfgRet_t zyExtRemoteMgmtSrvObjDel(char *tr98FullPathName);
+ 
++#ifdef SOL_TR69_TRUSTDOMAIN
++/*InternetGatewayDevice.X_ZYXEL_EXT.RemoteManagement.TrustDomain.i*/
++extern zcfgRet_t zyExtRemoteMgmtTrustDomainObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtRemoteMgmtTrustDomainObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++extern zcfgRet_t zyExtRemoteMgmtTrustDomainObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t zyExtRemoteMgmtTrustDomainObjDel(char *tr98FullPathName);
++#endif
++
+ extern zcfgRet_t zyExtIgmpObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t zyExtIgmpObjSet(char *, int , struct json_object *, struct json_object *);
+ 
+--- a/zyExt_parameter.h
++++ b/zyExt_parameter.h
+@@ -30,6 +30,14 @@ tr98Parameter_t para_RemoSrv[] = {
+ 	{ "TrustAll", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ NULL, 0, 0}
+ };
++#ifdef SOL_TR69_TRUSTDOMAIN
++tr98Parameter_t para_RemoTrustDomain[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "IPAddress", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "SubnetMask", PARAMETER_ATTR_WRITE, 16, json_type_string},
++	{ NULL, 0, 0}
++};
++#endif
+ tr98Parameter_t para_Igmp[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #if 0

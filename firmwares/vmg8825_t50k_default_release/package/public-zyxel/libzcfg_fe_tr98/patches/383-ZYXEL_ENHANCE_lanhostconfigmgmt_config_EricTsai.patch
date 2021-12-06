@@ -1,0 +1,137 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2016-11-02 16:42:49.246402022 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2016-11-02 16:32:18.893298800 +0800
+@@ -1276,7 +1276,7 @@
+ 		macAddr = json_object_object_get(ethLinkJobj, "MACAddress");
+ 		
+ 	IID_INIT(ipIntfIid);
+-	while(feObjStructGetNext(RDM_OID_IP_IFACE, &ipIntfIid, (void **)&ipIntfObj, updateFlag) == ZCFG_SUCCESS){
++	while(feObjStructGetNext(RDM_OID_IP_IFACE, &ipIntfIid, (void **)&ipIntfObj, TR98_GET_WITHOUT_UPDATE) == ZCFG_SUCCESS){
+ 		if (strcmp(ipIntfObj->LowerLayers, mappingPathName) == 0){
+ 			sprintf(ipIntfPathName, "IP.Interface.%d", ipIntfIid.idx[0]);
+ 			ipIntfNum++;
+@@ -1291,8 +1291,9 @@
+ 	IID_INIT(dhcpRelayIid);
+ 	if((ret = feObjStructGet(RDM_OID_DHCPV4_RELAY, &dhcpRelayIid, (void **)&dhcpRelayObj, updateFlag)) == ZCFG_SUCCESS){
+ 		if(dhcpRelayObj->Enable == true){
+-			if(feObjStructGetNext(RDM_OID_DHCPV4_RELAY_FWD, &dhcpRelayIid, (void **)&dhcpRelayFwdObj, updateFlag) != ZCFG_SUCCESS){
++			if((ret = feObjStructGetNext(RDM_OID_DHCPV4_RELAY_FWD, &dhcpRelayIid, (void **)&dhcpRelayFwdObj, updateFlag)) != ZCFG_SUCCESS){
+ 				zcfgLog(ZCFG_LOG_ERR, "%s : No such object 'DHCPv4.Relay.Forwarding.i'\n", __FUNCTION__);
++				json_object_put(ethLinkJobj);
+ 				return ret;
+ 			}
+ 			else{
+@@ -1312,14 +1313,14 @@
+ 	IID_INIT(objIid);
+ 	IID_INIT(ipIntfIid);
+ 	IID_INIT(dhcpServPoolIid);
+-	while(feObjStructGetNext(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void **)&dhcpServPoolObj, updateFlag) == ZCFG_SUCCESS){
++	while(feObjStructGetNext(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void **)&dhcpServPoolObj, TR98_GET_WITHOUT_UPDATE) == ZCFG_SUCCESS){
+ 		sprintf(tr181Obj, "Device.%s", dhcpServPoolObj->Interface);
+ 		ipIntfOid = zcfgFeObjNameToObjId(tr181Obj, &ipIntfIid);
+-		if((ret = feObjStructGet(RDM_OID_IP_IFACE, &ipIntfIid, (void **)&ipIntfObj, updateFlag)) == ZCFG_SUCCESS) {
++		if((ret = feObjStructGet(RDM_OID_IP_IFACE, &ipIntfIid, (void **)&ipIntfObj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) {
+ 			if(strcmp(ipIntfObj->LowerLayers, mappingPathName)==0){
+ 				if(flag == 0){
+ 					dhcpServPoolNum++;
+-					dhcpServPoolIid = objIid;
++					memcpy(&dhcpServPoolIid, &objIid, sizeof(objIndex_t));
+ 					flag = 1;
+ 				}
+ 				else
+@@ -1330,7 +1331,7 @@
+ 		zcfgFeObjStructFree(dhcpServPoolObj);
+ 	}
+ 
+-	if(dhcpServPoolNum && (ret = feObjJsonGet(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, &dhcpServPoolJobj, updateFlag)) != ZCFG_SUCCESS) {
++	if(flag && (ret = feObjJsonGet(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, &dhcpServPoolJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		json_object_put(ethLinkJobj);
+ 		return ret;
+ 	}
+@@ -1387,6 +1388,16 @@
+ 			}
+ 		}
+ 			
++		if(strstr(paramList->name, "DHCPServerConfigurable") != NULL){
++			sprintf(paramName, "%s", "X_ZYXEL_ServerConfigurable");
++			paramValue = (dhcpServPoolJobj) ? json_object_object_get(dhcpServPoolJobj, paramName) : NULL;
++			if(paramValue) {
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
+ 		/*Not defined in tr181, give it a default value*/
+ 		ztrdbg(ZTR_DL_INFO, "%s: Can't find parameter %s in TR181\n", __FUNCTION__, paramList->name);
+ 		zcfgFeTr98DefaultValueSet(*tr98Jobj, paramList->name, paramList->type);
+@@ -1496,6 +1507,13 @@
+ 				paramList++;
+ 				continue;
+ 			}
++
++			if(strstr(paramList->name, "DHCPServerConfigurable") != NULL){
++				json_object_object_add(dhcpServPoolJobj, "X_ZYXEL_ServerConfigurable", JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++
+ 		}
+ 
+ 		paramList++;	
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2016-11-02 16:42:49.214402022 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2016-11-02 16:33:33.282910200 +0800
+@@ -5,28 +5,28 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 	
+-tr98Parameter_t para_LanHostConfMgmt[] = {	
+-	{ "MACAddress", PARAMETER_ATTR_READONLY, 19, json_type_string},	
+-	{ "DHCPServerConfigurable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+-	{ "DHCPServerEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+-	{ "DHCPRelay", PARAMETER_ATTR_READONLY, 0, json_type_boolean},	
+-	{ "MinAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},	
+-	{ "MaxAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},	
+-	{ "ReservedAddresses", PARAMETER_ATTR_WRITE, 257, json_type_string},	
+-	{ "SubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},	
+-	{ "DNSServers", PARAMETER_ATTR_WRITE, 65, json_type_string},	
+-	{ "DomainName", PARAMETER_ATTR_WRITE, 65, json_type_string},	
+-	{ "IPRouters", PARAMETER_ATTR_WRITE, 65, json_type_string},	
+-	{ "DHCPLeaseTime", PARAMETER_ATTR_WRITE, 0, json_type_int},	
+-	{ "UseAllocatedWAN", PARAMETER_ATTR_WRITE, 20, json_type_string},	
+-	{ "AssociatedConnection", PARAMETER_ATTR_WRITE, 257, json_type_string},	
+-	{ "PassthroughLease", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
+-	{ "PassthroughMACAddress", PARAMETER_ATTR_WRITE, 19, json_type_string},	
+-	{ "AllowedMACAddress", PARAMETER_ATTR_WRITE, 513, json_type_string},	
+-	{ "IPInterfaceNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
+-	{ "DHCPStaticAddressNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
+-	{ "DHCPOptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
+-	{ "DHCPConditionalPoolNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},	
++tr98Parameter_t para_LanHostConfMgmt[] = {
++	{ "MACAddress", PARAMETER_ATTR_READONLY, 19, json_type_string},
++	{ "DHCPServerConfigurable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "DHCPServerEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "DHCPRelay", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "MinAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "MaxAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "ReservedAddresses", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "SubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "DNSServers", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "DomainName", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "IPRouters", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "DHCPLeaseTime", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	//{ "UseAllocatedWAN", PARAMETER_ATTR_WRITE, 20, json_type_string},
++	//{ "AssociatedConnection", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	//{ "PassthroughLease", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	//{ "PassthroughMACAddress", PARAMETER_ATTR_WRITE, 19, json_type_string},
++	//{ "AllowedMACAddress", PARAMETER_ATTR_WRITE, 513, json_type_string},
++	{ "IPInterfaceNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "DHCPStaticAddressNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "DHCPOptionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "DHCPConditionalPoolNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "X_ZYXEL_DNS_Type", PARAMETER_ATTR_WRITE, 16, json_type_string},
+ #ifdef SUNRISE_STB_PROVISION
+ 	{ "X_ZYXEL_STB_VENDORID", PARAMETER_ATTR_WRITE, 64, json_type_string},

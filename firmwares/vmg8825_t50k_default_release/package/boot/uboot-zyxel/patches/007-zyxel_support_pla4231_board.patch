@@ -1,0 +1,631 @@
+Index: u-boot-2009.11/cpu/mips/start.S
+===================================================================
+--- u-boot-2009.11.orig/cpu/mips/start.S	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/cpu/mips/start.S	2013-03-12 17:34:40.302303745 +0800
+@@ -25,6 +25,11 @@
+ #include <config.h>
+ #include <asm/regdef.h>
+ #include <asm/mipsregs.h>
++#if defined(CONFIG_AR7240)
++  #include <asm/addrspace.h>
++  #include <ar7240_soc.h>
++  #define AR7100_SPI_CLOCK  0xbf000004
++#endif
+ 
+ 	/*
+ 	 * For the moment disable interrupts, mark the kernel mode and
+@@ -228,16 +233,75 @@
+ #endif /* CONFIG_PURPLE */
+ 	.align 4
+ reset:
++#ifdef CONFIG_ATHEROS_SOC
++	/*
++	 * Clearing CP0 registers - This is generally required for the MIPS-24k
++	 * core used by Atheros.
++	 */
++	mtc0	zero, $0
++	mtc0	zero, $1
++	mtc0	zero, $2
++	mtc0	zero, $3
++	mtc0	zero, $4
++	mtc0	zero, $5
++	mtc0	zero, $6
++	mtc0	zero, $7
++	mtc0	zero, $8
++	mtc0	zero, $9
++	mtc0	zero, $10
++	mtc0	zero, $11
++	li	t0, 0x10000004
++	mtc0	t0, $12
++	mtc0	zero, $13
++	mtc0	zero, $14
++	mtc0	zero, $15
++	mtc0	zero, $16
++#if !defined(CONFIG_WASP_SUPPORT)
++	mtc0	zero, $17
++#endif
++	mtc0	zero, $18
++	mtc0	zero, $19
++#if !defined(CONFIG_WASP_SUPPORT)
++	mtc0	zero, $20
++	mtc0	zero, $21
++	mtc0	zero, $22
++#endif
++#ifndef CONFIG_HORNET_EMU
++	mtc0	zero, $23
++#endif
++	mtc0	zero, $24
++	mtc0	zero, $25
++	mtc0	zero, $26
++	mtc0	zero, $27
++	mtc0	zero, $28
++#ifdef CONFIG_WASP_SUPPORT
++	mtc0	zero, $29	# C0_TagHi
++	mtc0	zero, $28, 2	# C0_DTagLo
++	mtc0	zero, $29, 2	# C0_DTagHi
++#endif
++#endif /* CONFIG_ATHEROS_SOC */
+ 
+ 	/* Clear watch registers.
+ 	 */
+ 	mtc0	zero, CP0_WATCHLO
+ 	mtc0	zero, CP0_WATCHHI
+ 
++#ifdef CONFIG_ATHEROS_SOC
++	/* STATUS register */
++	mfc0	k0, CP0_STATUS
++	li	k1, ~ST0_IE
++	and	k0, k1
++        mtc0	zero, CP0_CAUSE
++	mtc0	k0, CP0_STATUS
++
++	/* CAUSE register */
++	mtc0	zero, CP0_CAUSE
++#else
+ 	/* WP(Watch Pending), SW0/1 should be cleared. */
+ 	mtc0	zero, CP0_CAUSE
+ 
+ 	setup_c0_status_reset
++#endif
+ 
+ 	/* Init Timer */
+ 	mtc0	zero, CP0_COUNT
+@@ -257,12 +321,80 @@
+ 1:
+ 	lw	gp, 0(ra)
+ 
++#if defined(CONFIG_MACH_HORNET) && defined(CONFIG_HORNET_1_1_WAR)
++/**************************************************************************/
++/*
++ * WAR: Hornet 1.1 currently need a reset once we boot to let the resetb has
++ *      enough time to stable, so that trigger reset at 1st boot, system team
++ *      is investigaing the issue, will remove in short
++ */
++
++do_reset_normal:
++
++    li  t7, 0xbd000000
++    lw  t8, 0(t7)            // t8 : value of 0xb8050024
++    li  t9, 0x12345678
++    sw  t9, 0(t7)
++    bne t8, t9, do_reset      // if 0xb8050024 == 0x19 , go to do_cpld
++    nop
++    b normal_path
++
++do_reset:
++    li t7, 0xb806001c       // load reset register 0x1806001c
++    lw t8, 0(t7)
++    li t9, 0x1000000        // bit24, fullchip reset
++    or t8, t8, t9         // t8:  set bit 18
++    sw t8, 0(t7)
++
++normal_path:
++#endif /* CONFIG_MACH_HORNET */
++
+ #if !defined(CONFIG_SKIP_LOWLEVEL_INIT)
+ 	/* Initialize any external memory.
+ 	 */
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++	la      t9, lowlevel_init
++	jalr    t9
++	nop
++	nop
++#if defined(CONFIG_MACH_HORNET)
++	la      t9, hornet_ddr_init
++	jalr    t9
++	nop
++	nop
++#endif
++	la	t0, rel_start
++	j	t0
++	nop
++
++rel_start:
++	/* REMAP_DISABLE */
++	li	a0, AR7100_SPI_CLOCK
++#ifdef CONFIG_WASP_SUPPORT
++	li	t0, 0x243
++#else
++	li	t0, 0x43
++#endif
++	sw	t0, 0(a0)
++#else
+ 	la	t9, lowlevel_init
+ 	jalr	t9
+ 	nop
++#endif
++
++
++#if defined(CONFIG_AR9100) && defined(CFG_HOWL_1_2)
++	/* Disable remap for parallel flash */
++	li	t7, AR9100_FLASH_CONFIG;
++	lw	t8, 0(t7);
++	li	t9, 0xffbf0000;
++	and	t8, t8, t9;
++	li	t9, 0x22fc;
++	or	t8, t8, t9;
++	li	t9, 0xffcfffff; /* scale = 0 */
++	and	t8, t8, t9;
++	sw	t8, 0(t7);
++#endif
+ 
+ 	/* Initialize caches...
+ 	 */
+@@ -272,8 +404,20 @@
+ 
+ 	/* ... and enable them.
+ 	 */
+-	li	t0, CONF_CM_CACHABLE_NONCOHERENT
+-	mtc0	t0, CP0_CONFIG
++#if defined(CONFIG_WASP_SUPPORT) && !defined(CONFIG_ATH_NAND_BR)
++	li	t7,	KSEG1ADDR(AR7240_REV_ID)
++	lw	t7,	0(t7)
++	andi	t9,	t7,	0xf
++	bne	zero,	t9,	1f
++	nop
++
++	li	t0,	CONF_CM_UNCACHED
++	j	2f
++	nop
++#endif
++
++1:	li	t0, CONF_CM_CACHABLE_NONCOHERENT
++2:	mtc0	t0, CP0_CONFIG
+ #endif /* !CONFIG_SKIP_LOWLEVEL_INIT */
+ 
+ 	/* Set up temporary stack.
+@@ -285,7 +429,11 @@
+ 	nop
+ #endif
+ 
++#ifdef CONFIG_WASP_SUPPORT
++	li	t0, 0xbd007000	/* Setup stack in SRAM */
++#else
+ 	li	t0, CONFIG_SYS_SDRAM_BASE + CONFIG_SYS_INIT_SP_OFFSET
++#endif
+ 	la	sp, 0(t0)
+ 
+ 	la	t9, board_init_f
+Index: u-boot-2009.11/cpu/mips/cache.S
+===================================================================
+--- u-boot-2009.11.orig/cpu/mips/cache.S	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/cpu/mips/cache.S	2013-03-12 17:34:40.302303745 +0800
+@@ -146,6 +146,11 @@
+ LEAF(mips_init_icache)
+ 	blez	a1, 9f
+ 	mtc0	zero, CP0_TAGLO
++#if defined(CONFIG_ATHEROS_SOC) && defined(CONFIG_WASP_SUPPORT)
++	mtc0	zero, $29	# C0_TagHi
++	mtc0	zero, $28, 2	# C0_DTagLo
++	mtc0	zero, $29, 2	# C0_DTagHi
++#endif
+ 	/* clear tag to invalidate */
+ 	PTR_LI		t0, INDEX_BASE
+ 	PTR_ADDU	t1, t0, a1
+@@ -171,6 +176,11 @@
+ LEAF(mips_init_dcache)
+ 	blez	a1, 9f
+ 	mtc0	zero, CP0_TAGLO
++#if defined(CONFIG_ATHEROS_SOC) && defined(CONFIG_WASP_SUPPORT)
++	mtc0	zero, $29	# C0_TagHi
++	mtc0	zero, $28, 2	# C0_DTagLo
++	mtc0	zero, $29, 2	# C0_DTagHi
++#endif
+ 	/* clear all tags */
+ 	PTR_LI		t0, INDEX_BASE
+ 	PTR_ADDU	t1, t0, a1
+Index: u-boot-2009.11/include/flash.h
+===================================================================
+--- u-boot-2009.11.orig/include/flash.h	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/include/flash.h	2013-03-12 17:34:40.302303745 +0800
+@@ -468,6 +468,7 @@
+ #define FLASH_MT28S4M16LC 0x00E1	/* Micron MT28S4M16LC			*/
+ #define FLASH_S29GL064M 0x00F0		/* Spansion S29GL064M-R6		*/
+ #define FLASH_S29GL128N 0x00F1		/* Spansion S29GL128N			*/
++#define FLASH_M25P64    0x00F2      
+ 
+ #define FLASH_UNKNOWN	0xFFFF		/* unknown flash type			*/
+ 
+Index: u-boot-2009.11/include/net.h
+===================================================================
+--- u-boot-2009.11.orig/include/net.h	2013-03-12 17:34:40.294303845 +0800
++++ u-boot-2009.11/include/net.h	2013-03-12 17:34:40.302303745 +0800
+@@ -288,7 +288,11 @@
+  * maximum packet size =  1518
+  * maximum packet size and multiple of 32 bytes =  1536
+  */
++#ifdef CFG_ATHRHDR_EN
++#define PKTSIZE			1520
++#else
+ #define PKTSIZE			1518
++#endif
+ #define PKTSIZE_ALIGN		1536
+ /*#define PKTSIZE		608*/
+ 
+@@ -356,7 +360,11 @@
+ extern int		NetRestartWrap;		/* Tried all network devices	*/
+ #endif
+ 
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++typedef enum { BOOTP, RARP, ARP, TFTP, DHCP, PING, DNS, NFS, CDP, NETCONS, SNTP, ATHRHDR } proto_t;
++#else
+ typedef enum { BOOTP, RARP, ARP, TFTP, DHCP, PING, DNS, NFS, CDP, NETCONS, SNTP } proto_t;
++#endif
+ 
+ /* from net/net.c */
+ extern char	BootFile[128];			/* Boot File name		*/
+Index: u-boot-2009.11/lib_mips/board.c
+===================================================================
+--- u-boot-2009.11.orig/lib_mips/board.c	2013-03-12 17:34:40.230304649 +0800
++++ u-boot-2009.11/lib_mips/board.c	2013-03-12 17:37:06.188469708 +0800
+@@ -53,6 +53,10 @@
+ 
+ extern int incaip_set_cpuclk(void);
+ 
++#ifdef CONFIG_WASP_SUPPORT
++extern void ath_set_tuning_caps(void);
++#endif
++
+ extern ulong uboot_end_data;
+ extern ulong uboot_end;
+ 
+@@ -307,6 +311,9 @@
+ #ifndef CONFIG_ENV_IS_NOWHERE
+ 	extern char * env_name_spec;
+ #endif
++#ifdef CONFIG_ATH_NAND_SUPPORT
++	extern ulong ath_nand_init(void);
++#endif
+ 	char *s;
+ 	bd_t *bd;
+ 
+@@ -384,8 +391,12 @@
+ #endif
+ 
+ #ifdef CONFIG_CMD_NAND
++  #ifdef CONFIG_ATH_NAND_BR
++	ath_nand_init();
++  #elif !defined(CONFIG_ATH_NAND_SUPPORT)
+ 	puts ("NAND:  ");
+ 	nand_init ();		/* go init the NAND */
++  #endif
+ #endif
+ 
+ #if defined(CONFIG_CMD_ONENAND)
+@@ -446,6 +457,15 @@
+ 	eth_initialize(gd->bd);
+ #endif
+ 
++#if defined(CONFIG_ATH_NAND_SUPPORT) && !defined(CONFIG_ATH_NAND_BR)
++	puts ("NAND:  ");
++	ath_nand_init();
++#endif
++
++#ifdef CONFIG_WASP_SUPPORT
++        ath_set_tuning_caps(); /* Needed here not to mess with Ethernet clocks */
++#endif
++
+ 	/* main_loop() can return to retry autoboot, if so just run it again. */
+ 	for (;;) {
+ 		main_loop ();
+Index: u-boot-2009.11/lib_mips/bootm.c
+===================================================================
+--- u-boot-2009.11.orig/lib_mips/bootm.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/lib_mips/bootm.c	2013-03-12 17:34:40.302303745 +0800
+@@ -28,6 +28,10 @@
+ #include <asm/byteorder.h>
+ #include <asm/addrspace.h>
+ 
++#ifdef CONFIG_AR7240
++#include <ar7240_soc.h>
++#endif
++
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+ #define	LINUX_MAX_ENVS		256
+@@ -43,9 +47,27 @@
+ static void linux_params_init (ulong start, char * commandline);
+ static void linux_env_set (char * env_name, char * env_val);
+ 
++#ifdef CONFIG_WASP_SUPPORT
++void wasp_set_cca(void)
++{
++	/* set cache coherency attribute */
++	asm(	"mfc0	$t0,	$16\n"		/* CP0_CONFIG == 16 */
++		"li	$t1,	~7\n"
++		"and	$t0,	$t0,	$t1\n"
++		"ori	$t0,	3\n"		/* CONF_CM_CACHABLE_NONCOHERENT */
++		"mtc0	$t0,	$16\n"		/* CP0_CONFIG == 16 */
++		"nop\n": : );
++}
++#endif
++
+ int do_bootm_linux(int flag, int argc, char *argv[], bootm_headers_t *images)
+ {
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++    int flash_size_mbytes;
++	void (*theKernel) (int, char **, char **, int);
++#else
+ 	void	(*theKernel) (int, char **, char **, int *);
++#endif
+ 	char	*commandline = getenv ("bootargs");
+ 	char	env_buf[12];
+ 	char	*cp;
+@@ -54,7 +76,11 @@
+ 		return 1;
+ 
+ 	/* find kernel entry point */
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++	theKernel = (void (*)(int, char **, char **, int))images->ep;
++#else
+ 	theKernel = (void (*)(int, char **, char **, int *))images->ep;
++#endif
+ 
+ 	show_boot_progress (15);
+ 
+@@ -100,7 +126,17 @@
+ 	/* we assume that the kernel is in place */
+ 	printf ("\nStarting kernel ...\n\n");
+ 
++#ifdef CONFIG_WASP_SUPPORT
++	wasp_set_cca();
++#endif
++
++#if defined(CONFIG_AR7100) || defined(CONFIG_AR7240)
++    /* Pass the flash size as expected by current Linux kernel for AR7100 */
++    flash_size_mbytes = gd->bd->bi_flashsize/(1024 * 1024);
++	theKernel (linux_argc, linux_argv, linux_env, flash_size_mbytes);
++#else
+ 	theKernel (linux_argc, linux_argv, linux_env, 0);
++#endif
+ 	/* does not return */
+ 	return 1;
+ }
+@@ -108,6 +144,9 @@
+ static void linux_params_init (ulong start, char *line)
+ {
+ 	char *next, *quote, *argp;
++#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240)
++	char memstr[32];
++#endif
+ 
+ 	linux_argc = 1;
+ 	linux_argv = (char **) start;
+@@ -115,7 +154,13 @@
+ 	argp = (char *) (linux_argv + LINUX_MAX_ARGS);
+ 
+ 	next = line;
+-
++#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240)
++	if (strstr(line, "mem=")) {
++		memstr[0] = 0;
++	} else {
++		memstr[0] = 1;
++	}
++#endif
+ 	while (line && *line && linux_argc < LINUX_MAX_ARGS) {
+ 		quote = strchr (line, '"');
+ 		next = strchr (line, ' ');
+@@ -138,6 +183,18 @@
+ 		linux_argv[linux_argc] = argp;
+ 		memcpy (argp, line, next - line);
+ 		argp[next - line] = 0;
++#if defined(CONFIG_AR7240)
++#define REVSTR	"REVISIONID"
++#define PYTHON	"python"
++#define VIRIAN	"virian"
++		if (strcmp(argp, REVSTR) == 0) {
++			if (is_ar7241() || is_ar7242()) {
++				strcpy(argp, VIRIAN);
++			} else {
++				strcpy(argp, PYTHON);
++			}
++		}
++#endif
+ 
+ 		argp += next - line + 1;
+ 		linux_argc++;
+@@ -148,6 +205,17 @@
+ 		line = next;
+ 	}
+ 
++#if defined(CONFIG_AR9100) || defined(CONFIG_AR7240)
++	/* Add mem size to command line */
++	if (memstr[0]) {
++		sprintf(memstr, "mem=%uM", gd->ram_size >> 20);
++		memcpy (argp, memstr, strlen(memstr)+1);
++		linux_argv[linux_argc] = argp;
++		linux_argc++;
++		argp += strlen(memstr) + 1;
++	}
++#endif
++
+ 	linux_env = (char **) (((ulong) argp + 15) & ~15);
+ 	linux_env[0] = 0;
+ 	linux_env_p = (char *) (linux_env + LINUX_MAX_ENVS);
+Index: u-boot-2009.11/net/eth.c
+===================================================================
+--- u-boot-2009.11.orig/net/eth.c	2009-12-16 06:20:54.000000000 +0800
++++ u-boot-2009.11/net/eth.c	2013-03-12 17:34:40.306303695 +0800
+@@ -208,6 +208,9 @@
+ #if defined(CONFIG_DB64460) || defined(CONFIG_P3Mx)
+ 	mv6446x_eth_initialize(bis);
+ #endif
++#if defined(CONFIG_AR7240)
++    ag7240_enet_initialize(bis);
++#endif
+ 	if (!eth_devices) {
+ 		puts ("No ethernet found.\n");
+ 		show_boot_progress (-64);
+Index: u-boot-2009.11/net/net.c
+===================================================================
+--- u-boot-2009.11.orig/net/net.c	2013-03-12 17:34:40.294303845 +0800
++++ u-boot-2009.11/net/net.c	2013-03-12 17:34:40.306303695 +0800
+@@ -186,6 +186,10 @@
+ int nc_input_packet(uchar *pkt, unsigned dest, unsigned src, unsigned len);
+ #endif
+ 
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++extern void athr_hdr_func(void);
++#endif
++
+ #if defined(CONFIG_RT2880_ETH)
+ #include <asm/addrspace.h>
+ extern VALID_BUFFER_STRUCT  rt2880_free_buf_list;
+@@ -363,6 +367,9 @@
+ NetLoop(proto_t protocol)
+ {
+ 	bd_t *bd = gd->bd;
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++	static int AthrHdr_Flag = 0;
++#endif
+ 
+ #ifdef CONFIG_NET_MULTI
+ 	NetRestarted = 0;
+@@ -384,7 +391,16 @@
+ 		NetArpWaitTxPacket -= (ulong)NetArpWaitTxPacket % PKTALIGN;
+ 		NetArpWaitTxPacketSize = 0;
+ 	}
+-
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++	if(!AthrHdr_Flag) {
++	        eth_halt();
++		if (eth_init(bd) < 0) {
++            	    eth_halt();
++               	 return(-1);
++        	}
++		AthrHdr_Flag = 1;
++	}
++#else
+ 	eth_halt();
+ #ifdef CONFIG_NET_MULTI
+ 	eth_set_current();
+@@ -393,6 +409,7 @@
+ 		eth_halt();
+ 		return(-1);
+ 	}
++#endif
+ 
+ restart:
+ #ifdef CONFIG_NET_MULTI
+@@ -408,6 +425,13 @@
+ 	 *	here on, this code is a state machine driven by received
+ 	 *	packets and timer events.
+ 	 */
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++	if(protocol == ATHRHDR) {
++		athr_hdr_func();
++		goto skip_netloop;
++	}
++#endif
++
+ 	NetInitLoop(protocol);
+ 
+ 	switch (net_check_prereq (protocol)) {
+@@ -504,6 +528,9 @@
+ #endif /* CONFIG_SYS_FAULT_ECHO_LINK_DOWN, ... */
+ #endif /* CONFIG_MII, ... */
+ 
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++skip_netloop:
++#endif
+ 	/*
+ 	 *	Main packet reception loop.  Loop receiving packets until
+ 	 *	someone sets `NetState' to a state that terminates.
+@@ -530,8 +557,12 @@
+ 			puts ("\nAbort\n");
+ 			return (-1);
+ 		}
+-
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++                if(protocol != ATHRHDR)
++			ArpTimeoutCheck();
++#else
+ 		ArpTimeoutCheck();
++#endif
+ 
+ 		/*
+ 		 *	Check for a timeout, and run the timeout handler
+@@ -539,7 +570,7 @@
+ 		 */
+ 		if (timeHandler && ((get_timer(0) - timeStart) > timeDelta)) {
+ 			thand_f *x;
+-
++#if !defined(CFG_ATHRS26_PHY) && !defined(CFG_ATHRHDR_EN)
+ #if defined(CONFIG_MII) || defined(CONFIG_CMD_MII)
+ #  if defined(CONFIG_SYS_FAULT_ECHO_LINK_DOWN) && \
+       defined(CONFIG_STATUS_LED) &&	   \
+@@ -554,6 +585,7 @@
+ 			}
+ #  endif /* CONFIG_SYS_FAULT_ECHO_LINK_DOWN, ... */
+ #endif /* CONFIG_MII, ... */
++#endif
+ 			x = timeHandler;
+ 			timeHandler = (thand_f *)0;
+ 			(*x)();
+@@ -569,6 +601,11 @@
+ 			goto restart;
+ 
+ 		case NETLOOP_SUCCESS:
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++			if(protocol == ATHRHDR)
++				return 1;
++#endif
++
+ 			if (NetBootFileXferSize > 0) {
+ 				char buf[20];
+ 				printf("Bytes transferred = %ld (%lx hex)\n",
+@@ -1348,6 +1385,9 @@
+ 	IPaddr_t tmp;
+ 	int	x;
+ 	uchar *pkt;
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++	uint8_t type;
++#endif
+ #if defined(CONFIG_CMD_CDP)
+ 	int iscdp;
+ #endif
+@@ -1355,6 +1395,23 @@
+ 
+ 	debug("packet received\n");
+ 
++#if defined(CFG_ATHRS26_PHY) && defined(CFG_ATHRHDR_EN)
++	type = (inpkt[1] & 0xf);
++	/* check for ack */
++       if(type == 0x6){
++               (*packetHandler)(inpkt,0,0,0);
++		return;
++	}
++	else if (type == 0x0) {
++	   inpkt = inpkt + ATHRHDR_LEN;  /* Remove ATHRHDR */
++	   len = len - ATHRHDR_LEN;
++	}
++	else{
++		printf("Packet dropped! Type invalid.\n");
++		return;
++	}
++#endif
++
+ 	NetRxPacket = inpkt;
+ 	NetRxPacketLen = len;
+ 	et = (Ethernet_t *)inpkt;

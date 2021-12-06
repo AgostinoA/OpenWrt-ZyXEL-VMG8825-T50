@@ -1,0 +1,136 @@
+Index: dropbear-2018.76/Makefile.in
+===================================================================
+--- dropbear-2018.76.orig/Makefile.in	2018-05-24 11:20:10.526152569 +0800
++++ dropbear-2018.76/Makefile.in	2018-05-24 11:48:29.380854157 +0800
+@@ -101,6 +101,10 @@
+ 	CFLAGS+= -DDROPBEAR_CLIENT
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_REMOTE_ACCESS_PRIVILEGE),y)
++	CFLAGS += -DZYXEL_REMOTE_ACCESS_PRIVILEGE
++endif
++
+ # these are exported so that libtomcrypt's makefile will use them
+ export CC
+ export CFLAGS
+Index: dropbear-2018.76/svr-auth.c
+===================================================================
+--- dropbear-2018.76.orig/svr-auth.c	2018-05-24 11:20:10.554152569 +0800
++++ dropbear-2018.76/svr-auth.c	2018-05-24 11:50:10.949310858 +0800
+@@ -424,6 +424,9 @@
+ 	objIndex_t spTrustDomainObjIid;
+ 	rdm_SpTrustDomain_t *spTrustDomainObj = NULL;
+ 	IID_INIT(spTrustDomainObjIid);	
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++	char userPriviege[65] = {0}; //WAN LAN
++#endif	
+ 	/*If IP address match SP trust domain, do not Auth GP_Privilege */
+ 	while(zcfgFeObjStructGetNext(RDM_OID_SP_TRUST_DOMAIN, &spTrustDomainObjIid, (void **) &spTrustDomainObj) == ZCFG_SUCCESS) {
+ 	if (checkCidrBlock(spTrustDomainObj->IPAddress, spTrustDomainObj->SubnetMask, remoAddr)){
+@@ -440,11 +443,18 @@
+ 				logGpObjIid.level = logAccountObjIid.level - 1;
+ 				logGpObjIid.idx[0] = logAccountObjIid.idx[0];
+ 				logGpObjIid.idx[1] = 0;
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++				if (accountObj->RemoteAccessPrivilege){
++					strcpy(userPriviege, accountObj->RemoteAccessPrivilege);
++					//syslog(LOG_INFO, "Account privilege:  %s Priviege = %s !!!!", username, userPriviege);
++				}
++#endif				
+ 				free(accountObj);
+ 				break ; 
+ 			}
+ 			free(accountObj);
+ 		}
++		
+ 		if(zcfgFeObjStructGet(RDM_OID_ZY_LOG_CFG_GP, &logGpObjIid, (void **) &logGpObj) == ZCFG_SUCCESS) {
+ 			if (strstr(logGpObj->GP_Privilege, SSH) == NULL){
+ 				syslog(LOG_INFO, "Account:'%s' SSH permission denied.", username);
+@@ -455,6 +465,87 @@
+ 			}
+ 			free(logGpObj);
+ 		}
++
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++
++		//syslog(LOG_INFO, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN >> SSH!!!!");
++		//syslog(LOG_INFO, "Account privilege: get remoAddr = %s ", remoAddr);
++
++		// check remote IP v4/v6
++		int addrType = 0;
++		char remoAddr_Type[32] = {0}; //WAN LAN
++		addrType = ipType(remoAddr);
++		
++		if (addrType == AF_INET){
++			//v4 checking
++			//syslog(LOG_INFO, "Account privilege: %s remoAddr type = %d ", remoAddr, addrType);
++			/*Remote Ip WAN/LAN Ip check */
++			//Get host IP	
++			int n;
++			int remoAddrType = 0;
++			objIndex_t objIid;
++			rdm_IpIface_t *ipObj = NULL;
++			rdm_IpIfaceV4Addr_t *ipv4Obj = NULL;	
++			char lanip[32] = {0};
++			char subnetMask[32] = {0};
++			char perfix[10]={0};
++
++			/*LANIP*/
++			IID_INIT(objIid);
++			while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&ipObj) == ZCFG_SUCCESS) {
++				if(strcmp(ipObj->X_ZYXEL_IfName, "br0") ==0) {
++					free(ipObj);
++					break;
++				}
++				free(ipObj);
++			}
++			
++			bool checkPrivilege = false;
++			objIndex_t v4AddrIid;
++			v4AddrIid.level = 2;
++			
++			IID_INIT(v4AddrIid);
++			while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, (void **)&ipv4Obj)== ZCFG_SUCCESS){
++				if (objIid.idx[0] == v4AddrIid.idx[0]){ //check br0(LAN) group
++					strcpy(lanip, ipv4Obj->IPAddress);
++					strcpy(subnetMask, ipv4Obj->SubnetMask);
++					
++					inet_pton(AF_INET, subnetMask, &n);
++					int i = 0;
++
++					while (n > 0) {
++							n = n >> 1;
++							i++;
++					}
++					sprintf(perfix, "%d", i);
++					if (checkCidrBlock(lanip, perfix, remoAddr) == 1){
++						strcpy(remoAddr_Type, "LAN");
++					}
++					else{
++						strcpy(remoAddr_Type, "WAN");
++					}
++					
++					if (strstr(userPriviege, remoAddr_Type) != NULL){
++						checkPrivilege = true;
++					}
++				}
++				free(ipv4Obj);
++			}
++
++			if (checkPrivilege == false){
++				syslog(LOG_INFO, "Account privilege:'%s' SSH permission denied.", username);
++				TRACE(("leave check username:'%s' SSH permission denied.", username));
++				return DROPBEAR_FAILURE;
++			}			
++		}
++		else if (addrType == AF_INET6){
++			//not support V6 for WIND Italy
++		}
++	    else{
++			//skip check unknow IP type
++	    }
++
++#endif		
+ 	}
+ 	/* check that user exists */
+ 	if (!ses.authstate.pw_name) {

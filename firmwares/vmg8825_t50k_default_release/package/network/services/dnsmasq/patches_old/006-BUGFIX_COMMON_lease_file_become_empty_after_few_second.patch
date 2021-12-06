@@ -1,0 +1,285 @@
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2014-09-19 15:33:29.030222780 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2014-09-19 15:37:49.262876588 +0800
+@@ -234,7 +234,7 @@
+ 
+ #ifdef ZYXEL_DHCP
+ 	#define DHCP_CLIENT_NUM 34
+-	#define VENDORID_LENGTH 100
++	#define VENDORID_LENGTH 256
+ 	#define MAC_LENGTH 18
+ #endif
+ 
+@@ -565,6 +565,7 @@
+   unsigned char *extradata;
+   unsigned int extradata_len, extradata_size;
+   int last_interface;
++  char vendorid[VENDORID_LENGTH];
+ #ifdef HAVE_DHCP6
+   struct in6_addr addr6;
+   int iaid;
+@@ -1023,6 +1024,11 @@
+ int sockaddr_isequal(union mysockaddr *s1, union mysockaddr *s2);
+ int hostname_isequal(const char *a, const char *b);
+ time_t dnsmasq_time(void);
++#ifdef ZYXEL_DHCP
++#include <sys/sysinfo.h>
++struct sysinfo sysinfoObject;
++unsigned long getUptime();
++#endif
+ int is_same_net(struct in_addr a, struct in_addr b, struct in_addr mask);
+ #ifdef HAVE_IPV6
+ int is_same_net6(struct in6_addr *a, struct in6_addr *b, int prefixlen);
+@@ -1150,6 +1156,9 @@
+ void lease_set_hostname(struct dhcp_lease *lease, char *name, int auth, char *domain, char *config_domain);
+ void lease_set_expires(struct dhcp_lease *lease, unsigned int len, time_t now);
+ void lease_set_interface(struct dhcp_lease *lease, int interface, time_t now);
++#ifdef ZYXEL_DHCP
++void lease_set_vendorid(struct dhcp_lease *lease, char *vendorid);
++#endif
+ struct dhcp_lease *lease_find_by_client(unsigned char *hwaddr, int hw_len, int hw_type,  
+ 					unsigned char *clid, int clid_len);
+ struct dhcp_lease *lease_find_by_addr(struct in_addr addr);
+Index: dnsmasq-2.67/src/lease.c
+===================================================================
+--- dnsmasq-2.67.orig/src/lease.c	2014-09-19 15:33:28.962222780 +0800
++++ dnsmasq-2.67/src/lease.c	2014-09-19 15:41:15.055235889 +0800
+@@ -18,11 +18,6 @@
+ 
+ #ifdef HAVE_DHCP
+ 
+-#ifdef ZYXEL_DHCP
+-extern char vendorid[DHCP_CLIENT_NUM][VENDORID_LENGTH];
+-extern int dhcpclientnum;
+-#endif
+-
+ static struct dhcp_lease *leases = NULL, *old_leases = NULL;
+ static int dns_dirty, file_dirty, leases_left;
+ 
+@@ -219,10 +214,8 @@
+   struct dhcp_lease *lease;
+   time_t next_event;
+   int i, err = 0;
+-#ifdef ZYXEL_DHCP
+-  int j = 0;
+-#endif
+ 
++  my_syslog(LOG_INFO, _("%s(): file_dirty = %d"), __FUNCTION__, file_dirty);
+   if (file_dirty != 0 && daemon->lease_stream)
+     {
+       errno = 0;
+@@ -268,15 +261,8 @@
+ 	    ourprintf(&err, "* ");
+ 
+ #ifdef ZYXEL_DHCP
+-	  if(dhcpclientnum > 0 &&  dhcpclientnum <= DHCP_CLIENT_NUM && (dhcpclientnum - j - 1) >= 0){//work around, need to modify method of get vendor id
+-		  my_syslog(LOG_INFO, _("dhcpclientnum = %d"), dhcpclientnum);
+-		  my_syslog(LOG_INFO, _("j = %d , Vendor-ID = %s"), j, vendorid[dhcpclientnum - j - 1]);
+-		  ourprintf(&err, "%s\n", vendorid[dhcpclientnum - j - 1]);
+-		  j++;
+-	  }
+-	  else{
+-		  ourprintf(&err, "%s\n", "* ");
+-	  }
++		ourprintf(&err, "%s\n", lease->vendorid);
++		my_syslog(LOG_INFO, _("lease->vendorid = %s"), lease->vendorid);
+ #endif
+ 	}
+       
+@@ -528,8 +514,9 @@
+ 	  
+ 	  leases_left++;
+ 	}
+-      else
+-	up = &lease->next;
++      else{
++		up = &lease->next;
++	  }
+     }
+ } 
+ 	
+@@ -990,6 +977,15 @@
+ #endif
+ }
+ 
++#ifdef ZYXEL_DHCP
++void lease_set_vendorid(struct dhcp_lease *lease, char *vendorid)
++{
++	my_syslog(LOG_INFO, _("%s(): vendorid = %s"), __FUNCTION__, vendorid);
++	strcpy(lease->vendorid, vendorid);
++	file_dirty = 1;
++}
++#endif
++
+ void rerun_scripts(void)
+ {
+   struct dhcp_lease *lease;
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2014-09-19 15:33:29.018222780 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2014-09-19 15:43:48.248164653 +0800
+@@ -18,12 +18,6 @@
+ 
+ #ifdef HAVE_DHCP
+ 
+-#ifdef ZYXEL_DHCP
+-char vendorid[DHCP_CLIENT_NUM][VENDORID_LENGTH] = {};
+-char clientmac[DHCP_CLIENT_NUM][MAC_LENGTH] = {};
+-int dhcpclientnum = 0;
+-#endif
+-
+ #define option_len(opt) ((int)(((unsigned char *)(opt))[1]))
+ #define option_ptr(opt, i) ((void *)&(((unsigned char *)(opt))[2u+(unsigned int)(i)]))
+ 
+@@ -101,13 +95,11 @@
+   unsigned char *oui = NULL, *serial = NULL, *class = NULL;
+ #ifdef ZYXEL_DHCP
+   unsigned int option_flag = 1; // always check MAC address
+-  char *s_ret = NULL, *macEmpty = NULL;
+-  int i;
+-  int j;
+   char vendorId[256] = "";
+   char intfGrpOptionCheck[16] = "";
+   char opt61Val[256] = "\0";
+   char *p = NULL;
++  int i=0;
+ #endif
+   subnet_addr.s_addr = override.s_addr = 0;
+ 
+@@ -135,42 +127,16 @@
+ 
+ #ifdef ZYXEL_DHCP
+ 	opt = option_find(mess, sz, OPTION_VENDOR_ID, 2);
+-	if ( opt ) {
++	if(opt){
+ 		SET_FLAG_OPTION_60(option_flag);
+ 	}
+ 
+-	if(dhcpclientnum <= DHCP_CLIENT_NUM && 0<= dhcpclientnum){
+-		if ( CLIENT_HAVE_OPTION_60(option_flag) ) {
+-			emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
+-			vendor_class_len = option_len(opt);
+-			memset(daemon->dhcp_buff3, '\0', strlen(daemon->dhcp_buff3));
+-			memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
+-			strncpy(vendorId, option_ptr(opt, 0), option_len(opt));
+-		}
+-
+-		for(j=0; j<dhcpclientnum; j++){
+-			my_syslog(LOG_INFO, _("print_mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-			my_syslog(LOG_INFO, _("print_mac = %s len = %d"), print_mac(daemon->namebuff, emac, emac_len), emac_len);
+-			my_syslog(LOG_INFO, _("clientmac[%d] = %s"), j, clientmac[j]);
+-			s_ret = strstr(clientmac[j], print_mac(daemon->namebuff, emac, emac_len)); //get client MAC Address
+-			if(s_ret != NULL) //client MAC already exist in mac table
+-				break;
+-		}
+-
+-		macEmpty = strstr(print_mac(daemon->namebuff, emac, emac_len), "<null>");
+-		if(s_ret == NULL && macEmpty == NULL){
+-			strcpy(clientmac[dhcpclientnum], print_mac(daemon->namebuff, emac, emac_len));
+-			if ( CLIENT_HAVE_OPTION_60(option_flag) ) {
+-				if(strcmp(daemon->dhcp_buff3, "")) strcpy(vendorid[dhcpclientnum], daemon->dhcp_buff3);
+-				else strcpy(vendorid[dhcpclientnum], "*");
+-			} else {
+-				strcpy(vendorid[dhcpclientnum], "*");
+-			}
+-			my_syslog(LOG_INFO, _("dhcp client number ++"));
+-			dhcpclientnum++;
+-		}
+-		my_syslog(LOG_INFO, _("New Coming MAC Address = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-		my_syslog(LOG_INFO, _("current dhcpclientnum = %d"), dhcpclientnum);
++	if(CLIENT_HAVE_OPTION_60(option_flag)){
++		emac = extended_hwaddr(mess->htype, mess->hlen, mess->chaddr, clid_len, clid, &emac_len);
++		vendor_class_len = option_len(opt);
++		memset(daemon->dhcp_buff3, '\0', strlen(daemon->dhcp_buff3));
++		memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
++		strncpy(vendorId, option_ptr(opt, 0), option_len(opt));
+ 	}
+ #endif
+       
+@@ -675,7 +641,12 @@
+ 				have_config(config, CONFIG_TIME) ? config->lease_time : 0xffffffff, 
+ 				now); 
+ 	      lease_set_interface(lease, int_index, now);
+-	      
++#ifdef ZYXEL_DHCP
++		if(strcmp(daemon->dhcp_buff3, ""))
++			lease_set_vendorid(lease, daemon->dhcp_buff3);
++		else
++			lease_set_vendorid(lease, "*");
++#endif
+ 	      clear_packet(mess, end);
+ 	      do_options(context, mess, end, NULL, hostname, get_domain(mess->yiaddr), 
+ 			 netid, subnet_addr, 0, 0, -1, NULL, vendor_class_len, now);
+@@ -980,9 +951,7 @@
+  
+ #ifdef ZYXEL_DHCP
+ 	my_syslog(LOG_INFO, _("mac = %s"), print_mac(daemon->namebuff, emac, emac_len));
+-
+ 	my_syslog(MS_DHCP | LOG_WARNING, _("iface_name=%s"),  iface_name);
+-	my_syslog(MS_DHCP | LOG_WARNING, _("vendorId=%s"),  vendorId);
+ 
+ 	/*send DHCP option information for any port any service*/
+ 	if ( option_flag ) {
+@@ -1441,10 +1410,15 @@
+ 
+ 	  if (hostname)
+ 	    lease_set_hostname(lease, hostname, hostname_auth, get_domain(lease->addr), domain);
+-	  
++
+ 	  lease_set_expires(lease, time, now);
+ 	  lease_set_interface(lease, int_index, now);
+-
++#ifdef ZYXEL_DHCP
++		if(strcmp(daemon->dhcp_buff3, ""))
++			lease_set_vendorid(lease, daemon->dhcp_buff3);
++		else
++			lease_set_vendorid(lease, "*");
++#endif
+ 	  if (override.s_addr != 0)
+ 	    lease->override = override;
+ 	  else
+@@ -1576,7 +1550,7 @@
+ static unsigned int calc_time(struct dhcp_context *context, struct dhcp_config *config, unsigned char *opt)
+ {
+   unsigned int time = have_config(config, CONFIG_TIME) ? config->lease_time : context->lease_time;
+-  
++
+   if (opt)
+     { 
+       unsigned int req_time = option_uint(opt, 0, 4);
+Index: dnsmasq-2.67/src/util.c
+===================================================================
+--- dnsmasq-2.67.orig/src/util.c	2013-10-25 17:37:30.000000000 +0800
++++ dnsmasq-2.67/src/util.c	2014-09-19 15:37:54.297381304 +0800
+@@ -302,7 +302,14 @@
+   
+   return 1;
+ }
+-    
++#ifdef ZYXEL_DHCP
++unsigned long getUptime()
++{
++	sysinfo(&sysinfoObject);
++	return sysinfoObject.uptime;
++}
++#endif
++
+ time_t dnsmasq_time(void)
+ {
+ #ifdef HAVE_BROKEN_RTC
+@@ -314,7 +321,13 @@
+ 
+   return (time_t)(times(&dummy)/tps);
+ #else
+-  return time(NULL);
++
++#ifdef ZYXEL_DHCP
++	return (time_t)getUptime();
++#else
++	return time(NULL);
++#endif
++
+ #endif
+ }
+ 

@@ -1,0 +1,81 @@
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_Qos.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_Qos.h	2019-06-26 09:53:21.205586483 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_Qos.h	2019-06-26 10:06:17.389905800 +0800
+@@ -3,6 +3,8 @@
+ 
+ #define QOS_DAL_DEBUG 0
+ 
++#define QOS_MAX_SHAPING_RATE 10485760
++
+ typedef enum e_ActionType {
+ 	e_ActionType_ADD = 0,
+ 	e_ActionType_EDIT,
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosGeneral.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosGeneral.c	2019-06-26 09:53:24.020178484 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosGeneral.c	2019-06-26 10:05:42.869503100 +0800
+@@ -25,8 +25,8 @@
+ dal_param_t QosGeneral_param[] = {
+ 	{"Enable",						dalType_boolean, 	0, 0, 			NULL,		NULL,												NULL},
+ 	{"AutoMapType",					dalType_string, 	0, 0, 			NULL,		"None|EthernetPriority|IPPrecedence|PacketLength",	NULL},
+-	{"UpRate",						dalType_int, 		0, 1024000, 	NULL,		NULL,												NULL},
+-	{"DownRate",					dalType_int, 		0, 1024000, 	NULL,		NULL,												NULL},
++	{"UpRate",						dalType_int, 		0, QOS_MAX_SHAPING_RATE, 	NULL,		NULL,												NULL},
++	{"DownRate",					dalType_int, 		0, QOS_MAX_SHAPING_RATE, 	NULL,		NULL,												NULL},
+ 	{NULL,							0,					0, 0,			NULL,		NULL,												NULL},
+ };
+ 
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosQueue.c	2019-06-26 09:53:25.903236484 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosQueue.c	2019-06-26 10:05:20.932616600 +0800
+@@ -53,7 +53,7 @@
+ 	{"Priority",			dalType_int, 		1,	8,			NULL,	NULL,	dal_Add},
+ 	{"Weight",				dalType_int, 		1,	8,			NULL,	NULL,	dal_Add},
+ 	{"DropAlgorithm",		dalType_string, 	0,	0,			NULL,	"DT",	dal_Add},
+-	{"ShapingRate",			dalType_int, 		-1,	1024000,	NULL,	NULL,	NULL},
++	{"ShapingRate",			dalType_int, 		0,	QOS_MAX_SHAPING_RATE,	NULL,	NULL,	NULL},
+ 	{NULL,					0,					0,	0,			NULL,	NULL,	NULL},	
+ };
+ 
+@@ -194,7 +194,7 @@
+ 		"Index", "Enable", "Name", "Interface", "Priority", "Weight", "Buffer Management", "Rate Limit");
+ 	//default queue
+ 	printf("%-7s %-12s %-20s %-12s %-12s %-12s %-20s %-12s \n",		    
+-		"1", "1", "default queue", "WAN", "8", "1", "DT", "-1");
++		"1", "1", "default queue", "WAN", "8", "1", "DT", "0");
+ #endif
+ 	len = json_object_array_length(Jarray);	
+ 	for(i=0;i<len;i++){		
+@@ -309,7 +309,7 @@
+ 
+ 	if(ret == ZCFG_SUCCESS) {
+ 		prepare_QosQueue_Info(Jobj, queueObj, &QosQueue_Info);
+-		//Shaping rate range is between 0 and 1024000, -1 and 0 imply no limit
++		//Shaping rate range is between 0 and QOS_MAX_SHAPING_RATE, 0 imply no limit
+ 		if(json_object_object_get(Jobj, "ShapingRate")!= NULL)
+ 			json_object_object_add(queueObj, "ShapingRate", json_object_new_int(QosQueue_Info.ShapingRate));
+ 		//If shaping rate is not set, set default value to -1
+@@ -387,7 +387,7 @@
+ 	// PUT RDM_OID_QOS_QUE	
+ 	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_QOS_QUE, &queueIid, &queueObj) == ZCFG_SUCCESS) {
+ 		prepare_QosQueue_Info(Jobj, queueObj, &QosQueue_Info);
+-		//Shaping rate range is between 0 and 1024000, -1 and 0 imply no limit
++		//Shaping rate range is between 0 and QOS_MAX_SHAPING_RATE, -1 and 0 imply no limit
+ 		if(json_object_object_get(Jobj, "ShapingRate") != NULL)
+ 			json_object_object_add(queueObj, "ShapingRate", json_object_new_int(QosQueue_Info.ShapingRate));
+ 		zcfgFeObjJsonBlockedSet(RDM_OID_QOS_QUE, &queueIid, queueObj, NULL);
+Index: libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/qos/zcfg_fe_QosShaper.c	2019-06-26 09:53:26.446964484 +0800
++++ libzcfg_fe_dal-1.0/network/qos/zcfg_fe_QosShaper.c	2019-06-26 10:05:00.218474600 +0800
+@@ -31,7 +31,7 @@
+ 	{"Index",						dalType_int, 			0, 0, 		  NULL,		NULL,	dal_Edit|dal_Delete},
+ 	{"Enable",						dalType_boolean,		0, 0, 		  NULL,		NULL,	dal_Add},
+ 	{"Interface",					dalType_ShaperIntf    , 0, 0,         NULL,		NULL,	dal_Add},
+-	{"ShapingRate",					dalType_int, 			0, 1024000,   NULL,  	NULL,	dal_Add},
++	{"ShapingRate",					dalType_int, 			0, QOS_MAX_SHAPING_RATE,   NULL,  	NULL,	dal_Add},
+ 	{NULL,							0,						0, 0,	      NULL,		NULL,	NULL},
+ };
+ extern uint32_t StrToIntConv(char *str);

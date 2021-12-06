@@ -1,0 +1,113 @@
+#!/bin/sh
+# Copyright (C) 2006 OpenWrt.org
+
+. /etc/functions.sh
+
+upnpd_netmask2prefix() {
+	local octet
+	local prefix=0
+	local IFS="."
+
+	set -- $1
+
+	for octet in $1 $2 $3 $4; do
+		while [ $octet -gt 0 ]; do
+			prefix=$(($prefix + ($octet & 1)))
+			octet=$(($octet >> 1))
+		done
+	done
+
+	return $prefix
+}
+
+get_net()
+{
+        local ip=$1
+        local netmask=$2
+        local ip_str1=$(echo $ip | cut -d "." -f 1)
+        local ip_str2=$(echo $ip | cut -d "." -f 2)
+        local ip_str3=$(echo $ip | cut -d "." -f 3)
+        local ip_str4=$(echo $ip | cut -d "." -f 4)
+
+        local mask_str1=$(echo $netmask | cut -d "." -f 1)
+        local mask_str2=$(echo $netmask | cut -d "." -f 2)
+        local mask_str3=$(echo $netmask | cut -d "." -f 3)
+        local mask_str4=$(echo $netmask | cut -d "." -f 4)
+        local netip="$((ip_str1 & mask_str1))".$((ip_str2 & mask_str2)).$((ip_str3 & mask_str3)).$((ip_str4 & mask_str4))
+
+        echo $netip
+        return 0
+}
+tmpconf="/tmp/miniupnpd.conf"
+
+include /lib/config
+include /lib/network
+
+local ifname ipaddr netmask lan_netmask lan_net
+scan_interfaces
+defaultwan=$(uci get network.general.defaultWan)
+sysmode=$(get_sys_mode)
+proto=$(uci get network.lan.proto)
+
+config_get ifname $defaultwan ifname
+config_get lan_ifname lan ifname
+config_get ipaddr lan ipaddr
+config_get netmask lan netmask
+
+[ -z "$ifname" ] && ifname="$lan_ifname"
+
+local upload download logging 
+config_load "upnpd"
+config_get upload config upload
+config_get download config download
+config_get logging config log_output
+
+echo "ext_ifname=$ifname" >$tmpconf
+[ -n "$ipaddr" ] && {
+	upnpd_netmask2prefix "$netmask"
+	if [ "$sysmode" = "2" -a "$proto" = "dhcp" ]; then
+                ipaddr="$(ifconfig br-lan | awk '/inet addr/{print $2}' | awk -F':' '{print $2}')"
+	fi
+	echo "listening_ip=$ipaddr/$?" >>$tmpconf
+}
+echo "port=5000" >>$tmpconf
+echo "enable_natpmp=yes" >>$tmpconf
+echo "enable_upnp=yes" >>$tmpconf
+#CVE-2016-10185 for #9 (A secure_mode=no line exists in /var/miniupnpd.conf)
+#echo "secure_mode=no" >>$tmpconf
+echo "secure_mode=yes" >>$tmpconf
+echo "system_uptime=yes" >>$tmpconf
+[ -n "$upload" -a -n "$download" ] && {
+	echo "bitrate_down=$(($download * 1024 * 1000))" >>$tmpconf
+	echo "bitrate_up=$(($upload * 1024 * 1000))" >>$tmpconf
+}
+uuid="$(cat /proc/sys/kernel/random/uuid | cut -c 1-24)"
+MAC="$(ifconfig br-lan | grep HWaddr|awk -F ' ' '{print $5}'|sed 's/://g' | tr A-Z a-z)"
+echo "uuid=$uuid$MAC" >>$tmpconf
+
+serial_num=$(cat /tmp/Serial_num)
+echo "serial=$serial_num" >>$tmpconf
+
+local product_name=$(uci get system.main.product_name_show) 
+
+if [ -n "$product_name" ]; then
+	echo "model_number=$product_name" >>$tmpconf
+fi
+
+#CVE-2016-10186 for #10 (/var/miniupnpd.conf has no deny rules)
+#echo "allow 1024-65535 0.0.0.0/0 1024-65535" >>$tmpconf
+lan_netmask="$(upnpd_netmask2prefix  "${netmask}")" 
+lan_net=$(get_net $ipaddr $netmask)	
+echo "allow 1024-65535 $lan_net/$lan_netmask 1024-65535" >>$tmpconf
+
+echo "deny 0-65535 0.0.0.0/0 0-65535" >>$tmpconf
+
+if [ -n "$ifname" ]; then
+	if [ "$logging" = "1" ]; then
+		/usr/sbin/miniupnpd -f /tmp/miniupnpd.conf -d
+	else
+		/usr/sbin/miniupnpd -f /tmp/miniupnpd.conf
+	fi
+else
+	logger -t "upnp daemon" "external interface not found, not starting"
+fi

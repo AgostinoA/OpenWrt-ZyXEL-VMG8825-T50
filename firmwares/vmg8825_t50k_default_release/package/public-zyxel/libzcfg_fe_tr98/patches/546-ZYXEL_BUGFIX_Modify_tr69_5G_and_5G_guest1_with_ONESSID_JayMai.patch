@@ -1,0 +1,215 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2018-02-13 13:25:23.636683579 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2018-02-13 15:54:38.532683579 +0800
+@@ -4899,10 +4899,8 @@
+ 	char wifiSsid[32] = {0};
+ 	char wifiRadio[32] = {0};
+ 	char ssidRef[32] = {0};
+-	char onessid[32] = {0};
+ 	char ExtChan40M[32] = {0};
+-	objIndex_t ssidIid, radioIid, apIid, onessidIid;
+-	struct json_object *onessidJobj = NULL;
++	objIndex_t ssidIid, radioIid, apIid;
+ 	struct json_object *radioJobj = NULL;
+ 	struct json_object *ssidJobj = NULL, *ssidJobjBak = NULL;
+ 	struct json_object *apJobj = NULL, *apJobjBak = NULL;
+@@ -4917,6 +4915,16 @@
+ 	bool apWpsEnable = false;
+ 	struct json_object *paramGuardObj = NULL;
+ 	objIndex_t wpsIid;
++#ifdef ZYXEL_ONESSID
++	char bands[32] = {0};
++	char tmpRadio[32] = {0};
++	objIndex_t tmpIid, onessidIid;
++	struct json_object *tmpJobj = NULL;
++	struct json_object *onessidJobj = NULL;
++	bool onessid = false;
++	bool mainssid = false;
++	int guest = 0, main = 0;
++#endif
+ 
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, wifiSsid) != ZCFG_SUCCESS) {
+ 		/*  The instance number of WLANConfiguration.i will be continuous because of the tr98 to tr181 mapping table.
+@@ -4926,24 +4934,11 @@
+ 		return ZCFG_NO_MORE_INSTANCE;
+ 	}
+ 
+-    IID_INIT(onessidIid);
+-    if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ONE_SSID, &onessidIid, &onessidJobj)) != ZCFG_SUCCESS) {
+-		zcfgLog(ZCFG_LOG_ERR, "%s : Get ONESSID Fail\n", __FUNCTION__);
+-		return ret;
+-	}
+-    strcpy(onessid, json_object_get_string(json_object_object_get(onessidJobj, "Enable")));
+-
+ 	/*mapping InternetGatewayDevice.LANDevice.1.WLANConfiguration.i to Device.WiFi.SSID.i*/
+ 	IID_INIT(ssidIid);
+ 	ssidIid.level = 1;
+ 	sscanf(wifiSsid, "WiFi.SSID.%hhu", &ssidIid.idx[0]);
+ 
+-	if(ssidIid.idx[0]>=5){
+-		if(!strcmp(onessid,"true")){
+-			return ZCFG_REQUEST_REJECT;
+-		}
+-	}
+-
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_SSID, &ssidIid, &ssidJobj)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.SSID Fail\n", __FUNCTION__);
+ 		return ret;
+@@ -4959,6 +4954,46 @@
+ 		json_object_put(ssidJobj);
+ 		return ret;
+ 	}
++
++#ifdef ZYXEL_ONESSID
++	IID_INIT(onessidIid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ONE_SSID, &onessidIid, &onessidJobj)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get ONESSID Fail\n", __FUNCTION__);
++		json_object_put(ssidJobj);
++		json_object_put(radioJobj);
++		return ret;
++	}
++	onessid = json_object_get_boolean(json_object_object_get(onessidJobj, "Enable"));
++	strcpy(bands, json_object_get_string(json_object_object_get(radioJobj, "SupportedFrequencyBands")));
++	zcfgFeJsonObjFree(onessidJobj);
++
++
++	if(onessid && !strcmp(bands,"5GHz")){
++		IID_INIT(tmpIid);
++		while((ret = zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &tmpIid, &tmpJobj)) == ZCFG_SUCCESS) {
++			strcpy(tmpRadio, json_object_get_string(json_object_object_get(tmpJobj, "LowerLayers")));
++			mainssid = json_object_get_boolean(json_object_object_get(tmpJobj, "X_ZYXEL_MainSSID"));
++			if(mainssid && !strcmp(tmpRadio,wifiRadio)){
++				guest++;
++				json_object_put(tmpJobj);
++				break;
++			}
++			else{
++				json_object_put(tmpJobj);
++				tmpJobj = NULL;
++				guest++;
++			}
++		}
++		main = guest++;
++
++		if(ssidIid.idx[0]==main || ssidIid.idx[0]==guest){//5G main,5G guest 1
++			json_object_put(ssidJobj);
++			json_object_put(radioJobj);
++			return ZCFG_REQUEST_REJECT;
++		}
++	}
++#endif
++
+ 	IID_INIT(apIid);
+ 	while((ret = zcfgFeObjJsonGetNext(RDM_OID_WIFI_ACCESS_POINT, &apIid, &apJobj)) == ZCFG_SUCCESS) {
+ 		strcpy(ssidRef, json_object_get_string(json_object_object_get(apJobj, "SSIDReference")));
+@@ -6409,9 +6444,7 @@
+ 	char *ptr = NULL;
+ 	char wifiSsid[32] = {0};
+ 	char ssidRef[32] = {0};
+-	char onessid[32] = {0};
+-	objIndex_t apIid, onessidIid, ssidIid;
+-	struct json_object *onessidJobj = NULL;
++	objIndex_t apIid;
+ 	struct json_object *apJobj = NULL, *apSecJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+@@ -6420,6 +6453,20 @@
+ 	bool setAutoGenPsk = false;
+ 	const char *setPreSharedKey = NULL;
+ 	const char *setKeyPassPhrase = NULL;
++#ifdef ZYXEL_ONESSID
++	int guest = 0;
++	int main = 0;
++	char wifiRadio[32] = {0};
++	struct json_object *radioJobj = NULL;
++	struct json_object *tmpJobj = NULL;
++	struct json_object *onessidJobj = NULL;
++	struct json_object *ssidJobj = NULL;
++	objIndex_t onessidIid, ssidIid, radioIid, tmpIid;
++	char tmpRadio[32] = {0};
++	char bands[32] = {0};
++	bool onessid = false;
++	bool mainssid = false;
++#endif
+ 
+ 	sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.%*[^.].%*d.PreSharedKey.%d", &idx);
+ 
+@@ -6431,26 +6478,68 @@
+ 	ptr = strstr(tr98TmpName, ".PreSharedKey");
+ 	*ptr = '\0';
+ 
+-    IID_INIT(onessidIid);
+-    if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ONE_SSID, &onessidIid, &onessidJobj)) != ZCFG_SUCCESS) {
+-		zcfgLog(ZCFG_LOG_ERR, "%s : Get ONESSID Fail\n", __FUNCTION__);
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i.WLANConfiguration.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wifiSsid)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-    strcpy(onessid, json_object_get_string(json_object_object_get(onessidJobj, "Enable")));//Jay
+ 
+-	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i.WLANConfiguration.i */
+-	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, wifiSsid)) != ZCFG_SUCCESS) {
++#ifdef ZYXEL_ONESSID
++	IID_INIT(onessidIid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ONE_SSID, &onessidIid, &onessidJobj)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get ONESSID Fail\n", __FUNCTION__);
+ 		return ret;
+ 	}
++	onessid = json_object_get_boolean(json_object_object_get(onessidJobj, "Enable"));
++	zcfgFeJsonObjFree(onessidJobj);
+ 
+-    IID_INIT(ssidIid);
++	IID_INIT(ssidIid);
+ 	ssidIid.level = 1;
+ 	sscanf(wifiSsid, "WiFi.SSID.%hhu", &ssidIid.idx[0]);
+-	if(ssidIid.idx[0]>=5){
+-		if(!strcmp(onessid,"true")){
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &ssidIid, &ssidJobj)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.SSID Fail\n", __FUNCTION__);
++		return ret;
++	}
++	strcpy(wifiRadio, json_object_get_string(json_object_object_get(ssidJobj, "LowerLayers")));
++
++	IID_INIT(radioIid);
++	radioIid.level = 1;
++	sscanf(wifiRadio, "WiFi.Radio.%hhu", &radioIid.idx[0]);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_RADIO, &radioIid, &radioJobj)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.Radio Fail\n", __FUNCTION__);
++		json_object_put(ssidJobj);
++		return ret;
++	}
++	strcpy(bands, json_object_get_string(json_object_object_get(radioJobj, "SupportedFrequencyBands")));
++
++	if(onessid && !strcmp(bands,"5GHz")){
++		IID_INIT(tmpIid);
++		while((ret = zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &tmpIid, &tmpJobj)) == ZCFG_SUCCESS) {
++			strcpy(tmpRadio, json_object_get_string(json_object_object_get(tmpJobj, "LowerLayers")));
++			mainssid = json_object_get_boolean(json_object_object_get(tmpJobj, "X_ZYXEL_MainSSID"));
++			if(mainssid && !strcmp(tmpRadio,wifiRadio)){
++				guest++;
++				json_object_put(tmpJobj);
++				break;
++			}
++			else {
++				json_object_put(tmpJobj);
++				tmpJobj = NULL;
++				guest++;
++			}
++		}
++	    main = guest++;
++
++		if(ssidIid.idx[0]==main || ssidIid.idx[0]==guest){//5G main,5G guest 1
++			json_object_put(ssidJobj);
++			json_object_put(radioJobj);
+ 			return ZCFG_REQUEST_REJECT;
+ 		}
+ 	}
++	json_object_put(ssidJobj);
++	json_object_put(radioJobj);
++#endif
+ 
+ 	setPreSharedKey = json_object_get_string(json_object_object_get(tr98Jobj, "PreSharedKey"));
+ 	setKeyPassPhrase = json_object_get_string(json_object_object_get(tr98Jobj, "KeyPassphrase"));

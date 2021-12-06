@@ -1,0 +1,678 @@
+diff -Naur /home/john/iproute2-2.6.33/configure iproute2-2.6.33/configure
+--- /home/john/iproute2-2.6.33/configure	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/configure	2014-01-13 19:52:34.764069126 +0800
+@@ -2,6 +2,9 @@
+ # This is not an autconf generated configure
+ #
+ INCLUDE=${1:-"$PWD/include"}
++CC=${2}
++
++echo "Running iproute2/configure $1 $2"
+ 
+ check_atm()
+ {
+@@ -13,7 +16,7 @@
+ 	return 0;
+ }
+ EOF
+-gcc -I$INCLUDE -o /tmp/atmtest /tmp/atmtest.c -latm >/dev/null 2>&1 
++${CC} -I$INCLUDE -o /tmp/atmtest /tmp/atmtest.c -latm >/dev/null 2>&1 
+ if [ $? -eq 0 ]
+ then
+     echo "TC_CONFIG_ATM:=y" >>Config
+@@ -47,7 +50,7 @@
+ 
+ EOF
+ 
+-if gcc -I$INCLUDE $IPTC -o /tmp/ipttest /tmp/ipttest.c $IPTL -ldl -lxtables >/dev/null 2>&1
++if ${CC} -I$INCLUDE $IPTC -o /tmp/ipttest /tmp/ipttest.c $IPTL -ldl -lxtables >/dev/null 2>&1
+ then
+ 	echo "TC_CONFIG_XT:=y" >>Config
+ 	echo "using xtables"
+@@ -84,7 +87,7 @@
+ }
+ 
+ EOF
+-gcc -I$INCLUDE $IPTC -o /tmp/ipttest /tmp/ipttest.c $IPTL -ldl >/dev/null 2>&1
++${CC} -I$INCLUDE $IPTC -o /tmp/ipttest /tmp/ipttest.c $IPTL -ldl >/dev/null 2>&1
+ 
+ if [ $? -eq 0 ]
+ then
+@@ -124,7 +127,7 @@
+ }
+ 
+ EOF
+-gcc -I$INCLUDE $IPTC -o /tmp/ipttest /tmp/ipttest.c $IPTL -ldl >/dev/null 2>&1
++${CC} -I$INCLUDE $IPTC -o /tmp/ipttest /tmp/ipttest.c $IPTL -ldl >/dev/null 2>&1
+ 
+ if [ $? -eq 0 ]
+ then
+diff -Naur /home/john/iproute2-2.6.33/include/linux/if_tunnel.h iproute2-2.6.33/include/linux/if_tunnel.h
+--- /home/john/iproute2-2.6.33/include/linux/if_tunnel.h	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/include/linux/if_tunnel.h	2014-01-13 19:52:34.764069126 +0800
+@@ -56,6 +56,7 @@
+ 	__be32			relay_prefix;
+ 	__u16			prefixlen;
+ 	__u16			relay_prefixlen;
++	__be32			br_addr;
+ };
+ 
+ enum {
+diff -Naur /home/john/iproute2-2.6.33/include/linux/types.h iproute2-2.6.33/include/linux/types.h
+--- /home/john/iproute2-2.6.33/include/linux/types.h	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/include/linux/types.h	2014-01-13 19:52:34.764069126 +0800
+@@ -34,5 +34,13 @@
+ typedef __u16 __bitwise __sum16;
+ typedef __u32 __bitwise __wsum;
+ 
++
++// brcm:
++#define __aligned_u64 __u64 __attribute__((aligned(8)))
++#define __aligned_be64 __be64 __attribute__((aligned(8)))
++#define __aligned_le64 __le64 __attribute__((aligned(8)))
++
++
++
+ #endif /*  __ASSEMBLY__ */
+ #endif /* _LINUX_TYPES_H */
+diff -Naur /home/john/iproute2-2.6.33/ip/ipnetns.c iproute2-2.6.33/ip/ipnetns.c
+--- /home/john/iproute2-2.6.33/ip/ipnetns.c	1970-01-01 08:00:00.000000000 +0800
++++ iproute2-2.6.33/ip/ipnetns.c	2014-01-13 19:52:34.764069126 +0800
+@@ -0,0 +1,313 @@
++#define _ATFILE_SOURCE
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include <sys/inotify.h>
++#include <sys/mount.h>
++#include <sys/param.h>
++#include <sys/syscall.h>
++#include <stdio.h>
++#include <string.h>
++#include <sched.h>
++#include <fcntl.h>
++#include <dirent.h>
++#include <errno.h>
++#include <unistd.h>
++
++#include "utils.h"
++#include "ip_common.h"
++
++#define NETNS_RUN_DIR "/var/run/netns"
++#define NETNS_ETC_DIR "/etc/netns"
++
++#ifndef CLONE_NEWNET
++#define CLONE_NEWNET 0x40000000	/* New network namespace (lo, device, names sockets, etc) */
++#endif
++
++#ifndef MNT_DETACH
++#define MNT_DETACH	0x00000002	/* Just detach from the tree */
++#endif /* MNT_DETACH */
++
++#ifndef HAVE_SETNS
++static int setns(int fd, int nstype)
++{
++#ifdef __NR_setns
++	return syscall(__NR_setns, fd, nstype);
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++#endif /* HAVE_SETNS */
++
++
++static void usage(void) __attribute__((noreturn));
++
++static void usage(void)
++{
++	fprintf(stderr, "Usage: ip netns list\n");
++	fprintf(stderr, "       ip netns add NAME\n");
++	fprintf(stderr, "       ip netns delete NAME\n");
++	fprintf(stderr, "       ip netns exec NAME cmd ...\n");
++	fprintf(stderr, "       ip netns monitor\n");
++	exit(-1);
++}
++
++int get_netns_fd(const char *name)
++{
++	char pathbuf[MAXPATHLEN];
++	const char *path, *ptr;
++
++	path = name;
++	ptr = strchr(name, '/');
++	if (!ptr) {
++		snprintf(pathbuf, sizeof(pathbuf), "%s/%s",
++			NETNS_RUN_DIR, name );
++		path = pathbuf;
++	}
++	return open(path, O_RDONLY);
++}
++
++static int netns_list(int argc, char **argv)
++{
++	struct dirent *entry;
++	DIR *dir;
++
++	dir = opendir(NETNS_RUN_DIR);
++	if (!dir)
++		return 0;
++
++	while ((entry = readdir(dir)) != NULL) {
++		if (strcmp(entry->d_name, ".") == 0)
++			continue;
++		if (strcmp(entry->d_name, "..") == 0)
++			continue;
++		printf("%s\n", entry->d_name);
++	}
++	closedir(dir);
++	return 0;
++}
++
++static void bind_etc(const char *name)
++{
++	char etc_netns_path[MAXPATHLEN];
++	char netns_name[MAXPATHLEN];
++	char etc_name[MAXPATHLEN];
++	struct dirent *entry;
++	DIR *dir;
++
++	snprintf(etc_netns_path, sizeof(etc_netns_path), "%s/%s", NETNS_ETC_DIR, name);
++	dir = opendir(etc_netns_path);
++	if (!dir)
++		return;
++
++	while ((entry = readdir(dir)) != NULL) {
++		if (strcmp(entry->d_name, ".") == 0)
++			continue;
++		if (strcmp(entry->d_name, "..") == 0)
++			continue;
++		snprintf(netns_name, sizeof(netns_name), "%s/%s", etc_netns_path, entry->d_name);
++		snprintf(etc_name, sizeof(etc_name), "/etc/%s", entry->d_name);
++		if (mount(netns_name, etc_name, "none", MS_BIND, NULL) < 0) {
++			fprintf(stderr, "Bind %s -> %s failed: %s\n",
++				netns_name, etc_name, strerror(errno));
++		}
++	}
++	closedir(dir);
++}
++
++static int netns_exec(int argc, char **argv)
++{
++	/* Setup the proper environment for apps that are not netns
++	 * aware, and execute a program in that environment.
++	 */
++	const char *name, *cmd;
++	char net_path[MAXPATHLEN];
++	int netns;
++
++	if (argc < 1) {
++		fprintf(stderr, "No netns name specified\n");
++		return -1;
++	}
++	if (argc < 2) {
++		fprintf(stderr, "No cmd specified\n");
++		return -1;
++	}
++	name = argv[0];
++	cmd = argv[1];
++	snprintf(net_path, sizeof(net_path), "%s/%s", NETNS_RUN_DIR, name);
++	netns = open(net_path, O_RDONLY);
++	if (netns < 0) {
++		fprintf(stderr, "Cannot open network namespace: %s\n",
++			strerror(errno));
++		return -1;
++	}
++	if (setns(netns, CLONE_NEWNET) < 0) {
++		fprintf(stderr, "seting the network namespace failed: %s\n",
++			strerror(errno));
++		return -1;
++	}
++
++	//if (unshare(CLONE_NEWNS) < 0) {
++	//	fprintf(stderr, "unshare failed: %s\n", strerror(errno));
++	//	return -1;
++	//}
++
++	/* Mount a version of /sys that describes the network namespace */
++	if (umount2("/sys", MNT_DETACH) < 0) {
++		fprintf(stderr, "umount of /sys failed: %s\n", strerror(errno));
++		return -1;
++	}
++	if (mount(name, "/sys", "sysfs", 0, NULL) < 0) {
++		fprintf(stderr, "mount of /sys failed: %s\n",strerror(errno));
++		return -1;
++	}
++
++	/* Setup bind mounts for config files in /etc */
++	bind_etc(name);
++
++	if (execvp(cmd, argv + 1)  < 0)
++		fprintf(stderr, "exec of %s failed: %s\n",
++			cmd, strerror(errno));
++	exit(-1);
++}
++
++static int netns_delete(int argc, char **argv)
++{
++	const char *name;
++	char netns_path[MAXPATHLEN];
++
++	if (argc < 1) {
++		fprintf(stderr, "No netns name specified\n");
++		return -1;
++	}
++
++	name = argv[0];
++	snprintf(netns_path, sizeof(netns_path), "%s/%s", NETNS_RUN_DIR, name);
++	umount2(netns_path, MNT_DETACH);
++	if (unlink(netns_path) < 0) {
++		fprintf(stderr, "Cannot remove %s: %s\n",
++			netns_path, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int netns_add(int argc, char **argv)
++{
++	/* This function creates a new network namespace and
++	 * a new mount namespace and bind them into a well known
++	 * location in the filesystem based on the name provided.
++	 *
++	 * The mount namespace is created so that any necessary
++	 * userspace tweaks like remounting /sys, or bind mounting
++	 * a new /etc/resolv.conf can be shared between uers.
++	 */
++	char netns_path[MAXPATHLEN];
++	const char *name;
++	int fd;
++
++	if (argc < 1) {
++		fprintf(stderr, "No netns name specified\n");
++		return -1;
++	}
++	name = argv[0];
++
++	snprintf(netns_path, sizeof(netns_path), "%s/%s", NETNS_RUN_DIR, name);
++
++	/* Create the base netns directory if it doesn't exist */
++	mkdir(NETNS_RUN_DIR, S_IRWXU|S_IRGRP|S_IXGRP|S_IROTH|S_IXOTH);
++
++	/* Create the filesystem state */
++	fd = open(netns_path, O_RDONLY|O_CREAT|O_EXCL, 0);
++	if (fd < 0) {
++		fprintf(stderr, "Could not create %s: %s\n",
++			netns_path, strerror(errno));
++		return -1;
++	}
++	close(fd);
++	//if (unshare(CLONE_NEWNET) < 0) {
++	//	fprintf(stderr, "Failed to create a new network namespace: %s\n",
++	//		strerror(errno));
++	//	goto out_delete;
++	//}
++
++	/* Bind the netns last so I can watch for it */
++	if (mount("/proc/self/ns/net", netns_path, "none", MS_BIND, NULL) < 0) {
++		fprintf(stderr, "Bind /proc/self/ns/net -> %s failed: %s\n",
++			netns_path, strerror(errno));
++		goto out_delete;
++	}
++	return 0;
++out_delete:
++	netns_delete(argc, argv);
++	exit(-1);
++	return -1;
++}
++
++
++static int netns_monitor(int argc, char **argv)
++{
++	char buf[4096];
++	struct inotify_event *event;
++	int fd;
++	fd = inotify_init();
++	if (fd < 0) {
++		fprintf(stderr, "inotify_init failed: %s\n",
++			strerror(errno));
++		return -1;
++	}
++	if (inotify_add_watch(fd, NETNS_RUN_DIR, IN_CREATE | IN_DELETE) < 0) {
++		fprintf(stderr, "inotify_add_watch failed: %s\n",
++			strerror(errno));
++		return -1;
++	}
++	for(;;) {
++		ssize_t len = read(fd, buf, sizeof(buf));
++		if (len < 0) {
++			fprintf(stderr, "read failed: %s\n",
++				strerror(errno));
++			return -1;
++		}
++		for (event = (struct inotify_event *)buf;
++		     (char *)event < &buf[len];
++		     event = (struct inotify_event *)((char *)event + sizeof(*event) + event->len)) {
++			if (event->mask & IN_CREATE)
++				printf("add %s\n", event->name);
++			if (event->mask & IN_DELETE)
++				printf("delete %s\n", event->name);
++		}
++	}
++	return 0;
++}
++
++int do_netns(int argc, char **argv)
++{
++	fprintf(stderr, "BRCM -> Had to take out netns to get ip to compile. Sorry!\n", *argv);
++    exit(-1);
++
++	if (argc < 1)
++		return netns_list(0, NULL);
++
++	if ((matches(*argv, "list") == 0) || (matches(*argv, "show") == 0) ||
++	    (matches(*argv, "lst") == 0))
++		return netns_list(argc-1, argv+1);
++
++	if (matches(*argv, "help") == 0)
++		usage();
++
++	if (matches(*argv, "add") == 0)
++		return netns_add(argc-1, argv+1);
++
++	if (matches(*argv, "delete") == 0)
++		return netns_delete(argc-1, argv+1);
++
++	if (matches(*argv, "exec") == 0)
++		return netns_exec(argc-1, argv+1);
++
++	if (matches(*argv, "monitor") == 0)
++		return netns_monitor(argc-1, argv+1);
++
++	fprintf(stderr, "Command \"%s\" is unknown, try \"ip netns help\".\n", *argv);
++	exit(-1);
++}
+diff -Naur /home/john/iproute2-2.6.33/ip/iptunnel.c iproute2-2.6.33/ip/iptunnel.c
+--- /home/john/iproute2-2.6.33/ip/iptunnel.c	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/ip/iptunnel.c	2014-01-13 19:52:34.764069126 +0800
+@@ -568,6 +568,12 @@
+ 			cmd = SIOCADD6RD;
+ 			memcpy(&ip6rd.relay_prefix, prefix.data, 4);
+ 			ip6rd.relay_prefixlen = prefix.bitlen;
++		} else if (strcmp(*argv, "6rd-br_addr") == 0) {
++			NEXT_ARG();
++			if (get_prefix(&prefix, *argv, AF_INET))
++				invarg("invalid 6rd-br_addr\n", *argv);
++			cmd = SIOCADD6RD;
++			memcpy(&ip6rd.br_addr, prefix.data, 4);
+ 		} else if (strcmp(*argv, "6rd-reset") == 0) {
+ 			cmd = SIOCDEL6RD;
+ 		} else if (strcmp(*argv, "dev") == 0) {
+diff -Naur /home/john/iproute2-2.6.33/lib/ll_types.c iproute2-2.6.33/lib/ll_types.c
+--- /home/john/iproute2-2.6.33/lib/ll_types.c	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/lib/ll_types.c	2014-01-13 19:52:34.764069126 +0800
+@@ -21,6 +21,7 @@
+ #include <arpa/inet.h>
+ #include <string.h>
+ 
++#include <linux/types.h>
+ #include <linux/netdevice.h>
+ #include <linux/if_arp.h>
+ #include <linux/sockios.h>
+diff -Naur /home/john/iproute2-2.6.33/lib/Makefile iproute2-2.6.33/lib/Makefile
+--- /home/john/iproute2-2.6.33/lib/Makefile	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/lib/Makefile	2014-01-13 19:52:34.768069126 +0800
+@@ -1,19 +1,18 @@
+-CFLAGS += -fPIC
+ 
+ UTILOBJ=utils.o rt_names.o ll_types.o ll_proto.o ll_addr.o inet_proto.o
+ 
+ NLOBJ=ll_map.o libnetlink.o
+ 
+-all: libnetlink.a libutil.a
++all: libnetlink.a libipr2util.a
+ 
+ libnetlink.a: $(NLOBJ)
+ 	$(AR) rcs $@ $(NLOBJ)
+ 
+-libutil.a: $(UTILOBJ) $(ADDLIB)
++libipr2util.a: $(UTILOBJ) $(ADDLIB)
+ 	$(AR) rcs $@ $(UTILOBJ) $(ADDLIB)
+ 
+ install:
+ 
+ clean:
+-	rm -f $(NLOBJ) $(UTILOBJ) $(ADDLIB) libnetlink.a libutil.a
++	rm -f $(NLOBJ) $(UTILOBJ) $(ADDLIB) libnetlink.a libipr2util.a
+ 
+diff -Naur /home/john/iproute2-2.6.33/lib/utils.c iproute2-2.6.33/lib/utils.c
+--- /home/john/iproute2-2.6.33/lib/utils.c	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/lib/utils.c	2014-01-13 19:52:34.768069126 +0800
+@@ -297,6 +297,7 @@
+ 		return 0;
+ 	}
+ 
++#if 0
+ 	if (family == AF_DECnet) {
+ 		struct dn_naddr dna;
+ 		addr->family = AF_DECnet;
+@@ -307,7 +308,7 @@
+ 		addr->bitlen = -1;
+ 		return 0;
+ 	}
+-
++#endif
+ 	addr->family = AF_INET;
+ 	if (family != AF_UNSPEC && family != AF_INET)
+ 		return -1;
+@@ -519,6 +520,7 @@
+ 	case AF_INET:
+ 	case AF_INET6:
+ 		return inet_ntop(af, addr, buf, buflen);
++#if 0
+ 	case AF_IPX:
+ 		return ipx_ntop(af, addr, buf, buflen);
+ 	case AF_DECnet:
+@@ -527,6 +529,7 @@
+ 		memcpy(dna.a_addr, addr, 2);
+ 		return dnet_ntop(af, &dna, buf, buflen);
+ 	}
++#endif
+ 	default:
+ 		return "???";
+ 	}
+diff -Naur /home/john/iproute2-2.6.33/Makefile iproute2-2.6.33/Makefile
+--- /home/john/iproute2-2.6.33/Makefile	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/Makefile	2014-01-13 19:56:33.556069480 +0800
+@@ -1,43 +1,58 @@
+-DESTDIR=/usr/
+-ROOTDIR=$(DESTDIR)
+-LIBDIR=/usr/lib/
+-SBINDIR=/sbin
+-CONFDIR=/etc/iproute2
+-DOCDIR=/share/doc/iproute2
+-MANDIR=/share/man
+-ARPDDIR=/var/lib/arpd
++DESTDIR=
++SBINDIR=$(INSTALL_DIR)/bin
++CONFDIR=$(INSTALL_DIR)/etc/iproute2
++DOCDIR=
++
++# Path to parent kernel include files directory
++#KERNEL_INCLUDE:=$(KERNEL_DIR)/include
++KERNEL_INCLUDES:=$(KERNEL_DIR)/include $(KERNEL_DIR)/arch/$(ARCH)/include
++LIBC_INCLUDE=$(KERNEL_DIR)/include/linux
+ 
+ # Path to db_185.h include
+-DBM_INCLUDE:=$(ROOTDIR)/usr/include
++#DBM_INCLUDE:=/usr/include
+ 
+-SHARED_LIBS = y
+-
+-DEFINES= -DRESOLVE_HOSTNAMES -DLIBDIR=\"$(LIBDIR)\"
+-ifneq ($(SHARED_LIBS),y)
+-DEFINES+= -DNO_SHARED_LIBS
+-endif
++#DEFINES= -DRESOLVE_HOSTNAMES
+ 
+ #options if you have a bind>=4.9.4 libresolv (or, maybe, glibc)
+-LDLIBS=-lresolv
++LDLIBS=
+ ADDLIB=
+ 
+ #options for decnet
+-ADDLIB+=dnet_ntop.o dnet_pton.o
++#ADDLIB+=dnet_ntop.o dnet_pton.o
+ 
+ #options for ipx
+-ADDLIB+=ipx_ntop.o ipx_pton.o
++#ADDLIB+=ipx_ntop.o ipx_pton.o
++
++ifeq ($(LIBC_INCLUDE)/socketbits.h,$(wildcard $(LIBC_INCLUDE)/socketbits.h))
++  ifeq ($(LIBC_INCLUDE)/net/if_packet.h,$(wildcard $(LIBC_INCLUDE)/net/if_packet.h))
++    GLIBCFIX=-I../include-glibc -include ../include-glibc/glibc-bugs.h
++  endif
++endif
++ifeq ($(LIBC_INCLUDE)/bits/socket.h,$(wildcard $(LIBC_INCLUDE)/bits/socket.h))
++  GLIBCFIX=-I../include-glibc -I/usr/include/db3 -include ../include-glibc/glibc-bugs.h
++endif
+ 
+-CC = gcc
+-HOSTCC = gcc
+-CCOPTS = -D_GNU_SOURCE -O2 -Wstrict-prototypes -Wall
+-CFLAGS = $(CCOPTS) -I../include $(DEFINES)
++#CC = gcc
++CCOPTS = -D_GNU_SOURCE -s -Os -Wstrict-prototypes -Wall -g
++
++ifeq ($(strip $(DESKTOP_LINUX)),y)
++# some apps, such as iptables and iproute2, include MIPS kernel header files
++# which need to know what endieness we are.  Fake the settings here.  We will
++# not run those apps on the desktop anyways.
++CCOPTS += -D__MIPSEL__ -D_MIPS_SZLONG=32
++endif
++
++CFLAGS = $(CCOPTS) $(GLIBCFIX) -I../include $(addprefix -I,$(KERNEL_INCLUDES)) $(DEFINES)
++#CFLAGS += -I$(TOOLCHAIN)/include
++#CFLAGS += $(BRCM_WERROR_CFLAGS)
+ YACCFLAGS = -d -t -v
+ 
+-LDLIBS += -L../lib -lnetlink -lutil
++LDLIBS += -L../lib -lnetlink -lipr2util -lm -ldl -lgcc_s
+ 
+-SUBDIRS=lib ip tc misc netem genl
++#SUBDIRS=lib ip tc misc netem genl
++SUBDIRS=lib ip tc misc
+ 
+-LIBNETLINK=../lib/libnetlink.a ../lib/libutil.a
++LIBNETLINK=../lib/libnetlink.a ../lib/libipr2util.a
+ 
+ all: Config
+ 	@set -e; \
+@@ -45,45 +60,36 @@
+ 	do $(MAKE) $(MFLAGS) -C $$i; done
+ 
+ Config:
+-	sh configure $(KERNEL_INCLUDE)
++	./configure $(KERNEL_INCLUDE) $(CC)
+ 
+-install: all
+-	install -m 0755 -d $(DESTDIR)$(SBINDIR)
+-	install -m 0755 -d $(DESTDIR)$(CONFDIR)
+-	install -m 0755 -d $(DESTDIR)$(ARPDDIR)
+-	install -m 0755 -d $(DESTDIR)$(DOCDIR)/examples
+-	install -m 0755 -d $(DESTDIR)$(DOCDIR)/examples/diffserv
+-	install -m 0644 README.iproute2+tc $(shell find examples -maxdepth 1 -type f) \
+-		$(DESTDIR)$(DOCDIR)/examples
+-	install -m 0644 $(shell find examples/diffserv -maxdepth 1 -type f) \
+-		$(DESTDIR)$(DOCDIR)/examples/diffserv
+-	@for i in $(SUBDIRS) doc; do $(MAKE) -C $$i install; done
+-	install -m 0644 $(shell find etc/iproute2 -maxdepth 1 -type f) $(DESTDIR)$(CONFDIR)
+-	install -m 0755 -d $(DESTDIR)$(MANDIR)/man8
+-	install -m 0644 $(shell find man/man8 -maxdepth 1 -type f) $(DESTDIR)$(MANDIR)/man8
+-	ln -sf tc-bfifo.8  $(DESTDIR)$(MANDIR)/man8/tc-pfifo.8
+-	ln -sf lnstat.8  $(DESTDIR)$(MANDIR)/man8/rtstat.8
+-	ln -sf lnstat.8  $(DESTDIR)$(MANDIR)/man8/ctstat.8
+-	ln -sf rtacct.8  $(DESTDIR)$(MANDIR)/man8/nstat.8
+-	ln -sf routel.8  $(DESTDIR)$(MANDIR)/man8/routef.8
+-	install -m 0755 -d $(DESTDIR)$(MANDIR)/man3
+-	install -m 0644 $(shell find man/man3 -maxdepth 1 -type f) $(DESTDIR)$(MANDIR)/man3
+-
+-snapshot:
+-	echo "static const char SNAPSHOT[] = \""`date +%y%m%d`"\";" \
+-		> include/SNAPSHOT.h
++install:
++#	install -m 0755 tc/tc $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/tc
++#	install -m 0755 ip/ip $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/ip
++#
++# These apps in the iproute2 package are not used by us.
++#
++#	install -m 0755 misc/ss $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/ss
++#	install -m 0755 misc/nstat $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/nstat
++#	install -m 0755 misc/ifstat $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/ifstat
++#	install -m 0755 misc/rtacct $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/rtacct
++#	install -m 0755 misc/lnstat $(DESTDIR)$(SBINDIR)
++#	$(STRIP) $(INSTALL_DIR)/bin/lnstat
++
++dynamic: install
+ 
+ clean:
+-	rm -f cscope.*
+ 	@for i in $(SUBDIRS) doc; \
+-	do $(MAKE) $(MFLAGS) -C $$i clean; done
++	do if [ -f Config ]; then $(MAKE) $(MFLAGS) -C $$i clean; fi; done
++	@rm -f Config
+ 
+ clobber: clean
+ 	rm -f Config
+ 
+-distclean: clobber
+-
+-cscope:
+-	cscope -b -q -R -Iinclude -sip -slib -smisc -snetem -stc
+ 
+ .EXPORT_ALL_VARIABLES:
+diff -Naur /home/john/iproute2-2.6.33/misc/Makefile iproute2-2.6.33/misc/Makefile
+--- /home/john/iproute2-2.6.33/misc/Makefile	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/misc/Makefile	2014-01-13 19:52:34.768069126 +0800
+@@ -1,7 +1,7 @@
+ SSOBJ=ss.o ssfilter.o
+ LNSTATOBJ=lnstat.o lnstat_util.o
+ 
+-TARGETS=ss nstat ifstat rtacct arpd lnstat
++TARGETS=ss nstat ifstat rtacct lnstat
+ 
+ include ../Config
+ 
+@@ -18,8 +18,8 @@
+ rtacct: rtacct.c
+ 	$(CC) $(CFLAGS) $(LDFLAGS) -o rtacct rtacct.c $(LIBNETLINK) -lm
+ 
+-arpd: arpd.c
+-	$(CC) $(CFLAGS) -I$(DBM_INCLUDE) $(LDFLAGS) -o arpd arpd.c $(LIBNETLINK) -ldb -lpthread
++#arpd: arpd.c
++#	$(CC) $(CFLAGS) -I$(DBM_INCLUDE) $(LDFLAGS) -o arpd arpd.c $(LIBNETLINK) -ldb -lpthread
+ 
+ ssfilter.c: ssfilter.y
+ 	bison ssfilter.y -o ssfilter.c
+diff -Naur /home/john/iproute2-2.6.33/tc/Makefile iproute2-2.6.33/tc/Makefile
+--- /home/john/iproute2-2.6.33/tc/Makefile	2010-02-25 11:56:50.000000000 +0800
++++ iproute2-2.6.33/tc/Makefile	2014-01-13 19:52:34.768069126 +0800
+@@ -111,10 +111,10 @@
+ q_atm.so: q_atm.c
+ 	$(CC) $(CFLAGS) $(LDFLAGS) -shared -fpic -o q_atm.so q_atm.c -latm
+ 
+-%.yacc.c: %.y
++%.yacc.c %.yacc.h: %.y
+ 	$(YACC) $(YACCFLAGS) -o $@ $<
+ 
+-%.lex.c: %.l
++%.lex.c: %.l %.yacc.h
+ 	$(LEX) $(LEXFLAGS) -o$@ $<
+ 
+ ifneq ($(SHARED_LIBS),y)

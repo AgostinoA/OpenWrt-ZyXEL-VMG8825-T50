@@ -1,0 +1,162 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-03-21 09:36:13.254719487 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-03-21 11:41:33.210383805 +0800
+@@ -149,6 +149,11 @@
+ /* HTTP server - client thread blocking timeout */
+ #define CG_HTTP_SERVER_READ_TIMEOUT 120
+ 
++#ifdef ZYXEL_PATCH /*BBF TR-069:The suggested SessionTimeout MUST be 30 seconds or greater, by ZyXEL charisse*/
++#define CG_HTTP_CWMP_SEND_RECV_TIMEOUT 3
++#define CG_HTTP_CWMP_SEND_RECV_TRY_COUNT 15
++#endif
++
+ /**** HTTP Status code reason phrases ****/
+ #define CG_HTTP_REASON_100 "Continue"
+ #define CG_HTTP_REASON_101 "Switching Protocols"
+Index: clinkc/src/cybergarage/http/chttp_response.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_response.c	2014-03-21 09:36:13.254719487 +0800
++++ clinkc/src/cybergarage/http/chttp_response.c	2014-03-21 09:36:13.302719488 +0800
+@@ -201,7 +201,9 @@
+ 	cg_string_tokenizer_delete(strTok);
+ 
+ #ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
+-	cg_http_packet_read((CgHttpPacket *)httpRes, sock, onlyHeader, lineBuf, sizeof(lineBuf), savedFile);
++	/*fix the bug of process lock when connection lost, by ZyXEL charisse*/
++	if(cg_http_packet_read((CgHttpPacket *)httpRes, sock, onlyHeader, lineBuf, sizeof(lineBuf), savedFile) == FALSE)
++		return FALSE;
+ #else
+ 	cg_http_packet_read((CgHttpPacket *)httpRes, sock, onlyHeader, lineBuf, sizeof(lineBuf));
+ #endif
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2014-03-21 09:36:13.266719487 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2014-03-21 11:41:17.898909075 +0800
+@@ -416,6 +416,9 @@
+ {
+ 	long readLen = 0;
+ 	long conLen = 0;
++#ifdef ZYXEL_PATCH /*fix the bug of process lock when connection lost, by ZyXEL charisse*/
++	int tmpLen;
++#endif
+ 	int tries = 0;
+ 	char *content = NULL;
+ 	
+@@ -439,12 +442,23 @@
+ 	
+ 	readLen = 0;
+ 	/* Read content until conLen is reached, or tired of trying */
++#ifdef ZYXEL_PATCH /*fix the bug of process lock when connection lost, by ZyXEL charisse*/
++	while (readLen < conLen && tries < CG_HTTP_CWMP_SEND_RECV_TRY_COUNT)
++	{
++		tmpLen = cg_socket_read(sock, (content+readLen), (conLen-readLen));
++		if( tmpLen<=0 )
++			tries++;
++		else{
++			readLen += tmpLen;
++		}
++	}
++#else
+ 	while (readLen < conLen && tries < 20)
+ 	{
+ 		readLen += cg_socket_read(sock, (content+readLen), (conLen-readLen));
+ 		tries++;
+ 	}
+-	
++#endif
+ 	/* Append content to packet */
+ #ifdef ZYXEL_PATCH /*support save content to file, by ZyXEL charisse*/
+ 	if(fp)
+@@ -479,6 +493,9 @@
+ {
+ 	long readLen;
+ 	int conLen;
++#ifdef ZYXEL_PATCH /*fix the bug of process lock when connection lost, by ZyXEL charisse*/
++	int tmpLen;
++#endif
+ 	char *content;
+ 	char readBuf[READBUF_LENGTH + 1];
+ 	int tries = 0;
+@@ -499,6 +516,23 @@
+ 		readLen = 0;
+ 		
+ 		/* Read content until conLen is reached, or tired of trying */
++#ifdef ZYXEL_PATCH /*fix the bug of process lock when connection lost, by ZyXEL charisse*/
++		while (readLen < conLen && tries < CG_HTTP_CWMP_SEND_RECV_TRY_COUNT)
++		{
++			tmpLen = cg_socket_read(sock, (content+readLen), (conLen-readLen));
++			/* Fixed to increment the counter only when cg_socket_read() doesn't read data */
++			if (tmpLen <= 0){
++				tries++;
++			}
++			else{
++				readLen += tmpLen;
++			}
++		}
++		if((tries >= CG_HTTP_CWMP_SEND_RECV_TRY_COUNT) || (readLen < conLen)){
++			free(content);
++			return FALSE;
++		}
++#else
+ 		while (readLen < conLen && tries < 20)
+ 		{
+ 			readLen += cg_socket_read(sock, (content+readLen), (conLen-readLen));
+@@ -506,6 +540,7 @@
+ 			if (readLen <= 0)
+ 				tries++;
+ 		}
++#endif
+ 		
+ 		if (readLen <= 0)
+ 			return TRUE;
+@@ -580,11 +615,10 @@
+ 		readLen = 0;
+ 
+ 		/* Read content until conLen is reached, or tired of trying */
+-		while (readLen < conLen && tries < 20)
++		while (readLen < conLen && tries < CG_HTTP_CWMP_SEND_RECV_TRY_COUNT)
+ 		{
+ 			memset(readBuf, '\0', sizeof(readBuf));
+ 			length = cg_socket_read(sock, readBuf, READBUF_LENGTH);
+-
+ 			/*for http server to parse upload multipart/form-data packet boundary and get the binary file start pointer*/
+ 			contentType = cg_http_packet_getheadervalue(httpPkt, CG_HTTP_CONTENT_TYPE);
+ 			if((contentType = strstr(contentType, "boundary=")) != NULL){
+@@ -598,19 +632,28 @@
+ 				else
+ 					parseFlag = 0;
+ 			}
+-
+-			readLen += length;
+-			if (length <= 0)
++			if (length <= 0){
+ 				tries++;
+-			else if (parseFlag)
+-				fwrite(fileStart, sizeof(char), length-(fileStart-readBuf), fp);
+-			else
+-				fwrite(readBuf, length, 1, fp);
++			}
++			else{
++				readLen += length;
++				if (parseFlag)
++					fwrite(fileStart, sizeof(char), length-(fileStart-readBuf), fp);
++				else
++					fwrite(readBuf, length, 1, fp);
++			}
++
++		}
++		if((tries >= CG_HTTP_CWMP_SEND_RECV_TRY_COUNT) || (readLen < conLen)){
++			fclose(fp);
++			unlink(savedFile);
++			return FALSE;
+ 		}
+ 
+ 		if (readLen <= 0){
+ 			fclose(fp);
+-			return TRUE;
++			unlink(savedFile);
++			return FALSE;
+ 		}
+ 		cg_http_packet_setcontentpointer(httpPkt, NULL, readLen);
+ 		fclose(fp);

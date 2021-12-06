@@ -1,0 +1,409 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2017-08-07 17:20:41.695136806 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2017-08-07 17:25:04.988720200 +0800
+@@ -236,7 +236,7 @@
+ 			printf("%-2s %-20s %-10s \n", "", "Mode", "Bridge");
+ 		if(!strcmp("IP_Routed",json_object_get_string(json_object_object_get(obj_idx, "Mode")))){
+ 			printf("%-2s %-20s %-10s \n", "", "Mode", json_object_get_string(json_object_object_get(obj_idx, "Encapsulation")));
+-			printf("%-2s %-20s %-10s \n", "", "IPv4/IPv6 Mode", json_object_get_string(json_object_object_get(obj_idx, "Encapsulation")));
++			printf("%-2s %-20s %-10s \n", "", "IPv4/IPv6 Mode", json_object_get_string(json_object_object_get(obj_idx, "ipMode")));
+ 			printf("%-2s %-20s %-10s \n", "", "Static IP", json_object_get_string(json_object_object_get(obj_idx, "ipStatic")));
+ 			if(json_object_get_boolean(json_object_object_get(obj_idx, "ipStatic"))){
+ 				printf("%-2s %-20s %-10s \n", "", "IP Address", json_object_get_string(json_object_object_get(obj_idx, "IPAddress")));
+@@ -279,6 +279,18 @@
+ 				printf("%-4s %-20s %-10s \n", "", "Maximum Burst Size [cells]", json_object_get_string(json_object_object_get(obj_idx, "atmMaxBurstSize")));
+ 			}
+ 		}
++		if(!strncmp(json_object_get_string(json_object_object_get(obj_idx, "Encapsulation")),"PPP",3)){
++			printf("PPP Information \n");
++			printf("%-2s %-25s %-10s \n", "", "PPP User Name", json_object_get_string(json_object_object_get(obj_idx, "pppUsername")));
++			printf("%-2s %-25s %-10s \n", "", "PPP Password", json_object_get_string(json_object_object_get(obj_idx, "pppPassword")));
++			if(!strcmp("AlwaysOn",json_object_get_string(json_object_object_get(obj_idx, "ConnectionTrigger"))))
++				printf("%-2s %-25s %-10s \n", "", "PPP Connection Trigger", "Auto Connect");
++			else if(!strcmp("OnDemand",json_object_get_string(json_object_object_get(obj_idx, "ConnectionTrigger")))){
++				printf("%-2s %-25s %-10s \n", "", "PPP Connection Trigger", "On Demand");
++				printf("%-2s %-25s %-10s \n", "", "Idle Timeout(sec.)", json_object_get_string(json_object_object_get(obj_idx, "IdleDisconnectTime")));
++			}
++			printf("%-2s %-25s %-10s \n", "", "PPPoE Passthrough", json_object_get_string(json_object_object_get(obj_idx, "pppoePassThrough")));
++		}
+ 		printf("VLAN: \n");
+ 		printf("%-2s %-20s %-10s \n", "", "Active :", json_object_get_string(json_object_object_get(obj_idx, "VLANEnable")));
+ 		if(!strcmp("-1",json_object_get_string(json_object_object_get(obj_idx, "VLANPriority"))))
+@@ -836,7 +848,6 @@
+ 	replaceParam(vlanTermObj, "X_ZYXEL_VLANEnable", Jobj, "VLANEnable");
+ 	replaceParam(vlanTermObj, "VLANID", Jobj, "VLANID");
+ 	replaceParam(vlanTermObj, "X_ZYXEL_VLANPriority", Jobj, "VLANPriority");
+-	
+ 	sprintf(currLowerLayers, "Ethernet.VLANTermination.%u", vlanTermIid.idx[0]);
+ 	
+ 	return ret;
+@@ -850,7 +861,6 @@
+ 	bool CurrNatEnabled=false, CurrFullConeEnabled=false;
+ 	bool NatEnable=false, FullConeEnabled=false;
+ 	struct json_object *pramJobj = NULL;
+-	
+ 	if(natIntfObj != NULL){
+ 		CurrNatEnabled = json_object_get_boolean(json_object_object_get(natIntfObj, "Enable"));
+ 		CurrFullConeEnabled = json_object_get_boolean(json_object_object_get(natIntfObj, "X_ZYXEL_FullConeEnabled"));
+@@ -940,8 +950,9 @@
+ 	if(CurrIpDnsStatic && ipDnsStatic){ //enable to enable
+ 		DNSServer = json_object_get_string(json_object_object_get(Jobj, "DNSServer"));
+ 		CurrDNSServer = json_object_get_string(json_object_object_get(dnsClientSrv4Obj, "DNSServer"));
+-		if(strcmp(DNSServer, CurrDNSServer)){
+-			json_object_object_add(dnsClientSrv4Obj, "DNSServer", json_object_new_string(DNSServer));
++		if(json_object_object_get(Jobj, "DNSServer")){
++			if(strcmp(DNSServer, CurrDNSServer))
++				json_object_object_add(dnsClientSrv4Obj, "DNSServer", json_object_new_string(DNSServer));
+ 		}
+ 		else{
+ 			if(dnsClientSrv4Obj) {zcfgFeJsonObjFree(dnsClientSrv4Obj);}
+@@ -1099,6 +1110,7 @@
+ 	const char *CurrIPAddress, *CurrSubnetMask, *CurrGatewayIPAddress;
+ 	const char *IP6Address, *NextHop;
+ 	const char *CurrIP6Address, *CurrNextHop;
++	bool ipdnsmodify = false;
+ 
+ 	pramJobj = json_object_object_get(Jobj, "ipStatic");
+ 	if(!strcmp(ipMode, "IPv6"))
+@@ -1145,11 +1157,21 @@
+ 		CurrSubnetMask = json_object_get_string(json_object_object_get(v4AddrObj, "SubnetMask"));
+ 		CurrGatewayIPAddress = json_object_get_string(json_object_object_get(v4FwdObj, "GatewayIPAddress"));
+ 			
+-		if(strcmp(IPAddress, CurrIPAddress) || strcmp(SubnetMask, CurrSubnetMask)){
+-			json_object_object_add(v4AddrObj, "Enable", json_object_new_boolean(true));
+-			json_object_object_add(v4AddrObj, "IPAddress", json_object_new_string(IPAddress));
+-			json_object_object_add(v4AddrObj, "SubnetMask", json_object_new_string(SubnetMask));
+-		}else{
++		if(json_object_object_get(Jobj, "IPAddress")){
++			if(strcmp(IPAddress, CurrIPAddress)){
++				json_object_object_add(v4AddrObj, "Enable", json_object_new_boolean(true));
++				json_object_object_add(v4AddrObj, "IPAddress", json_object_new_string(IPAddress));
++				ipdnsmodify = true;
++			}
++		}
++		if(json_object_object_get(Jobj, "SubnetMask")){
++			if(strcmp(SubnetMask, CurrSubnetMask)){
++				json_object_object_add(v4AddrObj, "Enable", json_object_new_boolean(true));
++				json_object_object_add(v4AddrObj, "SubnetMask", json_object_new_string(SubnetMask));
++				ipdnsmodify = true;
++			}
++		}
++		if(!ipdnsmodify){
+ 			if(v4AddrObj) {zcfgFeJsonObjFree(v4AddrObj);}
+ 		}
+ 
+@@ -2358,7 +2380,6 @@
+ 	//json_object_object_add(ipIfaceObj, "Enable", json_object_new_boolean(true));
+ 	if(!replaceParam(ipIfaceObj, "Enable", Jobj, "Enable"))
+ 		json_object_object_add(ipIfaceObj, "Enable", json_object_new_boolean(CurrEnable));
+-		
+ 	json_object_object_add(ipIfaceObj, "X_ZYXEL_ConnectionId", json_object_new_int(ipIfaceIid.idx[0] - 1));
+ #ifdef ISKON_CUSTOMIZATION //Adam
+ 	json_object_object_add(ipIfaceObj, "X_ZYXEL_IPR2_MARKING", json_object_new_int(mark));
+@@ -2501,37 +2522,37 @@
+ zcfgRet_t freeAllObjects(){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+-	if(atmLinkQosObj) json_object_put(atmLinkQosObj);
+-	if(atmLinkObj) json_object_put(atmLinkObj);
+-	if(ptmLinkObj) json_object_put(ptmLinkObj);
+-	if(ethLinkObj) json_object_put(ethLinkObj);
+-	if(vlanTermObj) json_object_put(vlanTermObj);
+-	if(pppIfaceObj) json_object_put(pppIfaceObj);
+-	if(ipIfaceObj) json_object_put(ipIfaceObj);
+-	if(natIntfObj) json_object_put(natIntfObj);
+-	if(dnsClientSrv4Obj) json_object_put(dnsClientSrv4Obj);
+-	if(dnsClientSrv6Obj) json_object_put(dnsClientSrv6Obj);
+-	if(v4FwdObj) json_object_put(v4FwdObj);
+-	if(v4AddrObj) json_object_put(v4AddrObj);
+-	if(v6FwdObj) json_object_put(v6FwdObj);
+-	if(v6AddrObj) json_object_put(v6AddrObj);
+-	if(opt42Obj) json_object_put(opt42Obj);
+-	if(opt43Obj) json_object_put(opt43Obj);
+-	if(opt120Obj) json_object_put(opt120Obj);
+-	if(opt121Obj) json_object_put(opt121Obj);
+-	if(opt212Obj) json_object_put(opt212Obj);
+-	if(opt60Obj) json_object_put(opt60Obj);
+-	if(opt61Obj) json_object_put(opt61Obj);
+-	if(opt125Obj) json_object_put(opt125Obj);
+-	if(v4ClientObj) json_object_put(v4ClientObj);
+-	if(igmpObj) json_object_put(igmpObj);
+-	if(mldObj) json_object_put(mldObj);
+-	if(routerObj) json_object_put(routerObj);
+-	if(dnsObj) json_object_put(dnsObj);
+-	if(ethIfaceObj) json_object_put(ethIfaceObj);
+-	if(optIfaceObj) json_object_put(optIfaceObj);
+-	if(dynamicDnsClientSrv4Obj) json_object_put(dynamicDnsClientSrv4Obj);
+-	if(dynamicDnsClientSrv6Obj) json_object_put(dynamicDnsClientSrv6Obj);
++	if(atmLinkQosObj) zcfgFeJsonObjFree(atmLinkQosObj);
++	if(atmLinkObj) zcfgFeJsonObjFree(atmLinkObj);
++	if(ptmLinkObj) zcfgFeJsonObjFree(ptmLinkObj);
++	if(ethLinkObj) zcfgFeJsonObjFree(ethLinkObj);
++	if(vlanTermObj) zcfgFeJsonObjFree(vlanTermObj);
++	if(pppIfaceObj) zcfgFeJsonObjFree(pppIfaceObj);
++	if(ipIfaceObj) zcfgFeJsonObjFree(ipIfaceObj);
++	if(natIntfObj) zcfgFeJsonObjFree(natIntfObj);
++	if(dnsClientSrv4Obj) zcfgFeJsonObjFree(dnsClientSrv4Obj);
++	if(dnsClientSrv6Obj) zcfgFeJsonObjFree(dnsClientSrv6Obj);
++	if(v4FwdObj) zcfgFeJsonObjFree(v4FwdObj);
++	if(v4AddrObj) zcfgFeJsonObjFree(v4AddrObj);
++	if(v6FwdObj) zcfgFeJsonObjFree(v6FwdObj);
++	if(v6AddrObj) zcfgFeJsonObjFree(v6AddrObj);
++	if(opt42Obj) zcfgFeJsonObjFree(opt42Obj);
++	if(opt43Obj) zcfgFeJsonObjFree(opt43Obj);
++	if(opt120Obj) zcfgFeJsonObjFree(opt120Obj);
++	if(opt121Obj) zcfgFeJsonObjFree(opt121Obj);
++	if(opt212Obj) zcfgFeJsonObjFree(opt212Obj);
++	if(opt60Obj) zcfgFeJsonObjFree(opt60Obj);
++	if(opt61Obj) zcfgFeJsonObjFree(opt61Obj);
++	if(opt125Obj) zcfgFeJsonObjFree(opt125Obj);
++	if(v4ClientObj) zcfgFeJsonObjFree(v4ClientObj);
++	if(igmpObj) zcfgFeJsonObjFree(igmpObj);
++	if(mldObj) zcfgFeJsonObjFree(mldObj);
++	if(routerObj) zcfgFeJsonObjFree(routerObj);
++	if(dnsObj) zcfgFeJsonObjFree(dnsObj);
++	if(ethIfaceObj) zcfgFeJsonObjFree(ethIfaceObj);
++	if(optIfaceObj) zcfgFeJsonObjFree(optIfaceObj);
++	if(dynamicDnsClientSrv4Obj) zcfgFeJsonObjFree(dynamicDnsClientSrv4Obj);
++	if(dynamicDnsClientSrv6Obj) zcfgFeJsonObjFree(dynamicDnsClientSrv6Obj);
+ 	
+ 	return ret;
+ }
+@@ -3134,18 +3155,18 @@
+ 
+     getWanLanList(&wanLanList);
+     len = json_object_array_length(wanLanList);
+-
+-    for(i=0; i<len; i++){
+-        listObj = json_object_array_get_idx(wanLanList, i);
+-        if(!strcmp("WAN",json_object_get_string(json_object_object_get(listObj, "Type"))))
+-        {
+-            if(!strcmp(json_object_get_string(json_object_object_get(currObj, "Type")),json_object_get_string(json_object_object_get(listObj, "LinkType"))))
+-            {
+-                wanIntfCount ++;
+-            }
+-        }
+-    }
+-
++	if(json_object_object_get(currObj, "Type")){
++	    for(i=0; i<len; i++){
++	        listObj = json_object_array_get_idx(wanLanList, i);
++	        if(!strcmp("WAN",json_object_get_string(json_object_object_get(listObj, "Type"))))
++	        {
++	            if(!strcmp(json_object_get_string(json_object_object_get(currObj, "Type")),json_object_get_string(json_object_object_get(listObj, "LinkType"))))
++	            {
++	                wanIntfCount ++;
++	            }
++	        }
++	    }
++	}
+     if(isAdd)
+         wanIntfCount++;
+     
+@@ -3168,13 +3189,16 @@
+ 	getBasicInfo(Jobj);
+ 
+ 	//check if duplicate Name exist
+-	if(getSpecificObj(RDM_OID_IP_IFACE, "X_ZYXEL_SrvName", json_type_string, Name, NULL, NULL))
++	if(getSpecificObj(RDM_OID_IP_IFACE, "X_ZYXEL_SrvName", json_type_string, Name, NULL, NULL)){
++		if(replyMsg)
++			strcpy(replyMsg,"Name is duplicate.");
+ 		return ZCFG_REQUEST_REJECT;
++	}
+ 
+ 	if(checkWanInterfaceLimit(Jobj, 1) == false){
+ 		return ZCFG_REQUEST_REJECT;
+ 	}
+-
++	ret = zcfgFeCheckIPDNS(Jobj, replyMsg);
+ 	if((ret = addDefaultParam(Jobj, replyMsg)) != ZCFG_SUCCESS)//for CLI
+ 		return ret;
+ 
+@@ -3322,8 +3346,7 @@
+ 	initGlobalObjects();
+ 	getBasicInfo(Jobj);
+ 
+-	t2 = time(NULL);
+-    dbg_printf("line=%d, time=%d\n", __LINE__, (int) difftime(t2, t1));
++	ret = zcfgFeCheckIPDNS(Jobj, replyMsg);
+ 
+ 	if(json_object_object_get(Jobj, "EnableEthWAN")){
+ 		// it's EthWAN enable/disable
+@@ -3340,10 +3363,6 @@
+ 
+ 	if ((ret = getCurrentConfig(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+-
+-	t2 = time(NULL);
+-    dbg_printf("line=%d, time=%d\n", __LINE__, (int) difftime(t2, t1));
+-
+ 	//disable ipIface pppIface first
+ 	CurrEnable = json_object_get_boolean(json_object_object_get(ipIfaceObj, "Enable"));
+ 	json_object_object_add(ipIfaceObj, "Enable", json_object_new_boolean(false));
+@@ -3354,7 +3373,6 @@
+ 		zcfgFeObjJsonSet(RDM_OID_PPP_IFACE, &pppIfaceIid, pppIfaceObj, NULL);
+ 	}
+ 
+-	
+ 	//Always clean dynamic dns
+ 	if(dynamicDnsClientSrv4Obj){
+ 		json_object_object_add(dynamicDnsClientSrv4Obj, "Interface", json_object_new_string(""));
+@@ -3394,26 +3412,17 @@
+ 	}
+ 	
+ 	deleteUnnecessaryObj();
+-	
+ 	if((ret = editPhyLayerObjects(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+-	
+ 	if((ret = editEthLinkObject(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+ 
+ 	if((ret = editVlanTermObject(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+ 	
+-    dbg_printf("line=%d\n", __LINE__);
+-	
+ 	if((ret = editLayer3Objects(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+ 
+-    dbg_printf("line=%d\n", __LINE__);
+-
+-	t2 = time(NULL);
+-    dbg_printf("before set, time=%d seconds\n", (int) difftime(t2, t1));
+-	
+ 	setAllObjects(Jobj);
+ 
+ dalwan_edit_fail:
+@@ -3983,18 +3992,104 @@
+ 		}
+ 		zcfgFeJsonObjFree(ipIfObj);
+ 	}
+-
+ 	freeAllObjects();
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeCheckIPDNS(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *Jarray = NULL, *obj = NULL;
++	const char *curname = NULL;
++	int len = 0, i;
++	bool editmode = false, ipv4static = false, dnsv4static = false, ipv6static = false, dnsv6static = false;
++	bool oriipv4static = false, oridnsv4static = false, oriipv6static = false, oridnsv6static = false;
++
++	Jarray = json_object_new_array();
++	curname = json_object_get_string(json_object_object_get(Jobj, "Name"));
++	ipv4static = json_object_get_boolean(json_object_object_get(Jobj, "ipStatic"));
++	dnsv4static = json_object_get_boolean(json_object_object_get(Jobj, "ipDnsStatic"));
++	ipv6static = json_object_get_boolean(json_object_object_get(Jobj, "ip6Static"));
++	dnsv6static = json_object_get_boolean(json_object_object_get(Jobj, "ip6DnsStatic"));
++	zcfgFeDalWanGet(Jobj, Jarray, NULL);
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(!strcmp(curname, json_object_get_string(json_object_object_get(obj, "Name")))){
++			oriipv4static = json_object_get_boolean(json_object_object_get(obj, "ipStatic"));
++			oridnsv4static = json_object_get_boolean(json_object_object_get(obj, "ipDnsStatic"));
++			oriipv6static = json_object_get_boolean(json_object_object_get(obj, "ip6Static"));
++			oridnsv6static = json_object_get_boolean(json_object_object_get(obj, "ip6DnsStatic"));
++			editmode = true;
++			break;
++		}
++	}
++	if(editmode){	//edit case
++		if(json_object_object_get(Jobj, "ipStatic") && json_object_object_get(Jobj, "ipDnsStatic")){
++			if(ipv4static && !dnsv4static){
++				if(replyMsg)
++					strcpy(replyMsg, "--ipDnsStatic should be set as 1.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++		else if(!json_object_object_get(Jobj, "ipStatic") && json_object_object_get(Jobj, "ipDnsStatic")){
++			if(oriipv4static && !dnsv4static){
++				if(replyMsg)
++					strcpy(replyMsg, "--ipDnsStatic should be set as 1.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++
++		if(json_object_object_get(Jobj, "ip6Static") && json_object_object_get(Jobj, "ip6DnsStatic")){
++			if(ipv6static && !dnsv6static){
++				if(replyMsg)
++					strcpy(replyMsg, "--ip6DnsStatic should be set as 1.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++		else if(!json_object_object_get(Jobj, "ip6Static") && json_object_object_get(Jobj, "ip6DnsStatic")){
++			if(oriipv6static && !dnsv6static){
++				if(replyMsg)
++					strcpy(replyMsg, "--ip6DnsStatic should be set as 1.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++	}
++	else{	//add case
++		if(ipv4static){	//for ipv4 case
++			if(!json_object_object_get(Jobj, "ipDnsStatic")){
++				if(replyMsg)
++					strcpy(replyMsg, "Please set --ipDnsStatic parameter.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++			else if(!dnsv4static){
++				if(replyMsg)
++					strcpy(replyMsg, "--ipDnsStatic should be set as 1.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++		if(ipv6static){	//for ipv6 case
++			if(!json_object_object_get(Jobj, "ip6DnsStatic")){
++				if(replyMsg)
++					strcpy(replyMsg, "Please set --i6pDnsStatic parameter.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++			else if(!dnsv6static){
++				if(replyMsg)
++					strcpy(replyMsg, "--ip6DnsStatic should be set as 1.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++	}
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+ 	if(!strcmp(method, "POST"))
+-		ret = zcfgFeDalWanAdd(Jobj, NULL);
++		ret = zcfgFeDalWanAdd(Jobj, replyMsg);
+ 	else if(!strcmp(method, "PUT"))
+-		ret = zcfgFeDalWanEdit(Jobj, NULL);
++		ret = zcfgFeDalWanEdit(Jobj, replyMsg);
+ 	else if(!strcmp(method, "DELETE"))
+ 		ret = zcfgFeDalWanDelete(Jobj, NULL);
+ 	else if(!strcmp(method, "GET")){
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lansetup.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_lansetup.c	2017-08-07 17:20:41.707136806 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lansetup.c	2017-08-07 17:22:17.637529900 +0800
+@@ -661,11 +661,17 @@
+ 		}
+ 
+ 		if(setParam){
++			fflush(stdout);
++			if(!strcmp(dnsType, "DNSProxy"))
++				json_object_object_add(dhcpSrvObj, "X_ZYXEL_DNS_Type", json_object_new_string("DNS Proxy"));
++			else if(!strcmp(dnsType, "FromISP"))
++				json_object_object_add(dhcpSrvObj, "X_ZYXEL_DNS_Type", json_object_new_string("From ISP"));
++			else 
++				json_object_object_add(dhcpSrvObj, "X_ZYXEL_DNS_Type", json_object_new_string(dnsType));	
+ 			json_object_object_add(dhcpSrvObj, "Enable", json_object_new_boolean(true));
+ 			json_object_object_add(dhcpSrvObj, "MinAddress", json_object_new_string(dhcpMinAdr));
+ 			json_object_object_add(dhcpSrvObj, "MaxAddress", json_object_new_string(dhcpMaxAdr));
+ 			json_object_object_add(dhcpSrvObj, "DNSServers", json_object_new_string(dnsServer));
+-			json_object_object_add(dhcpSrvObj, "X_ZYXEL_DNS_Type", json_object_new_string(dnsType));
+ 			json_object_object_add(dhcpSrvObj, "LeaseTime", json_object_new_int(leaseTime));
+ 			json_object_object_add(dhcpSrvObj, "X_ZYXEL_AutoReserveLanIp", json_object_new_boolean(dhcpAutoReserve));
+ 			zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL, &dhcpSrvIid, dhcpSrvObj, NULL);

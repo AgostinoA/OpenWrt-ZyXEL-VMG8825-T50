@@ -1,0 +1,1393 @@
+Index: linux-3.18.21/include/linux/netfilter/xt_AUTOMAP.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/include/linux/netfilter/xt_AUTOMAP.h	2018-05-02 12:27:36.898041751 +0800
+@@ -0,0 +1,65 @@
++/* x_tables module for setting the IPv4/IPv6 DSCP field
++ *
++ * (C) 2002 Harald Welte <laforge@gnumonks.org>
++ * based on ipt_FTOS.c (C) 2000 by Matthew G. Marsh <mgm@paktronix.com>
++ * This software is distributed under GNU GPL v2, 1991
++ *
++ * See RFC2474 for a description of the DSCP field within the IP Header.
++ *
++ * xt_DSCP.h,v 1.7 2002/03/14 12:03:13 laforge Exp
++*/
++#ifndef _XT_AUTOMAP_TARGET_H
++#define _XT_AUTOMAP_TARGET_H
++
++#define XT_AUTO_TYPE	0x1
++//#define XT_AUTO_MARK	0x2
++//#define XT_AUTO_DSCP	0x4
++//#define XT_AUTO_ETHPRI	0x8
++
++/*Automapping Type*/
++#define AUTOMAP_TYPE_8021P	0x1
++#define AUTOMAP_TYPE_DSCP		0x2
++#define AUTOMAP_TYPE_PKTLEN	0x4
++
++#define DSCP_MASK_SHIFT   5
++#define ETHERPRI_MARK_SHIFT   12
++
++		/*
++		Auto Priority Mapping Table
++
++
++			DSCP	|   Packet Length	| 802.1P	|     Queue     |
++		   ---------------------------------------------
++					|				|   001	|       0 		|
++					|				|		|			|
++					|				|   010	|       1		|
++					|				|		|			|
++			0x00       |       >1100		|   000	|       2		|
++					|				|		|			|
++			0x08       |       250-1100	|   011	|       3		|
++					|				|		|			|
++			0x10       |				|   100	|       4		|
++					|				|		|			|
++			0x18       |       <250		|   101	|       5		|
++					|				|		|			|
++		0x20,0x28	|				|   110	|       6		|
++					|				|		|			|
++		0x30,0x38  	|				|   111	|       7		|
++		*/
++
++
++/* accoding to tr181 8021p to DSCP mapping table(upstream) higher value higher priority */
++unsigned short vlan8021pToDSCP[8]= {0x00,0x00,0x00,0x08,0x10,0x18,0x28,0x38};
++unsigned short dscpPrecedenceTo8021p[8] = {0,3,4,5,6,6,7,7};
++
++unsigned short vlan8021pToPriorityQueue[8] = {2,0,1,3,4,5,6,7};
++unsigned short dscpPrecedenceToPriorityQueue[8] = {2,3,4,5,6,6,7,7};
++
++/* target info */
++struct xt_automap_target_info {
++	int type;
++	int marktable[8];
++	int flags;
++};
++
++#endif /* _XT_AUTOMAP_TARGET_H */
+Index: linux-3.18.21/include/linux/netfilter/xt_policer.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/include/linux/netfilter/xt_policer.h	2018-05-02 12:27:36.898041751 +0800
+@@ -0,0 +1,38 @@
++#ifndef _XT_RATE_H
++#define _XT_RATE_H
++
++#define BITS_PER_BYTE 8
++#define KILO_SCALE 1000
++
++struct xt_policerinfo {
++#if 1//__MSTC__, Jones For compilation
++    int policerMode;
++
++    /* For srTCM and trTCM, rate means cRate and burst means cbsBurst.
++    For srTCM, pbsBurst means ebsBurst. */
++    u_int32_t rate, pRate;
++    u_int32_t burst, pbsBurst;  /* Period multiplier for upper limit. */
++
++    /* Used internally by the kernel */
++    unsigned long prev;
++
++    /* For srTCM and trTCM, credit means cbsCredit and creditCap means cbsCreditCap.
++    For srTCM, pbsCreditCap means ebsCreditCap. */
++    u_int32_t credit, pbsCredit;
++    u_int32_t creditCap, pbsCreditCap;
++
++    struct xt_policerinfo *master;
++#else
++    u_int32_t avg;    /* Average secs between packets * scale */
++    u_int32_t burst;  /* Period multiplier for upper limit. */
++
++    /* Used internally by the kernel */
++    unsigned long prev;
++    u_int32_t credit;
++    u_int32_t credit_cap, cost;
++
++    struct xt_policerinfo *master;
++#endif
++};
++
++#endif /*_XT_RATE_H*/
+Index: linux-3.18.21/net/netfilter/Kconfig
+===================================================================
+--- linux-3.18.21.orig/net/netfilter/Kconfig	2018-05-02 10:39:19.648635920 +0800
++++ linux-3.18.21/net/netfilter/Kconfig	2018-05-02 12:27:36.898041751 +0800
+@@ -587,6 +587,21 @@
+ 	"Use netfilter MARK value as routing key") and can also be used by
+ 	other subsystems to change their behavior.
+ 
++config NETFILTER_XT_TARGET_AUTOMAP
++        tristate '"AUTOMAP" target support'
++        depends on NETFILTER_XTABLES
++        help
++
++          This option adds a `AUTOMAP' target, which allows packet auto mapping to Internal Priority Queue by 8021p value, and automaically mark DSCP value.
++
++          To compile it as a module, choose M here.  If unsure, say N.
++
++config NETFILTER_XT_POLICER
++        tristate '"policer" rate limit support'
++        depends on NETFILTER_XTABLES
++        help
++          To compile it as a module, choose M here.  If unsure, say N.
++
+ config NETFILTER_XT_CONNMARK
+ 	tristate 'ctmark target and match support'
+ 	depends on NF_CONNTRACK
+Index: linux-3.18.21/net/netfilter/Makefile
+===================================================================
+--- linux-3.18.21.orig/net/netfilter/Makefile	2018-05-02 10:39:19.624635929 +0800
++++ linux-3.18.21/net/netfilter/Makefile	2018-05-02 12:27:36.898041751 +0800
+@@ -123,6 +123,8 @@
+ obj-$(CONFIG_NETFILTER_XT_TARGET_TEE) += xt_TEE.o
+ obj-$(CONFIG_NETFILTER_XT_TARGET_TRACE) += xt_TRACE.o
+ obj-$(CONFIG_NETFILTER_XT_TARGET_IDLETIMER) += xt_IDLETIMER.o
++obj-$(CONFIG_NETFILTER_XT_TARGET_AUTOMAP) += xt_AUTOMAP.o
++obj-$(CONFIG_NETFILTER_XT_POLICER) += xt_policer.o
+ 
+ # matches
+ obj-$(CONFIG_NETFILTER_XT_MATCH_ADDRTYPE) += xt_addrtype.o
+Index: linux-3.18.21/net/netfilter/xt_AUTOMAP.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/netfilter/xt_AUTOMAP.c	2018-05-02 12:27:36.898041751 +0800
+@@ -0,0 +1,189 @@
++/* x_tables module for setting the IPv4/IPv6 DSCP field, Version 1.8
++ *
++ * (C) 2002 by Harald Welte <laforge@netfilter.org>
++ * based on ipt_FTOS.c (C) 2000 by Matthew G. Marsh <mgm@paktronix.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * See RFC2474 for a description of the DSCP field within the IP Header.
++ *
++ * xt_DSCP.c,v 1.8 2002/08/06 18:41:57 laforge Exp
++*/
++
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <linux/ip.h>
++#include <linux/ipv6.h>
++#include <net/dsfield.h>
++#include <linux/if_vlan.h>
++
++#include <linux/netfilter/x_tables.h>
++#include <linux/netfilter/xt_AUTOMAP.h>
++#include <linux/netfilter/xt_DSCP.h>
++#include <net/dsfield.h>
++
++
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("ipt_AUTOMAP");
++MODULE_ALIAS("ip6t_AUTOMAP");
++#if 0
++static int getVlanPrioAndIpHeader(struct sk_buff *skb, unsigned char *prio, struct iphdr **iph){
++	unsigned short TCI;
++	unsigned short id;	/* VLAN ID, given from frame TCI */
++	 /* Need to recalculate IP header checksum after altering TOS byte */
++	const struct vlan_hdr *fp;
++	struct vlan_hdr _frame;
++	struct iphdr *ih = NULL;
++
++	/* get ip header */
++	ih = NULL;
++	ih = ip_hdr(skb);
++
++	*iph = ih;
++
++	/* check VLAN header is parsed or not ? */
++	if(ntohs(((struct vlan_hdr *)(skb->vlan_header))->h_vlan_encapsulated_proto) == 0){
++
++		/* tagged packet */
++		if(skb->protocol == ETH_P_8021Q) {
++
++             fp = skb_header_pointer(skb, 0, sizeof(_frame), &_frame);
++             if (fp == NULL)
++                return -1;
++
++          /* Tag Control Information (TCI) consists of the following elements:
++	              * - User_priority. The user_priority field is three bits in length,
++	              * 	interpreted as a binary number.
++	              * - Canonical Format Indicator (CFI). The Canonical Format Indicator
++	              *	 (CFI) is a single bit flag value. Currently ignored.
++	              * - VLAN Identifier (VID). The VID is encoded as
++	              * 	an unsigned binary number.
++	            */
++             TCI = ntohs(fp->h_vlan_TCI);
++             id = TCI & VLAN_VID_MASK;
++             *prio = (TCI >> 13) & 0x7;
++
++		}
++		else { /* untagged packet */
++			TCI = 0;
++			id = 0;
++			/* Packet with no VLAN tag will be sent to default queue just like 1p value is 1 */
++			*prio = 1;
++		}
++
++    }
++	else{
++         /* for new broadcom vlan device */
++         TCI = ntohs(((struct vlan_hdr *)(skb->vlan_header))->h_vlan_TCI);
++         id = TCI & VLAN_VID_MASK;
++         *prio = (TCI >> 13) & 0x7;
++    }
++
++	return 0;
++}
++#endif
++
++//static unsigned int target(struct sk_buff **pskb, const struct xt_tgchk_param *par)
++static unsigned int AUTOMAP_target_v4(struct sk_buff *skb, const struct xt_action_param *par)
++			   //const struct net_device *in,
++			   //const struct net_device *out,
++			   //unsigned int hooknum,
++			   //const struct xt_target *target,
++			   //const void *targinfo)
++{
++		const struct xt_automap_target_info *aminfo = par->targinfo;
++		struct iphdr _iph, *ih=NULL;
++		struct iphdr *iph = NULL;
++		unsigned char prio = 0;
++		unsigned char dscp = 0;
++		unsigned char dscpPrecedence = 0;
++
++		if(aminfo->flags & XT_AUTO_TYPE){
++//			getVlanPrioAndIpHeader(skb, &prio, &iph);
++			if((aminfo->type&AUTOMAP_TYPE_DSCP)||(aminfo->type&AUTOMAP_TYPE_PKTLEN)){
++				ih = skb_header_pointer(skb, 0, sizeof(_iph), &_iph);
++			}
++
++			switch(aminfo->type){
++				case AUTOMAP_TYPE_8021P:
++					prio = ((skb)->vlan_tci>>13)&0x7;
++					/* mark priority queue */
++					skb->mark |= vlan8021pToPriorityQueue[prio];
++
++					/* lookup upstream 8021p to DSCP value table */
++					dscp = vlan8021pToDSCP[prio];
++
++					/* mark DSCP value */
++					if (!skb_make_writable(skb, sizeof(struct iphdr)))
++			                        return NF_DROP;
++
++			        ipv4_change_dsfield(ip_hdr(skb), (__u8)(~XT_DSCP_MASK), dscp << XT_DSCP_SHIFT);
++
++					break;
++				case AUTOMAP_TYPE_DSCP:
++					/* get dscp precedence */
++//					dscpPrecedence = ((iph->tos)>>5)&0x7;
++					dscpPrecedence = ((ih->tos)>>5)&0x7;
++
++					/* mark priority queue */
++					skb->mark |= dscpPrecedenceToPriorityQueue[dscpPrecedence];
++
++					/* it should mark 8021p here, TBD */
++
++					break;
++				case AUTOMAP_TYPE_PKTLEN:
++
++//					if(iph->tot_len > 1100){
++					if(ih->tot_len > 1100){
++						skb->mark|=vlan8021pToPriorityQueue[0]; /* queue priority 2 */
++//                    }else if(iph->tot_len < 250){
++                    }else if(ih->tot_len < 250){
++						skb->mark|=vlan8021pToPriorityQueue[5]; /* queue priority 5 */
++                    }else{  /*250~1100*/
++						skb->mark|=vlan8021pToPriorityQueue[3]; /* queue priority 3 */
++                    }
++					break;
++				default:
++					printk("unknown AUTOMAP type: \n");
++					break;
++			}
++		}
++
++	return XT_CONTINUE;
++}
++
++
++static int AUTOMAP_checkentry_v4(const struct xt_tgchk_param *par)
++{
++	return 0;
++}
++
++static struct xt_target xt_auto_target __read_mostly = {
++
++	.name		= "AUTOMAP",
++	.revision   = 0,
++	.family		= NFPROTO_IPV4,
++	.checkentry	= AUTOMAP_checkentry_v4,
++	.target		= AUTOMAP_target_v4,
++	.targetsize	= sizeof(struct xt_automap_target_info),
++	.table		= "mangle",
++	.me		= THIS_MODULE,
++
++};
++
++static int __init xt_automap_target_init(void)
++{
++	//return xt_register_targets(xt_auto_target, ARRAY_SIZE(xt_auto_target));
++	return xt_register_target(&xt_auto_target);
++}
++
++static void __exit xt_automap_target_fini(void)
++{
++	//xt_unregister_targets(xt_auto_target, ARRAY_SIZE(xt_auto_target));
++	xt_unregister_target(&xt_auto_target);
++}
++
++module_init(xt_automap_target_init);
++module_exit(xt_automap_target_fini);
+Index: linux-3.18.21/net/netfilter/xt_policer.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/netfilter/xt_policer.c	2018-05-02 12:27:36.898041751 +0800
+@@ -0,0 +1,382 @@
++/* Kernel module to control the rate in kbps. */
++/* This program is free software; you can redistribute it and/or modify
++ *  * it under the terms of the GNU General Public License version 2 as
++ *   * published by the Free Software Foundation. */
++/* ZyXEL Birken, 20100107. */
++
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/netfilter/x_tables.h>
++#include <linux/netfilter/xt_policer.h>
++#if 1 //__MSTC__, Eric, Qos policer.
++#include <linux/skb_defines.h>
++#define RED		1
++#define YELLOW	2
++#define GREEN 	3
++#endif
++#if 1//__MSTC__, Jones For compilation
++#define MODE_TBF   0
++#define MODE_SRTCM 1
++#define MODE_TRTCM 2
++#endif
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Herve Eychenne <rv@wallfire.org>");
++MODULE_DESCRIPTION("iptables rate policer match");
++MODULE_ALIAS("ipt_policer");
++MODULE_ALIAS("ip6t_policer");
++
++/* The algorithm used is the Simple Token Bucket Filter (TBF)
++ *  * see net/sched/sch_tbf.c in the linux source tree. */
++
++static DEFINE_SPINLOCK(policer_lock);
++
++#if 0 //__MSTC__, richard, QoS
++static int
++ipt_policer_match(const struct sk_buff *skb,
++                  const struct net_device *in,
++                  const struct net_device *out,
++                  const struct xt_match *match,
++                  const void *matchinfo,
++                  int offset,
++                  unsigned int protoff,
++                  int *hotdrop)
++#else
++static bool ipt_policer_match(const struct sk_buff *skb, struct xt_action_param *par)
++#endif //__MSTC__, richard, QoS
++{
++#if 1//__MSTC__, Jones For compilation
++	struct xt_policerinfo *r = (struct xt_policerinfo *)par->matchinfo;
++	unsigned long now = jiffies;
++	unsigned long timePassed = 0;
++	struct sk_buff *tmp;
++	u_int32_t cost = 0;
++	u_int32_t extraCredit = 0;
++	spin_lock_bh(&policer_lock);
++
++#if 1 //__OBM__, Jones
++#if defined(CONFIG_MIPS_BRCM) && defined(CONFIG_BLOG)
++				blog_skip((struct sk_buff *)skb);
++#endif
++#endif
++	switch(r->policerMode) {
++	/* Token Bucket Filter (tbf) mode */
++	/* The algorithm used is the Simple Token Bucket Filter (TBF)
++	   see net/sched/sch_tbf.c in the linux source tree. */
++	case MODE_TBF:
++		r->credit += (now - xchg(&r->prev, now)) * r->rate; /* Add TBF cerdit */
++		if (r->credit > r->creditCap) {
++			r->credit = r->creditCap;
++		}
++		cost = (skb->len + skb->mac_len) * BITS_PER_BYTE;
++		if (r->credit >= cost) {
++			/* We're not limited. (Match) */
++			r->credit -= cost;						        /* Take out credit */
++			spin_unlock_bh(&policer_lock);
++			return true;
++			break;
++		}
++		/* We're limited. (Not Match) */
++		spin_unlock_bh(&policer_lock);
++		return false;
++		break;
++
++	/* Single Rate Three Color Marker (srTCM) Mode */
++	case MODE_SRTCM:
++		/* Add CBS first */
++		r->credit += (now - xchg(&r->prev, now)) * r->rate; /* Add CBS cerdit */
++		if (r->credit > r->creditCap) {
++			extraCredit = r->credit - r->creditCap;
++			r->credit = r->creditCap;
++		}
++		if (r->pbsCredit < r->pbsCreditCap && extraCredit > 0) {
++			r->pbsCredit += extraCredit;                        /* Add EBS cerdit */
++			if (r->pbsCredit > r->pbsCreditCap) {
++				r->pbsCredit = r->pbsCreditCap;
++			}
++		}
++		cost = (skb->len + skb->mac_len) * BITS_PER_BYTE;
++		tmp = (struct sk_buff *)skb;
++		if (r->credit >= cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , GREEN);    /* Green */
++			r->credit -= cost;
++		}
++		else if (r->pbsCredit >= cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , YELLOW);    /* Yellow */
++			r->pbsCredit -= cost;
++		}
++		else {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , RED);    /* Red */
++		}
++		spin_unlock_bh(&policer_lock);
++		return true;
++		break;
++
++	/* Two Rate Three Color Marker (srTCM) Mode */
++	case MODE_TRTCM:
++		timePassed = (now - xchg(&r->prev, now));
++		r->credit += timePassed * r->rate;            /* Add CBS cerdit */
++		r->pbsCredit += timePassed * r->pRate;        /* Add PBS cerdit */
++		if (r->credit > r->creditCap) {
++			r->credit = r->creditCap;
++		}
++		if (r->pbsCredit > r->pbsCreditCap) {
++			r->pbsCredit = r->pbsCreditCap;
++		}
++		cost = (skb->len + skb->mac_len) * BITS_PER_BYTE;
++		tmp = (struct sk_buff *)skb;
++		if (r->pbsCredit < cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , RED);    /* Red */
++		}
++		else if (r->credit < cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , YELLOW);    /* Yellow */
++			r->pbsCredit -= cost;
++		}
++		else {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , GREEN);    /* Green */
++			r->pbsCredit -= cost;
++			r->credit -= cost;
++		}
++		spin_unlock_bh(&policer_lock);
++		return true;
++		break;
++
++	default:
++		return false;
++	}
++#else
++#if 0 //__MSTC__, richard, QoS
++	struct xt_policerinfo *r = ((struct xt_policerinfo *)matchinfo)->master;
++#else
++   struct xt_policerinfo *r = (struct xt_policerinfo *)par->matchinfo;
++#endif //__MSTC__, richard, QoS
++
++	unsigned long now = jiffies;
++	spin_lock_bh(&policer_lock);
++	r->credit += (now - xchg(&r->prev, now)) * r->avg; /* Add cerdit */
++	if (r->credit > r->credit_cap) {
++		r->credit = r->credit_cap;
++	}
++	u_int32_t temp_cost = 0;
++	temp_cost = (skb->len + skb->mac_len) * r->cost;
++	if (r->credit >= temp_cost) {
++		/* We're not limited. */
++		r->credit -= temp_cost;                        /* Take out credit */
++		spin_unlock_bh(&policer_lock);
++#if 0 //__MSTC__, richard, QoS
++      return 1;
++#else
++		return true;
++		////return false;
++#endif //__MSTC__, richard, QoS
++	}
++	spin_unlock_bh(&policer_lock);
++
++#if 0 //__MSTC__, richard, QoS
++   return 0;
++#else
++	return false;
++	////return true;
++#endif //__MSTC__, richard, QoS
++#endif
++}
++
++
++#if 1//__MSTC__, Jones For compilation
++/* Precision saver. */
++/* As a policer rule added, this function will be executed */
++static int
++ipt_policer_checkentry(const struct xt_mtchk_param *par)
++{
++       struct xt_policerinfo *r = (struct xt_policerinfo *)par->matchinfo;
++	/* For SMP, we only want to use one set of counters. */
++	r->master = r;
++
++	/* pRate must be equal or greater than crate. */
++	if (r->policerMode == 2) {
++		if (r->rate > r->pRate) {
++			return -EINVAL;
++		}
++	}
++
++	if (r->creditCap == 0) { /* Check if policer initiate or not. */
++		switch(r->policerMode) {
++		case MODE_TBF:
++			r->prev = jiffies;
++			r->creditCap = r->burst * BITS_PER_BYTE * KILO_SCALE;       /* TBF Credits full */
++			r->credit = r->creditCap;                                   /* TBF Credits full */
++			break;
++
++		case MODE_SRTCM:
++			r->prev = jiffies;
++			r->creditCap = r->burst * BITS_PER_BYTE * KILO_SCALE;       /* CBS Credits full */
++			r->credit = r->creditCap;                                   /* CBS Credits full */
++			r->pbsCreditCap = r->pbsBurst * BITS_PER_BYTE * KILO_SCALE; /* EBS Credits full */
++			r->pbsCredit = r->pbsCreditCap;                             /* EBS Credits full */
++			break;
++
++		case MODE_TRTCM:
++			r->prev = jiffies;
++			r->creditCap = r->burst * BITS_PER_BYTE * KILO_SCALE;       /* CBS Credits full. */
++			r->credit = r->creditCap;                                   /* CBS Credits full. */
++			r->pbsCreditCap = r->pbsBurst * BITS_PER_BYTE * KILO_SCALE; /* PBS Credits full. */
++			r->pbsCredit = r->pbsCreditCap;                             /* PBS Credits full. */
++			break;
++
++		default:
++			return -EINVAL;
++		}
++	}
++	return 0;
++}
++/* end ipt_policer_checkentry */
++#else
++/* Precision saver. */
++/* As a policer rule added, this function will be executed */
++#if 0 //__MSTC__, richard, QoS
++static int
++ipt_policer_checkentry(const char *tablename,
++                       const void *inf,
++                       const struct xt_match *match,
++                       void *matchinfo,
++                       unsigned int hook_mask)
++#else
++static bool
++ipt_policer_checkentry(const struct xt_mtchk_param *par)
++#endif //__MSTC__, richard, QoS
++{
++#if 0 //__MSTC__, richard, QoS
++	struct xt_policerinfo *r = matchinfo;
++#else
++   struct xt_policerinfo *r = (struct xt_policerinfo *)par->matchinfo;
++#endif //__MSTC__, richard, QoS
++
++	/* For SMP, we only want to use one set of counters. */
++	r->master = r;
++	if (r->cost == 0) {
++		r->prev = jiffies;
++		r->credit_cap = r->burst * BITS_PER_BYTE * KILO_SCALE; /*Credits full.*/
++		r->credit = r->credit_cap;                             /*Credits full.*/
++		r->cost = BITS_PER_BYTE;
++	}
++#if 0 //__MSTC__, richard, QoS
++   return 1;
++#else
++	return true;
++#endif //__MSTC__, richard, QoS
++}
++#endif
++
++////#if 0 /* We do not know what this is for. Comment it temporarily. ZyXEL Birken, 20100107. */
++#ifdef CONFIG_COMPAT
++struct compat_xt_rateinfo {
++	u_int32_t avg;
++	u_int32_t burst;
++
++	compat_ulong_t prev;
++	u_int32_t credit;
++	u_int32_t credit_cap, cost;
++
++	u_int32_t master;
++};
++
++/* To keep the full "prev" timestamp, the upper 32 bits are stored in the
++ *  * master pointer, which does not need to be preserved. */
++static void compat_from_user(void *dst, void *src)
++{
++	struct compat_xt_rateinfo *cm = src;
++	struct xt_policerinfo m = {
++		.avg	             = cm->avg,
++		.burst            = cm->burst,
++		.prev             = cm->prev | (unsigned long)cm->master << 32,
++		.credit           = cm->credit,
++		.credit_cap     = cm->credit_cap,
++		.cost             = cm->cost,
++	};
++	memcpy(dst, &m, sizeof(m));
++}
++
++static int compat_to_user(void __user *dst, void *src)
++{
++	struct xt_policerinfo *m = src;
++	struct compat_xt_rateinfo cm = {
++		.avg              = m->avg,
++		.burst            = m->burst,
++		.prev             = m->prev,
++		.credit           = m->credit,
++#if 1//__MSTC__, Jones For compilation
++		.credit_cap     = m->creditCap,
++#else
++		.credit_cap     = m->credit_cap,
++#endif
++		.cost             = m->cost,
++		.master          = m->prev >> 32,
++	};
++	return copy_to_user(dst, &cm, sizeof(cm)) ? -EFAULT : 0;
++}
++#endif /* CONFIG_COMPAT */
++////#endif
++
++#if 0 //__MSTC__, richard, QoS
++static struct xt_match xt_policer_match[] __read_mostly = {
++    {
++#else
++static struct xt_match xt_policer_match __read_mostly = {
++#endif //__MSTC__, richard, QoS
++        .name              = "policer",
++#if 0 //__MSTC__, richard, QoS
++        .family            = AF_INET,
++#else
++        .family            = NFPROTO_UNSPEC,
++#endif //__MSTC__, richard, QoS
++        .checkentry        = ipt_policer_checkentry,
++        .match             = ipt_policer_match,
++        .matchsize         = sizeof(struct xt_policerinfo),
++#ifdef CONFIG_COMPAT
++        .compatsize        = sizeof(struct compat_xt_rateinfo),
++        .compat_from_user  = compat_from_user,
++        .compat_to_user    = compat_to_user,
++#endif
++        .me                = THIS_MODULE,
++#if 0 //__MSTC__, richard, QoS
++    },
++    {
++        .name              = "policer",
++        .family            = AF_INET6,
++        .checkentry        = ipt_policer_checkentry,
++        .match             = ipt_policer_match,
++        .matchsize         = sizeof(struct xt_policerinfo),
++        .me                = THIS_MODULE,
++    },
++#endif //__MSTC__, richard, QoS
++};
++
++static int __init xt_policer_init(void)
++{
++#if 0 //__MSTC__, richard, QoS
++	return xt_register_matches(xt_policer_match, ARRAY_SIZE(xt_policer_match));
++#else
++   return xt_register_match(&xt_policer_match);
++#endif //__MSTC__, richard, QoS
++}
++
++static void __exit xt_policer_fini(void)
++{
++#if 0 //__MSTC__, richard, QoS
++	xt_unregister_matches(xt_policer_match, ARRAY_SIZE(xt_policer_match));
++#else
++   xt_unregister_match(&xt_policer_match);
++#endif //__MSTC__, richard, QoS
++}
++
++module_init(xt_policer_init);
++module_exit(xt_policer_fini);
++
+Index: linux-3.18.21/include/linux/netfilter_bridge/ebt_AUTOMAP.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/include/linux/netfilter_bridge/ebt_AUTOMAP.h	2018-05-02 12:27:36.902020551 +0800
+@@ -0,0 +1,50 @@
++/* Used by ebt_AUTOMAP.c, MitraStar Jeff, 20110114*/
++#ifndef __LINUX_BRIDGE_EBT_AUTOMAP_H
++#define __LINUX_BRIDGE_EBT_AUTOMAP_H
++
++#define EBT_AUTOMAP_TARGET "AUTOMAP"
++
++#define AUTOMAP_TYPE_8021P  0x1
++#define AUTOMAP_TYPE_DSCP   0x2
++#define AUTOMAP_TYPE_PKTLEN 0x4
++
++#define DSCP_MASK_SHIFT   5
++#define ETHERPRI_MARK_SHIFT   12
++
++
++		/*
++		Auto Priority Mapping Table
++
++
++			DSCP	|   Packet Length	| 802.1P	|     Queue     |
++		   ---------------------------------------------
++					|				|   001	|       0 		|
++					|				|		|			|
++					|				|   010	|       1		|
++					|				|		|			|
++			0x00       |       >1100		|   000	|       2		|
++					|				|		|			|
++			0x08       |       250-1100	|   011	|       3		|
++					|				|		|			|
++			0x10       |				|   100	|       4		|
++					|				|		|			|
++			0x18       |       <250		|   101	|       5		|
++					|				|		|			|
++		0x20,0x28	|				|   110	|       6		|
++					|				|		|			|
++		0x30,0x38  	|				|   111	|       7		|
++		*/
++		
++
++/* accoding to tr181 8021p to DSCP mapping table(upstream), higher value higher priority*/
++unsigned short vlan8021pToPriorityQueue[8] = {2,0,1,3,4,5,6,7};
++unsigned short dscpPrecedenceToPriorityQueue[8] = {2,3,4,5,6,6,7,7};
++
++
++/* target info */
++struct ebt_automap_t_info {
++	int type;	
++	int marktable[8];
++};
++
++#endif
+Index: linux-3.18.21/include/linux/netfilter_bridge/ebt_policer.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/include/linux/netfilter_bridge/ebt_policer.h	2018-05-02 12:27:36.902020551 +0800
+@@ -0,0 +1,39 @@
++/* Used by ebt_policer.c, ZyXEL Stan, 20100107*/
++#ifndef __LINUX_BRIDGE_EBT_POLICER_H
++#define __LINUX_BRIDGE_EBT_POLICER_H
++
++#define EBT_POLICER_MATCH "policer"  
++
++#define BITS_PER_BYTE 8 
++#define KILO_SCALE    1000 
++
++struct ebt_policer_info
++{
++#if 1//__MSTC__, Jones For compilation
++       int policerMode;
++
++	/* For srTCM and trTCM, rate means cRate and burst means cbsBurst.
++       For srTCM, pbsBurst means ebsBurst. */
++       u_int32_t rate, pRate;    
++	u_int32_t burst, pbsBurst;  /* Period multiplier for upper limit. */
++
++       /* Used internally by the kernel */
++       unsigned long prev;
++
++	/* For srTCM and trTCM, credit means cbsCredit and creditCap means cbsCreditCap.
++	   For srTCM, pbsCreditCap means ebsCreditCap. */
++	u_int32_t credit, pbsCredit;
++	u_int32_t creditCap, pbsCreditCap, only_for_bugfix_1, only_for_bugfix_2;
++#else
++	u_int32_t avg;    /* Average secs between packets * scale */
++	u_int32_t burst;  /* Period multiplier for upper limit. */
++
++	/* Used internally by the kernel */
++	unsigned long prev;
++	u_int32_t credit;
++	u_int32_t credit_cap, cost;
++#endif	
++};
++
++#endif
++
+Index: linux-3.18.21/net/bridge/netfilter/Kconfig
+===================================================================
+--- linux-3.18.21.orig/net/bridge/netfilter/Kconfig	2018-05-02 10:39:19.564635952 +0800
++++ linux-3.18.21/net/bridge/netfilter/Kconfig	2018-05-02 12:27:36.902020551 +0800
+@@ -215,6 +215,23 @@
+ 	  source address of frames.
+ 
+ 	  To compile it as a module, choose M here.  If unsure, say N.
++
++config BRIDGE_EBT_AUTOMAP
++        tristate "ebt: auto priority mapping and DSCP marking support"
++        depends on BRIDGE_NF_EBTABLES
++        help
++          This option adds Auto Priority Mapping target on ebtables
++
++          To compile it as a module, choose M here.  If unsure, say N.
++
++config BRIDGE_EBT_POLICER
++        tristate "ebt: policy rate limit support"
++        depends on BRIDGE_NF_EBTABLES
++        help
++          This option adds the policy rate limit support
++
++          To compile it as a module, choose M here.  If unsure, say N.
++
+ #
+ # watchers
+ #
+Index: linux-3.18.21/net/bridge/netfilter/Makefile
+===================================================================
+--- linux-3.18.21.orig/net/bridge/netfilter/Makefile	2018-05-02 10:39:19.528635966 +0800
++++ linux-3.18.21/net/bridge/netfilter/Makefile	2018-05-02 12:27:36.902020551 +0800
+@@ -36,6 +36,8 @@
+ obj-$(CONFIG_BRIDGE_EBT_SNAT) += ebt_snat.o
+ obj-$(CONFIG_BRIDGE_EBT_FTOS) += ebt_ftos.o
+ obj-$(CONFIG_BRIDGE_EBT_TC) += ebt_tc.o
++obj-$(CONFIG_BRIDGE_EBT_AUTOMAP) += ebt_AUTOMAP.o
++obj-$(CONFIG_BRIDGE_EBT_POLICER) += ebt_policer.o
+ 
+ # watchers
+ obj-$(CONFIG_BRIDGE_EBT_LOG) += ebt_log.o
+Index: linux-3.18.21/net/bridge/netfilter/ebt_AUTOMAP.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/bridge/netfilter/ebt_AUTOMAP.c	2018-05-02 12:27:36.902020551 +0800
+@@ -0,0 +1,158 @@
++/* Kernel module to control the rate in kbps. */
++/* This program is free software; you can redistribute it and/or modify 
++ * it under the terms of the GNU General Public License version 2 as 
++ * published by the Free Software Foundation. */
++/*  MitraStar Jeff, 20110114*/
++
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <linux/ip.h>
++#include <linux/if_vlan.h>
++
++#include <linux/netfilter/x_tables.h>
++#include <linux/netfilter_bridge/ebtables.h>
++#include <linux/netfilter_bridge/ebt_AUTOMAP.h>
++
++#if 0
++static int getVlanPrioAndIpHeader(struct sk_buff *skb, unsigned char *prio, struct iphdr **iph){
++	unsigned short TCI;
++	unsigned short id;	/* VLAN ID, given from frame TCI */
++	 /* Need to recalculate IP header checksum after altering TOS byte */
++	const struct vlan_hdr *fp;
++	struct vlan_hdr _frame;
++	struct iphdr *ih = NULL;
++
++	/* get ip header */
++	if (skb->protocol == __constant_htons(ETH_P_IP))
++		ih = (struct iphdr *)(skb->network_header);
++    else if (skb->protocol == __constant_htons(ETH_P_8021Q)) {
++        if (*(unsigned short *)(skb->network_header + VLAN_HLEN - 2) == __constant_htons(ETH_P_IP))
++			ih = (struct iphdr *)(skb->network_header + VLAN_HLEN);
++    }
++	*iph = ih;
++	
++	if(ntohs(((struct vlan_hdr *)(skb->vlan_header))->h_vlan_encapsulated_proto) == 0){
++		if(skb->protocol == ETH_P_8021Q) {
++			fp = skb_header_pointer(skb, 0, sizeof(_frame), &_frame);
++			if (fp == NULL)
++				return EBT_CONTINUE;
++			/* Tag Control Information (TCI) consists of the following elements:
++			 * - User_priority. The user_priority field is three bits in length,
++			 *   interpreted as a binary number.
++			 * - Canonical Format Indicator (CFI). The Canonical Format Indicator
++			 *   (CFI) is a single bit flag value. Currently ignored.
++			 * - VLAN Identifier (VID). The VID is encoded as
++			 *   an unsigned binary number. */
++			TCI = ntohs(fp->h_vlan_TCI);
++			id = TCI & VLAN_VID_MASK;
++			*prio = (TCI >> 13) & 0x7;
++		}
++		//Packet with no VLAN tag
++		else {
++			TCI = 0;
++			id = 0;
++			//Packet with no VLAN tag will be sent to default queue just like 1p value is 1
++			*prio = 1;
++		}
++	}
++	else {
++		// for new broadcom vlan device
++		TCI = ntohs(((struct vlan_hdr *)(skb->vlan_header))->h_vlan_TCI);
++		id = TCI & VLAN_VID_MASK;
++		*prio = (TCI >> 13) & 0x7;
++	}
++
++	return 0;
++}
++#endif
++
++static unsigned int
++ebt_automap_tg(struct sk_buff *skb, const struct xt_action_param *par) 
++{
++	const struct ebt_automap_t_info *aminfo = par->targinfo;
++	struct iphdr *iph = NULL;
++	unsigned char prio = 0;
++	unsigned char dscpPrecedence = 0;
++
++	
++//	getVlanPrioAndIpHeader(skb, &prio, &iph);
++
++	/* get ip header */
++	if (skb->protocol == __constant_htons(ETH_P_IP))
++		iph = (struct iphdr *)(skb->network_header);
++    else if (skb->protocol == __constant_htons(ETH_P_8021Q)) {
++        if (*(unsigned short *)(skb->network_header + VLAN_HLEN - 2) == __constant_htons(ETH_P_IP))
++			iph = (struct iphdr *)(skb->network_header + VLAN_HLEN);
++    }
++	
++	switch(aminfo->type){
++		case AUTOMAP_TYPE_8021P:
++			prio = ((skb)->vlan_tci>>13)&0x7;
++			/* mark value for priority queue */
++			skb->mark |= vlan8021pToPriorityQueue[prio];
++
++			/* should mark DSCP here */
++			break;
++		case AUTOMAP_TYPE_DSCP:
++			
++			if(iph==NULL)
++				skb->mark|=0x0;
++			else {
++				/* get dscp precedence */
++				dscpPrecedence = ((iph->tos)>>5)&0x7;
++
++				/* mark value for priority queue */
++				skb->mark |= dscpPrecedenceToPriorityQueue[dscpPrecedence];
++			}
++			break;
++		case AUTOMAP_TYPE_PKTLEN:
++			if(iph==NULL)
++				skb->mark|=0x0;
++			else {
++				if(iph->tot_len > 1100){
++					skb->mark|=vlan8021pToPriorityQueue[0]; /* queue prio 2 */
++				}else if(iph->tot_len < 250){
++					skb->mark|=vlan8021pToPriorityQueue[5]; /* queue prio 5 */
++				}else{  /*250~1100*/
++					skb->mark|=vlan8021pToPriorityQueue[3]; /* queue prio 3 */
++				}
++			}
++			break;
++		default:
++			break;
++	}
++	
++	return EBT_CONTINUE;
++}
++
++/* As a policer rule added, this function will be executed */ 
++static int ebt_automap_tg_check(const struct xt_tgchk_param *par)
++{
++	return 0;
++}
++
++static struct xt_target ebt_automap_tg_reg __read_mostly =
++{
++    .name = EBT_AUTOMAP_TARGET,
++    .revision	= 0,
++    .family		= NFPROTO_BRIDGE,
++    .target  = ebt_automap_tg,
++    .checkentry  = ebt_automap_tg_check,
++    .targetsize	= sizeof(struct ebt_automap_t_info),
++    .me     = THIS_MODULE,
++};
++
++static int __init ebt_automap_init(void)
++{
++   return xt_register_target(&ebt_automap_tg_reg);
++}
++
++static void __exit ebt_automap_fini(void)
++{
++   xt_unregister_target(&ebt_automap_tg_reg);
++}
++
++module_init(ebt_automap_init);
++module_exit(ebt_automap_fini);
++MODULE_LICENSE("GPL");
++
+Index: linux-3.18.21/net/bridge/netfilter/ebt_policer.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/bridge/netfilter/ebt_policer.c	2018-05-02 12:27:36.902020551 +0800
+@@ -0,0 +1,328 @@
++/* Kernel module to control the rate in kbps. */
++/* This program is free software; you can redistribute it and/or modify 
++ * it under the terms of the GNU General Public License version 2 as 
++ * published by the Free Software Foundation. */
++/*  ZyXEL Stan, 20100105*/
++
++#include <linux/module.h>
++#if 1 // __MSTC__, ZyXEL richard, QoS
++#include <linux/netfilter/x_tables.h>
++#endif // __MSTC__, ZyXEL richard, QoS
++#include <linux/netfilter_bridge/ebtables.h>
++#include <linux/netfilter_bridge/ebt_policer.h>
++
++#include <linux/netdevice.h>
++#include <linux/spinlock.h>
++#if 1 //__MSTC__, Eric, Qos policer.
++#include <linux/skb_defines.h>
++#define RED		1
++#define YELLOW	2
++#define GREEN 	3
++#endif
++#if 1//__MSTC__, Jones For compilation
++#define MODE_TBF   0
++#define MODE_SRTCM 1
++#define MODE_TRTCM 2
++#endif
++static DEFINE_SPINLOCK(policer_lock);
++#if 1//__MSTC__, Jones For compilation
++static bool 
++ebt_policer_match(const struct sk_buff *skb, struct xt_action_param *par)
++                             
++{
++       struct ebt_policer_info *r = (struct ebt_policer_info *)par->matchinfo;
++	unsigned long now = jiffies;
++	unsigned long timePassed = 0;
++	struct sk_buff *tmp;
++	u_int32_t cost = 0;
++	u_int32_t extraCredit = 0; 
++	spin_lock_bh(&policer_lock);
++	
++#if 1 //__OBM__, Jones
++#if defined(CONFIG_MIPS_BRCM) && defined(CONFIG_BLOG)
++				blog_skip((struct sk_buff *)skb);
++#endif
++#endif
++
++		//printk(KERN_EMERG "111__skb->mark=%x\n\r", skb->mark);
++	switch(r->policerMode) {
++	/* Token Bucket Filter (tbf) mode */
++	/* The algorithm used is the Simple Token Bucket Filter (TBF)
++	   see net/sched/sch_tbf.c in the linux source tree. */
++	case MODE_TBF: 
++		r->credit += (now - xchg(&r->prev, now)) * r->rate; /* Add TBF cerdit */ 
++		if (r->credit > r->creditCap) {
++			r->credit = r->creditCap;
++		}
++		cost = (skb->len + skb->mac_len) * BITS_PER_BYTE;
++		if (r->credit >= cost) {
++			/* We're not limited. (Match) */
++			r->credit -= cost;						        /* Take out credit */ 	
++			spin_unlock_bh(&policer_lock);
++		//printk(KERN_EMERG "222__skb->mark=%x\n\r", skb->mark);
++			return true;
++			break;
++		}
++		/* We're limited. (Not Match) */
++		spin_unlock_bh(&policer_lock);
++		//printk(KERN_EMERG "333__skb->mark=%x\n\r", skb->mark);
++		return false;
++		break;
++
++	/* Single Rate Three Color Marker (srTCM) Mode */
++	case MODE_SRTCM:
++		/* Add CBS first */
++		r->credit += (now - xchg(&r->prev, now)) * r->rate; /* Add CBS cerdit */
++		if (r->credit > r->creditCap) {
++			extraCredit = r->credit - r->creditCap;
++			r->credit = r->creditCap;
++		}
++		if (r->pbsCredit < r->pbsCreditCap && extraCredit > 0) {
++			r->pbsCredit += extraCredit;                        /* Add EBS cerdit */
++			if (r->pbsCredit > r->pbsCreditCap) {
++				r->pbsCredit = r->pbsCreditCap;
++			}
++		}
++		cost = (skb->len + skb->mac_len) * BITS_PER_BYTE;
++		tmp = (struct sk_buff *)skb;
++		if (r->credit >= cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , GREEN);    /* Green */
++			r->credit -= cost;
++		}
++		else if (r->pbsCredit >= cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , YELLOW);    /* Yellow */
++			r->pbsCredit -= cost;
++		}
++		else {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , RED);    /* Red */
++		}
++		spin_unlock_bh(&policer_lock);
++		return true;
++		break;
++
++	/* Two Rate Three Color Marker (srTCM) Mode */
++	case MODE_TRTCM:
++		timePassed = (now - xchg(&r->prev, now));
++		r->credit += timePassed * r->rate;            /* Add CBS cerdit */
++		r->pbsCredit += timePassed * r->pRate;        /* Add PBS cerdit */
++		if (r->credit > r->creditCap) {
++			r->credit = r->creditCap;
++		}
++		if (r->pbsCredit > r->pbsCreditCap) {
++			r->pbsCredit = r->pbsCreditCap;
++		}
++		cost = (skb->len + skb->mac_len) * BITS_PER_BYTE;
++		tmp = (struct sk_buff *)skb;
++		if (r->pbsCredit < cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , RED);    /* Red */
++		}
++		else if (r->credit < cost) {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , YELLOW);    /* Yellow */
++			r->pbsCredit -= cost;
++		}
++		else {
++			tmp->mark &= ~(SKBMARK_POLICER_M); /* Reset 2 color bit */
++			tmp->mark |= SKBMARK_SET_POLICER(0 , GREEN);    /* Green */
++			r->pbsCredit -= cost;
++			r->credit -= cost;
++		}
++		spin_unlock_bh(&policer_lock);
++		return true;
++		break;
++
++	default:
++		return false;
++	}
++}
++/* end ipt_policer_match */
++#else
++#if 0 // __MSTC__, ZyXEL richard, QoS
++static int ebt_policer_match(const struct sk_buff *skb,
++                             const struct net_device *in,
++                             const struct net_device *out,
++                             const void *data,
++                             unsigned int datalen)
++{
++	struct ebt_policer_info *info = (struct ebt_policer_info *)data;
++	unsigned long now = jiffies;
++
++	spin_lock_bh(&policer_lock);
++	info->credit += (now - xchg(&info->prev, now)) * info->avg; /* Add credit. */
++	if (info->credit > info->credit_cap) {
++		info->credit = info->credit_cap;
++	}
++	u_int32_t temp_cost = 0;
++	temp_cost = (skb->len + skb->mac_len) * info->cost;
++	if (info->credit >= temp_cost) {
++		/* We're not limited. */
++		info->credit -= temp_cost; /* Take out credit */
++		spin_unlock_bh(&policer_lock);
++		return EBT_MATCH;
++	}
++
++	spin_unlock_bh(&policer_lock);
++	return EBT_NOMATCH;
++}
++#else
++static bool ebt_policer_match(const struct sk_buff *skb, const struct xt_match_param *par)
++{
++	struct ebt_policer_info *info = par->matchinfo;
++	unsigned long now = jiffies;
++
++	spin_lock_bh(&policer_lock);
++	info->credit += (now - xchg(&info->prev, now)) * info->avg; /* Add credit. */
++	if (info->credit > info->credit_cap) {
++		info->credit = info->credit_cap;
++	}
++   
++	u_int32_t temp_cost;
++	temp_cost = (skb->len + skb->mac_len) * info->cost;
++	if (info->credit >= temp_cost) {
++		/* We're not limited. */
++		info->credit -= temp_cost; /* Take out credit */
++		spin_unlock_bh(&policer_lock);
++		return true;
++		////return false;
++	}
++
++	spin_unlock_bh(&policer_lock);
++   
++	return false;
++	////return true;
++}
++#endif // __MSTC__, ZyXEL richard, QoS
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++/* Precision saver. */
++/* As a policer rule added, this function will be executed */ 
++static int ebt_policer_check(const struct xt_mtchk_param *par)
++{
++	struct ebt_policer_info *r = par->matchinfo;
++	
++	/* pRate must be equal or greater than crate. */
++	if (r->policerMode == 2) {
++		if (r->rate > r->pRate) {
++			return -EINVAL;	
++		}
++	}
++
++	if (r->creditCap == 0) { /* Check if policer initiate or not. */ 
++		switch(r->policerMode) {
++		case MODE_TBF:
++			r->prev = jiffies;
++			r->creditCap = r->burst * BITS_PER_BYTE * KILO_SCALE;       /* TBF Credits full */
++			r->credit = r->creditCap;                                   /* TBF Credits full */		
++			break;
++
++		case MODE_SRTCM:
++			r->prev = jiffies;
++			r->creditCap = r->burst * BITS_PER_BYTE * KILO_SCALE;       /* CBS Credits full */
++			r->credit = r->creditCap;                                   /* CBS Credits full */
++			r->pbsCreditCap = r->pbsBurst * BITS_PER_BYTE * KILO_SCALE; /* EBS Credits full */
++			r->pbsCredit = r->pbsCreditCap;                             /* EBS Credits full */
++			break;
++			
++		case MODE_TRTCM:	
++			r->prev = jiffies;
++			r->creditCap = r->burst * BITS_PER_BYTE * KILO_SCALE;       /* CBS Credits full. */
++			r->credit = r->creditCap;                                   /* CBS Credits full. */
++			r->pbsCreditCap = r->pbsBurst * BITS_PER_BYTE * KILO_SCALE; /* PBS Credits full. */
++			r->pbsCredit = r->pbsCreditCap;                             /* PBS Credits full. */ 
++			break;
++
++		default:
++			return -EINVAL;				
++		}
++	}
++	return 0;
++}
++#else
++/* Precision saver. */
++/* As a policer rule added, this function will be executed */ 
++#if 0 // __MSTC__, ZyXEL richard, QoS
++static int ebt_policer_check(const char *tablename, 
++                             unsigned int hookmask,
++                             const struct ebt_entry *e,
++                             void *data,
++                             unsigned int datalen)
++{
++	struct ebt_policer_info *info = (struct ebt_policer_info *)data;
++
++	if (datalen != EBT_ALIGN(sizeof(struct ebt_policer_info))) {
++		return -EINVAL;
++	}
++	
++	info->prev = jiffies;
++	info->credit_cap = info->burst * BITS_PER_BYTE * KILO_SCALE; /*Credits full.*/
++	info->credit = info->burst * BITS_PER_BYTE * KILO_SCALE; /*Credits full.*/
++	info->cost = BITS_PER_BYTE;
++	
++	return 0;
++}
++#else
++static bool ebt_policer_check(const struct xt_mtchk_param *par)
++{
++	struct ebt_policer_info *info = par->matchinfo;
++
++	/***if (par->datalen != EBT_ALIGN(sizeof(struct ebt_policer_info))) {
++		return -EINVAL;
++	}***/
++	
++	info->prev = jiffies;
++	info->credit_cap = info->burst * BITS_PER_BYTE * KILO_SCALE; /*Credits full.*/
++	info->credit = info->burst * BITS_PER_BYTE * KILO_SCALE; /*Credits full.*/
++	info->cost = BITS_PER_BYTE;
++	
++	return true;
++}
++#endif // __MSTC__, ZyXEL richard, QoS
++#endif
++
++#if 0 // __MSTC__, ZyXEL richard, QoS
++static struct ebt_match ebt_policer_reg =
++#else
++static struct xt_match ebt_policer_reg __read_mostly =
++#endif
++{
++    .name = EBT_POLICER_MATCH,
++#if 1 // __MSTC__, ZyXEL richard, QoS
++    .revision	= 0,
++    .family		= NFPROTO_BRIDGE,
++    .match  = ebt_policer_match,
++    .checkentry  = ebt_policer_check,
++    .matchsize	= sizeof(struct ebt_policer_info),
++#else
++    .check  = ebt_policer_check,
++    .match  = ebt_policer_match,
++#endif // __MSTC__, ZyXEL richard, QoS
++    .me     = THIS_MODULE,
++};
++
++static int __init ebt_policer_init(void)
++{
++#if 0 // __MSTC__, ZyXEL richard, QoS
++    return ebt_register_match(&ebt_policer_reg);
++#else
++   return xt_register_match(&ebt_policer_reg);
++#endif // __MSTC__, ZyXEL richard, QoS
++}
++
++static void __exit ebt_policer_fini(void)
++{
++#if 0 // __MSTC__, ZyXEL richard, QoS
++    ebt_unregister_match(&ebt_policer_reg);
++#else
++   xt_unregister_match(&ebt_policer_reg);
++#endif
++}
++
++module_init(ebt_policer_init);
++module_exit(ebt_policer_fini);
++MODULE_LICENSE("GPL");
++
+Index: linux-3.18.21/include/uapi/linux/Kbuild
+===================================================================
+--- linux-3.18.21.orig/include/uapi/linux/Kbuild	2018-04-27 19:07:01.595207544 +0800
++++ linux-3.18.21/include/uapi/linux/Kbuild	2018-05-02 12:32:50.073090706 +0800
+@@ -362,6 +362,7 @@
+ header-y += shm.h
+ header-y += signal.h
+ header-y += signalfd.h
++header-y += skb_defines.h
+ header-y += smiapp.h
+ header-y += snmp.h
+ header-y += sock_diag.h
+Index: linux-3.18.21/include/uapi/linux/netfilter/Kbuild
+===================================================================
+--- linux-3.18.21.orig/include/uapi/linux/netfilter/Kbuild	2018-04-27 19:07:01.611141958 +0800
++++ linux-3.18.21/include/uapi/linux/netfilter/Kbuild	2018-05-02 12:31:02.391407681 +0800
+@@ -17,6 +17,7 @@
+ header-y += nfnetlink_log.h
+ header-y += nfnetlink_queue.h
+ header-y += x_tables.h
++header-y += xt_AUTOMAP.h
+ header-y += xt_AUDIT.h
+ header-y += xt_CHECKSUM.h
+ header-y += xt_CLASSIFY.h

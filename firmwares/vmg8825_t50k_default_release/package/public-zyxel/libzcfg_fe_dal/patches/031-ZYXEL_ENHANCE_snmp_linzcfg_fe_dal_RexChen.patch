@@ -1,0 +1,195 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-09-29 13:36:27.000000000 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-09-29 14:34:38.873270700 +0800
+@@ -7,9 +7,11 @@
+ FE_PATH = ./
+ NETWORK_BR_PATH = ./network/broadband
+ MAINTENANCE_MGMT = ./maintenance/mgmt
++MAINTENANCE = ./maintenance
+ SOURCES += $(wildcard $(FE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_BR_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_MGMT)/*.c)
++SOURCES += $(wildcard $(MAINTENANCE)/*.c)
+ OBJS = $(patsubst %.c, %.o, $(SOURCES))
+ 
+ #OBJ_FILES = zcfg_fe_dal.o zcfg_fe_dal_broadband.o zcfg_fe_dal_mgmt.o
+Index: libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_snmp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_snmp.c	2016-09-23 23:58:10.991836500 +0800
+@@ -0,0 +1,151 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t SNMP_param[]={
++/* set RDM_OID_ZY_SNMP object */
++{"Enable", 		dalType_boolean,	0,	0,	NULL},
++{"ROCommunity", dalType_string,		0, 15,	NULL},
++{"RWCommunity", dalType_string, 	0, 15, NULL},
++{"TrapCommunity", dalType_string, 	0, 15, NULL},
++/* set RDM_OID_SYSTEM_INFO object */
++{"HostName", 	dalType_string, 	0, 15, NULL},
++{"Location", 	dalType_string,		0, 15, NULL},
++{"Contact", 	dalType_string,		0, 50, NULL},
++/* set RDM_OID_TRAP_ADDR object */
++{"Host", 		dalType_string,		0, 0, NULL},
++{"Port", 		dalType_int,		0, 65535, NULL},
++{NULL, 			0, 					0, 0, NULL}
++};
++
++zcfgRet_t setSNMPObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *snmpObj = NULL;
++	objIndex_t snmpIid = {0};
++	bool enable = false;
++	const char *ROCommunity = NULL;
++	const char *RWCommunity = NULL;
++	const char *TrapCommunity = NULL;
++
++	enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	ROCommunity = json_object_get_string(json_object_object_get(Jobj, "ROCommunity"));
++	RWCommunity = json_object_get_string(json_object_object_get(Jobj, "RWCommunity"));
++	TrapCommunity = json_object_get_string(json_object_object_get(Jobj, "TrapCommunity"));
++
++	IID_INIT(snmpIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_SNMP, &snmpIid, &snmpObj);
++
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(snmpObj, "Enable", json_object_new_boolean(enable));
++		json_object_object_add(snmpObj, "ROCommunity", json_object_new_string(ROCommunity));
++		json_object_object_add(snmpObj, "RWCommunity", json_object_new_string(RWCommunity));
++		json_object_object_add(snmpObj, "TrapCommunity", json_object_new_string(TrapCommunity));
++
++		zcfgFeObjJsonSet(RDM_OID_ZY_SNMP, &snmpIid, snmpObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(snmpObj);
++	return ret;
++}
++
++zcfgRet_t setSysInfoObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object * SysInfoObj = NULL;
++	objIndex_t SysInfoIid = {0};
++	const char *HostName = NULL;
++	const char *Location = NULL;
++	const char *Contact = NULL;
++
++	HostName = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++	Location = json_object_get_string(json_object_object_get(Jobj, "Location"));
++	Contact = json_object_get_string(json_object_object_get(Jobj, "Contact"));
++
++	IID_INIT(SysInfoIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SYSTEM_INFO, &SysInfoIid, &SysInfoObj);
++
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(SysInfoObj, "HostName", json_object_new_string(HostName));
++		json_object_object_add(SysInfoObj, "Location", json_object_new_string(Location));
++		json_object_object_add(SysInfoObj, "Contact", json_object_new_string(Contact));
++
++		zcfgFeObjJsonSet(RDM_OID_SYSTEM_INFO, &SysInfoIid, SysInfoObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(SysInfoObj);
++	return ret;
++}
++
++zcfgRet_t setTrap_addrObj(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *trapObj = NULL;
++	objIndex_t trapIid = {0};
++	const char *host = NULL;
++	int port = 0;
++	bool found = false;
++
++	
++	IID_INIT(trapIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_TRAP_ADDR, &trapIid, &trapObj) == ZCFG_SUCCESS){
++		found = true;
++		break;
++	}
++
++	if(found == false && trapObj == NULL){
++		IID_INIT(trapIid);
++		ret = zcfgFeObjJsonAdd(RDM_OID_TRAP_ADDR, &trapIid, NULL);
++		if(ret == ZCFG_SUCCESS){
++			zcfgFeObjJsonGet(RDM_OID_TRAP_ADDR, &trapIid, &trapObj);
++			found = true;
++		}
++	}
++
++	if(found == true && trapObj != NULL){
++		host = json_object_get_string(json_object_object_get(Jobj, "Host"));
++		port = json_object_get_int(json_object_object_get(Jobj, "Port"));
++
++		if(!strcmp(host, "undefined")){
++			ret = zcfgFeObjJsonDel(RDM_OID_TRAP_ADDR, &trapIid, NULL);
++		}else{
++			json_object_object_add(trapObj, "Host", json_object_new_string(host));
++			json_object_object_add(trapObj, "Port", json_object_new_int(port));
++			zcfgFeObjJsonSet(RDM_OID_TRAP_ADDR, &trapIid, trapObj, NULL);
++		}
++	}
++
++	zcfgFeJsonObjFree(trapObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_SNMP_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	setSNMPObj(Jobj);
++	setSysInfoObj(Jobj);
++	setTrap_addrObj(Jobj);
++
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalSNMP(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!strcmp(method, "PUT"))
++		ret = zcfgFeDal_SNMP_Edit(Jobj, NULL);
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-09-29 13:36:27.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-09-29 14:35:10.267870700 +0800
+@@ -9,8 +9,10 @@
+ 
+ extern dal_param_t WAN_param[];
+ extern dal_param_t MGMT_param[];
++extern dal_param_t SNMP_param[];
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalSNMP(const char *method, struct json_object *Jobj, char *replyMsg);
+ 
+ typedef struct dal_handler_s {
+ 	char				*name;
+@@ -22,6 +24,7 @@
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan},
+ {"MGMT",			MGMT_param,			zcfgFeDalMgmt},
++{"SNMP",			SNMP_param, 		zcfgFeDalSNMP},
+ {NULL,				NULL,				NULL}
+ };
+ 

@@ -1,0 +1,404 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2017-08-15 13:56:56.787113312 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2017-08-16 17:06:39.596053587 +0800
+@@ -20,22 +20,67 @@
+ 	{NULL,		0,	0,	0,	NULL}
+ };
+ 
++bool isSameMac(const char *mac1, const char *mac2){
++	int i;
++	
++	for(i=0;i<18;i++){
++		if((*mac1 == *mac2) || (*mac1 == *mac2 + 32) || (*mac1 == *mac2 - 32)){
++			mac1++;
++			mac2++;
++			continue;
++		}
++		else if(*mac1 == ':' || *mac1 == '-'){
++			mac1++;
++			mac2++;
++			continue;
++		}
++		else 
++			return false;
++		
++		mac1++;
++		mac2++;
++	}
++	return true;
++}
++
++bool genIid(struct json_object **iid, int iid1, int iid2, int iid3, int iid4, int iid5, int iid6){
++	
++	*iid = json_object_new_array();
++	json_object_array_add(*iid, json_object_new_int(iid1));
++	json_object_array_add(*iid, json_object_new_int(iid2));
++	json_object_array_add(*iid, json_object_new_int(iid3));
++	json_object_array_add(*iid, json_object_new_int(iid4));
++	json_object_array_add(*iid, json_object_new_int(iid5));
++	json_object_array_add(*iid, json_object_new_int(iid6));
++	
++}
++
++	
+ void zcfgFeDalShowNetworkMAP(struct json_object *Jarray){
+ 	int i, len = 0, len1 = 0;
+ 	struct json_object *obj = NULL;
+ 	const char *Name = NULL;
+ 	char chartmp[64] = {0};
+ 	const char *IPv6Address = NULL;
++	struct json_object *networkMAPInfoJobj = NULL;
++	struct json_object *hostsJarray;
+ 
+ 	if(json_object_get_type(Jarray) != json_type_array){
+ 		printf("wrong Jobj format!\n");
+ 		return;
+ 	}
++	networkMAPInfoJobj = json_object_array_get_idx(Jarray, 0);
++	if(networkMAPInfoJobj == NULL)
++		return;
++	hostsJarray = Jget(networkMAPInfoJobj,"lanhosts");
++	if(hostsJarray == NULL)
++		return;
++	
+ 	printf("%-20s %-17s %-30s %-20s %-16s %-5s\n",
+ 		    "Name", "IP Address", "IPv6 Address", "MAC Address", "Address Source", "Connection Type");
+-	len = json_object_array_length(Jarray);
++	len = json_object_array_length(hostsJarray);
+ 	for(i=0;i<len;i++){
+-		obj = json_object_array_get_idx(Jarray, i);
++		obj = json_object_array_get_idx(hostsJarray, i);
+ 
+ 		//if PhysAddress is empty, skip it.
+ 		if(!strcmp(json_object_get_string(json_object_object_get(obj, "PhysAddress")),""))
+@@ -43,6 +88,7 @@
+ 		
+ 		if(!strcmp(json_object_get_string(json_object_object_get(obj, "HostName")),"")){
+ 			Name = "Unknown";
++			strcpy(chartmp,Name);
+ 		}
+ 		else{
+ 			Name = json_object_get_string(json_object_object_get(obj, "HostName"));
+@@ -72,25 +118,277 @@
+ 	}
+ }
+ 
+-zcfgRet_t zcfgFeDalNetworkMAPGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++/*
++*	All parameters of RDM_OID_HOSTS and the following parameters
++*	DeviceIcon
++*	curHostName
++*	DeviceName
++*	dhcp4PoolExist
++*	dhcp4PoolIid
++*	dhcp4StaticAddrUsedByOtherHost
++*	dhcp4StaticAddrExist
++*	dhcp4StaticAddrNum
++*	dhcp4StaticAddrIid
++*	dhcp4StaticAddrEnable
++*	dhcp4StaticAddr
++*
++*	Parameters For Elisa and CBT
++*	Customized X_ZYXEL_ConnectionType
++*	SupportedFrequencyBands
++*	WiFiname
++*/
++zcfgRet_t zcfgFeDalLanHostsGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *obj = NULL;
+-	objIndex_t iid = {0};
++	struct json_object *iconJobj, *iconJarray;
++	struct json_object *ssidJobj, *ssidJarray;
++	struct json_object *dhcp4PoolJobj, *dhcp4PoolJarray, *dhcp4PoolIid;
++	struct json_object *dhcp4StaticAddrJobj, *dhcp4StaticAddrJarray, *dhcp4StaticAddrIid;
++	struct json_object *radioJobj, *radioJarray;
++	objIndex_t iid;
++	struct json_object *stbJobj = NULL;
++	int i, j, len, len2;
++	const char *MacAddress, *IPAddress, *PhysAddress, *Layer1Interface, *Layer3Interface, *LowerLayers, *SupportedFrequencyBands, *Interface, *Yiaddr;
++	char X_ZYXEL_ConnectionType[64] = {0};
++
++	zcfgFeWholeObjJsonGet("Device.X_ZYXEL_Change_Icon_Name.", &iconJarray);
++	zcfgFeWholeObjJsonGet("Device.X_ZYXEL_STB_VENDOR_ID.", &stbJobj);
++	zcfgFeWholeObjJsonGet("Device.DHCPv4.Server.Pool.", &dhcp4PoolJarray);
++#if (defined(CBT_CUSTOMIZATION) || defined (ELISA_NETWORKMAP_CUSTOMIZATION))
++	zcfgFeWholeObjJsonGet("Device.WiFi.SSID.", &ssidJarray);
++	zcfgFeWholeObjJsonGet("Device.WiFi.Radio.", &radioJarray);
++#endif
+ 
+ 	//update hosts list first
+ 	IID_INIT(iid);
+ 	if(zcfgFeObjJsonGet(RDM_OID_HOSTS, &iid, &obj) == ZCFG_SUCCESS){
+ 		zcfgFeJsonObjFree(obj);
+ 	}
+-
+ 	IID_INIT(iid);
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_HOSTS_HOST, &iid, &obj) == ZCFG_SUCCESS){
+-		json_object_array_add(Jarray, JSON_OBJ_COPY(obj));
+-		zcfgFeJsonObjFree(obj);
+-	}	
++		PhysAddress = Jgets(obj, "PhysAddress");
++		IPAddress = Jgets(obj, "IPAddress");
++		Layer3Interface = Jgets(obj, "Layer3Interface");
++		Layer3Interface = strstr(Layer3Interface, "IP."); //Layer3Interface value may be "IP.Interface.1" or "Device.IP.Interface.1" skip "Device."
++		Jadds(obj, "SupportedFrequencyBands", "");
++		Jadds(obj, "WiFiname", "");
++		Jadds(obj, "DeviceIcon", "");
++		replaceParam(obj, "DeviceName", obj, "HostName");
++		Jadds(obj, "curHostName", "");
++		
++		if(!strcmp("", Jgets(obj,"DeviceName")))
++			Jadds(obj, "DeviceName", "Unknown");
++		
++		//DHCPv4 static address info
++		Jaddb(obj, "dhcp4PoolExist", false);
++		genIid(&dhcp4PoolIid, 0, 0, 0, 0, 0, 0);
++		json_object_object_add(obj, "dhcp4PoolIid", dhcp4PoolIid);
++		Jaddb(obj, "dhcp4StaticAddrExist", false);
++		genIid(&dhcp4StaticAddrIid, 0, 0, 0, 0, 0, 0);
++		json_object_object_add(obj, "dhcp4StaticAddrIid", dhcp4StaticAddrIid);
++		Jaddb(obj, "dhcp4StaticAddrEnable", false);
++		Jadds(obj, "dhcp4StaticAddr", "");
++		Jaddi(obj, "dhcp4StaticAddrNum", 0);
++		Jaddb(obj, "dhcp4StaticAddrUsedByOtherHost", false);
++		
++		len = json_object_array_length(dhcp4PoolJarray);
++		for(i=0;i<len;i++){
++			dhcp4PoolJobj = json_object_array_get_idx(dhcp4PoolJarray, i);
++			if(dhcp4PoolJobj == NULL)
++				break;
++			Interface = Jgets(dhcp4PoolJobj, "Interface");
++			if(Interface == NULL || *Interface == '\0')
++				continue;
++			Interface = strstr(Interface, "IP."); //Interface value may be "IP.Interface.1" or "Device.IP.Interface.1" skip "Device."
++
++			if(!strcmp(Interface, Layer3Interface)){
++				Jaddb(obj, "dhcp4PoolExist", true);
++				genIid(&dhcp4PoolIid, i+1, 0, 0, 0, 0, 0);
++				json_object_object_add(obj, "dhcp4PoolIid", dhcp4PoolIid);
++				
++				json_object_object_add(obj, "staticIP", json_object_new_string(""));
++
++				dhcp4StaticAddrJarray = Jget(dhcp4PoolJobj, "StaticAddress");
++				if(dhcp4StaticAddrJarray == NULL){
++					break;
++				}
++
++				len2 = json_object_array_length(dhcp4StaticAddrJarray);
++				Jaddi(obj, "dhcp4StaticAddrNum", len2);
++				for(j=0;j<len2;j++){
++					dhcp4StaticAddrJobj = json_object_array_get_idx(dhcp4StaticAddrJarray, j);
++					MacAddress = Jgets(dhcp4StaticAddrJobj, "Chaddr");
++					if(MacAddress && isSameMac(MacAddress, PhysAddress)){
++						Jaddb(obj, "dhcp4StaticAddrExist", true);
++						replaceParam(obj, "dhcp4StaticAddr", dhcp4StaticAddrJobj, "Yiaddr");
++						genIid(&dhcp4StaticAddrIid, i+1, j+1, 0, 0, 0, 0);
++						json_object_object_add(obj, "dhcp4StaticAddrIid", dhcp4StaticAddrIid);
++						replaceParam(obj, "dhcp4StaticAddrEnable", dhcp4StaticAddrJobj, "Enable");
++						break;
++					}
++					Yiaddr = Jgets(dhcp4StaticAddrJobj, "Yiaddr");
++					if(Yiaddr && !strcmp(Yiaddr, IPAddress)){ //different MAC but IP is the same
++						Jaddb(obj, "dhcp4StaticAddrUsedByOtherHost", true);
++						break;
++					}
++				}
++				break;
++			}
++		}
++		
++		//ICON info
++		len = json_object_array_length(iconJarray);
++		for(i=0;i<len;i++){
++			iconJobj = json_object_array_get_idx(iconJarray, i);
++			if(iconJobj == NULL)
++				break;
++			MacAddress = Jgets(iconJobj, "MacAddress");
++			if(MacAddress == NULL)
++				continue;
++			if(isSameMac(PhysAddress, MacAddress)){
++				replaceParam(obj, "DeviceIcon", iconJobj, "DeviceIcon");
++				if(strcmp("", Jgets(iconJobj, "HostName")))
++					replaceParam(obj, "curHostName", iconJobj, "HostName");
++			}
++		}
++		
++#if (defined(CBT_CUSTOMIZATION) || defined (ELISA_NETWORKMAP_CUSTOMIZATION))
++		Layer1Interface = Jgets(obj, "Layer1Interface");
++		if(strstr(Layer1Interface, "SSID")){
++			sscanf(Layer1Interface, "Device.WiFi.SSID.%d", &i);
++			ssidJobj = json_object_array_get_idx(ssidJarray, i-1);
++			replaceParam(obj, "WiFiname", ssidJobj, "SSID");
++			
++			LowerLayers = Jgets(ssidJobj, "LowerLayers");
++			sscanf(LowerLayers, "Device.WiFi.Radio.%hhu", &i);
++			radioJobj = json_object_array_get_idx(radioJarray, i-1);
++			SupportedFrequencyBands = Jgets(radioJobj, "SupportedFrequencyBands");
++			Jadds(obj, "SupportedFrequencyBands", SupportedFrequencyBands);
++#ifdef ELISA_NETWORKMAP_CUSTOMIZATION
++			sprintf(X_ZYXEL_ConnectionType, "%s %s", Jgets(obj, "X_ZYXEL_ConnectionType"), SupportedFrequencyBands);
++			Jadds(obj, "X_ZYXEL_ConnectionType", X_ZYXEL_ConnectionType);
++#else
++			Jadds(obj, "X_ZYXEL_ConnectionType", "WiFi");
++#endif
++		}
++#ifdef ELISA_NETWORKMAP_CUSTOMIZATION
++		else if(strstr(Layer1Interface, "Radio")){
++			sscanf(Layer1Interface, "Device.WiFi.Radio.%hhu", &i);
++			radioJobj = json_object_array_get_idx(radioJarray, i-1);
++			SupportedFrequencyBands = Jgets(radioJobj, "SupportedFrequencyBands");
++			Jadds(obj, "SupportedFrequencyBands", SupportedFrequencyBands);
++			
++			sprintf(X_ZYXEL_ConnectionType, "%s %s", Jgets(obj, "X_ZYXEL_ConnectionType"), SupportedFrequencyBands);
++			Jadds(obj, "X_ZYXEL_ConnectionType", X_ZYXEL_ConnectionType);
++		}
++#endif
++#endif
++		json_object_array_add(Jarray, obj);
++	}
++	
++	zcfgFeJsonObjFree(iconJarray);
++	zcfgFeJsonObjFree(stbJobj);
++	zcfgFeJsonObjFree(dhcp4PoolJarray);
++#if (defined(CBT_CUSTOMIZATION) || defined (ELISA_NETWORKMAP_CUSTOMIZATION))
++	zcfgFeJsonObjFree(ssidJarray);
++	zcfgFeJsonObjFree(radioJarray);
++#endif
++
+ 	return ret;
+ }
+ 
++/*
++[{
++  "lanhosts":[{},...],
++  "wanInfo":{"wanStatus": 1|0, "wanIfaceExist" : 1|0}
++}]
++*/
++zcfgRet_t zcfgFeDalNetworkMAPGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++	struct json_object *ipIfaceJarray;
++	struct json_object *ipIfaceObj;
++	struct json_object *addrJarray;
++	struct json_object *addrJObj;
++	struct json_object *networkMAPInfoJobj = NULL;
++	struct json_object *hostsJarray;
++	struct json_object *wanInfoJobj;
++	struct json_object *stbJobj;
++	int len, len2, i, j;
++	const char *X_ZYXEL_IfName = NULL, *Status = NULL, *IPAddress = NULL, *addrStatus = NULL;
++	bool X_ZYXEL_DefaultGatewayIface;
++	int wanstatus = 0, wanIfaceExist = 0;
++	objIndex_t iid;
++	
++	zcfgFeWholeObjJsonGet("Device.IP.Interface.", &ipIfaceJarray);
++	if(ipIfaceJarray==NULL)
++		return ZCFG_INTERNAL_ERROR;
++	len = json_object_array_length(ipIfaceJarray);
++	for(i=0;i<len;i++){
++		ipIfaceObj = json_object_array_get_idx(ipIfaceJarray, i);
++		X_ZYXEL_IfName = Jgets(ipIfaceObj,"X_ZYXEL_IfName");
++		if(strstr(X_ZYXEL_IfName, "br"))
++			continue;
++		wanIfaceExist = 1;
++		Status = Jgets(ipIfaceObj,"Status");
++		if(Status == NULL) Status = "";
++		X_ZYXEL_DefaultGatewayIface = Jgetb(ipIfaceObj, "X_ZYXEL_DefaultGatewayIface");
++#if (!defined(INTERNET_LED_DEPEND_ON_DEFAULT_GW))
++		X_ZYXEL_DefaultGatewayIface = true;
++#endif
++		if(X_ZYXEL_DefaultGatewayIface && (!strcmp(Status, "Up") || !strcmp(Status, "LowerLayerDown"))){
++			addrJarray = Jget(ipIfaceObj, "IPv4Address");
++			if(addrJarray != NULL){
++				len2 = json_object_array_length(addrJarray);
++				for(j=0;j<len2;j++){
++					addrJObj = json_object_array_get_idx(addrJarray, j);
++					Status = Jgets(addrJObj,"Status");
++					if(Status == NULL) Status = "";
++					IPAddress = Jgets(addrJObj,"IPAddress");
++					if(strcmp(IPAddress, "") && !strcmp(Status, "Enabled")){
++						wanstatus = 1;
++						break;
++					}
++				}
++			}
++			addrJarray = Jget(ipIfaceObj, "IPv6Address");
++			if(addrJarray != NULL){
++				len2 = json_object_array_length(addrJarray);
++				for(j=0;j<len2;j++){
++					addrJObj = json_object_array_get_idx(addrJarray, j);
++					Status = Jgets(addrJObj,"Status");
++					if(Status == NULL) Status = "";
++					IPAddress = Jgets(addrJObj,"IPAddress");
++					if(strcmp(IPAddress, "") && !strcmp(Status, "Enabled")){
++						wanstatus = 1;
++						break;
++					}
++				}
++			}
++		}
++	}
++
++	networkMAPInfoJobj = json_object_new_object();
++	json_object_array_add(Jarray, networkMAPInfoJobj);
++	wanInfoJobj = json_object_new_object();
++	json_object_object_add(networkMAPInfoJobj, "wanInfo", wanInfoJobj);
++	Jaddi(wanInfoJobj,"wanStatus",wanstatus);
++	Jaddi(wanInfoJobj,"wanIfaceExist",wanIfaceExist);
++
++	hostsJarray = json_object_new_array();
++	json_object_object_add(networkMAPInfoJobj, "lanhosts", hostsJarray);
++	zcfgFeDalLanHostsGet(NULL, hostsJarray, NULL);
++
++
++	IID_INIT(iid);
++	if(zcfgFeObjJsonGet(RDM_OID_S_T_B_VENDOR_I_D, &iid, &stbJobj) == ZCFG_SUCCESS){
++		json_object_object_add(networkMAPInfoJobj, "STBVendorID", stbJobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++
+ zcfgRet_t zcfgFeDalNetworkMAP(const char *method, struct json_object *Jobj, struct json_object *Jarray,char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -104,3 +402,7 @@
+ 
+ 	return ret;
+ }
++
++
++
++
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-08-15 13:56:56.759113311 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-08-15 13:56:56.891113314 +0800
+@@ -91,6 +91,9 @@
+ ifeq ($(CONFIG_CBT_CUSTOMIZATION),y)
+ CFLAGS += -DCBT_CUSTOMIZATION
+ endif
++ifeq ($(CONFIG_INTERNET_LED_DEPEND_ON_DEFAULT_GW),y)
++CFLAGS += -DINTERNET_LED_DEPEND_ON_DEFAULT_GW
++endif
+ ifeq ($(CONFIG_ZyXEL_WEB_GUI_SHOW_PON),y)
+ CFLAGS += -DZYXEL_ZyXEL_WEB_GUI_SHOW_PON
+ endif
+@@ -128,10 +131,15 @@
+ INC_PATH += -I$(VOIP_PATH)
+ endif
+ 
++#Elisa
+ ifeq ($(CONFIG_ELISA_NAT_PORTFORWARD_CUSTOMIZATION),y)
+ CFLAGS += -DELISA_NAT_PORTFORWARD_CUSTOMIZATIONN
+ endif
+ 
++ifeq ($(CONFIG_ELISA_NETWORKMAP_CUSTOMIZATION),y)
++CFLAGS += -DELISA_NETWORKMAP_CUSTOMIZATION
++endif
++
+ #HAWAII TELECOM
+ ifeq ($(HAWAIIAN_TELCOM),y)
+ CFLAGS += -DHAWAIIAN_TELCOM

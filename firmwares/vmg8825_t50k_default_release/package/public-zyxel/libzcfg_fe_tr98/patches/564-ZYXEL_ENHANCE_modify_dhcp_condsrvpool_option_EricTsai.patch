@@ -1,0 +1,366 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2018-05-07 17:49:42.127413825 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2018-05-07 17:41:07.579028400 +0800
+@@ -3948,6 +3948,7 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++#endif
+ 
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.DHCPConditionalServingPool.i.DHCPOption.i
+ 
+@@ -3956,16 +3957,120 @@
+ */
+ zcfgRet_t lanDhcpCondServPoolOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
++	char mappingPathName[128] = {0};
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName) != ZCFG_SUCCESS){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("%s: %s\n", __FUNCTION__, mappingPathName);
++
++	struct json_object *dhcp4SvrOpt = NULL, *paramObj;
++	objIndex_t objIid;
++	IID_INIT(objIid);
++	objIid.level += 2;
++	int n = sscanf(mappingPathName, "DHCPv4.Server.Pool.%hhu.Option.%hhu", &objIid.idx[0], &objIid.idx[1]);
++	zcfgRet_t rst = ZCFG_NO_SUCH_OBJECT;
++	if(n != 2 || (rst = zcfgFeObjJsonGet(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid, &dhcp4SvrOpt)) != ZCFG_SUCCESS){
++		printf("%s: no DHCPv4 server pool option object\n", __FUNCTION__);
++		return rst;
++	}
++
++	struct tr98Parameter_s *parmList = tr98Obj[handler].parameter;
++	if(!parmList){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	while(parmList->name){
++		paramObj = json_object_object_get(dhcp4SvrOpt, parmList->name);
++		if(paramObj){
++			if(!strcmp(parmList->name, "Value")){
++				const char *paramObjStr = json_object_get_string(paramObj);
++				int paramObjStrLen = strlen(paramObjStr);
++				char *outputBase64 = base64_encode((unsigned char *)paramObjStr, paramObjStrLen);
++				printf("%s: encoded base64 value: %s\n", __FUNCTION__, outputBase64 ? outputBase64 : "null");
++				json_object_object_add(*tr98Jobj, parmList->name, json_object_new_string(outputBase64));
++				free(outputBase64);
++			}else{
++				json_object_object_add(*tr98Jobj, parmList->name, JSON_OBJ_COPY(paramObj));
++			}
++		}
++		parmList++;
++	}
++	json_object_put(dhcp4SvrOpt);
+ 
+ 	return ZCFG_SUCCESS;
+ }
+ 
++//InternetGatewayDevice.LANDevice.{i}.LANHostConfigManagement.DHCPConditionalServingPool.{i}.DHCPOption.{i}.
+ zcfgRet_t lanDhcpCondServPoolOptObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
+ {
++	char mappingPathName[128] = {0};
+ 
+-	return ZCFG_SUCCESS;
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName) != ZCFG_SUCCESS){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("%s: %s\n", __FUNCTION__, mappingPathName);
++
++	struct json_object *dhcp4SvrOpt = NULL, *paramObj;
++	objIndex_t objIid;
++	IID_INIT(objIid);
++	objIid.level += 2;
++	int n = sscanf(mappingPathName, "DHCPv4.Server.Pool.%hhu.Option.%hhu", &objIid.idx[0], &objIid.idx[1]);
++	zcfgRet_t rst = ZCFG_NO_SUCH_OBJECT;
++	if(n != 2 || (rst = zcfgFeObjJsonQueryExist(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid)) != ZCFG_SUCCESS){
++		printf("%s: no DHCPv4 server pool option object\n", __FUNCTION__);
++		return rst;
++	}
++
++	struct tr98Parameter_s *parmList = tr98Obj[handler].parameter;
++	if(!parmList){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++	char optValue[256] = {0};
++	char *decodeOptValue = NULL;
++	int decodeOptValueLen = 0;
++	const char *valueStr = json_object_get_string(json_object_object_get(tr98Jobj, "Value"));
++	if(valueStr){
++		strncpy(optValue, valueStr, sizeof(optValue)-1);
++		decodeOptValue = base64_decode((unsigned char *)optValue, &decodeOptValueLen);
++		printf("%s: base64 decoded: %s\n", __FUNCTION__, decodeOptValueLen ? decodeOptValue : "null" );
++	}
++
++	dhcp4SvrOpt = json_object_new_object();
++
++	while(parmList->name){
++		paramObj = json_object_object_get(tr98Jobj, parmList->name);
++		if(paramObj){
++			if(!strcmp(parmList->name, "Value") && decodeOptValueLen){
++				json_object_object_add(dhcp4SvrOpt, parmList->name, json_object_new_string(decodeOptValue));
++			}else{
++			json_object_object_add(dhcp4SvrOpt, parmList->name, JSON_OBJ_COPY(paramObj));
++			}
++		}
++		parmList++;
++	}
++
++	if(decodeOptValue)
++		free(decodeOptValue);
++
++	if(multiJobj){
++		zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid, multiJobj, dhcp4SvrOpt);
++		zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid, "partialset", json_object_new_boolean(true));
++	}else{
++		rst = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid, dhcp4SvrOpt, NULL);
++	}
++	json_object_put(dhcp4SvrOpt);
++
++
++	return rst;
+ }
+ 
++//InternetGatewayDevice.LANDevice.{i}.LANHostConfigManagement.DHCPConditionalServingPool.{i}.DHCPOption.{i}.
+ zcfgRet_t lanDhcpCondServPoolOptObjAdd(char *tr98FullPathName, int *idx)
+ {
+ 	zcfgRet_t ret;
+@@ -3976,28 +4081,28 @@
+ 	uint32_t  oid = 0;
+ 	char *ptr = NULL;
+ 
+-       printf("Enter %s\n", __FUNCTION__);
+-        
++	printf("Enter %s\n", __FUNCTION__);
++
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".DHCPOption");
+ 	*ptr = '\0';
+ 
+ 	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.DHCPConditionalServingPool.i */
+ 	printf("tr98TmpName %s\n", tr98TmpName);
+-		        
+-       if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+-       }
++	}
+ 	else{
+ 		/* mappingPathName will be DHCPv4.Server.Pool.i */
+ 		printf("TR181 object %s\n", mappingPathName);
+-       }
++	}
+ 
+-	sprintf(tr181Obj, "Device.%s", mappingPathName);
+ 	IID_INIT(objIid);
+-	oid = zcfgFeObjNameToObjId(tr181Obj, &objIid);
+-	if((ret = zcfgFeObjStructAdd(oid, &objIid, NULL)) != ZCFG_SUCCESS){
++	objIid.level = 1;
++	sscanf(mappingPathName, "DHCPv4.Server.Pool.%hhu", &objIid.idx[0]);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid, NULL)) != ZCFG_SUCCESS){
+ 		printf("Add Instance Fail!!\n");
+ 		return ret;
+ 	}
+@@ -4006,12 +4111,33 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++//InternetGatewayDevice.LANDevice.{i}.LANHostConfigManagement.DHCPConditionalServingPool.{i}.DHCPOption.{i}.
+ zcfgRet_t lanDhcpCondServPoolOptObjDel(char *tr98FullPathName)
+ {
++	char mappingPathName[128] = {0};
+ 
+-	return ZCFG_SUCCESS;
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName) != ZCFG_SUCCESS){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("%s: %s\n", __FUNCTION__, mappingPathName);
++
++	struct json_object *dhcp4SvrOpt = NULL, *paramObj;
++	objIndex_t objIid;
++	IID_INIT(objIid);
++	objIid.level += 2;
++	int n = sscanf(mappingPathName, "DHCPv4.Server.Pool.%hhu.Option.%hhu", &objIid.idx[0], &objIid.idx[1]);
++	zcfgRet_t rst = ZCFG_NO_SUCH_OBJECT;
++	if(n != 2 || (rst = zcfgFeObjJsonQueryExist(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid)) != ZCFG_SUCCESS){
++		printf("%s: no DHCPv4 server pool option object\n", __FUNCTION__);
++		return rst;
++	}
++
++	rst = zcfgFeObjJsonDel(RDM_OID_DHCPV4_SRV_POOL_OPT, &objIid, NULL);
++
++	return rst;
+ }
+-#endif
++
+ 
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANEthernetInterfaceConfig.i
+ 
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2018-05-07 17:49:42.143413825 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2018-05-07 17:49:42.179413825 +0800
+@@ -201,6 +201,7 @@
+ tr98Parameter_t para_DhcpCondServPoolDhcpOpt[] = {	
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+ 	{ "Tag", PARAMETER_ATTR_WRITE, 0, json_type_uint32},	
++	{ "Value", PARAMETER_ATTR_WRITE, 256, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2018-05-07 17:49:42.099413824 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2018-05-07 17:49:42.195413825 +0800
+@@ -455,7 +455,7 @@
+ //{TR98_DHCP_COND_SERVPOOL,       ATTR_INDEX_CREA,para_DhcpCondServPool,  lanDhcpCondServPoolObjGet,  lanDhcpCondServPoolObjSet,  lanDhcpCondServPoolObjAdd,  lanDhcpCondServPoolObjDel, lanDhcpCondServPoolObjNotify, lanDhcpCondServPoolObjAttrGet, lanDhcpCondServPoolObjAttrSet},
+ {TR98_DHCP_COND_SERVPOOL,       ATTR_INDEX_CREA,para_DhcpCondServPool,  lanDhcpCondServPoolObjGet,  lanDhcpCondServPoolObjSet,  lanDhcpCondServPoolObjAdd,  lanDhcpCondServPoolObjDel, NULL, NULL, NULL},
+ {TR98_SERVPOOL_DHCP_STATICADDR, ATTR_INDEX_CREA,para_DhcpCondServPoolDhcpStaticAddr,NULL, NULL, NULL, NULL, NULL, NULL, NULL},
+-{TR98_SERVPOOL_DHCP_OPT,        ATTR_INDEX_CREA,para_DhcpCondServPoolDhcpOpt,NULL,  NULL,  NULL,  NULL, NULL, NULL, NULL},
++{TR98_SERVPOOL_DHCP_OPT,        ATTR_INDEX_CREA,para_DhcpCondServPoolDhcpOpt, lanDhcpCondServPoolOptObjGet,  lanDhcpCondServPoolOptObjSet,  lanDhcpCondServPoolOptObjAdd,  lanDhcpCondServPoolOptObjDel, NULL, NULL, NULL},
+ {TR98_LAN_ETH_INTF_CONF,        ATTR_INDEXNODE, para_LanEthIntfConf,    lanEthIntfConfObjGet,    lanEthIntfConfObjSet,   NULL,             NULL,            lanEthIntfConfObjNotify, lanEthIntfConfObjAttrGet, lanEthIntfConfObjAttrSet},
+ {TR98_LAN_ETH_INTF_CONF_STAT,   0,              para_LanEthIntfConfStat,lanEthIntfConfStatObjGet,NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_USB_INTF_CONF,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2018-05-07 17:49:42.039413824 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2018-05-07 17:39:38.743764900 +0800
+@@ -20,59 +20,8 @@
+ 
+ #define WAN_ADD_INDIVIDUAL
+ 
+-#include <openssl/evp.h>
+-#include <openssl/sha.h>
+-#include <openssl/hmac.h>
+-#include <openssl/bio.h>
+-#include <openssl/buffer.h>
+-
+ extern bool isBondingWanProcess;
+ 
+-char *base64_encode(unsigned char *input, int length)
+-{
+-	BIO *bmem, *b64;
+-	BUF_MEM *bptr;
+-	char *buffer;
+-
+-	b64 = BIO_new(BIO_f_base64());
+-	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+-	bmem = BIO_new(BIO_s_mem());
+-	b64 = BIO_push(b64, bmem);
+-	BIO_write(b64, input, length);
+-	BIO_flush(b64);
+-	BIO_get_mem_ptr(b64, &bptr);
+-
+-	buffer= (char *)malloc(bptr->length+1);
+-	memcpy(buffer, bptr->data, bptr->length);
+-	buffer[bptr->length] = 0;
+-
+-	BIO_free_all(b64);
+-
+-	return buffer;
+-}
+-
+-char *base64_decode(unsigned char *input, int *length)
+-{
+-	BIO *b64, *bmem;
+-	BUF_MEM *bptr;
+-	char *buffer;
+-
+-	b64 = BIO_new(BIO_f_base64());
+-	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+-	bmem = BIO_new_mem_buf(input, -1);
+-	bmem = BIO_push(b64, bmem);
+-	
+-	BIO_get_mem_ptr(bmem, &bptr); 
+-	buffer= (char *)malloc(bptr->length+1);
+-	memset(buffer, 0, bptr->length);
+-	*length = bptr->length;
+-	BIO_read(bmem, buffer, bptr->length);
+-	BIO_free_all(bmem);
+-
+-	return buffer;
+-}
+-
+-
+ extern tr98Object_t tr98Obj[];
+ 
+ extern zcfgRet_t zcfgFeTr181IfaceStackHigherLayerGet(char *, char *);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2018-05-07 17:49:42.071413824 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2018-05-07 17:39:57.925600500 +0800
+@@ -1,5 +1,11 @@
+ #include <ctype.h>
+ 
++#include <openssl/evp.h>
++#include <openssl/sha.h>
++#include <openssl/hmac.h>
++#include <openssl/bio.h>
++#include <openssl/buffer.h>
++
+ #include "zcfg_fe_tr98.h"
+ #include "wanDev.h"
+ #include "devInfo.h"
+@@ -2181,6 +2187,52 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++char *base64_encode(unsigned char *input, int length)
++{
++	BIO *bmem, *b64;
++	BUF_MEM *bptr;
++	char *buffer;
++
++	b64 = BIO_new(BIO_f_base64());
++	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
++	bmem = BIO_new(BIO_s_mem());
++	b64 = BIO_push(b64, bmem);
++	BIO_write(b64, input, length);
++	BIO_flush(b64);
++	BIO_get_mem_ptr(b64, &bptr);
++
++	buffer= (char *)malloc(bptr->length+1);
++	memcpy(buffer, bptr->data, bptr->length);
++	buffer[bptr->length] = 0;
++
++	BIO_free_all(b64);
++
++	return buffer;
++}
++
++char *base64_decode(unsigned char *input, int *length)
++{
++	BIO *b64, *bmem;
++	BUF_MEM *bptr;
++	char *buffer;
++
++	b64 = BIO_new(BIO_f_base64());
++	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
++	bmem = BIO_new_mem_buf(input, -1);
++	bmem = BIO_push(b64, bmem);
++
++	BIO_get_mem_ptr(bmem, &bptr);
++	buffer= (char *)malloc(bptr->length+1);
++	memset(buffer, 0, bptr->length);
++	*length = bptr->length;
++	BIO_read(bmem, buffer, bptr->length);
++	BIO_free_all(bmem);
++
++	return buffer;
++}
++
++
++#define TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
+ #ifdef TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
+ //----------------------------------------------------------------------------------------------------
+ // Tr98/Tr181 object mapping convert routines -- start

@@ -1,0 +1,181 @@
+--- a/lanDev.c
++++ b/lanDev.c
+@@ -4083,6 +4083,116 @@ write_parameters_complete:
+ 
+ 	return ret;
+ }
++
++/*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i
++ *
++ *   Related object in TR181:
++ *
++ *   Device.Hosts.Host.i
++ */
++zcfgRet_t lanDevWlanCfgAssocDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid, hostIid;
++	tr98Parameter_t *paramList = NULL;
++	char tr181Name[32] = {0};
++	char tr98TmpName[128] = {0};
++	char higherLayerPath[32] = {0};
++	char mappingPathName[32] = {0};
++	char hostName[128] = {0};
++	char *ptr = NULL;
++	char paramName[64] = {0};
++	int idx = 0;
++	uint32_t hostNum = 0;
++	struct json_object *hostJobj = NULL;
++	struct json_object *paramValue = NULL;
++	rdm_HostsHost_t *stHost = NULL;
++	
++	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++
++#if 0	
++	//Refresh Hosts device list
++	rdm_Hosts_t *hostsObj = NULL;
++	IID_INIT(objIid);	
++	if(zcfgFeObjStructGet(RDM_OID_HOSTS, &objIid, (void **)&hostsObj) == ZCFG_SUCCESS){
++		zcfgFeObjStructFree(hostsObj);
++	}
++#endif
++	
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".WLANConfiguration");
++	*ptr = '\0';
++	
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++		return ret;
++	}
++	
++	strcpy(tr181Name, mappingPathName);
++	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
++		return ret;
++	
++	if(strstr(higherLayerPath, "IP.Interface") != NULL) {
++		IID_INIT(objIid);
++		IID_INIT(hostIid);
++		objIid.level = 1;
++		sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.WLANConfiguration.%*d.AssociatedDevice.%d", &idx);
++		
++		while(feObjStructGetNext(RDM_OID_HOSTS_HOST, &objIid, (void **)&stHost, updateFlag) == ZCFG_SUCCESS){
++			if( (strcmp(stHost->Layer3Interface, higherLayerPath) == 0 ) && ( strcmp(stHost->X_ZYXEL_ConnectionType, "802.11" ) == 0 ) ) {
++				hostNum++;
++				if(idx == hostNum) {
++					hostIid = objIid;
++					zcfgFeObjStructFree(stHost);
++					break;
++				}
++			}
++			zcfgFeObjStructFree(stHost);
++		}
++	}
++	else
++		return;
++	
++	if((ret = feObjJsonGet(RDM_OID_HOSTS_HOST, &hostIid, &hostJobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++	
++	/*fill up tr98 Host object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(hostJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*special case*/
++		if(!strcmp(paramList->name, "AssociatedDeviceMACAddress")) {
++			paramValue = json_object_object_get(hostJobj, "PhysAddress");
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		if(!strcmp(paramList->name, "AssociatedDeviceIPAddress")) {
++			paramValue = json_object_object_get(hostJobj, "IPAddress");
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++	/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++	
++	json_object_put(hostJobj);
++	
++	return ZCFG_SUCCESS;
++}
++
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.PreSharedKey.i
+  *
+  *   Related object in TR181:
+--- a/lanDev.h
++++ b/lanDev.h
+@@ -22,6 +22,7 @@ extern tr98Parameter_t para_LanEthIntfCo
+ extern tr98Parameter_t para_LanDevWlanCfg[];
+ extern tr98Parameter_t para_LanDevWlanCfgStat[];
+ extern tr98Parameter_t para_LanDevWlanCfgWps[];
++extern tr98Parameter_t para_LanDevWlanCfgAssocDev[];
+ extern tr98Parameter_t para_WepKey[];
+ extern tr98Parameter_t para_Psk[];
+ extern tr98Parameter_t para_Hosts[];
+@@ -105,6 +106,9 @@ extern zcfgRet_t lanDevWlanCfgStatObjGet
+ extern zcfgRet_t lanDevWlanCfgWpsObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevWlanCfgWpsObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ 
++/*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i*/
++extern zcfgRet_t lanDevWlanCfgAssocDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.PreSharedKey.i*/
+ extern zcfgRet_t lanDevWlanCfgPskObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevWlanCfgPskObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+--- a/zcfg_fe_tr98.c
++++ b/zcfg_fe_tr98.c
+@@ -146,7 +146,7 @@ tr98NameObj_t tr98NameObjList[] =
+ {e_TR98_WLAN_CFG_STAT           , &tr98Obj[e_TR98_WLAN_CFG_STAT           -e_TR98_START]},
+ {e_TR98_WPS                     , &tr98Obj[e_TR98_WPS                     -e_TR98_START]},
+ //{e_TR98_REG                     , &tr98Obj[e_TR98_REG                     -e_TR98_START]},
+-//{e_TR98_ASSOC_DEV               , &tr98Obj[e_TR98_ASSOC_DEV               -e_TR98_START]},
++{e_TR98_ASSOC_DEV               , &tr98Obj[e_TR98_ASSOC_DEV               -e_TR98_START]},
+ {e_TR98_WEP_KEY                 , &tr98Obj[e_TR98_WEP_KEY                 -e_TR98_START]},
+ {e_TR98_PSK                     , &tr98Obj[e_TR98_PSK                     -e_TR98_START]},
+ //{e_TR98_AP_WMM_PARAM            , &tr98Obj[e_TR98_AP_WMM_PARAM            -e_TR98_START]},
+--- a/zcfg_fe_tr98_handle.h
++++ b/zcfg_fe_tr98_handle.h
+@@ -314,7 +314,7 @@ tr98Object_t tr98Obj[] = {
+ {TR98_WLAN_CFG_STAT,            0,              para_LanDevWlanCfgStat, lanDevWlanCfgStatObjGet,        NULL,                   NULL,             NULL,            NULL},
+ {TR98_WPS,                      0,              para_LanDevWlanCfgWps,  lanDevWlanCfgWpsObjGet,  lanDevWlanCfgWpsObjSet, NULL,             NULL,            NULL},
+ //{TR98_REG,                      ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_ASSOC_DEV,                ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_ASSOC_DEV,                ATTR_INDEXNODE, para_LanDevWlanCfgAssocDev,          lanDevWlanCfgAssocDevObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_WEP_KEY,                  ATTR_INDEXNODE, para_WepKey,            lanDevWlanCfgWEPKeyObjGet,lanDevWlanCfgWEPKeyObjSet,                   NULL,             NULL,            NULL},
+ {TR98_PSK,                      ATTR_INDEXNODE, para_Psk,               lanDevWlanCfgPskObjGet,  lanDevWlanCfgPskObjSet, NULL,             NULL,            NULL},
+ //{TR98_AP_WMM_PARAM,             ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+--- a/lanDev_parameter.h
++++ b/lanDev_parameter.h
+@@ -320,6 +320,17 @@ tr98Parameter_t para_LanDevWlanCfgWps[]
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_LanDevWlanCfgAssocDev[] = {
++	{ "AssociatedDeviceMACAddress", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "AssociatedDeviceIPAddress", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "AssociatedDeviceAuthenticationState", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "LastRequestedUnicastCipher", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "LastRequestedMulticastCipher", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "LastPMKId", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "LastDataTransmitRate", PARAMETER_ATTR_READONLY, 5, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WepKey[] = {
+ 	{ "WEPKey", PARAMETER_ATTR_WRITE, 129, json_type_string},
+ 	{ NULL, 0, 0, 0}

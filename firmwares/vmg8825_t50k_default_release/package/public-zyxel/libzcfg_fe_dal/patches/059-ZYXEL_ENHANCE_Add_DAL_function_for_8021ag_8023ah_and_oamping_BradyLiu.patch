@@ -1,0 +1,588 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-11-11 17:17:48.844645199 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-11-11 17:22:04.765010700 +0800
+@@ -55,6 +55,9 @@
+ extern dal_param_t MAIL_NOTIFICATION_param[];
+ extern dal_param_t LOG_SETTING_param[];
+ extern dal_param_t PING_TEST_param[];
++extern dal_param_t IEEE_8021AG_param[];
++extern dal_param_t IEEE_8023AH_param[];
++extern dal_param_t OAMPING_param[];
+ extern dal_param_t USB_FILESHARING_param[];
+ extern dal_param_t USB_MEDIASERVER_param[];
+ extern dal_param_t PAREN_CTL_param[];
+@@ -109,6 +112,9 @@
+ extern zcfgRet_t zcfgFeDalMailNotification(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalLogSetting(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalPingTest(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFe8021ag(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFe8023ah(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeOamPing(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUsbFilesharing(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUsbMediaserver(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalParentCtl(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -171,6 +177,9 @@
+ {"EMAIL",			MAIL_NOTIFICATION_param,zcfgFeDalMailNotification},
+ {"LOGSETTING",		LOG_SETTING_param,	zcfgFeDalLogSetting},
+ {"PINGTEST",		PING_TEST_param,	zcfgFeDalPingTest},
++{"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag},
++{"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah},
++{"OAMPING", 		OAMPING_param,		zcfgFeOamPing},
+ {"USB_FILESHARING", 		USB_FILESHARING_param,	zcfgFeDalUsbFilesharing},
+ {"USB_MEDIASERVER", 		USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver},
+ {"PAREN_CTL", 		PAREN_CTL_param,	zcfgFeDalParentCtl},
+Index: libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_8021ag.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_8021ag.c	2016-11-11 17:22:19.296651622 +0800
+@@ -0,0 +1,250 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++#define TYPE_IEEE8021AG 0
++#define TYPE_LOOPBACK 1
++#define TYPE_LINKTRACE 2
++
++dal_param_t IEEE_8021AG_param[]={
++	{"EthOAM_TMS",							dalType_boolean,0,	0,	NULL},
++	{"type",								dalType_int,	0,	0,	NULL},
++	{"Enabled",								dalType_boolean,0,	0,	NULL},
++	{"MDLevel",								dalType_int,	0,	0,	NULL},
++	{"Interface",							dalType_string,	0,	0,	NULL},
++	{"MAID",								dalType_string,	0,	0,	NULL},
++	{"MDName",								dalType_string,	0,	0,	NULL},
++	{"LMPID",								dalType_int,	0,	0,	NULL},
++	{"RMPID",								dalType_int,	0,	0,	NULL},
++	{"CCMEnabled",							dalType_boolean,0,	0,	NULL},
++	{"Y1731Mode",							dalType_boolean,0,	0,	NULL},
++	{"VLANID",								dalType_int,	0,	0,	NULL},
++	{"DestMacAddress",						dalType_string,	0,	0,	NULL},
++	{"SendLoopBack",						dalType_boolean,0,	0,	NULL},
++	{"SendLinkTrace",						dalType_boolean,0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++};
++
++
++struct json_object *ieee8021agobj;
++
++objIndex_t ieee8021agIid;
++
++bool EthOAM_TMS;
++unsigned int type;
++bool Enabled;
++unsigned int MDLevel;
++char *Interface;
++char *MAID;
++char *MDName;
++unsigned int LMPID;
++unsigned int RMPID;
++bool CCMEnabled;
++bool Y1731Mode;
++unsigned int VLANID;
++char *DestMacAddress;
++bool SendLoopBack;
++bool SendLinkTrace;
++
++void freeAll8021agObjects(){
++	if(ieee8021agobj) json_object_put(ieee8021agobj);
++
++	return;
++}
++
++void init8021agGlobalObjects(){
++	ieee8021agobj = NULL;
++
++	return;
++}
++
++void get8021agBasicInfo(struct json_object *Jobj){
++	EthOAM_TMS = json_object_get_boolean(json_object_object_get(Jobj, "EthOAM_TMS"));
++	MDLevel = json_object_get_int(json_object_object_get(Jobj, "MDLevel"));
++	if(EthOAM_TMS == true){
++		type = json_object_get_int(json_object_object_get(Jobj, "type"));
++		Enabled = json_object_get_boolean(json_object_object_get(Jobj, "Enabled"));
++		Y1731Mode = json_object_get_boolean(json_object_object_get(Jobj, "Y1731Mode"));
++		if(Y1731Mode == false){
++			MAID = json_object_get_string(json_object_object_get(Jobj, "MAID"));
++		}
++		MDName = json_object_get_string(json_object_object_get(Jobj, "MDName"));
++		Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++		LMPID = json_object_get_int(json_object_object_get(Jobj, "LMPID"));
++		RMPID = json_object_get_int(json_object_object_get(Jobj, "RMPID"));
++		CCMEnabled = json_object_get_boolean(json_object_object_get(Jobj, "CCMEnabled"));
++		VLANID = json_object_get_int(json_object_object_get(Jobj, "VLANID"));
++	}
++
++	return;
++}
++
++void getLoopBackBasicInfo(struct json_object *Jobj){
++	MDLevel = json_object_get_int(json_object_object_get(Jobj, "MDLevel"));
++	DestMacAddress = json_object_get_string(json_object_object_get(Jobj, "DestMacAddress"));
++	VLANID = json_object_get_int(json_object_object_get(Jobj, "VLANID"));
++	SendLoopBack = json_object_get_boolean(json_object_object_get(Jobj, "SendLoopBack"));
++
++	return;
++}
++
++void getLinkTraceBasicInfo(struct json_object *Jobj){
++	MDLevel = json_object_get_int(json_object_object_get(Jobj, "MDLevel"));
++	DestMacAddress = json_object_get_string(json_object_object_get(Jobj, "DestMacAddress"));
++	VLANID = json_object_get_int(json_object_object_get(Jobj, "VLANID"));
++	SendLinkTrace = json_object_get_boolean(json_object_object_get(Jobj, "SendLinkTrace"));
++
++	return;
++}
++
++void getCfgTypeInfo(struct json_object *Jobj){
++	type = json_object_get_int(json_object_object_get(Jobj, "type"));
++
++	return;
++}
++
++zcfgRet_t zcfgFeDal8021agCfg(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): Enter..\n ",__FUNCTION__);
++	get8021agBasicInfo(Jobj);
++
++	IID_INIT(ieee8021agIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8021AG, &ieee8021agIid, &ieee8021agobj)) != ZCFG_SUCCESS) {
++		printf("%s():(ERROR) Get IEEE 802.1ag Obj fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(ieee8021agobj != NULL){
++		if(EthOAM_TMS == true){
++			if(Enabled == true){
++				json_object_object_add(ieee8021agobj, "Enabled", json_object_new_boolean(Enabled));
++				json_object_object_add(ieee8021agobj, "Y1731Mode", json_object_new_boolean(Y1731Mode));
++				json_object_object_add(ieee8021agobj, "MDLevel", json_object_new_int(MDLevel));
++				json_object_object_add(ieee8021agobj, "Interface", json_object_new_string(Interface));
++				json_object_object_add(ieee8021agobj, "MDName", json_object_new_string(MDName));
++				if(Y1731Mode == false){
++					json_object_object_add(ieee8021agobj, "MAID", json_object_new_string(MAID));
++				}
++				json_object_object_add(ieee8021agobj, "LMPID", json_object_new_int(LMPID));
++				json_object_object_add(ieee8021agobj, "RMPID", json_object_new_int(RMPID));
++				json_object_object_add(ieee8021agobj, "CCMEnabled", json_object_new_boolean(CCMEnabled));
++				json_object_object_add(ieee8021agobj, "VLANID", json_object_new_int(VLANID));
++			}else{
++				json_object_object_add(ieee8021agobj, "Enabled", json_object_new_boolean(Enabled));
++			}
++		}else{
++			json_object_object_add(ieee8021agobj, "MDLevel", json_object_new_int(MDLevel));
++		}
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IEEE8021AG, &ieee8021agIid, ieee8021agobj, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Set IEEE 802.1ag fail\n", __FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLoopBack(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): Enter..\n ",__FUNCTION__);
++	getLoopBackBasicInfo(Jobj);
++
++	IID_INIT(ieee8021agIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8021AG, &ieee8021agIid, &ieee8021agobj)) != ZCFG_SUCCESS) {
++		printf("%s():(ERROR) Get IEEE 802.1ag Obj fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(ieee8021agobj != NULL){
++		json_object_object_add(ieee8021agobj, "MDLevel", json_object_new_int(MDLevel));
++		json_object_object_add(ieee8021agobj, "DestMacAddress", json_object_new_string(DestMacAddress));
++		json_object_object_add(ieee8021agobj, "VLANID", json_object_new_int(VLANID));
++		json_object_object_add(ieee8021agobj, "SendLoopBack", json_object_new_boolean(SendLoopBack));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IEEE8021AG, &ieee8021agIid, ieee8021agobj, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Set IEEE 802.1ag fail\n", __FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalLinktrace(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): Enter..\n ",__FUNCTION__);
++	getLinkTraceBasicInfo(Jobj);
++
++	IID_INIT(ieee8021agIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8021AG, &ieee8021agIid, &ieee8021agobj)) != ZCFG_SUCCESS) {
++		printf("%s():(ERROR) Get IEEE 802.1ag Obj fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(ieee8021agobj != NULL){
++		json_object_object_add(ieee8021agobj, "MDLevel", json_object_new_int(MDLevel));
++		json_object_object_add(ieee8021agobj, "DestMacAddress", json_object_new_string(DestMacAddress));
++		json_object_object_add(ieee8021agobj, "VLANID", json_object_new_int(VLANID));
++		json_object_object_add(ieee8021agobj, "SendLinkTrace", json_object_new_boolean(SendLinkTrace));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IEEE8021AG, &ieee8021agIid, ieee8021agobj, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Set IEEE 802.1ag fail\n", __FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal8021agEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	init8021agGlobalObjects();
++	getCfgTypeInfo(Jobj);
++
++	if(type == TYPE_IEEE8021AG){
++		if((ret = zcfgFeDal8021agCfg(Jobj)) != ZCFG_SUCCESS){
++			printf("%s: config 8021ag fail\n", __FUNCTION__);
++			goto exit;
++		}
++	}else if(type == TYPE_LOOPBACK){
++		if((ret = zcfgFeDalLoopBack(Jobj)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) config LoopBack fail\n", __FUNCTION__);
++			goto exit;
++		}
++	}else if(type == TYPE_LINKTRACE){
++		if((ret = zcfgFeDalLinktrace(Jobj)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) config Linktrace fail\n", __FUNCTION__);
++			goto exit;
++		}
++	}
++
++exit:
++	freeAll8021agObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFe8021ag(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDal8021agEdit(Jobj, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_8023ah.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_8023ah.c	2016-11-11 16:48:04.430914100 +0800
+@@ -0,0 +1,121 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++dal_param_t IEEE_8023AH_param[]={
++	{"Enabled",								dalType_boolean,0,	0,	NULL},
++	{"OAMID",								dalType_int,	0,	0,	NULL},
++	{"Interface",							dalType_string,	0,	0,	NULL},
++	{"VariableRetrievalEnabled",			dalType_boolean,0,	0,	NULL},
++	{"LinkEventsEnabled",					dalType_boolean,0,	0,	NULL},
++	{"RemoteLoopbackEnabled",				dalType_boolean,0,	0,	NULL},
++	{"ActiveModeEnabled",					dalType_boolean,0,	0,	NULL},
++	{"AutoEventEnabled",					dalType_boolean,0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++};
++
++struct json_object *ieee8023ahobj;
++
++objIndex_t ieee8023ahIid;
++
++void freeAll8023ahObjects(){
++	if(ieee8023ahobj) json_object_put(ieee8023ahobj);
++
++	return;
++}
++
++void init8023ahGlobalObjects(){
++	ieee8023ahobj = NULL;
++
++	return;
++}
++
++bool Enabled;
++unsigned int OAMID;
++char *Interface;
++bool VariableRetrievalEnabled;
++bool LinkEventsEnabled;
++bool RemoteLoopbackEnabled;
++bool ActiveModeEnabled;
++bool AutoEventEnabled;
++
++void get8023ahBasicInfo(struct json_object *Jobj){
++	Enabled = json_object_get_boolean(json_object_object_get(Jobj, "Enabled"));
++	OAMID = json_object_get_int(json_object_object_get(Jobj, "OAMID"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	VariableRetrievalEnabled = json_object_get_boolean(json_object_object_get(Jobj, "VariableRetrievalEnabled"));
++	LinkEventsEnabled = json_object_get_boolean(json_object_object_get(Jobj, "LinkEventsEnabled"));
++	RemoteLoopbackEnabled = json_object_get_boolean(json_object_object_get(Jobj, "RemoteLoopbackEnabled"));
++	ActiveModeEnabled = json_object_get_boolean(json_object_object_get(Jobj, "ActiveModeEnabled"));
++	AutoEventEnabled = json_object_get_boolean(json_object_object_get(Jobj, "AutoEventEnabled"));
++
++	return;
++}
++
++zcfgRet_t zcfgFeDal8023ahCfg(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	IID_INIT(ieee8023ahIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IEEE8023AH, &ieee8023ahIid, &ieee8023ahobj)) != ZCFG_SUCCESS) {
++		printf("%s():(ERROR) Get IEEE 802.3ah Obj fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(ieee8023ahobj != NULL){
++		json_object_object_add(ieee8023ahobj, "Enabled", json_object_new_boolean(Enabled));
++		json_object_object_add(ieee8023ahobj, "OAMID", json_object_new_int(OAMID));
++		json_object_object_add(ieee8023ahobj, "Interface", json_object_new_string(Interface));
++		json_object_object_add(ieee8023ahobj, "VariableRetrievalEnabled", json_object_new_boolean(VariableRetrievalEnabled));
++		json_object_object_add(ieee8023ahobj, "LinkEventsEnabled", json_object_new_boolean(LinkEventsEnabled));
++		json_object_object_add(ieee8023ahobj, "RemoteLoopbackEnabled", json_object_new_boolean(RemoteLoopbackEnabled));
++		json_object_object_add(ieee8023ahobj, "ActiveModeEnabled", json_object_new_boolean(ActiveModeEnabled));
++		json_object_object_add(ieee8023ahobj, "AutoEventEnabled", json_object_new_boolean(AutoEventEnabled));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IEEE8023AH, &ieee8023ahIid, ieee8023ahobj, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Set IEEE 802.3ah fail\n", __FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal8023ahEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	init8023ahGlobalObjects();
++	get8023ahBasicInfo(Jobj);
++
++	if((ret = zcfgFeDal8023ahCfg(Jobj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) config 8023ah fail\n", __FUNCTION__);
++			goto exit;
++	}
++
++exit:
++	freeAll8023ahObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFe8023ah(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDal8023ahEdit(Jobj, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_oam_ping.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/diagnostic/zcfg_fe_dal_oam_ping.c	2016-11-11 16:47:55.897666200 +0800
+@@ -0,0 +1,168 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++#define ATM_DIAG_F4_LO 4
++#define ATM_DIAG_F5_LO 5
++
++dal_param_t OAMPING_param[]={
++	{"LoopbackType",							dalType_int,	0,	0,	NULL},
++	{"DiagnosticsState",						dalType_string,	0,	0,	NULL},
++	{"NumberOfRepetitions",						dalType_int,	0,	0,	NULL},
++	{"Interface",								dalType_string,	0,	0,	NULL},
++	{"SegmentLoopback",							dalType_boolean,0,	0,	NULL},
++	{"X_ZYXEL_SegmentLoopback",					dalType_boolean,0,	0,	NULL},
++	{NULL,										0,				0,	0,	NULL},
++};
++
++struct json_object *atmF4Obj;
++struct json_object *atmF5Obj;
++
++void freeAllOamPingObjects(){
++	if(atmF4Obj) json_object_put(atmF4Obj);
++	if(atmF5Obj) json_object_put(atmF5Obj);
++
++	return;
++}
++
++void initOamPingGlobalObjects(){
++	atmF4Obj = NULL;
++	atmF5Obj = NULL;
++
++	return;
++}
++
++unsigned int LoopbackType;
++unsigned int NumberOfRepetitions;
++const char* DiagnosticsState;
++const char* Interface;
++bool SegmentLoopback;
++bool X_ZYXEL_SegmentLoopback;
++
++
++objIndex_t F4objIid;
++objIndex_t F5objIid;
++
++void getOamPingF4BasicInfo(struct json_object *Jobj){
++	DiagnosticsState = json_object_get_string(json_object_object_get(Jobj, "DiagnosticsState"));
++	NumberOfRepetitions = json_object_get_int(json_object_object_get(Jobj, "NumberOfRepetitions"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	SegmentLoopback = json_object_get_boolean(json_object_object_get(Jobj, "SegmentLoopback"));
++
++	return;
++}
++
++void getOamPingF5BasicInfo(struct json_object *Jobj){
++	DiagnosticsState = json_object_get_string(json_object_object_get(Jobj, "DiagnosticsState"));
++	NumberOfRepetitions = json_object_get_int(json_object_object_get(Jobj, "NumberOfRepetitions"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	X_ZYXEL_SegmentLoopback = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_SegmentLoopback"));
++}
++
++void getOamPingType(struct json_object *Jobj){
++	LoopbackType = json_object_get_int(json_object_object_get(Jobj, "LoopbackType"));
++	return;
++}
++
++
++zcfgRet_t zcfgFeDalOamPingF4LookbackEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): Enter ..\n", __FUNCTION__);
++	getOamPingF4BasicInfo(Jobj);
++
++	IID_INIT(F4objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ATM_DIAG_F4_LO, &F4objIid, &atmF4Obj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGet get atmF4Loopback fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(atmF4Obj != NULL){
++		json_object_object_add(atmF4Obj, "DiagnosticsState", json_object_new_string(DiagnosticsState));
++		json_object_object_add(atmF4Obj, "NumberOfRepetitions", json_object_new_int(NumberOfRepetitions));
++		json_object_object_add(atmF4Obj, "Interface", json_object_new_string(Interface));
++		json_object_object_add(atmF4Obj, "SegmentLoopback", json_object_new_boolean(SegmentLoopback));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ATM_DIAG_F4_LO, &F4objIid, atmF4Obj, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ATM_DIAG_F4_LO);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalOamPingF5LookbackEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): Enter ..\n", __FUNCTION__);
++	getOamPingF5BasicInfo(Jobj);
++
++
++	IID_INIT(F5objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ATM_DIAG_F5_LO, &F5objIid, &atmF5Obj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGet get atmF5Loopback fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(atmF5Obj != NULL){
++		json_object_object_add(atmF5Obj, "DiagnosticsState", json_object_new_string(DiagnosticsState));
++		json_object_object_add(atmF5Obj, "NumberOfRepetitions", json_object_new_int(NumberOfRepetitions));
++		json_object_object_add(atmF5Obj, "Interface", json_object_new_string(Interface));
++		json_object_object_add(atmF5Obj, "X_ZYXEL_SegmentLoopback", json_object_new_boolean(X_ZYXEL_SegmentLoopback));
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ATM_DIAG_F5_LO, &F5objIid, atmF5Obj, NULL)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ATM_DIAG_F5_LO);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalOamPingEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initOamPingGlobalObjects();
++	getOamPingType(Jobj);
++
++	if(LoopbackType == ATM_DIAG_F4_LO){
++		if((ret = zcfgFeDalOamPingF4LookbackEdit(Jobj)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Oam Ping F4 Lookback fail\n", __FUNCTION__);
++			goto exit;
++		}
++	}else if(LoopbackType == ATM_DIAG_F5_LO){
++		if((ret = zcfgFeDalOamPingF5LookbackEdit(Jobj)) != ZCFG_SUCCESS){
++			printf("%s():(ERROR) Oam Ping F5 Lookback fail\n", __FUNCTION__);
++			goto exit;
++		}
++	}
++
++exit:
++	freeAllOamPingObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeOamPing(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalOamPingEdit(Jobj, NULL);
++	}
++
++	return ret;
++}
++

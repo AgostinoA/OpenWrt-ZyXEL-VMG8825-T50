@@ -1,0 +1,119 @@
+Index: libzcfg_fe_dal-1.0/network/dns/zcfg_fe_dal_d_dns.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/dns/zcfg_fe_dal_d_dns.c	2017-06-09 14:53:39.317675039 +0800
++++ libzcfg_fe_dal-1.0/network/dns/zcfg_fe_dal_d_dns.c	2017-06-09 15:00:45.117954500 +0800
+@@ -13,17 +13,16 @@
+ dal_param_t D_DNS_param[] =
+ {
+ 	{"Enable", 			dalType_boolean,	0,	0,		NULL, NULL,		0},
+-	{"ServiceProvider", 		dalType_string, 	1, 	32,		NULL, "myzyxel|dyndns|zoneedit|noip|dtdns|freedns|userdefined",		0},
+-	{"DDNSType", 			dalType_string, 	0, 	8,		NULL, NULL,		dalcmd_Forbid},
++	{"ServiceProvider", 		dalType_string, 	1, 	32,		NULL, "dyndns|zoneedit|noip|dtdns|freedns|userdefined",		0},
+ 	{"HostName", 			dalType_string, 	0, 	256,	NULL, NULL,		0},
+ 	{"UserName", 			dalType_string, 	0, 	256, 	NULL, NULL,		0},
+ 	{"Password", 			dalType_string, 	0, 	64, 		NULL, NULL,		0},
+-	{"IPAddressPolicy", 		dalType_int,		1,	1,		NULL, NULL,		0},
++	{"IPAddressPolicy", 		dalType_int,		1,	1,		NULL, NULL,		dalcmd_Forbid},
+ 	{"UserIPAddress", 		dalType_v4Addr,	0,	0,		NULL, NULL,		dalcmd_Forbid},
+ 	{"Wildcard", 			dalType_boolean,	0,	0,		NULL, NULL,		0},
+ 	{"Offline", 			dalType_boolean,	0,	0,		NULL, NULL,		0},
+ 	{"UpdateURL", 		dalType_string, 	0, 	256,	NULL, NULL,		0},
+-	{"ConnectionType", 	dalType_string, 	0, 	12,		NULL, NULL,		0},
++	{"ConnectionType", 	dalType_string, 	0, 	12,		NULL, "HTTP|HTTPS",		0},
+ 	{NULL, 					0, 					0, 	0, 		NULL, NULL,		0}
+ };
+ 
+@@ -61,48 +60,60 @@
+ 		json_object_array_add(Jarray, JSON_OBJ_COPY(obj));
+ 		zcfgFeJsonObjFree(obj);
+ 	}
+-	
+ 	return ret;
+ }
+ 
+-zcfgRet_t zcfgFeDalDDnsEdit(struct json_object *Jobj, char *replyMsg)
+-{
+-
++zcfgRet_t zcfgFeDalDDnsEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+-	objIndex_t objIid;
++	objIndex_t objIid = {0};
+ 	struct json_object *ddnsJobj = NULL;
+-	int paramModified = 0, n = 0;
++	bool enable = false;
++	const char *serviceprovider = NULL;
++	const char *hostname = NULL;
++	const char *username = NULL;
++	const char *password = NULL;
++	bool wildcard = false;
++	bool offline = false;
++	int ipaddrpolicy = 1;
++	const char *updateurl = NULL;
++	const char *connectiontype = NULL;
++
++	enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	serviceprovider = json_object_get_string(json_object_object_get(Jobj, "ServiceProvider"));
++	hostname = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++	username = json_object_get_string(json_object_object_get(Jobj, "UserName"));
++	password = json_object_get_string(json_object_object_get(Jobj, "Password"));
++	wildcard = json_object_get_boolean(json_object_object_get(Jobj, "Wildcard"));
++	offline = json_object_get_boolean(json_object_object_get(Jobj, "Offline"));
++	updateurl = json_object_get_string(json_object_object_get(Jobj, "UpdateURL"));
++	connectiontype = json_object_get_string(json_object_object_get(Jobj, "ConnectionType"));
++	if(zcfgFeObjJsonGet(RDM_OID_D_DNS, &objIid, &ddnsJobj) == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "Enable"))
++			json_object_object_add(ddnsJobj, "Enable", json_object_new_boolean(enable));
++		if(json_object_object_get(Jobj, "ServiceProvider"))
++			json_object_object_add(ddnsJobj, "ServiceProvider", json_object_new_string(serviceprovider));
++		if(json_object_object_get(Jobj, "HostName"))
++			json_object_object_add(ddnsJobj, "HostName", json_object_new_string(hostname));
++		if(json_object_object_get(Jobj, "UserName"))
++			json_object_object_add(ddnsJobj, "UserName", json_object_new_string(username));
++		if(json_object_object_get(Jobj, "Password"))
++			json_object_object_add(ddnsJobj, "Password", json_object_new_string(password));
++		json_object_object_add(ddnsJobj, "IPAddressPolicy", json_object_new_int(ipaddrpolicy));
++		if(json_object_object_get(Jobj, "Wildcard"))
++			json_object_object_add(ddnsJobj, "Wildcard", json_object_new_boolean(wildcard));
++		if(json_object_object_get(Jobj, "Offline"))
++			json_object_object_add(ddnsJobj, "Offline", json_object_new_boolean(offline));
++		if(json_object_object_get(Jobj, "UpdateURL"))
++			json_object_object_add(ddnsJobj, "UpdateURL", json_object_new_string(updateurl));
++		if(json_object_object_get(Jobj, "ConnectionType"))
++			json_object_object_add(ddnsJobj, "ConnectionType", json_object_new_string(connectiontype));
++		ret = zcfgFeObjJsonBlockedSet(RDM_OID_D_DNS, &objIid, ddnsJobj, NULL);
+ 
+-	paraName = (const char *)D_DNS_param[n++].paraName;
+-	
+-	IID_INIT(objIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_D_DNS, &objIid, &ddnsJobj)) != ZCFG_SUCCESS) {
+-		printf("%s: Object retrieve fail\n", __FUNCTION__);
+-		return ret;
++		zcfgFeJsonObjFree(ddnsJobj);
+ 	}
+-	
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			paraName = (const char *)D_DNS_param[n++].paraName;
+-			continue;
+-		}
+-
+-		json_object_object_add(ddnsJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paramModified = 1;			
+-
+-		paraName = (const char *)D_DNS_param[n++].paraName;
+-	}
+-
+-	if(paramModified) {
+-		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_D_DNS, &objIid, ddnsJobj, NULL)) != ZCFG_SUCCESS)
+-			printf("%s: Write object fail\n", __FUNCTION__);
++		return ret;
+ 	}
+ 	
+-	json_object_put(ddnsJobj);
+-	return ret;
+-}
+ zcfgRet_t zcfgFeDalDDns(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;

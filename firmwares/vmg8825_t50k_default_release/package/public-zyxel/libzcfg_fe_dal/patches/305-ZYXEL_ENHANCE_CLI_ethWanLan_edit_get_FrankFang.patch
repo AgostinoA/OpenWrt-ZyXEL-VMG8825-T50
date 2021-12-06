@@ -1,0 +1,285 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2017-08-11 09:59:06.640200215 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2017-08-17 10:48:11.375512709 +0800
+@@ -3346,6 +3346,7 @@
+ 	initGlobalObjects();
+ 	getBasicInfo(Jobj);
+ 
++	/*
+ 	if(json_object_object_get(Jobj, "EnableEthWAN")){
+ 		// it's EthWAN enable/disable
+ 		if(configEthIfaceWan(Jobj) == ZCFG_SUCCESS)
+@@ -3354,6 +3355,7 @@
+ 		goto dalwan_edit_fail;
+ 	}
+ 	else
++	*/
+ 		ret = zcfgFeCheckIPDNS(Jobj, replyMsg);
+ 
+ 	if(checkWanInterfaceLimit(Jobj, 0) == false){
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_ethwanlan.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_ethwanlan.c	2017-08-11 09:59:05.376200168 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_ethwanlan.c	2017-08-17 10:46:38.052210619 +0800
+@@ -6,6 +6,7 @@
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_string.h"
+ #include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_rdm_access.h"
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+@@ -14,40 +15,193 @@
+ #include "zcfg_fe_dal_common.h"
+ 
+ dal_param_t ETHWANLAN_param[]={
+-	{"BCM63138_EthWanAsLan", dalType_boolean,	0,	0,	NULL},
+-	{"EthWanAsLan", dalType_boolean,	0,	0,	NULL},
+-	{"X_ZYXEL_Upstream", dalType_boolean,	0,	0,	NULL},
+-	{NULL,					0,	0,	0,	NULL},
++	{"Enable", 					dalType_boolean,	0,	0,	NULL,		NULL,			dal_Edit},
++	//{"BCM63138_EthWanAsLan", 	dalType_boolean,	0,	0,	NULL,		NULL,			dalcmd_Forbid},
++	//{"EthWanAsLan", 			dalType_boolean,	0,	0,	NULL,		NULL,			dalcmd_Forbid},
++	//{"X_ZYXEL_Upstream", 		dalType_boolean,	0,	0,	NULL,		NULL,			dalcmd_Forbid},
++	{NULL,	0,	0,	0,	NULL,	NULL,	0},
+ 
+ };
+ 
++zcfgRet_t getEthObj(struct json_object **output, int *index){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL;
++	objIndex_t objIid;
++	int intfId, lastIntfId;
++	char *name = NULL;
++	char *lanPort = NULL;
++	
++	*output = NULL;
++	lastIntfId = -1;
++	IID_INIT(objIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &objIid, &obj) == ZCFG_SUCCESS){
++
++		lanPort = json_object_get_string(json_object_object_get(obj, "X_ZYXEL_LanPort"));
++		if(!strcmp(lanPort,"ETHWAN")){
++			*output = obj;
++			*index = (int)objIid.idx[0];
++			break;
++		}
++		
++		name = json_object_get_string(json_object_object_get(obj, "Name"));
++		sscanf(name,"eth%d",&intfId);
++		if(intfId > lastIntfId){
++			lastIntfId = intfId;
++
++			if(*output!=NULL)
++				zcfgFeJsonObjFree(*output);
++			
++			*output = obj;
++			*index = (int)objIid.idx[0];
++		}
++
++		if(obj != *output)
++			zcfgFeJsonObjFree(obj);
++
++	}
++
++	return ret;
++}
++
++void zcfgFeDalShowEthWanLan(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++	char channel[16] = {0};
++	
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("Ethernet WAN status : ");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj != NULL){
++			if(json_object_get_boolean(json_object_object_get(obj, "Enable")))
++				printf("Enabled");
++			else
++				printf("Disabled");
++		}
++	}
++	printf("\n");
++}
++
++zcfgRet_t zcfgFeDal_ETHWanLAN_Get(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	// CONFIG_BCM963138 || CONFIG_BCM963148 && ZYXEL_SUPPORT_ETHWAN_AS_LAN
++	struct json_object *custObj = NULL;
++	objIndex_t custIid;
++	bool ethWanAsLan;
++
++	// else
++	struct json_object *pramJobj = NULL;
++	struct json_object *ethObj = NULL;
++	int iidIndex;
++
++	pramJobj = json_object_new_object();
++
++#if (defined(CONFIG_BCM963138) || defined (CONFIG_BCM963148)) && defined(ZYXEL_SUPPORT_ETHWAN_AS_LAN)
++
++	IID_INIT(custIid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_GUI_CUSTOMIZATION, &custIid, &custObj)) != ZCFG_SUCCESS)
++		return ret;
++
++	ethWanAsLan = json_object_get_boolean(json_object_object_get(custObj,"EthWanAsLan"));
++
++	if(ethWanAsLan)
++		json_object_object_add(pramJobj, "Enable", json_object_new_boolean(false));
++	else
++		json_object_object_add(pramJobj, "Enable", json_object_new_boolean(true));
++
++	zcfgFeJsonObjFree(custObj);
++
++#else
++	getEthObj(&ethObj,&iidIndex);
++	json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(ethObj,"X_ZYXEL_Upstream")));
++	zcfgFeJsonObjFree(ethObj);
++
++#endif
++
++	json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++	zcfgFeJsonObjFree(pramJobj);
++	return ret;
++
++}
++
+ zcfgRet_t zcfgFeDal_ETHWanLAN_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *ethWanLanObj = NULL;
+ 	objIndex_t ethWanLanObjIid = {0};
+ 	struct json_object *obj = NULL;
+-	objIndex_t objIid;
+ 	bool X_ZYXEL_Upstream = false, curX_ZYXEL_Upstream = false;
+ 	bool EthWanAsLan = false;
+ 	bool BCM63138_EthWanAsLan = false;
+-	const char *ethName;
+ 	bool wanPort = false;
+ 
++	bool enable;
++	enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++
++#if (defined(CONFIG_BCM963138) || defined (CONFIG_BCM963148)) && defined(ZYXEL_SUPPORT_ETHWAN_AS_LAN)
+ 
+-	IID_INIT(objIid);
+ 	IID_INIT(ethWanLanObjIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_GUI_CUSTOMIZATION, &ethWanLanObjIid, &ethWanLanObj);
++	if(ret == ZCFG_SUCCESS){
+ 
+-	BCM63138_EthWanAsLan = json_object_get_boolean(json_object_object_get(Jobj, "BCM63138_EthWanAsLan"));
++		if(enable)
++			json_object_object_add(ethWanLanObj, "EthWanAsLan", json_object_new_boolean(false));
++		else
++			json_object_object_add(ethWanLanObj, "EthWanAsLan", json_object_new_boolean(true));
+ 
+-	if(BCM63138_EthWanAsLan){
+-		EthWanAsLan = json_object_get_boolean(json_object_object_get(Jobj, "EthWanAsLan"));
+-		ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_GUI_CUSTOMIZATION, &ethWanLanObjIid, &ethWanLanObj);
+-		if(ret == ZCFG_SUCCESS){
+-			json_object_object_add(ethWanLanObj, "EthWanAsLan", json_object_new_boolean(EthWanAsLan));
+-			zcfgFeObjJsonSet(RDM_OID_GUI_CUSTOMIZATION, &ethWanLanObjIid, ethWanLanObj, NULL);
+-		}
++		zcfgFeObjJsonSet(RDM_OID_GUI_CUSTOMIZATION, &ethWanLanObjIid, ethWanLanObj, NULL);
++	}
++
++	zcfgFeJsonObjFree(ethWanLanObj);
+ 		
+-	}else{
++#else
++
++	struct json_object *ethObj = NULL;
++	objIndex_t ethObjIid;
++	int iidIndex;
++
++	getEthObj(&ethObj,&iidIndex);
++	json_object_object_add(ethObj, "X_ZYXEL_Upstream", json_object_new_boolean(enable));
++	IID_INIT(ethObjIid);
++	ethObjIid.level = 1;
++	ethObjIid.idx[0]=iidIndex;
++	zcfgFeObjJsonSet(RDM_OID_ETH_IFACE, &ethObjIid, ethObj, NULL);
++	zcfgFeJsonObjFree(ethObj);
++
++	if(enable){
++		struct json_object *ipIntObj = NULL;
++		objIndex_t ipIntIid;
++		char higherLayers[64] = {0}, lowerLayers[64] = {0};
++		char ethIfaceName[64] = {0};
++		sprintf(ethIfaceName,"Ethernet.Interface.%d",iidIndex);
++
++		IID_INIT(ipIntIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipIntIid, &ipIntObj) == ZCFG_SUCCESS) {
++			const char *ipIfaceLowerLayers = json_object_get_string(json_object_object_get(ipIntObj, "LowerLayers"));
++			if(ipIfaceLowerLayers && strlen(ipIfaceLowerLayers)){
++				if(objectStepStackLowerLayer(ipIfaceLowerLayers, ethIfaceName, higherLayers, lowerLayers) == ZCFG_SUCCESS){
++					break;
++				}
++				json_object_put(ipIntObj);
++				ipIntObj = NULL;
++			}
++		}
++		if(ipIntObj){
++			json_object_object_add(ipIntObj, "X_ZYXEL_AccessDescription", json_object_new_string("SetIpIfaceStackModified"));
++			if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_IP_IFACE, &ipIntIid, ipIntObj, NULL)) != ZCFG_SUCCESS){
++				json_object_put(ipIntObj);
++				return ret;
++			}
++			json_object_put(ipIntObj);
++		}
++	}
++
++	/*
+ 		X_ZYXEL_Upstream = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_Upstream"));
+ 
+ 		while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &objIid, &obj) == ZCFG_SUCCESS){
+@@ -73,10 +227,12 @@
+ 			json_object_object_add(ethWanLanObj, "X_ZYXEL_Upstream", json_object_new_boolean(X_ZYXEL_Upstream));
+ 			zcfgFeObjJsonSet(RDM_OID_ETH_IFACE, &ethWanLanObjIid, ethWanLanObj, NULL);
+ 		}
+-	}
++	*/
++#endif
+ 
++	if(ret==ZCFG_SUCCESS)
++		zcfgFeReqReboot(NULL);
+ 
+-	zcfgFeJsonObjFree(ethWanLanObj);
+ 	return ret;
+ }
+ 
+@@ -86,6 +242,8 @@
+ 	
+ 	if(!strcmp(method, "PUT"))
+ 		ret = zcfgFeDal_ETHWanLAN_Edit(Jobj, NULL);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDal_ETHWanLAN_Get(Jobj, Jarray, NULL);
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-11 09:59:06.612200214 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-15 16:28:20.885873009 +0800
+@@ -226,12 +226,13 @@
+ extern void zcfgFeDalShowSysLog(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiMACFilter(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiOthers(struct json_object *Jarray);
++extern void zcfgFeDalShowEthWanLan(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+ {"wan",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get|add|edit|delete",	"Broadband"},
+ {"tr69",			MGMT_param,			zcfgFeDalMgmt,			zcfgFeDalShowMgmt,			"get|edit",			"TR-069_Client"},
+-{"ETHWANLAN", 		ETHWANLAN_param, 	zcfgFeDalEthWanLan,		NULL,						"edit",				""}, //Broadband
++{"ethwanlan", 		ETHWANLAN_param, 	zcfgFeDalEthWanLan,		zcfgFeDalShowEthWanLan,		"get|edit",				"Broadband"},
+ {"dns",				DNS_ENTRY_param,	zcfgFeDalDnsEntry,		zcfgFeDalShowDnsEntry,		"get|add|edit|delete",	"DNS"}, //DNS
+ {"ddns",			D_DNS_param,		zcfgFeDalDDns,			zcfgFeDalShowDDns,			"get|edit",			"DNS"},
+ {"wan_adv",			ADVANCE_param,		zcfgFeDalWanAdvance,	zcfgFeDalShowWanAdvance,	"get|edit",				"Broadband"}, //Broadband

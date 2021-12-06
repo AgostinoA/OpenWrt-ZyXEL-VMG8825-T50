@@ -1,0 +1,162 @@
+Index: busybox-1_20_1/loginutils/login.c
+===================================================================
+--- busybox-1_20_1.orig/loginutils/login.c	2017-05-24 13:38:21.318596067 +0800
++++ busybox-1_20_1/loginutils/login.c	2017-05-24 13:39:17.814596535 +0800
+@@ -14,6 +14,15 @@
+ #include "libbb.h"
+ #include <syslog.h>
+ #include <sys/resource.h>
++#ifdef ZCFG_SUPPORT
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_fe_rdm_struct.h"
++#endif
+ 
+ #if ENABLE_SELINUX
+ # include <selinux/selinux.h>  /* for is_selinux_enabled()  */
+@@ -35,10 +44,16 @@
+ #endif
+ 
+ enum {
++	GROUP_IID=0,
++	ACCOUNT_IID=1,
+ 	TIMEOUT = 60,
+ 	EMPTY_USERNAME_COUNT = 10,
+ 	USERNAME_SIZE = 32,
+ 	TTYNAME_SIZE = 32,
++	SIZE_OF_INTEGER = sizeof("2147483648")-1,
++	SIZE_OF_PATH = sizeof("/tmp/login_tmp_")+ SIZE_OF_INTEGER + SIZE_OF_INTEGER -1,
++	SIZE_OF_VALUE = 64	// maximum supported username length is 64
++
+ };
+ 
+ struct globals {
+@@ -230,6 +245,56 @@
+ 	ndelay_off(STDOUT_FILENO);
+ 	_exit(EXIT_SUCCESS);
+ }
++#ifdef ZCFG_SUPPORT
++void add_authorize_fail_cnt(int *cur_user_idx, int login_fail_cnt){
++	FILE *fd = NULL;
++	char path[SIZE_OF_PATH+1] = {0};
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	sprintf(path, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]);
++	fd = fopen(path, "w");
++	if(fd == NULL){
++		return;
++	}
++	fprintf(fd, "%d:%d", login_fail_cnt, ts.tv_sec);
++	fclose(fd);
++}
++void reset_authorize_fail_cnt(int *cur_user_idx){
++
++	char path[SIZE_OF_PATH+1] = {0};
++	sprintf(path, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]);
++	remove(path);
++}
++
++int chk_account_is_locked(int *cur_user_idx, int *login_fail_cnt, int last_login_time, int retry_times, int lock_period){
++
++	FILE* fd = NULL;
++	char value[SIZE_OF_VALUE+1] = {0};
++	struct timespec ts;
++	sprintf(value, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]);
++	fd = fopen(value, "r");
++	if(fd == NULL || fscanf(fd, "%d:%d", login_fail_cnt, &last_login_time) != 2){
++		// not in monitoring period or incorrect format
++		return 0;
++	}
++	fclose(fd);
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	if((ts.tv_sec - last_login_time) < lock_period){ // in monitoring period
++		if((*login_fail_cnt < retry_times) || retry_times == 0){
++			return 0; // unlock stat
++		}
++		else{
++			return 1; // lock stat
++		}
++	}
++	else{ // out of monitoring period, reset cnt and remove tmp file
++		*login_fail_cnt = 0 ;
++		reset_authorize_fail_cnt(cur_user_idx) ;
++		return 0;
++	}
++	return 0;
++}
++#endif
+ 
+ int login_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int login_main(int argc UNUSED_PARAM, char **argv)
+@@ -249,6 +314,14 @@
+ 	char *opt_user = opt_user; /* for compiler */
+ 	char *full_tty;
+ 	char *short_tty;
++#ifdef ZCFG_SUPPORT
++	int cur_user_idx[2] = {-1};
++	int login_fail_cnt = 0;
++	int last_login_time = 0;
++	int retry_times = 0;
++	int lock_period = 0;
++	zcfgEidInit(ZCFG_EID_TELNETD, NULL);
++#endif
+ 	IF_SELINUX(security_context_t user_sid = NULL;)
+ #if ENABLE_PAM
+ 	int pamret;
+@@ -396,6 +469,26 @@
+ 					pam_strerror(pamh, pamret), pamret);
+ 		safe_strncpy(username, "UNKNOWN", sizeof(username));
+ #else /* not PAM */
++#ifdef ZCFG_SUPPORT
++		objIndex_t logAccountObjIid;
++		rdm_ZyLogCfgGpAccount_t *accountObj = NULL;
++		IID_INIT(logAccountObjIid);
++		while(zcfgFeObjStructGetNext(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &logAccountObjIid, (void **) &accountObj) == ZCFG_SUCCESS) {
++			if (!strcmp(accountObj->Username, username)){
++				retry_times = accountObj->AccountRetryTime;
++				lock_period = accountObj->AccountLockTime;
++				cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
++				cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
++			}
++			free(accountObj);
++		}
++
++		if(chk_account_is_locked(cur_user_idx, &login_fail_cnt, last_login_time, retry_times, lock_period)){
++			puts("Account has been blocked temporarily, please try later!");
++			syslog(LOG_WARNING, "Account: user '%s' has been locked temporarily, rejected.", username);
++			return EXIT_FAILURE;
++		}
++#endif
+ 		pw = getpwnam(username);
+ 		if (!pw) {
+ 			strcpy(username, "UNKNOWN");
+@@ -419,14 +512,24 @@
+ 		 * Note that reads (in no-echo mode) trash tty attributes.
+ 		 * If we get interrupted by SIGALRM, we need to restore attrs.
+ 		 */
+-		if (correct_password(pw))
++		if (correct_password(pw)){
++#ifdef ZCFG_SUPPORT
++			reset_authorize_fail_cnt(cur_user_idx);
++#endif
+ 			break;
++		}
+ #endif /* ENABLE_PAM */
+  auth_failed:
+ 		opt &= ~LOGIN_OPT_f;
+ 		bb_do_delay(LOGIN_FAIL_DELAY);
+ 		/* TODO: doesn't sound like correct English phrase to me */
+ 		puts("Login incorrect");
++#ifdef ZCFG_SUPPORT
++		if (strcmp(username, "UNKNOWN")){
++			login_fail_cnt++;
++			add_authorize_fail_cnt(cur_user_idx, login_fail_cnt);
++		}
++#endif
+ 		if (!strncmp("p",short_tty,1))
+ 			syslog(LOG_INFO, "Account: Enter an invalid password for User '%s' from the host on %s by telnetd.",username,short_tty);
+ 		if (++count == 3) {

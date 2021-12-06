@@ -1,0 +1,147 @@
+Index: libzyutil-1.0/ECONET/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_wrapper.c	2018-05-10 13:35:23.010891830 +0800
++++ libzyutil-1.0/ECONET/libzyutil_wrapper.c	2018-05-10 13:36:45.835594820 +0800
+@@ -1,5 +1,6 @@
+ #ifdef ECONET_PLATFORM
+ 
++#include <unistd.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -7,6 +8,48 @@
+ 
+ #include "libzyutil_wrapper.h"
+ #include "libzyutil_econet_wrapper.h"
++#include "zcfg_msg.h"
++
++static zcfgRet_t zyUtilReqSendWithResponse(uint32_t msgType, zcfgEid_t srcEid, zcfgEid_t dstEid, int payloadLen, const char *payload, char **returnStr)
++    {
++        zcfgRet_t ret;
++        void *sendBuf = NULL;
++        void *recvBuf = NULL;
++        zcfgMsg_t *sendMsgHdr = NULL;
++        char *recv_str = NULL;
++        int buf_size = 0;
++    
++        //printf("atsh payload length %d\n", payloadLen);
++    
++        buf_size = sizeof(zcfgMsg_t)+payloadLen;
++        sendBuf = malloc(buf_size);
++        sendMsgHdr = (zcfgMsg_t*)sendBuf;
++    
++        sendMsgHdr->type = msgType;
++        sendMsgHdr->length = payloadLen;
++        sendMsgHdr->srcEid = srcEid; //eid defined at zcfg_eid.h
++        sendMsgHdr->dstEid = dstEid;
++    
++        if(payload != NULL)
++            memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++    
++        ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++    
++        if(ret == ZCFG_SUCCESS) {
++            recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++            //printf("Receive message : %s\n", recv_str);
++    
++            *returnStr = recv_str;
++            /*switch(msgType){
++                case ZCFG_MSG_FAKEROOT_SYS_ATSH:
++                    //printf("reply msgType = %d\n", msgType);
++                    break;
++            }*/
++        }
++    
++        //free(sendBuf);
++        return ret;
++    }
+ 
+ int mtd_open(const char *mtd, int flags)
+ {
+@@ -120,16 +163,32 @@
+ {
+ 	char sysCmd[128] = {0};
+ 	FILE *fptr = NULL;
++    char username[16];
++	void *sysCmd_reply=NULL;
+ 
+ 	// clean the MRD info
+ 	memset(mrd, 0x0, sizeof(MRD_DATA));
+ #if 1
+ 	// Get MRD info from bootloader partition with offset 0xff00
++	int uid = getuid();
++    cuserid(username);  
+ 	sprintf(sysCmd,FLASH_READ_CMD,MRDINFO_FILE,(long unsigned int)MRDINFO_SIZE,(long unsigned int)MRDINFO_OFFSET,MRDINFO_PARTITON_NAME);
+-	system(sysCmd);
+-	sprintf(sysCmd,"chmod 666 %s",MRDINFO_FILE);
+-	system(sysCmd);
+-	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++
++    if(uid == 0){
++	    system(sysCmd);
++    }else{
++        zyUtilReqSendWithResponse(ZCFG_MSG_FAKEROOT_COMMAND_REPLY, ZCFG_EID_SYS_CMD, ZCFG_EID_ESMD, strlen(sysCmd), sysCmd, (char**)&sysCmd_reply);
++
++        if((sysCmd_reply == NULL) && strcmp(sysCmd_reply, "1") != 0){
++            printf("%s: Update Fail!!! \n", __FUNCTION__);        
++        }
++	    sprintf(sysCmd,"chmod 666 %s | chown %s %s",MRDINFO_FILE, username, MRDINFO_FILE);
++        zyUtilReqSendWithResponse(ZCFG_MSG_FAKEROOT_COMMAND_REPLY, ZCFG_EID_SYS_CMD, ZCFG_EID_ESMD, strlen(sysCmd), sysCmd, (char**)&sysCmd_reply);
++
++        if((sysCmd_reply == NULL) && strcmp(sysCmd_reply, "1") != 0){
++            printf("%s: Update Fail!!! \n", __FUNCTION__);        
++        }
++    }
+ 
+     /*Read MRD info to buffer*/
+     if((fptr = fopen(MRDINFO_FILE, "rb")) == NULL) {
+@@ -160,6 +219,7 @@
+ {
+ 	char sysCmd[128] = {0};
+ 	FILE *fptr = NULL;
++	void *sysCmd_reply=NULL;
+ 
+     /*Write MRD info into file*/
+     if((fptr = fopen(MRDINFO_FILE, "wb+")) == NULL) {
+@@ -173,9 +233,15 @@
+ 
+ 	// Set MRD info from file into bootloader partition with offset 0xff00
+ 	sprintf(sysCmd,FLASH_WRITE_CMD,MRDINFO_FILE,(long unsigned int)MRDINFO_SIZE,(long unsigned int)MRDINFO_OFFSET,MRDINFO_PARTITON_NAME);
+-	system(sysCmd);
++	//system(sysCmd);
+ 	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
+ 
++	zyUtilReqSendWithResponse(ZCFG_MSG_FAKEROOT_COMMAND_REPLY, ZCFG_EID_SYS_CMD, ZCFG_EID_ESMD, strlen(sysCmd), sysCmd, (char**)&sysCmd_reply);
++
++    if((sysCmd_reply == NULL) && strcmp(sysCmd_reply, "1") != 0){
++    	printf("%s: Update Fail!!! \n", __FUNCTION__);        
++    }
++
+ 	unlink(MRDINFO_FILE);
+ 	return ZCFG_SUCCESS;
+ }
+@@ -423,14 +489,23 @@
+ zcfgRet_t zyUtilISetBootingFlag(int boot_flag)
+ {
+ 	char sysCmd[128] = {0};
++    void *sysCmd_reply=NULL;    
++    
+ 	if(boot_flag !=0 && boot_flag != 1) return ZCFG_INTERNAL_ERROR;
+ 	sprintf(sysCmd, "echo %d > %s", boot_flag, BOOT_FLAG_FILE);
+ 	system(sysCmd);
+ 	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
+ 
+ 	sprintf(sysCmd,FLASH_WRITE_CMD,BOOT_FLAG_FILE,(long unsigned int)BOOT_FLAG_SIZE,(long unsigned int)BOOT_FLAG_OFFSET,RESERVEAREA_NAME);
+-	system(sysCmd);
++	//system(sysCmd);
+ 	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++
++	zyUtilReqSendWithResponse(ZCFG_MSG_FAKEROOT_COMMAND_REPLY, ZCFG_EID_SYS_CMD, ZCFG_EID_ESMD, strlen(sysCmd), sysCmd, (char**)&sysCmd_reply);
++
++    if((sysCmd_reply == NULL) && strcmp(sysCmd_reply, "1") != 0){
++    	printf("%s: Update Fail!!! \n", __FUNCTION__);        
++    }
++
+ 	unlink(BOOT_FLAG_FILE);
+ 
+ 	return ZCFG_SUCCESS;

@@ -1,0 +1,177 @@
+Index: dnsmasq-2.78/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.78.orig/src/dnsmasq.h	2018-10-31 15:45:27.946913771 +0800
++++ dnsmasq-2.78/src/dnsmasq.h	2018-10-31 15:45:27.962913771 +0800
+@@ -832,7 +832,13 @@
+   struct dhcp_netid netid;
+   struct dhcp_mac *next;
+ };
+-
++#ifdef ZYXEL_PATCH
++struct dhcp_ifname {
++  char ifname[IF_NAMESIZE];
++  struct dhcp_netid netid;
++  struct dhcp_ifname *next;
++};
++#endif
+ struct dhcp_bridge {
+   char iface[IF_NAMESIZE];
+   struct dhcp_bridge *alias, *next;
+@@ -1092,6 +1098,9 @@
+   /* utility string buffer, hold max sized IP address as string */
+   char *addrbuff;
+   char *addrbuff2;              /* only allocated when OPT_EXTRALOG */
++#ifdef ZYXEL_PATCH
++  struct dhcp_ifname *dhcp_ifnames;
++#endif
+ 
+ } *daemon;
+ 
+Index: dnsmasq-2.78/src/option.c
+===================================================================
+--- dnsmasq-2.78.orig/src/option.c	2018-10-31 15:45:27.946913771 +0800
++++ dnsmasq-2.78/src/option.c	2018-10-31 15:45:27.966913771 +0800
+@@ -162,6 +162,10 @@
+ #define LOPT_TFTP_MTU      349
+ #define LOPT_REPLY_DELAY   350
+ 
++#ifdef ZYXEL_PATCH
++#define LOPT_TAG_IFNAME   329
++#endif
++
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =
+ #else
+@@ -326,6 +330,9 @@
+   {"script-arp", 0, 0, LOPT_SCRIPT_ARP},
+   {"dhcp-ttl", 1, 0, LOPT_DHCPTTL},
+   {"dhcp-reply-delay", 1, 0, LOPT_REPLY_DELAY},
++#ifdef ZYXEL_PATCH
++  {"dhcp-ifname", 1, 0, LOPT_TAG_IFNAME},
++#endif
+   {NULL, 0, 0, 0}
+ };
+ 
+@@ -749,8 +756,13 @@
+         NULL}, {
+   LOPT_REPLY_DELAY, ARG_ONE, "<integer>",
+         gettext_noop("Delay DHCP replies for at least number of seconds."),
+-        NULL}, {
+-  0, 0, NULL, NULL, NULL}
++        NULL},
++#ifdef ZYXEL_PATCH
++  {
++  LOPT_TAG_IFNAME, ARG_DUP, "set:<tag>,<ifname>",
++        gettext_noop("Map interface name to option set."), NULL},
++#endif
++  {0, 0, NULL, NULL, NULL}
+ };
+ 
+ /* We hide metacharacters in quoted strings by mapping them into the ASCII control
+@@ -3568,7 +3580,23 @@
+       }
+     }
+     break;
++#ifdef ZYXEL_PATCH
++  case LOPT_TAG_IFNAME:        /* --dhcp-ifname */
++    {
++      if (!(comma = split(arg)))
++        ret_err(gen_err);
++      else {
++        struct dhcp_ifname *new = opt_malloc(sizeof(struct dhcp_ifname));
++        new->netid.net = opt_string_alloc(set_prefix(arg));
++        arg = comma;
++        strcpy(new->ifname, arg);
+ 
++        new->next = daemon->dhcp_ifnames;
++        daemon->dhcp_ifnames = new;
++      }
++    }
++    break;
++#endif
+ #ifdef OPTION6_PREFIX_CLASS
+   case LOPT_PREF_CLSS:         /* --dhcp-prefix-class */
+     {
+Index: dnsmasq-2.78/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.78.orig/src/rfc2131.c	2018-10-31 15:45:27.906913770 +0800
++++ dnsmasq-2.78/src/rfc2131.c	2018-10-31 15:46:01.715691600 +0800
+@@ -75,6 +75,10 @@
+ static struct dhcp_opt *pxe_opts(int pxe_arch, struct dhcp_netid *netid,
+                                  struct in_addr local, time_t now);
+ struct dhcp_boot *find_boot(struct dhcp_netid *netid);
++#ifdef ZYXEL_PATCH
++static int find_ifname(unsigned char *subnet_mac, int len, char *ifname,
++                       char *interface);
++#endif
+ static int pxe_uefi_workaround(int pxe_arch, struct dhcp_netid *netid,
+                                struct dhcp_packet *mess, struct in_addr local,
+                                time_t now, int pxe);
+@@ -119,7 +123,7 @@
+ #endif
+ #ifdef ZYXEL_PATCH
+   char *vendor_class_ptr = NULL;
+-
++  struct dhcp_ifname *ifname;
+ #endif
+ 
+   subnet_addr.s_addr = override.s_addr = 0;
+@@ -277,6 +281,16 @@
+                         &emac_len);
+   }
+ 
++#ifdef ZYXEL_PATCH
++  for (ifname = daemon->dhcp_ifnames; ifname; ifname = ifname->next) {
++
++    if (find_ifname(mess->chaddr, mess->hlen, ifname->ifname, iface_name)) {
++      ifname->netid.next = netid;
++      netid = &ifname->netid;
++    }
++  }
++#endif
++
+   for (mac = daemon->dhcp_macs; mac; mac = mac->next)
+     if (mac->hwaddr_len == mess->hlen &&
+         (mac->hwaddr_type == mess->htype || mac->hwaddr_type == 0) &&
+@@ -2218,6 +2232,41 @@
+   return boot;
+ }
+ 
++#ifdef ZYXEL_PATCH
++static int
++find_ifname(unsigned char *subnet_mac, int len, char *ifname, char *interface)
++{
++  FILE *fp;
++  char sysCmd[128] = { 0 };
++  char line[128] = { 0 };
++
++  int sub_mac_idx = 0;
++  char mac_value[32] = { 0 };
++
++  for (sub_mac_idx = 0; sub_mac_idx < len; sub_mac_idx++) {
++    if (0 == sub_mac_idx) {
++      sprintf(mac_value, "%02x", subnet_mac[sub_mac_idx]);
++    } else {
++      sprintf(mac_value, "%s:%02x", mac_value, subnet_mac[sub_mac_idx]);
++    }
++  }
++
++  sprintf(sysCmd, "brctl showmacs %s | grep %s", interface, mac_value);
++  fp = popen(sysCmd, "r");
++
++  if (fp) {
++    while (fgets(line, sizeof(line), fp) != NULL) {
++      if (strstr(line, ifname) != NULL) {
++        pclose(fp);
++        return 1;
++      }
++    }
++    pclose(fp);
++  }
++  return 0;
++}
++#endif
++
+ static void do_options(struct dhcp_context *context,
+                        struct dhcp_packet *mess,
+                        unsigned char *end,

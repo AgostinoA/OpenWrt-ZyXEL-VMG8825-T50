@@ -1,0 +1,205 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_wmm.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_wmm.c	2017-07-27 17:18:35.479681885 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_wmm.c	2017-07-27 17:25:34.921128387 +0800
+@@ -12,11 +12,160 @@
+ dal_param_t WIFI_WMM_param[] =
+ {
+ 	//WiFi Access Point
+-	{"WMMEnable",		dalType_boolean,	0,	0,	NULL},
+-	{"UAPSDEnable",		dalType_boolean,	0,	0,	NULL},
+-	{NULL,		0,	0,	0,	NULL}
++	{"Index",			dalType_int,		0,	0,	NULL,	NULL,	dal_Edit}, // CLI
++	{"WmmEnable",		dalType_boolean,	0,	0,	NULL,	NULL,	0}, // CLI
++	{"UapsdEnable",		dalType_boolean,	0,	0,	NULL,	NULL,	0}, // CLI
++	{"WMMEnable",		dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"UAPSDEnable",		dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{NULL,		0,	0,	0,	NULL,	NULL,	0}
+ };
+ 
++void zcfgFeDalShowWifiWmm(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-10s %-15s %-25s\n","Index","WMM Status","WMM APSD Status");
++	printf("---------------------------------------------\n");
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj!=NULL){
++			printf("%-10s ",json_object_to_json_string(json_object_object_get(obj, "Index")));
++			printf("%-15s ",json_object_to_json_string(json_object_object_get(obj, "WMMEnable")));
++			printf("%-25s ",json_object_to_json_string(json_object_object_get(obj, "UAPSDEnable")));
++			printf("\n");
++		}
++	}
++}
++
++zcfgRet_t zcfgFeDalWifiWmmGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *obj = NULL;
++	objIndex_t iid;
++	IID_INIT(iid);
++	int count = 1;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT, &iid, &obj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index", json_object_new_int(count));
++		json_object_object_add(paramJobj, "WMMEnable", JSON_OBJ_COPY(json_object_object_get(obj,"WMMEnable")));
++		json_object_object_add(paramJobj, "UAPSDEnable", JSON_OBJ_COPY(json_object_object_get(obj,"UAPSDEnable")));
++		json_object_array_add(Jarray, paramJobj);
++		count++;
++		zcfgFeJsonObjFree(obj);
++	}
++	return ret;
++}
++
++zcfgRet_t prepareWifiWmmObj(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *obj = NULL;
++	objIndex_t iid;
++
++	// if GUI, no need to prepare
++	if(!json_object_object_get(Jobj, "Index"))
++		return ZCFG_SUCCESS;
++
++	// Jobj
++	bool hasIndex = true;
++	bool hasWmmEn;
++	bool hasUAPSDEn;
++	int index;
++	bool wmmEn;
++	bool uapsdEn;
++
++	// iidArray[]
++	struct json_object *ssidObj = NULL;
++	objIndex_t ssidIid;
++	char lowerLayer[15]={0};
++	struct json_object *iidArray = NULL;
++
++	// wmmEnableArray[]
++	struct json_object *wmmEnableArray = NULL;
++	wmmEnableArray = json_object_new_array();
++	int len;
++	int iidIdx, idx;
++	bool enable;
++	struct json_object *apObj = NULL;
++	objIndex_t apIid;
++	
++	// Jobj
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	if(json_object_object_get(Jobj, "WmmEnable")){
++		hasWmmEn = true;
++		wmmEn = json_object_get_boolean(json_object_object_get(Jobj, "WmmEnable"));
++	}
++	else{
++		hasWmmEn = false;
++	}
++	if(json_object_object_get(Jobj, "UapsdEnable")){
++		hasUAPSDEn = true;
++		uapsdEn = json_object_get_boolean(json_object_object_get(Jobj, "UapsdEnable"));
++	}
++	else{
++		hasUAPSDEn = false;
++	}
++
++	// iidArray[]
++	iidArray = json_object_new_array();
++	IID_INIT(ssidIid);
++	ssidIid.level = 1;
++	ssidIid.idx[0] = index;
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &ssidIid, &ssidObj) == ZCFG_SUCCESS){
++		strcpy(lowerLayer,json_object_get_string(json_object_object_get(ssidObj, "LowerLayers")));
++		zcfgFeJsonObjFree(ssidObj);
++	}
++	IID_INIT(ssidIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &ssidIid, &ssidObj) == ZCFG_SUCCESS){
++		if(!strcmp(lowerLayer,json_object_get_string(json_object_object_get(ssidObj, "LowerLayers")))){
++			json_object_array_add(iidArray, json_object_new_int(ssidIid.idx[0]));
++		}
++		zcfgFeJsonObjFree(ssidObj);
++	}
++
++	// wmmEnableArray[]
++	len = json_object_array_length(iidArray);
++	for(iidIdx = 0; iidIdx < len; iidIdx++){
++		idx = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
++		IID_INIT(apIid);
++		apIid.level = 1;
++		apIid.idx[0] = idx;
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT, &apIid, &apObj) == ZCFG_SUCCESS){
++
++			enable = json_object_get_boolean(json_object_object_get(apObj, "WMMEnable"));
++
++			if(hasWmmEn && (apIid.idx[0]==index))
++				json_object_array_add(wmmEnableArray, json_object_new_boolean(wmmEn));
++			else
++				json_object_array_add(wmmEnableArray, json_object_new_boolean(enable));
++
++			if(!hasUAPSDEn){
++				uapsdEn = json_object_get_boolean(json_object_object_get(apObj, "UAPSDEnable"));
++				hasUAPSDEn = true;
++			}
++			
++			zcfgFeJsonObjFree(apObj);
++		}
++	}
++	
++	json_object_object_add(Jobj, "UAPSDEnable", json_object_new_boolean(uapsdEn));
++	json_object_object_add(Jobj, "WMMEnable", JSON_OBJ_COPY(wmmEnableArray));
++	json_object_object_add(Jobj, "startidxarray", JSON_OBJ_COPY(iidArray));
++	if(json_object_object_get(Jobj, "WmmEnable"))
++		json_object_object_del(Jobj, "WmmEnable");
++	if(json_object_object_get(Jobj, "UapsdEnable"))
++		json_object_object_del(Jobj, "UapsdEnable");
++
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t zcfgFeDalWifiWmmEdit(struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -84,8 +233,15 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 	
+ 	if(!strcmp(method, "PUT")) {
++		if(prepareWifiWmmObj(Jobj, NULL)){
++			printf("%s : failed preparing WMM object\n",__FUNCTION__);
++			return ZCFG_INTERNAL_ERROR;
++		}
+ 		ret = zcfgFeDalWifiWmmEdit(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalWifiWmmGet(Jobj, Jarray, NULL);
++	}
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 	
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-27 17:18:35.911681877 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-27 17:20:05.124898268 +0800
+@@ -213,6 +213,7 @@
+ extern void zcfgFeDalShowWwanBackup(struct json_object *Jarray);
+ extern void zcfgFeDalShowMailNotification(struct json_object *Jarray);
+ extern void zcfgFeDalShowLogSetting(struct json_object *Jarray);
++extern void zcfgFeDalShowWifiWmm(struct json_object *Jarray);
+ 
+ 
+ 
+@@ -253,7 +254,7 @@
+ {"qos_policer",		QosPolicer_param,	zcfgFeDalQosPolicer,	zcfgFeDalShowQosPolicer,	"get|add|edit|delete",	"Qos"},//QoS
+ {"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,NULL,					"edit",       		""},//Wireless
+ {"wps",				WIFI_WPS_param,		zcfgFeDalWifiWps,		zcfgFeDalShowWifiWps,		"edit|get",			"Wireless"},
+-{"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm,		NULL,						"edit",				""},//Wireless
++{"wmm",				WIFI_WMM_param,		zcfgFeDalWifiWmm,		zcfgFeDalShowWifiWmm,		"edit|get",			"Wireless"},//
+ #ifdef BUILD_SONIQ
+ {"WIFI_SONIQ",		WIFI_SONIQ_param, 	zcfgFeDalWifiSoniq,		NULL,						"edit", 			""},//Wireless
+ #endif

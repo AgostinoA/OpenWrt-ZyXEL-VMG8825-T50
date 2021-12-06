@@ -1,0 +1,277 @@
+Index: libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_mgmt.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/mgmt/zcfg_fe_dal_mgmt.c	2017-06-09 16:51:46.000000000 +0800
++++ libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_mgmt.c	2017-06-09 16:51:56.806131590 +0800
+@@ -21,20 +21,143 @@
+ 	{"PeriodicInformEnable", dalType_boolean, 0, 0, NULL},	
+ 	{"PeriodicInformInterval", dalType_int, 0, 0, NULL},
+ 	{"PeriodicInformTime", dalType_string, 0, 256, NULL},
+-	{"X_ZYXEL_ActiveNotifyUpdateInterval", dalType_int, 0, 0, NULL},
++	{"X_ZYXEL_ActiveNotifyUpdateInterval", dalType_int, 0, 0, NULL, NULL, dalcmd_Forbid},
+ 	{"DebugLevelEnable", dalType_int, 0, 0, NULL},
+ 	{"DebugLevelDisable", dalType_int, 0, 0, NULL},
+ 	{"FetureOptionEnable", dalType_int, 0, 0, NULL},
+ 	{"FetureOptionDisable", dalType_int, 0, 0, NULL},
+-	{"X_ZYXEL_IPv6_Protocol", dalType_boolean, 0, 0, NULL},
+-	{"X_ZYXEL_IPv4_Protocol", dalType_boolean, 0, 0, NULL},
+-	{"X_ZYXEL_DisplaySOAP", dalType_boolean, 0, 0, NULL},
+-	{"X_ZYXEL_BoundInterface", dalType_string, 0, 256, NULL},
+-	{"X_ZYXEL_BoundInterfaceList", dalType_string, 0, 256, NULL},
+-	{"X_ZYXEL_Certificate", dalType_string, 0, 256, NULL},
++	{"IPv6_Enable", dalType_boolean, 0, 0, NULL},
++	{"IPv4_Enable", dalType_boolean, 0, 0, NULL},
++	{"DisplaySOAP", dalType_boolean, 0, 0, NULL},
++	{"BoundInterfaceMode", dalType_string, 0, 256, NULL, "Any_WAN|Multi_WAN"},
++	{"BoundInterfaceList", dalType_MultiRtWanWWan, 0, 256, NULL},
++	{"ConnectionRequestURL", dalType_string, 0, 0, NULL, NULL, dalcmd_Forbid},
++	{"Certificate", dalType_LocalCert, 0, 256, NULL},
+ 	{NULL, 0, 0, 0, NULL}
+ };
+ 
++void zcfgFeDalShowMgmt(struct json_object *Jarray){
++	struct json_object *Jobj;
++	const char *mode = NULL;
++	char proto[32] = {0};
++	bool v4Enable, v6Enable;
++	const char *conUser, *conPass, *cert;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	Jobj = json_object_array_get_idx(Jarray, 0);
++	
++	v4Enable = json_object_get_boolean(json_object_object_get(Jobj, "IPv4_Enable"));
++	v6Enable = json_object_get_boolean(json_object_object_get(Jobj, "IPv6_Enable"));
++	if(v4Enable && v6Enable)
++		strcpy(proto, "Auto Select");
++	else if(v6Enable)
++		strcpy(proto, "TR069 on IPv6 Only");
++	else
++		strcpy(proto, "TR069 on IPv4 Only");
++
++	mode = json_object_get_string(json_object_object_get(Jobj, "BoundInterfaceMode"));
++	conUser = json_object_get_string(json_object_object_get(Jobj, "ConnectionRequestUsername"));
++	conPass = json_object_get_string(json_object_object_get(Jobj, "ConnectionRequestPassword"));
++	cert = json_object_get_string(json_object_object_get(Jobj, "Certificate"));
++	
++	printf("TR-069 Client Information:\n");
++	printf("%-45s %s\n", "CWMP Active", json_object_get_string(json_object_object_get(Jobj, "EnableCWMP")));
++	printf("%-45s %s\n", "Inform", json_object_get_string(json_object_object_get(Jobj, "PeriodicInformEnable")));
++	printf("%-45s %s\n", "Inform Interval", json_object_get_string(json_object_object_get(Jobj, "PeriodicInformInterval")));
++	printf("%-45s %s\n", "IP Protocol", proto);
++	printf("%-45s %s\n", "ACS URL", json_object_get_string(json_object_object_get(Jobj, "URL")));
++	printf("%-45s %s\n", "ACS User Name", json_object_get_string(json_object_object_get(Jobj, "Username")));
++	printf("%-45s %s\n", "ACS Password", "********");
++
++	printf("%-45s %s\n", "WAN Interface Used by TR-069 Client:", json_object_get_string(json_object_object_get(Jobj, "BoundInterfaceMode")));
++	printf("%-45s %s\n", "", !strcmp(mode, "Any_WAN")?"":json_object_get_string(json_object_object_get(Jobj, "BoundInterfaceList")));
++	printf("%-45s %s\n", "Display SOAP Messages on Serial Console", json_object_get_string(json_object_object_get(Jobj, "DisplaySOAP")));
++	printf("%-45s %s\n", "Connection Request Authentication", (*conUser | *conPass)?"true":"false");
++	printf("%-45s %s\n", "Connection Request User Name", (*conUser | *conPass)?json_object_get_string(json_object_object_get(Jobj, "ConnectionRequestUsername")):"");
++	printf("%-45s %s\n", "Connection Request Password", (*conUser | *conPass)?"********":"");
++	printf("%-45s %s\n", "Connection Request URL", json_object_get_string(json_object_object_get(Jobj, "ConnectionRequestURL")));
++	printf("%-45s %s\n", "Local Certificate Used by TR-069 Client", (*cert == '0')?"":cert);
++	
++	
++}
++
++static zcfgRet_t zcfgFeDalMgmtGet(struct json_object *Jarray, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char *paraName;
++	objIndex_t objIid;
++	struct json_object *mgmtJobj = NULL;
++	struct json_object *pramJobj = NULL;
++	bool enable;
++	int intVal;
++	const char *str;
++	int n = 0;
++
++	paraName = (const char *)MGMT_param[n++].paraName;
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_MGMT_SRV, &objIid, &mgmtJobj)) != ZCFG_SUCCESS) {
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
++	
++	pramJobj = json_object_new_object();	
++	while(paraName) {
++		if(!strcmp(paraName, "DebugLevelEnable")) {
++			intVal = json_object_get_int(json_object_object_get(mgmtJobj, "X_ZYXEL_DebugLevel"));
++			json_object_object_add(pramJobj, paraName, json_object_new_int(intVal));
++		}
++		else if(!strcmp(paraName, "DebugLevelDisable")) {
++			//do nothing
++		}
++		else if(!strcmp(paraName, "FetureOptionEnable")) {	
++			intVal = json_object_get_int(json_object_object_get(mgmtJobj, "X_ZYXEL_Feature"));
++			json_object_object_add(pramJobj, paraName, json_object_new_int(intVal));
++		}
++		else if(!strcmp(paraName, "FetureOptionDisable")) {
++			//do nothing			
++		}
++		else if(!strcmp(paraName, "IPv6_Enable")) {
++			enable = json_object_get_boolean(json_object_object_get(mgmtJobj, "X_ZYXEL_IPv6_Protocol"));
++			json_object_object_add(pramJobj, paraName, json_object_new_boolean(enable));
++		}
++		else if(!strcmp(paraName, "IPv4_Enable")) {
++			enable = json_object_get_boolean(json_object_object_get(mgmtJobj, "X_ZYXEL_IPv4_Protocol"));
++			json_object_object_add(pramJobj, paraName, json_object_new_boolean(enable));		
++		}
++		else if(!strcmp(paraName, "DisplaySOAP")) {			
++			enable = json_object_get_boolean(json_object_object_get(mgmtJobj, "X_ZYXEL_DisplaySOAP"));
++			json_object_object_add(pramJobj, paraName, json_object_new_boolean(enable));
++		}
++		else if(!strcmp(paraName, "BoundInterfaceMode")) {
++			str = json_object_get_string(json_object_object_get(mgmtJobj, "X_ZYXEL_BoundInterface"));
++			json_object_object_add(pramJobj, paraName, json_object_new_string(str));
++		}
++		else if(!strcmp(paraName, "BoundInterfaceList")) { //note that BoundInterfaceMode must be processed before BoundInterfaceList
++			str = json_object_get_string(json_object_object_get(mgmtJobj, "X_ZYXEL_BoundInterfaceList"));
++			json_object_object_add(pramJobj, paraName, json_object_new_string(str));
++		}
++		else if(!strcmp(paraName, "Certificate")) {
++			str = json_object_get_string(json_object_object_get(mgmtJobj, "X_ZYXEL_Certificate"));
++			json_object_object_add(pramJobj, paraName, json_object_new_string(str));
++		}
++		else {
++			json_object_object_add(pramJobj, paraName, JSON_OBJ_COPY(json_object_object_get(mgmtJobj, paraName)));		
++		}
++
++		paraName = (const char *)MGMT_param[n++].paraName;
++	}
++
++	json_object_put(mgmtJobj);
++	json_object_array_add(Jarray, pramJobj);
++	
++	return ret;
++}
++
++
+ static zcfgRet_t zcfgFeDalMgmtSet(struct json_object *paramObj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -46,7 +169,7 @@
+ 	paraName = (const char *)MGMT_param[n++].paraName;
+ 
+ 	IID_INIT(objIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_MGMT_SRV, &objIid, &mgmtJobj)) != ZCFG_SUCCESS) {
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_MGMT_SRV, &objIid, &mgmtJobj)) != ZCFG_SUCCESS) {
+ 		printf("%s: Object retrieve fail\n", __FUNCTION__);
+ 		return ret;
+ 	}
+@@ -90,6 +213,45 @@
+ 			json_object_object_add(mgmtJobj, "X_ZYXEL_Feature", json_object_new_int(features));		
+ 			paramModified = 1;			
+ 		}
++		else if(!strcmp(paraName, "IPv6_Enable")) {
++			bool enable = json_object_get_boolean(paramValue);
++			json_object_object_add(mgmtJobj, "X_ZYXEL_IPv6_Protocol", json_object_new_boolean(enable));
++			paramModified = 1;	
++		}
++		else if(!strcmp(paraName, "IPv4_Enable")) {
++			bool enable = json_object_get_boolean(paramValue);
++			json_object_object_add(mgmtJobj, "X_ZYXEL_IPv4_Protocol", json_object_new_boolean(enable));	
++			paramModified = 1;			
++		}
++		else if(!strcmp(paraName, "DisplaySOAP")) {
++			bool enable = json_object_get_boolean(paramValue);
++			json_object_object_add(mgmtJobj, "X_ZYXEL_DisplaySOAP", json_object_new_boolean(enable));	
++			paramModified = 1;			
++		}
++		else if(!strcmp(paraName, "BoundInterfaceMode")) {
++			const char *mode = json_object_get_string(paramValue);
++			json_object_object_add(mgmtJobj, "X_ZYXEL_BoundInterface", json_object_new_string(mode));
++			if(!strcmp(mode, "Any_WAN")){
++				json_object_object_add(mgmtJobj, "X_ZYXEL_BoundInterfaceList", json_object_new_string("SUPPORT_MULTI_WAN"));
++			}
++			paramModified = 1;			
++		}
++		else if(!strcmp(paraName, "BoundInterfaceList")) { //note that BoundInterfaceMode must be processed before BoundInterfaceList
++			const char *curMode = json_object_get_string(json_object_object_get(mgmtJobj, "X_ZYXEL_BoundInterface"));
++			if(!strcmp(curMode, "Multi_WAN")){
++				const char *list = json_object_get_string(paramValue);
++				json_object_object_add(mgmtJobj, "X_ZYXEL_BoundInterfaceList", json_object_new_string(list));		
++				paramModified = 1;
++			}
++		}
++		else if(!strcmp(paraName, "Certificate")) {
++			const char *certName = json_object_get_string(paramValue);
++			json_object_object_add(mgmtJobj, "X_ZYXEL_Certificate", json_object_new_string(certName));		
++			paramModified = 1;			
++		}
++		else if(!strcmp(paraName, "ConnectionRequestURL")) {
++			//readonly parameter		
++		}
+ 		else {
+ 			json_object_object_add(mgmtJobj, paraName, JSON_OBJ_COPY(paramValue));
+ 			paramModified = 1;			
+@@ -121,6 +283,9 @@
+ 	else if(!strcmp(method, "POST")) {
+ 		ret = zcfgFeDalMgmtSet(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalMgmtGet(Jobj, NULL);
++	}
+ 	else if(!strcmp(method, "DELETE")) {
+ 	
+ 	}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-09 16:51:48.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-09 16:51:56.810131590 +0800
+@@ -199,10 +199,12 @@
+ extern void zcfgFeDalShowVoipLine(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipProfile(struct json_object *Jarray);
+ extern void zcfgFeDalShowSchedule(struct json_object *Jarray);
++extern void zcfgFeDalShowMgmt(struct json_object *Jarray);
++
+ 
+ dal_handler_t dalHandler[] = {
+ {"wan",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+-{"MGMT",			MGMT_param,			zcfgFeDalMgmt,			NULL,						"edit",				""}, //TR-069_Client
++{"tr69",			MGMT_param,			zcfgFeDalMgmt,			zcfgFeDalShowMgmt,			"get|edit",			"TR-069_Client"},
+ {"ETHWANLAN", 		ETHWANLAN_param, 	zcfgFeDalEthWanLan,		NULL,						"edit",				""}, //Broadband
+ {"DNS_ENTRY",		DNS_ENTRY_param,	zcfgFeDalDnsEntry,		zcfgFeDalShowDnsEntry,		"get|add|edit|delete",	"DNS"}, //DNS
+ {"ddns",			D_DNS_param,		zcfgFeDalDDns,			zcfgFeDalShowDDns,			"get|edit",			"DNS"},
+@@ -343,6 +345,24 @@
+ 
+ 
+ 
++zcfgRet_t getCertList(struct json_object **Jarray){
++	struct json_object *obj = NULL;
++	objIndex_t iid;
++	char path[64] = {0};
++
++	*Jarray = json_object_new_array();
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_DEV_SEC_CERT, &iid, &obj) == ZCFG_SUCCESS){	
++		sprintf(path, "Security.Certificate.%u", iid.idx[0]);
++		json_object_object_add(obj, "path", json_object_new_string(path));
++		json_object_array_add(*Jarray, obj);
++	}
++
++	//printf("*Jarray=%s\n", json_object_to_json_string(*Jarray));
++	return ZCFG_SUCCESS;
++}
++
+ 
+ //Suppose parameter need to check is string.
+ zcfgRet_t dalcmdParamCheck(objIndex_t *Iid, const char *param, zcfg_offset_t oid, char *key, char *key1, char *replyMsg){
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-06-09 16:51:48.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-06-09 16:51:56.810131590 +0800
+@@ -83,7 +83,8 @@
+ 	dalType_VoipLine,
+ 	dalType_VoipProvider,				//Service provider
+ 	dalType_MultiVoipLine,
+-	dalType_ICMPv6						//Firewall ICMPv6 list 
++	dalType_ICMPv6,						//Firewall ICMPv6 list 
++	dalType_LocalCert
+ };
+ 
+ 

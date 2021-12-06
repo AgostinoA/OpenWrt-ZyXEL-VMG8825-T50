@@ -1,0 +1,266 @@
+Index: libedit-20080712-2.11/src/read.c
+===================================================================
+--- libedit-20080712-2.11.orig/src/read.c	2018-02-14 17:40:35.776943621 +0800
++++ libedit-20080712-2.11/src/read.c	2018-02-14 17:42:57.006669719 +0800
+@@ -51,6 +51,10 @@
+ #include <stdlib.h>
+ #include "el.h"
+ 
++#ifdef ZYXEL_CLI_IDLE_TIMEOUT
++#include <sys/times.h>
++#endif
++
+ #define	OKCMD	-1
+ 
+ private int	read__fixio(int, int);
+@@ -628,3 +632,249 @@
+ 	}
+ 	return (num ? el->el_line.buffer : NULL);
+ }
++
++public const char *
++el_gets_zysh(EditLine *el, int *nread)
++{
++	int retval;
++	el_action_t cmdnum = 0;
++	int num;		/* how many chars we have read at NL */
++	char ch;
++	int crlf = 0;
++#ifdef FIONREAD
++	c_macro_t *ma = &el->el_chared.c_macro;
++#endif /* FIONREAD */
++
++#ifdef ZYXEL_CLI_IDLE_TIMEOUT
++	FILE *fp;
++	int idle_times = 0;
++	fp=fopen("/var/accountIdleTime", "r");
++	if(fp) fscanf(fp, "%d", &idle_times);
++#endif
++		
++	if (el->el_flags & NO_TTY) {
++		char *cp = el->el_line.buffer;
++		size_t idx;
++
++		while ((*el->el_read.read_char)(el, cp) == 1) {
++			/* make sure there is space for next character */
++			if (cp + 1 >= el->el_line.limit) {
++				idx = (cp - el->el_line.buffer);
++				if (!ch_enlargebufs(el, 2))
++					break;
++				cp = &el->el_line.buffer[idx];
++			}
++			cp++;
++			if (el->el_flags & UNBUFFERED)
++				break;
++			if (cp[-1] == '\r' || cp[-1] == '\n')
++				break;
++		}
++
++		el->el_line.cursor = el->el_line.lastchar = cp;
++		*cp = '\0';
++		if (nread)
++			*nread = el->el_line.cursor - el->el_line.buffer;
++		return (el->el_line.buffer);
++	}
++
++
++#ifdef FIONREAD
++	if (el->el_tty.t_mode == EX_IO && ma->level < 0) {
++		long chrs = 0;
++
++		(void) ioctl(el->el_infd, FIONREAD, (ioctl_t) & chrs);
++		if (chrs == 0) {
++			if (tty_rawmode(el) < 0) {
++				if (nread)
++					*nread = 0;
++				return (NULL);
++			}
++		}
++	}
++#endif /* FIONREAD */
++
++	if ((el->el_flags & UNBUFFERED) == 0)
++		read_prepare(el);
++
++	if (el->el_flags & EDIT_DISABLED) {
++		char *cp;
++		size_t idx;
++		if ((el->el_flags & UNBUFFERED) == 0)
++			cp = el->el_line.buffer;
++		else
++			cp = el->el_line.lastchar;
++
++		term__flush();
++
++		while ((*el->el_read.read_char)(el, cp) == 1) {
++			/* make sure there is space next character */
++			if (cp + 1 >= el->el_line.limit) {
++				idx = (cp - el->el_line.buffer);
++				if (!ch_enlargebufs(el, 2))
++					break;
++				cp = &el->el_line.buffer[idx];
++			}
++			if (*cp == 4)	/* ought to be stty eof */
++				break;
++			cp++;
++			crlf = cp[-1] == '\r' || cp[-1] == '\n';
++			if (el->el_flags & UNBUFFERED)
++				break;
++			if (crlf)
++				break;
++		}
++
++		el->el_line.cursor = el->el_line.lastchar = cp;
++		*cp = '\0';
++		if (nread)
++			*nread = el->el_line.cursor - el->el_line.buffer;
++		return (el->el_line.buffer);
++	}
++
++	for (num = OKCMD; num == OKCMD;) {	/* while still editing this
++						 * line */
++
++#ifdef ZYXEL_CLI_IDLE_TIMEOUT		
++		if(idle_times > 0) {
++			alarm(idle_times);
++		}
++#endif
++#ifdef DEBUG_EDIT
++		read_debug(el);
++#endif /* DEBUG_EDIT */
++		/* if EOF or error */
++		if ((num = read_getcmd(el, &cmdnum, &ch)) != OKCMD) {
++#ifdef DEBUG_READ
++			(void) fprintf(el->el_errfile,
++			    "Returning from el_gets %d\n", num);
++#endif /* DEBUG_READ */
++			break;
++		}
++		if ((unsigned int)cmdnum >= el->el_map.nfunc) {	/* BUG CHECK command */
++#ifdef DEBUG_EDIT
++			(void) fprintf(el->el_errfile,
++			    "ERROR: illegal command from key 0%o\r\n", ch);
++#endif /* DEBUG_EDIT */
++			continue;	/* try again */
++		}
++		/* now do the real command */
++#ifdef DEBUG_READ
++		{
++			el_bindings_t *b;
++			for (b = el->el_map.help; b->name; b++)
++				if (b->func == cmdnum)
++					break;
++			if (b->name)
++				(void) fprintf(el->el_errfile,
++				    "Executing %s\n", b->name);
++			else
++				(void) fprintf(el->el_errfile,
++				    "Error command = %d\n", cmdnum);
++		}
++#endif /* DEBUG_READ */
++		/* vi redo needs these way down the levels... */
++		el->el_state.thiscmd = cmdnum;
++		el->el_state.thisch = ch;
++#if 0	/* ZyXEL */
++		if (el->el_map.type == MAP_VI &&
++		    el->el_map.current == el->el_map.key &&
++		    el->el_chared.c_redo.pos < el->el_chared.c_redo.lim) {
++			if (cmdnum == VI_DELETE_PREV_CHAR &&
++			    el->el_chared.c_redo.pos != el->el_chared.c_redo.buf
++			    && isprint((unsigned char)el->el_chared.c_redo.pos[-1]))
++				el->el_chared.c_redo.pos--;
++			else
++				*el->el_chared.c_redo.pos++ = ch;
++		}
++#endif
++		retval = (*el->el_map.func[cmdnum]) (el, ch);
++#ifdef DEBUG_READ
++		(void) fprintf(el->el_errfile,
++			"Returned state %d\n", retval );
++#endif /* DEBUG_READ */
++
++		/* save the last command here */
++		el->el_state.lastcmd = cmdnum;
++
++		/* use any return value */
++		switch (retval) {
++		case CC_CURSOR:
++			re_refresh_cursor(el);
++			break;
++
++		case CC_REDISPLAY:
++			re_clear_lines(el);
++			re_clear_display(el);
++			/* FALLTHROUGH */
++
++		case CC_REFRESH:
++			re_refresh(el);
++			break;
++
++		case CC_REFRESH_BEEP:
++			re_refresh(el);
++			term_beep(el);
++			break;
++
++		case CC_NORM:	/* normal char */
++			break;
++
++		case CC_ARGHACK:	/* Suggested by Rich Salz */
++			/* <rsalz@pineapple.bbn.com> */
++			continue;	/* keep going... */
++
++		case CC_EOF:	/* end of file typed */
++			if ((el->el_flags & UNBUFFERED) == 0)
++				num = 0;
++			else if (num == -1) {
++				*el->el_line.lastchar++ = CONTROL('d');
++				el->el_line.cursor = el->el_line.lastchar;
++				num = 1;
++			}
++			break;
++
++		case CC_NEWLINE:	/* normal end of line */
++			num = el->el_line.lastchar - el->el_line.buffer;
++			break;
++
++		case CC_FATAL:	/* fatal error, reset to known state */
++#ifdef DEBUG_READ
++			(void) fprintf(el->el_errfile,
++			    "*** editor fatal ERROR ***\r\n\n");
++#endif /* DEBUG_READ */
++			/* put (real) cursor in a known place */
++			re_clear_display(el);	/* reset the display stuff */
++			ch_reset(el, 1);	/* reset the input pointers */
++			re_refresh(el);	/* print the prompt again */
++			break;
++
++		case CC_ERROR:
++		default:	/* functions we don't know about */
++#ifdef DEBUG_READ
++			(void) fprintf(el->el_errfile,
++			    "*** editor ERROR ***\r\n\n");
++#endif /* DEBUG_READ */
++			term_beep(el);
++			term__flush();
++			break;
++		}
++		el->el_state.argument = 1;
++		el->el_state.doingarg = 0;
++		el->el_chared.c_vcmd.action = NOP;
++		if (el->el_flags & UNBUFFERED)
++			break;
++	}
++
++	term__flush();		/* flush any buffered output */
++	/* make sure the tty is set up correctly */
++	if ((el->el_flags & UNBUFFERED) == 0) {
++		read_finish(el);
++		if (nread)
++			*nread = num;
++	} else {
++		if (nread)
++			*nread = el->el_line.lastchar - el->el_line.buffer;
++	}
++	return (num ? el->el_line.buffer : NULL);
++}
+\ No newline at end of file

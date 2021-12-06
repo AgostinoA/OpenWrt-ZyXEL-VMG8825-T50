@@ -1,0 +1,392 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2015-04-30 16:08:42.872453016 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2015-04-30 16:08:42.916452463 +0800
+@@ -4,6 +4,11 @@
+ LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+ OBJ_FILES = wanDev.o wanDev_api.o zyExt.o diag.o devInfo.o devTime.o root.o mgmtSrv.o lanDev.o l2bridge.o l3fwd.o lanConfSec.o firewall.o schedule.o qos.o voice.o
++ifeq ($(CONFIG_ZYXEL_ONECONNECT),y)
++LINK_LIB+= -lsqlite3
++OBJ_FILES+=oneConnect.o
++endif
++
+ CFLAGS += -fPIC -Wall
+ 
+ 
+@@ -62,6 +67,11 @@
+ voice.o: voice.c
+ 	$(CC) $(CFLAGS) -c $< $(INC_PATH) $(LIB_PATH) $(LINK_LIB) -std=gnu99
+ 
++ifeq ($(CONFIG_ZYXEL_ONECONNECT),y)
++oneConnect.o: oneConnect.c
++	$(CC) $(CFLAGS) -c $< $(INC_PATH) $(LIB_PATH) $(LINK_LIB) -std=gnu99
++endif
++
+ zcfg_fe_tr98.o : zcfg_fe_tr98.c zcfg_fe_tr98.h
+ 	$(CC) $(CFLAGS) -c zcfg_fe_tr98.c $(CFLAG) $(LIB_PATH) $(INC_PATH) $(LINK_LIB) -std=gnu99
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-04-30 16:08:42.904452614 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-04-30 16:08:42.916452463 +0800
+@@ -16,6 +16,9 @@
+ #include "schedule.h"
+ #include "qos.h"
+ #include "voice.h"
++#ifdef ONECONNECT
++#include "oneConnect.h"
++#endif
+ 
+ #include "zcfg_fe_rdm_access.h"
+ #include "zcfg_fe_rdm_string.h"
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-04-30 16:08:42.904452614 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-04-30 16:08:42.916452463 +0800
+@@ -188,6 +188,11 @@
+ #define TR98_FIREWALL_CHAIN_RULE      "InternetGatewayDevice.Firewall.Chain.i.Rule.i"
+ #define TR98_SCHEDULE                 "InternetGatewayDevice.X_ZYXEL_EXT.Schedule.i"
+ 
++#ifdef ONECONNECT
++#define TR98_ONECONNECT_EXT            	   "InternetGatewayDevice.LANDevice.i.Hosts.Host.i.X_ZYXEL_EXT"
++//#define TR98_ONECONNECT_SPEEDTEST          "InternetGatewayDevice.X_ZYXEL_EXT.SpeedTestInfo"
++#endif
++
+ #define OBSOLETED 1
+ #define ZYXEL_EXT 1
+ 
+@@ -322,7 +327,7 @@
+ {TR98_WAN_IP_CONN_IPV6RD,       0,              para_WANIpv6Rd,     	WANIpv6RdObjGet,         WANIpv6RdObjSet,        NULL,             NULL,            NULL},
+ #endif
+ {TR98_WAN_PPP_CONN,             ATTR_INDEX_CREA,para_WANPppConn,        WANPppConnObjGet,        WANPppConnObjSet,       WANPppConnObjAdd, WANPppConnObjDel, WANPppConnObjNotify, /*NULL, NULL*/ WANPppConnObjAttrGet, WANPppConnObjAttrSet},
+-{TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,    WANPortMappingSet,      WANPortMappingAdd, WANPortMappingDel, WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},	
++{TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,       WANPortMappingSet,      WANPortMappingAdd,WANPortMappingDel,NULL},	
+ {TR98_WAN_PPP_CONN_STAT,        0,              para_WANPppConnStat,    WANConnStObjGet,         NULL,                   NULL,   NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_WAN_PPP_CONN_IPV6ADDR,    ATTR_INDEX_CREA, para_WANPppv6Addr,     WANPppv6AddrObjGet,        WANPppv6AddrObjSet,     WANPppv6AddrObjAdd, WANPppv6AddrObjDel,            NULL},
+@@ -360,5 +365,8 @@
+ //{TR98_WAN_DSL_CONN_MGMT,        0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_WAN_DSL_CONN_SRVC,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ #endif
++#ifdef ONECONNECT
++{TR98_ONECONNECT_EXT,		    0, 	para_OneConnectExt,		oneConnectExtObjGet,		 oneConnectExtObjSet,		   NULL,             NULL,            NULL},
++#endif
+ {NULL,                          0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL}
+ };
+Index: libzcfg_fe_tr98-1.0/oneConnect.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/oneConnect.c	2015-04-30 16:10:52.999077754 +0800
+@@ -0,0 +1,275 @@
++#include <json/json.h>
++#include <sqlite3.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcmd_schema.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_msg.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_tr98.h"
++#include "oneConnect_parameter.h"
++
++extern tr98Object_t tr98Obj[];
++
++sqlite3 *db = NULL;
++#define DATABASE_PATH    "/tmp/netprobe.db"
++#define BROADCASTMAC     "00:00:00:00:00:00"
++
++int tr_db_init()
++{
++    int rc = 0;
++
++    /* Open database */
++	rc = sqlite3_open_v2(DATABASE_PATH, &db, SQLITE_OPEN_READONLY, NULL);
++	//rc = sqlite3_open_v2(DATABASE_PATH, &db, SQLITE_OPEN_READWRITE, NULL);
++    if(rc) {
++        fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
++		db = NULL;
++        return -1;
++    }
++
++    return 0;
++}
++
++static int tr_db_result_get(char *sql, int *rows, int *cols, char ***result)
++{
++	char *error_report = NULL;
++
++	if( sqlite3_get_table(db, sql, result, rows, cols, &error_report) != SQLITE_OK ) {
++        fprintf( stderr , "\t> CMD: %s , Error: %s\n" , sql , error_report );
++		sqlite3_free(error_report);
++		*rows = -1;
++		*cols = -1;
++		return -1;
++	}
++
++	return 0;
++}
++
++int tr_db_is_subIntf(char *mac, char *almac)
++{
++	char sql[128] = {0};
++	int rows = 0, cols = 0, ret = 0;
++	char **result = NULL;
++	//bool subIntf = false;
++
++	sprintf(sql, "SELECT ALMac FROM SubIntf WHERE [IntfMAC]='%s';", mac);
++
++	ret = tr_db_result_get(sql, &rows, &cols, &result);
++	/*
++		result :
++		 0 ALMac
++		   -----
++		 1 MAC1
++		 2 MAC2
++		    .
++		    .
++	 */
++	if(rows > 0) {
++		//subIntf = true;
++
++		/*Use first result*/
++		if(strcmp(result[1], "") != 0)
++			strcpy(almac, result[1]);
++	}
++
++	if(ret == 0)
++		sqlite3_free_table(result);
++
++	return ret;
++}
++
++void tr_db_close(){
++	
++	sqlite3_close(db);
++}
++
++/*
++ *   TR98 Object Name : InternetGatewayDevice.LANDevice.i.Hosts.Host.i.X_ZYXEL_EXT"
++ *
++ *   Related object in TR181:
++ *   Device.Hosts.Host.i.Ext
++ */
++zcfgRet_t oneConnectExtObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid, hostIid;
++	tr98Parameter_t *paramList = NULL;
++	char tr181Name[32] = {0};
++	char tr98TmpName[128] = {0};
++	char higherLayerPath[32] = {0};
++	char mappingPathName[32] = {0};
++	char *ptr = NULL;
++	int idx = 0;
++	uint32_t hostNum = 0;
++	struct json_object *paramValue = NULL;
++	rdm_HostsHost_t *stHost = NULL;
++	char macAddress[65] = {0}; 
++	char cmd[256] = {0}; 
++	char alMac[65] = {0}; 
++	bool broadcast = false;
++	
++	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++	
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".Hosts");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	strcpy(tr181Name, mappingPathName);
++	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(strstr(higherLayerPath, "IP.Interface") != NULL) {
++		IID_INIT(objIid);
++		IID_INIT(hostIid);
++		objIid.level = 1;
++		sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.Hosts.Host.%d", &idx);
++
++		while(zcfgFeObjStructGetNext(RDM_OID_HOSTS_HOST, &objIid, (void **)&stHost) == ZCFG_SUCCESS){
++			if(strcmp(stHost->Layer3Interface, higherLayerPath) == 0){
++				hostNum++;
++				if((idx == hostNum) && (stHost->Active != true)) {
++					zcfgFeObjStructFree(stHost);
++					return ZCFG_INVALID_ARGUMENTS;
++				}
++				else if(idx == hostNum){
++					hostIid = objIid;
++					strncpy(macAddress, stHost->PhysAddress, sizeof(macAddress)); 
++					zcfgFeObjStructFree(stHost);
++					break;
++				}
++			}
++			zcfgFeObjStructFree(stHost);
++		}
++	}
++	else
++		return ZCFG_NOT_FOUND;
++	
++	// open database
++	if(tr_db_init() != 0){
++		fprintf( stderr , "can't init database\n");
++		return ZCFG_INTERNAL_ERROR;
++	}
++	
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			if(strcmp(paramList->name, "L2DevCtrl_Broadcast") == 0){
++				if(json_object_get_boolean(paramValue) == true) {
++					broadcast = true;
++				}
++			}
++			/*else if(strcmp(paramList->name, "L2DevCtrl_WiFiEnable") == 0){
++				if(json_object_get_boolean(paramValue) == true) {
++					// To Do
++				}
++			}*/
++			else if(strcmp(paramList->name, "L2DevCtrl_Reboot") == 0){
++				if(json_object_get_boolean(paramValue) == true) {
++					if(broadcast){
++						sprintf(cmd, "/usr/sbin/zy1905App 2 %s", BROADCASTMAC);
++						system(cmd);
++						printf("zy1905 cmd = %s\n", cmd);
++					}
++					else{
++						if(tr_db_is_subIntf(macAddress, alMac) != 0){
++							fprintf( stderr , "can't find ALMac\n");
++							return ZCFG_INTERNAL_ERROR;
++						}
++						
++						if(strcmp(alMac, "") != 0)
++							sprintf(cmd, "/usr/sbin/zy1905App 2 %s", alMac);
++						else
++							sprintf(cmd, "/usr/sbin/zy1905App 2 %s", macAddress);
++						system(cmd);
++						printf("zy1905 cmd = %s\n", cmd);
++					}
++				}
++			}
++			else if(strcmp(paramList->name, "L2DevCtrl_Reset") == 0){
++				if(json_object_get_boolean(paramValue) == true) {
++					printf("Reset to default\n");
++				}
++			}
++		}
++		paramList++;
++	}
++	
++	if(db != NULL)
++		tr_db_close();
++	
++	return ZCFG_SUCCESS;
++}
++
++
++/*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.Hosts.Host.i.X_ZYXEL_EXT
++
++    Related object in TR181:
++    Device.Hosts.Host.i
++*/
++zcfgRet_t oneConnectExtObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	tr98Parameter_t *paramList = NULL;
++	
++	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++		
++	//fill up tr98 Host object
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(!strcmp(paramList->name, "L2DevCtrl_Broadcast")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_WiFiEnable")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_Reboot")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_Reset")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "ModelName")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "FWUpgradeState")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(0));
++			paramList++;
++			continue;
++		}
++		else if(!strcmp(paramList->name, "NewFWUpgradeVersion")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			paramList++;
++			continue;
++		}
++		
++	//Not defined in tr181, give it a default value
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
+Index: libzcfg_fe_tr98-1.0/oneConnect.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/oneConnect.h	2015-04-30 16:11:09.630164943 +0800
+@@ -0,0 +1,11 @@
++#ifndef __ONECONNECT_H__
++#define __ONECONNECT_H__
++/*Parameter*/
++extern tr98Parameter_t para_OneConnectExt[];
++
++/* InternetGatewayDevice.LANDevice.i.Hosts.Host.i.X_ZYXEL_EXT */
++extern zcfgRet_t oneConnectExtObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++extern zcfgRet_t oneConnectExtObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++
++/* InternetGatewayDevice.X_ZYXEL_EXT.SpeedTestInfo */
++#endif
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/oneConnect_parameter.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/oneConnect_parameter.h	2015-04-30 16:11:23.517438603 +0800
+@@ -0,0 +1,13 @@
++#ifndef __ONECONNECT_PARAMETER_H__
++#define __ONECONNECT_PARAMETER_H__
++tr98Parameter_t para_OneConnectExt[] = {
++	{ "L2DevCtrl_Broadcast", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_WiFiEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_Reboot", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "L2DevCtrl_Reset", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "ModelName", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ "FWUpgradeState", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "NewFWUpgradeVersion", PARAMETER_ATTR_READONLY, 256, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++#endif
+\ No newline at end of file

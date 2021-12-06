@@ -1,0 +1,510 @@
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lansetup.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_lansetup.c	2017-07-28 17:55:24.502095066 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lansetup.c	2017-07-28 17:57:34.966458500 +0800
+@@ -22,6 +22,7 @@
+ 	{"DHCP_MinAddress", dalType_v4Addr,	0,	0,	NULL},
+ 	{"DHCP_MaxAddress", dalType_v4Addr,	0,	0,	NULL},
+ 	{"DHCP_AutoReserveLanIp", dalType_boolean,	0,	0,	NULL},
++	{"DHCP_RelayAddr", dalType_v4Addr,	0,	0,	NULL},
+ 	//DHCP Server State
+ 	{"EnableDHCP", dalType_boolean,	0,	0,	NULL},
+ 	{"DHCPType", dalType_string,	0,	0,	NULL, "DHCPServer|DHCPRelay"},
+@@ -58,8 +59,8 @@
+ 	//DNS Query Scenario
+ 	{"DNSQueryScenario", dalType_string,	0,	0,	NULL, "IPv4IPv6|IPv6Only|IPv4Only|IPv6First|IPv4First"},
+ 	//Other
+-	{"IGMPSnoopingMode", dalType_string,	0,	0,	NULL, "Disabled|Standard|Blocking"},
+-	{"MLDSnoopingMode", dalType_string,	0,	0,	NULL, "Disabled|Standard|Blocking"},
++	{"IGMPSnoopingMode", dalType_string,	0,	0,	NULL, "Disabled|Standard|Blocking",	dalcmd_Forbid},
++	{"MLDSnoopingMode", dalType_string,	0,	0,	NULL, "Disabled|Standard|Blocking",	dalcmd_Forbid},
+ 	{NULL,					0,	0,	0,	NULL},
+ };
+ 
+@@ -482,7 +483,7 @@
+ 	      
+ 		IPAddress = json_object_get_string(json_object_object_get(Jobj, "IPAddress"));
+ 		SubnetMask = json_object_get_string(json_object_object_get(Jobj, "SubnetMask"));
+-	      
++	    if(json_object_object_get(Jobj, "IPAddress") || json_object_object_get(Jobj, "SubnetMask")){  
+ 		if(strcmp(IPAddress,CurIPAddress) || strcmp(SubnetMask,CurSubnetMask)){
+ 	        json_object_object_add(v4AddrObj, "Enable", json_object_new_boolean(true));
+ 	        json_object_object_add(v4AddrObj, "IPAddress", json_object_new_string(IPAddress));
+@@ -490,6 +491,7 @@
+ 			zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, v4AddrObj, NULL);
+ 		}
+ 	}
++	}
+ 
+ 	zcfgFeJsonObjFree(v4AddrObj);
+ 	return ret;
+@@ -697,14 +699,17 @@
+ 		json_object_object_add(radvdObj, "Interface", json_object_new_string(ifacePath));
+ 		
+ 		ip6LanAddrAssign = json_object_get_string(json_object_object_get(Jobj, "IPv6_LanAddrAssign"));
++		if(json_object_object_get(Jobj, "IPv6_LanAddrAssign")){
+         if(!strcmp(ip6LanAddrAssign, "Stateless")){
+ 			json_object_object_add(radvdObj, "AdvManagedFlag", json_object_new_boolean(false));
+         }
+         else{ //if(!strcmp(ip6LanAddrAssign, "Stateful")){
+             json_object_object_add(radvdObj, "AdvManagedFlag", json_object_new_boolean(true));
+         }
++		}
+ 
+ 		ip6DnsAssign = json_object_get_string(json_object_object_get(Jobj, "IPv6_DNSAssign"));
++		if(json_object_object_get(Jobj, "IPv6_DNSAssign")){
+         if(!strcmp(ip6DnsAssign, "DHCP"))//From DHCP6 server
+ 			json_object_object_add(radvdObj, "AdvOtherConfigFlag", json_object_new_boolean(true));
+         else if(!strcmp(ip6DnsAssign, "RA_DHCP")){//From DHCP6 server and RA
+@@ -714,6 +719,7 @@
+         else{ //if(!strcmp(ip6DnsAssign, "RA")){
+         	json_object_object_add(radvdObj, "AdvOtherConfigFlag", json_object_new_boolean(false));
+         }
++		}
+ 		
+         if(ip6PreTypeStatic){
+ 			json_object_object_add(radvdObj, "ManualPrefixes", json_object_new_string(manualPrefixes));
+@@ -726,11 +732,12 @@
+ 
+ 		json_object_object_add(radvdObj, "X_ZYXEL_DNSList", json_object_new_string(dnsList));
+ 		json_object_object_add(radvdObj, "X_ZYXEL_DNSServers", json_object_new_string(dnsServer));
+-
++		if(json_object_object_get(Jobj, "IPv6_DNSAssign")){
+ 		if(!strcmp(ip6DnsAssign, "RA_DHCP"))
+ 			json_object_object_add(radvdObj, "X_ZYXEL_RAandDHCP6S", json_object_new_boolean(true));
+         else
+ 			json_object_object_add(radvdObj, "X_ZYXEL_RAandDHCP6S", json_object_new_boolean(false));
++		}
+ 
+ 		zcfgFeObjJsonSet(RDM_OID_RT_ADV_INTF_SET, &radvdIid, radvdObj, NULL);
+ 
+@@ -750,7 +757,7 @@
+ 	
+ 	prefixWanName = json_object_get_string(json_object_object_get(Jobj, "IPv6_PrefixWan"));
+ 	iP6PrefixDelegateWAN = json_object_get_string(json_object_object_get(curIpIfaceObj, "X_ZYXEL_IPv6PrefixDelegateWAN"));
+-		
++	if(json_object_object_get(Jobj, "IPv6_PrefixWan")){	
+     if(strcmp(prefixWanName, "Default")){
+         for(i = 0; i < json_object_array_length(allIpIfaceObj); i++) {
+ 			struct json_object *subIpIfaceObj = json_object_array_get_idx(allIpIfaceObj, i);
+@@ -768,7 +775,7 @@
+ 			isRTADVApply = true;
+     	}
+     }
+-
++	}
+ 	setRadvd(Jobj, false, isRTADVApply);
+ 	return ret;
+ }
+@@ -786,11 +793,11 @@
+ 	const char *ip6LanAdrAssign = NULL;
+ 	const char *ip6DNSAssign = NULL;
+ 
+-	
+ 	ip6Origin = json_object_get_string(json_object_object_get(Jobj, "IPv6_PrefixType"));
+ 	json_object_object_add(curIpIfaceObj, "IPv6Enable", json_object_new_boolean(true));
++	if(json_object_object_get(Jobj, "IPv6_PrefixType"))
+ 	json_object_object_add(curIpIfaceObj, "X_ZYXEL_IPv6Origin", json_object_new_string(ip6Origin));
+-
++	if(json_object_object_get(Jobj, "IPv6_PrefixType")){
+ 	if(!strcmp(ip6Origin, "DelegateFromWan")){
+ 		IPv6_PrefixWan = json_object_get_string(json_object_object_get(Jobj, "IPv6_PrefixWan"));
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_IPv6PrefixDelegateWAN", json_object_new_string(IPv6_PrefixWan));
+@@ -799,9 +806,10 @@
+ 		if(ip6Prefix != NULL)
+ 			json_object_object_add(curIpIfaceObj, "X_ZYXEL_IPv6Prefix", json_object_new_string(ip6Prefix));
+ 	}
+-
++	}
+ 
+ 	IPv6_IdentifierType = json_object_get_string(json_object_object_get(Jobj, "IPv6_IdentifierType"));
++	if(json_object_object_get(Jobj, "IPv6_IdentifierType")){
+ 	if(!strcmp(IPv6_IdentifierType, "EUI64"))
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_IPv6IdentifierType", json_object_new_string("EUI-64"));
+ 	else{ //if(!strcmp(IPv6_IdentifierType, "Manual"))
+@@ -809,23 +817,25 @@
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_IPv6IdentifierType", json_object_new_string("Manual"));
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_IPv6Identifier", json_object_new_string(ip6Id));
+ 	}
++	}
+ 
+ 	ip6LanAdrAssign = json_object_get_string(json_object_object_get(Jobj, "IPv6_LanAddrAssign"));
+ 	ip6DNSAssign = json_object_get_string(json_object_object_get(Jobj, "IPv6_DNSAssign"));
+-
++	if(json_object_object_get(Jobj, "IPv6_LanAddrAssign")){
+ 	if(!strcmp(ip6LanAdrAssign, "Stateless"))
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_AdvManagedFlag", json_object_new_int(0));
+ 	else //if(!strcmp(ip6LanAdrAssign, "Stateful")){
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_AdvManagedFlag", json_object_new_int(1));
++	}
+ 
+-
++	if(json_object_object_get(Jobj, "IPv6_DNSAssign")){
+ 	if(!strcmp(ip6DNSAssign, "DHCP"))
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_AdvOtherConfigFlag", json_object_new_int(1));
+ 	else if(!strcmp(ip6DNSAssign, "RA_DHCP"))
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_AdvOtherConfigFlag", json_object_new_int(1));
+ 	else //if(!strcmp(ip6DNSAssign, "RA"))
+ 		json_object_object_add(curIpIfaceObj, "X_ZYXEL_AdvOtherConfigFlag", json_object_new_int(0));
+-	
++	}
+ 	zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &curIpIfaceIid, curIpIfaceObj, NULL);
+ 	return ret;
+ }
+@@ -861,7 +871,6 @@
+ 			curIp6LinkLocalAdr = json_object_get_string(json_object_object_get(v6AddrObj, "IPAddress"));
+ 			if(!strcmp(ip6Origin, "Static") && !strncmp(curIp6LinkLocalAdr, "fe80", 4)){
+ 				found = true;
+-				json_object_object_add(v6AddrObj, "Enable", json_object_new_boolean(true));
+ 				json_object_object_add(v6AddrObj, "IPAddress", json_object_new_string(ip6LinkLocalAdr));
+ 				zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, v6AddrObj, NULL);
+ 			}
+@@ -876,7 +885,6 @@
+ 			ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, NULL);
+ 			if(ret == ZCFG_SUCCESS){
+ 				zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, &v6AddrObj);
+-				json_object_object_add(v6AddrObj, "Enable", json_object_new_boolean(true));
+ 				json_object_object_add(v6AddrObj, "IPAddress", json_object_new_string(ip6LinkLocalAdr));
+ 				zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, v6AddrObj, NULL);
+ 				zcfgFeJsonObjFree(v6AddrObj);
+@@ -896,10 +904,10 @@
+ 	bool found = false;
+ 	const char *ip6LanAdrAssign = NULL;
+ 
+-	ipfacev6Prefix = json_object_get_string(json_object_object_get(curIpIfaceObj, "X_ZYXEL_IPv6Prefix"));
+ 	IID_INIT(v6prefixIid);
+ 	while(zcfgFeSubInObjJsonGetNext(RDM_OID_IP_IFACE_V6_PREFIX, &curIpIfaceIid, &v6prefixIid, &v6prefixObj)== ZCFG_SUCCESS){
+ 		ip6Prefix = json_object_get_string(json_object_object_get(v6prefixObj, "Prefix"));
++		ipfacev6Prefix = json_object_get_string(json_object_object_get(curIpIfaceObj, "X_ZYXEL_IPv6Prefix"));
+ 		if(!strcmp(ip6Prefix, ipfacev6Prefix)){
+ 			found = true;
+ 			break;
+@@ -975,6 +983,7 @@
+ 		json_object_object_add(dhcp6SrvObj, "Interface", json_object_new_string(ifacePath));
+ 	
+ 		ip6LanAddrAssign = json_object_get_string(json_object_object_get(Jobj, "IPv6_LanAddrAssign"));
++		if(json_object_object_get(Jobj, "IPv6_LanAddrAssign")){
+ 		if(!strcmp(ip6LanAddrAssign, "Stateless")){
+ 			json_object_object_add(dhcp6SrvObj, "X_ZYXEL_MinAddress", json_object_new_string(""));
+ 			json_object_object_add(dhcp6SrvObj, "X_ZYXEL_MaxAddress", json_object_new_string(""));
+@@ -987,6 +996,7 @@
+ 			if(maxAddress != NULL)
+ 				json_object_object_add(dhcp6SrvObj, "X_ZYXEL_MaxAddress", json_object_new_string(maxAddress));
+ 		}
++		}
+ 		
+ 		ip6DnsAssign = json_object_get_string(json_object_object_get(Jobj, "IPv6_DNSAssign"));
+ 		if(ip6DnsAssign != NULL && !strcmp(ip6DnsAssign, "RA_DHCP")){
+@@ -1126,7 +1136,6 @@
+ 	setLanIP(Jobj);
+ 	setDHCPState(Jobj);
+ 	setIgmpSnooping(Jobj);
+-	
+ 	if(json_object_object_get(Jobj, "IPv6_LanEnable"))
+ 		ipv6LanEnable = json_object_get_boolean(json_object_object_get(Jobj, "IPv6_LanEnable"));
+ 	else
+@@ -1134,20 +1143,21 @@
+ 	
+ 	if(ipv6LanEnable){
+ 		convertIPv6DnsList(Jobj);
+-		
+ 		IPv6_PrefixType = json_object_get_string(json_object_object_get(Jobj, "IPv6_PrefixType"));
++		if(json_object_object_get(Jobj, "IPv6_PrefixType")){
+ 		if(!strcmp(IPv6_PrefixType, "Static"))
+ 			ip6PreTypeStatic = true;
+-
++		}
+ 		setmldSnooping(Jobj);
+ 		if(!ip6PreTypeStatic){
+ 			setIp6PreTypeStatic_Disable(Jobj);
+-		}else{
+-			setIp6PreTypeStatic_Enable(Jobj);
+ 		}
+ 		setIp6refixTypeDelegated(Jobj);
+ 		setIp6LinkLocalEUI64(Jobj);
+ 
++		if(ip6PreTypeStatic){
++			setIp6PreTypeStatic_Enable(Jobj);
++		}
+ 		setDHCPv6(Jobj,ip6PreTypeStatic);
+ 		setDNSQueryScenario(Jobj);
+ 	}else{
+@@ -1158,12 +1168,255 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDal_LanSetup_Get(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *ipifaceObj = NULL;
++	struct json_object *ipv4addrObj= NULL;
++	struct json_object *ipv6addrObj= NULL;
++	struct json_object *dhcpv4fwdObj = NULL;
++	struct json_object *dhcpv4srvObj = NULL;
++	struct json_object *dhcpv6srvObj = NULL;
++	struct json_object *dnsObj = NULL;
++	struct json_object *rtadvObj = NULL;
++	objIndex_t ipifaceIid = {0};
++	objIndex_t ipv4addrIid = {0};
++	objIndex_t ipv6addrIid = {0};
++	objIndex_t dhcpv4fwdIid = {0};
++	objIndex_t dhcpv4srvIid = {0};
++	objIndex_t dhcpv6srvIid = {0};
++	objIndex_t dnsIid = {0};
++	objIndex_t rtadvIid = {0};
++	bool dchprelay = false;
++	int leasetime = 0, min = 0, hour = 0, day = 0, DNSQueryScenario = 0;
++	const char *dnstype = NULL, *dnsserver = NULL, *IPv6_IdentifierType = NULL, *IPv6_PrefixType = NULL, *v6DNSServer = NULL, *v6DNSList = NULL;
++	char currintf[32] = {0}, buff[32] = {0}, v6DNSServerTmp[256] = {0}, v6DNSListTmp[256] = {0};
++	char *dns1 = NULL, dns2 = NULL, *v6dnstype1 = NULL, *v6dnstype2 = NULL, *v6dnstype3 = NULL, *v6dnsServer1 = NULL, *v6dnsServer2 = NULL, *v6dnsServer3 = NULL, *v6DNSservertmp = NULL, *v6dnstypetmp = NULL, *ptr = NULL;
++
++	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ipifaceIid, &ipifaceObj) == ZCFG_SUCCESS){
++		if(!strncmp(json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_IfName")), "br0", 3)){
++			paramJobj = json_object_new_object();
++			json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(ipifaceObj, "X_ZYXEL_SrvName")));
++			ipv4addrIid.level = 2;
++			ipv4addrIid.idx[0] = ipifaceIid.idx[0];
++			ipv4addrIid.idx[1] = 1;
++			if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V4_ADDR, &ipv4addrIid, &ipv4addrObj) == ZCFG_SUCCESS){
++				json_object_object_add(paramJobj, "IPv4Addr", JSON_OBJ_COPY(json_object_object_get(ipv4addrObj, "IPAddress")));
++				json_object_object_add(paramJobj, "IPv4Submask", JSON_OBJ_COPY(json_object_object_get(ipv4addrObj, "SubnetMask")));
++
++				zcfgFeJsonObjFree(ipv4addrObj);
++			}
++			sprintf(currintf,"IP.Interface.%u",ipifaceIid.idx[0]);	// IP.Interface.1 , IP.Interface.6 , IP.Interface.7
++			while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_RELAY_FWD, &dhcpv4fwdIid, &dhcpv4fwdObj) == ZCFG_SUCCESS){
++				if(!strcmp(json_object_get_string(json_object_object_get(dhcpv4fwdObj, "Interface")),currintf)){
++					json_object_object_add(paramJobj, "DHCP", json_object_new_string("DHCP Relay"));
++					json_object_object_add(paramJobj, "DHCPServerIPAddr", JSON_OBJ_COPY(json_object_object_get(dhcpv4fwdObj, "DHCPServerIPAddress")));
++					dchprelay = true;
++					zcfgFeJsonObjFree(dhcpv4fwdObj);
++					break;
++				}
++				zcfgFeJsonObjFree(dhcpv4fwdObj);
++			}
++			while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL, &dhcpv4srvIid, &dhcpv4srvObj) == ZCFG_SUCCESS){
++				if(!strcmp(json_object_get_string(json_object_object_get(dhcpv4srvObj, "Interface")),currintf) && !dchprelay){
++					if(json_object_get_boolean(json_object_object_get(dhcpv4srvObj, "Enable"))){
++						json_object_object_add(paramJobj, "DHCP", json_object_new_string("Enable"));
++						json_object_object_add(paramJobj, "minAddr", JSON_OBJ_COPY(json_object_object_get(dhcpv4srvObj, "MinAddress")));
++						json_object_object_add(paramJobj, "maxAddr", JSON_OBJ_COPY(json_object_object_get(dhcpv4srvObj, "MaxAddress")));
++						json_object_object_add(paramJobj, "AutoReserveLanIp", JSON_OBJ_COPY(json_object_object_get(dhcpv4srvObj, "X_ZYXEL_AutoReserveLanIp")));
++						leasetime = json_object_get_int(json_object_object_get(dhcpv4srvObj, "LeaseTime"));
++						leasetime = leasetime / 60;
++						min = leasetime % 60;
++						leasetime = (leasetime - (leasetime % 60)) / 60;
++						hour = leasetime % 24;
++						leasetime = (leasetime - (leasetime % 24)) / 24;
++						day = leasetime;
++						json_object_object_add(paramJobj, "minutes", json_object_new_int(min));
++						json_object_object_add(paramJobj, "hours", json_object_new_int(hour));
++						json_object_object_add(paramJobj, "days", json_object_new_int(day));
++						dnstype = json_object_get_string(json_object_object_get(dhcpv4srvObj, "X_ZYXEL_DNS_Type"));
++						if(!strcmp(dnstype, "DNS Proxy") )
++							json_object_object_add(paramJobj, "dnstype", json_object_new_string(dnstype));
++						else if(!strcmp(dnstype, "Static") || !strcmp(dnstype, "From ISP")){
++							json_object_object_add(paramJobj, "dnstype", json_object_new_string(dnstype));
++							dnsserver = json_object_get_string(json_object_object_get(dhcpv4srvObj, "DNSServers"));
++							strcpy(buff, dnsserver);
++							dns1 = strtok_r(buff, ",", dns2);
++							json_object_object_add(paramJobj, "DNS1", json_object_new_string(dns1));
++							json_object_object_add(paramJobj, "DNS2", json_object_new_string(dns2));
++						}
++					}
++					else
++						json_object_object_add(paramJobj, "DHCP", json_object_new_string("Disable"));
++					zcfgFeJsonObjFree(dhcpv4srvObj);
++					break;
++
++				}
++				zcfgFeJsonObjFree(dhcpv4srvObj);	
++			}
++
++			if(json_object_get_boolean(json_object_object_get(ipifaceObj, "IPv6Enable"))){	//IPv6
++				json_object_object_add(paramJobj, "IPv6Enable", JSON_OBJ_COPY(json_object_object_get(ipifaceObj, "IPv6Enable")));
++				ipv6addrIid.level = 2;
++				ipv6addrIid.idx[0] = ipifaceIid.idx[0];
++				ipv6addrIid.idx[1] = 1;
++				if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_ADDR, &ipv6addrIid, &ipv6addrObj) == ZCFG_SUCCESS){
++					json_object_object_add(paramJobj, "IPv6_LinkLocalAddressType", json_object_new_string("Manual"));
++					json_object_object_add(paramJobj, "IPv6localAddr", JSON_OBJ_COPY(json_object_object_get(ipv6addrObj, "IPAddress")));
++					zcfgFeJsonObjFree(ipv6addrObj);
++				}
++				else
++					json_object_object_add(paramJobj, "IPv6_LinkLocalAddressType", json_object_new_string("EUI64"));
++				IPv6_IdentifierType = json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_IPv6IdentifierType"));
++				json_object_object_add(paramJobj, "IPv6_IdentifierType", json_object_new_string(IPv6_IdentifierType));
++				if(!strcmp(IPv6_IdentifierType, "Manual"))
++					json_object_object_add(paramJobj, "IPv6_Identifier", JSON_OBJ_COPY(json_object_object_get(ipifaceObj, "X_ZYXEL_IPv6Identifier")));
++				IPv6_PrefixType = json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_IPv6Origin"));
++				json_object_object_add(paramJobj, "IPv6_PrefixType", json_object_new_string(IPv6_PrefixType));
++				if(!strcmp(IPv6_PrefixType ,"Static"))
++					json_object_object_add(paramJobj, "IPv6_Prefix", JSON_OBJ_COPY(json_object_object_get(ipifaceObj, "X_ZYXEL_IPv6Prefix")));
++				else if(!strcmp(IPv6_PrefixType, "DelegateFromWan")){
++					json_object_object_add(paramJobj, "IPv6_PrefixWan", JSON_OBJ_COPY(json_object_object_get(ipifaceObj, "X_ZYXEL_IPv6PrefixDelegateWAN")));
++				}
++				while(zcfgFeObjJsonGetNext(RDM_OID_RT_ADV_INTF_SET, &rtadvIid, &rtadvObj) == ZCFG_SUCCESS){
++					if(!strcmp(json_object_get_string(json_object_object_get(rtadvObj, "Interface")),currintf)){
++						if(json_object_get_boolean(json_object_object_get(rtadvObj, "AdvOtherConfigFlag"))){
++							if(json_object_get_boolean(json_object_object_get(rtadvObj, "X_ZYXEL_RAandDHCP6S")))
++								json_object_object_add(paramJobj, "IPv6_DNSAssignSetup", json_object_new_string("From DHCPv6 Server"));
++							else
++								json_object_object_add(paramJobj, "IPv6_DNSAssignSetup", json_object_new_string("From RA & DHCPv6 Server"));
++						}
++						else
++							json_object_object_add(paramJobj, "IPv6_DNSAssignSetup", json_object_new_string("From Router Advertisement"));
++						zcfgFeJsonObjFree(rtadvObj);
++						break;
++					}
++					zcfgFeJsonObjFree(rtadvObj);
++				}
++				if(json_object_get_int(json_object_object_get(ipifaceObj, "X_ZYXEL_AdvManagedFlag")) == 0){
++					json_object_object_add(paramJobj, "IPv6_AddressAssignSetup", json_object_new_string("Stateful"));
++					while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV6_SRV_POOL, &dhcpv6srvIid, &dhcpv6srvObj) == ZCFG_SUCCESS){
++						if(!strcmp(currintf, json_object_get_string(json_object_object_get(dhcpv6srvObj, "Interface")))){ 
++							json_object_object_add(paramJobj, "IPv6_MinAddress", JSON_OBJ_COPY(json_object_object_get(dhcpv6srvObj, "X_ZYXEL_MinAddress")));
++							json_object_object_add(paramJobj, "IPv6_MaxAddress", JSON_OBJ_COPY(json_object_object_get(dhcpv6srvObj, "X_ZYXEL_MaxAddress")));
++							json_object_object_add(paramJobj, "IPv6_DNSSuffix", JSON_OBJ_COPY(json_object_object_get(dhcpv6srvObj, "X_ZYXEL_DNSSuffix")));
++							v6DNSServer = json_object_get_string(json_object_object_get(dhcpv6srvObj, "X_ZYXEL_DNSServers"));
++							v6DNSList = json_object_get_string(json_object_object_get(dhcpv6srvObj, "X_ZYXEL_DNSList")); 
++							
++							strcpy(v6DNSServerTmp,v6DNSServer);
++							strcpy(v6DNSListTmp,v6DNSList);
++							v6dnstype1 = strtok_r(v6DNSListTmp, ",", &v6dnstypetmp);
++							v6dnstype2 = strtok_r(NULL, ",", &v6dnstypetmp);
++							v6dnstype3 = strtok_r(NULL, ",", &v6dnstypetmp);
++							json_object_object_add(paramJobj, "IPv6_DNSType1", json_object_new_string(v6dnstype1));
++							json_object_object_add(paramJobj, "IPv6_DNSType2", json_object_new_string(v6dnstype2));
++							json_object_object_add(paramJobj, "IPv6_DNSType3", json_object_new_string(v6dnstype3));
++							v6dnsServer1=v6DNSServerTmp;
++							*(ptr = strchr(v6dnsServer1, ',')) = '\0';
++							v6dnsServer2=ptr+1;
++							*(ptr = strchr(v6dnsServer2, ',')) = '\0';
++							v6dnsServer3=ptr+1;
++							json_object_object_add(paramJobj, "IPv6_DNSServer1", json_object_new_string(v6dnsServer1));
++							json_object_object_add(paramJobj, "IPv6_DNSServer2", json_object_new_string(v6dnsServer2));
++							json_object_object_add(paramJobj, "IPv6_DNSServer3", json_object_new_string(v6dnsServer3));
++							zcfgFeJsonObjFree(dhcpv6srvObj);
++							break;
++						}
++						zcfgFeJsonObjFree(dhcpv6srvObj);
++					}
++				}
++				else{
++					json_object_object_add(paramJobj, "IPv6_AddressAssignSetup", json_object_new_string("Stateless"));
++				} 
++				
++				if(zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsObj) == ZCFG_SUCCESS){
++					DNSQueryScenario = json_object_get_int(json_object_object_get(dnsObj, "X_ZYXEL_DNSQueryScenario"));
++					if(DNSQueryScenario == 0)
++						json_object_object_add(paramJobj, "IPv6_DNSQueryScenario", json_object_new_string("IPv4/IPv6 DNS Server"));
++					else if(DNSQueryScenario == 1)
++						json_object_object_add(paramJobj, "IPv6_DNSQueryScenario", json_object_new_string("IPv6 DNS Server Only"));
++					else if(DNSQueryScenario == 2)
++						json_object_object_add(paramJobj, "IPv6_DNSQueryScenario", json_object_new_string("IPv4 DNS Server Only"));
++					else if(DNSQueryScenario == 3)
++						json_object_object_add(paramJobj, "IPv6_DNSQueryScenario", json_object_new_string("IPv6 DNS Server First"));
++					else if(DNSQueryScenario == 4)
++						json_object_object_add(paramJobj, "IPv6_DNSQueryScenario", json_object_new_string("IPv4 DNS Server First"));
++					zcfgFeJsonObjFree(dnsObj);
++				}
++			}
++			json_object_array_add(Jarray, paramJobj);
++		}
++		zcfgFeJsonObjFree(ipifaceObj);
++		
++		
++	}
++	return ret;
++
++}
++
++void zcfgFeDalShowLanSetup(struct json_object *Jarray){
++	struct json_object *obj = NULL;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray, 0);
++	printf("%-15s %s \n","Group Name",json_object_get_string(json_object_object_get(obj, "Name")));
++	printf("%-15s %s \n","IP Address",json_object_get_string(json_object_object_get(obj, "IPv4Addr")));
++	printf("%-15s %s \n","Subnet Mask",json_object_get_string(json_object_object_get(obj, "IPv4Submask")));
++
++	
++	printf("%-15s %s \n","DHCP",json_object_get_string(json_object_object_get(obj, "DHCP")));
++	if(!strcmp("DHCP Relay",json_object_get_string(json_object_object_get(obj, "DHCP")))){
++		printf("%-20s %-10s\n", "DHCP IP Address", json_object_get_string(json_object_object_get(obj, "DHCPServerIPAddr")));
++	}
++	else if(!strcmp("DHCP Relay",json_object_get_string(json_object_object_get(obj, "DHCP")))){
++		printf("%-2s %-25s %s \n", "", "Beginning IP Address",json_object_get_string(json_object_object_get(obj, "minAddr")));
++		printf("%-2s %-25s %s \n", "", "Ending IP Address",json_object_get_string(json_object_object_get(obj, "maxAddr")));
++		printf("%-2s %-25s %s \n", "", "AutoReserveLanIp",json_object_get_string(json_object_object_get(obj, "AutoReserveLanIp")));
++		printf("%-2s %-25s %s %s %s %s %s %s \n", "", "DHCP Server Lease Time",json_object_get_string(json_object_object_get(obj, "days")),"Days",json_object_get_string(json_object_object_get(obj, "hours")),"Hours",json_object_get_string(json_object_object_get(obj, "minutes")),"Minutes");
++		printf("%-2s %-15s %s \n", "", "DNS Values",json_object_get_string(json_object_object_get(obj, "dnstype")));
++
++	}
++	printf("%-15s %s \n","IPv6 Active",json_object_get_string(json_object_object_get(obj, "IPv6Enable")));
++	if(json_object_get_boolean(json_object_object_get(obj, "IPv6Enable"))){
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")),"Manual"))
++			printf("%-30s %-10s %-10s\n", "Link Local Address Type", json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")),json_object_get_string(json_object_object_get(obj, "IPv6localAddr")));
++		else if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")),"EUI64"))
++			printf("%-30s %-10s\n", "Link Local Address Type", json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")));
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_IdentifierType")),"Manual"))
++			printf("%-30s %-10s %-10s\n", "LAN Global Identifier Type", json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")),json_object_get_string(json_object_object_get(obj, "IPv6_Identifier")));
++		else if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")),"EUI-64"))
++			printf("%-30s %-10s\n", "LAN Global Identifier Type", json_object_get_string(json_object_object_get(obj, "IPv6_LinkLocalAddressType")));
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_PrefixType")),"DelegateFromWan"))
++			printf("%-30s %-30s %-10s\n", "LAN IPv6 Prefix Setup", "Delegate prefix from WAN", json_object_get_string(json_object_object_get(obj, "IPv6_PrefixWan")));
++		else if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_PrefixType")),"IPv6_PrefixType"))
++			printf("%-30s %-10s %-10s\n", "LAN IPv6 Prefix Setup", "Static", json_object_get_string(json_object_object_get(obj, "DHCPServerIPAddr")));
++		printf("%-30s %-10s\n", "LAN IPv6 Address Assign Setup", json_object_get_string(json_object_object_get(obj, "IPv6_AddressAssignSetup")));
++		printf("%-30s %-10s\n", "LAN IPv6 DNS Assign Setup", json_object_get_string(json_object_object_get(obj, "IPv6_DNSAssignSetup")));
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_DNSAssignSetup")), "From Router Advertisement"))
++			printf("%-30s %-10s\n", "DHCPv6 Active", "DHCPv6 Disable");
++		else
++			printf("%-30s %-10s\n", "DHCPv6 Active", "DHCPv6 Server");
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6_AddressAssignSetup")),"Stateless")){
++			printf("IPv6 DNS Values \n");
++			printf("%-2s %-25s %-12s %-10s\n", "", "IPv6 DNS Server 1", json_object_get_string(json_object_object_get(obj, "IPv6_DNSType1")), json_object_get_string(json_object_object_get(obj, "IPv6_DNSServer1")));
++			printf("%-2s %-25s %-12s %-10s\n", "", "IPv6 DNS Server 2", json_object_get_string(json_object_object_get(obj, "IPv6_DNSType2")), json_object_get_string(json_object_object_get(obj, "IPv6_DNSServer2")));
++			printf("%-2s %-25s %-12s %-10s\n", "", "IPv6 DNS Server 3", json_object_get_string(json_object_object_get(obj, "IPv6_DNSType3")), json_object_get_string(json_object_object_get(obj, "IPv6_DNSServer3")));
++		}
++		printf("%-30s %-10s\n", "DHCPv6 Active", json_object_get_string(json_object_object_get(obj, "IPv6_DNSQueryScenario")));		
++	}
++}
++
++
++
+ 
+ zcfgRet_t zcfgFeDalLanSetup(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	
+ 	if(!strcmp(method, "PUT"))
+ 		ret = zcfgFeDal_LanSetup_Edit(Jobj, NULL);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDal_LanSetup_Get(Jobj, Jarray, NULL); 
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 	//else if(!strcmp(method, "GET"))
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-28 17:55:24.970095058 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-28 17:56:40.977458500 +0800
+@@ -214,7 +214,7 @@
+ extern void zcfgFeDalShowMailNotification(struct json_object *Jarray);
+ extern void zcfgFeDalShowLogSetting(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiWmm(struct json_object *Jarray);
+-
++extern void zcfgFeDalShowLanSetup(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -237,7 +237,7 @@
+ {"nat_conf",		NAT_CONF_param,		zcfgFeDalNatConf, 		zcfgFeDalShowNatConf,		"edit|get",				"NAT"}, //NAT
+ {"intf_group",		IntfGrp_param,		zcfgFeDalIntrGrp,		zcfgFeDalShowIntrGrp,		"add|edit|delete|get",	"Interface_Grouping"},//
+ {"lanadv",			LANADV_param, 		zcfgFeDalLanAdvance,	zcfgFeDalShowLanAdv,		"edit|get",			"Home_Networking"},
+-{"LANSETUP",		LANSETUP_param, 	zcfgFeDalLanSetup,		NULL,						"edit", 			"Home_Networking"},
++{"lan",				LANSETUP_param, 	zcfgFeDalLanSetup,		zcfgFeDalShowLanSetup,		"get|edit", 			"Home_Networking"},
+ {"ipalias",			SUBNET_param,		zcfgFeDalAddnlSubnet,	zcfgFeDalShowAddnl,			"get|edit" ,			"Home_Networking"},//Home_Networking
+ {"static_dhcp",		STATIC_DHCP_param,	zcfgFeDalStaticDHCP,	zcfgFeDalShowStaticDHCP,	"get|add|edit|delete",	"Home_Networking"},//Home_Networking
+ {"vlan_group", 		VLANGRP_param,		zcfgFeDalVlanGroup,		zcfgFeDalShowVlanGroup,		"get|add|edit|delete",	"Vlan Group"},//Vlan_Group

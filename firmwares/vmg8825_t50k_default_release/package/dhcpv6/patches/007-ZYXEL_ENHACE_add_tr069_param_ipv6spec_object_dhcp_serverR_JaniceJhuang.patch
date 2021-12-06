@@ -1,0 +1,481 @@
+Index: wide-dhcpv6-20080615/dhcp6s.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6s.c	2017-10-27 09:09:47.834327306 +0800
++++ wide-dhcpv6-20080615/dhcp6s.c	2017-10-27 19:40:18.670774857 +0800
+@@ -76,6 +76,14 @@
+ #include <dhcp6_ctl.h>
+ #include <signal.h>
+ #include <lease.h>
++#include <sys/stat.h>
++
++/*zyxel*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++
++#include <json/json.h>
+ 
+ #define DUID_FILE LOCALDBDIR "/dhcp6s_duid"
+ #define DHCP6S_CONF LOCALDBDIR "/dhcp6s.conf"
+@@ -225,8 +233,16 @@
+     struct dhcp6_optinfo *, struct dhcp6_optinfo *));
+ static inline char *clientstr __P((struct host_conf *, struct duid *));
+ static void release_dhcp6sinfo __P((struct dhcp6_listval *));
++static void dhcp6sMsgToJsonFormat __P((struct json_object *));
+ static void setleases_dhcp6sinfo __P((struct dhcp6_listval *, struct dhcp6_binding *));
+ static void resetleases_dhcp6sinfo __P((struct dhcp6_binding *));
++static void addleases_dhcp6sLocalAddr __P((struct dhcp6_optinfo *, struct sockaddr *));
++static void addjson_dhcp6sLeases __P((struct dhcp6_optinfo *));
++
++
++//add the dhcp6s json define
++extern struct dhcp6s_Msg dhcp6sMsg;
++extern zcfgRet_t dhcp6sMsgSend(int, int, const char *);
+ 
+ int daemon_init(void) {
+ 
+@@ -630,6 +646,8 @@
+ 	fd_set r;
+ 	int maxsock;
+ 
++	zcfgEidInit(ZCFG_EID_UDHCP6S, "dhcp6s");
++
+ 	while (1) {
+ 		if (sig_flags)
+ 			process_signals();
+@@ -1693,6 +1711,13 @@
+ 	/* send a reply message. */
+ 	(void)server6_send(DH6_REPLY, ifp, dh6, optinfo, from, fromlen,
+ 	    &roptinfo, relayinfohead, client_conf);
++	// TODO: Add the local IPv6 address
++	addleases_dhcp6sLocalAddr(optinfo, from);
++	addjson_dhcp6sLeases(optinfo);
++
++
++	//struct dhcp6opt_ia optia;
++	//printf("  IA_NA: ID=%lu, T1=%lu, T2=%lu, %s(%d)\n",optia.dh6_ia_iaid, optia.dh6_ia_t1, optia.dh6_ia_t2, __FUNCTION__, __LINE__);
+ 
+   end:
+ 	dhcp6_clear_options(&roptinfo);
+@@ -3402,6 +3427,7 @@
+ 					continue;
+ 				}
+ 				release_address(&lv->val_statefuladdr6.addr);
++				release_dhcp6sinfo(lv);
+ 			}
+ 		}
+ 		dhcp6_clear_list(&binding->val_list);
+@@ -3743,27 +3769,56 @@
+ }
+ 
+ static void
++dhcp6sMsgToJsonFormat(dhcp6sMsgBody)
++	struct json_object *dhcp6sMsgBody;
++{
++	if(dhcp6sMsg.ClientIPv6eidtPid)
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6pidfile", json_object_new_string(dhcp6sMsg.ClientIPv6pidfile)); //add pid_file information
++	if(dhcp6sMsg.ClientIPv6editAddr){
++		json_object_object_add(dhcp6sMsgBody, "isIA_NA", json_object_new_int(dhcp6sMsg.isIA_NA));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPV6Linklocaladdr", json_object_new_string(dhcp6sMsg.ClientIPV6Linklocaladdr));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6addr", json_object_new_string(dhcp6sMsg.ClientIPv6addr));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6addrPltime", json_object_new_int(dhcp6sMsg.ClientIPv6addrPltime));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6addrVltime", json_object_new_int(dhcp6sMsg.ClientIPv6addrVltime));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6addrEntries", json_object_new_int(dhcp6sMsg.ClientIPv6addrEntries));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6prefixEntries", json_object_new_int(dhcp6sMsg.ClientIPv6prefixEntries));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6clientID", json_object_new_string(dhcp6sMsg.ClientIPv6clientID));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6serverID", json_object_new_string(dhcp6sMsg.ClientIPv6serverID));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6elapsedtime", json_object_new_string(dhcp6sMsg.ClientIPv6elapsedtime));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6Indentity", json_object_new_string(dhcp6sMsg.ClientIPv6Indentity));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6Option", json_object_new_string(dhcp6sMsg.ClientIPv6Option));
++	}
++	if(dhcp6sMsg.ClientIPv6deletAddr){
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6release_flag", json_object_new_int(dhcp6sMsg.ClientIPv6release_flag));
++		json_object_object_add(dhcp6sMsgBody, "isIA_NA", json_object_new_int(dhcp6sMsg.isIA_NA));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPV6Linklocaladdr", json_object_new_string(dhcp6sMsg.ClientIPV6Linklocaladdr));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6addr", json_object_new_string(dhcp6sMsg.ClientIPv6addr));
++	}
++}
++
++static void
+ release_dhcp6sinfo(lvia)
+ 	struct dhcp6_listval *lvia;
+ {
+-	// TODO:Janice, delete the dhcp6s lease
+-
+ 	FILE *lease_v6fp = NULL;
+ 	FILE *leasetmp_v6fp = NULL;
+ 	char line[512]={0};
+-	char ClinetId[48] = {0};
++	char ClientId[48] = {0};
+ 	char IPv6addr[48] = {0};
+-	char hwaddr[65] = {0};
+-	char validTime[10] = {0};
+-	char updatetime[10] = {0};
++	char ipV6LinklocalAddr[48] = {0};
+ 	int num = 0;
+ 	char NumStr[512] = {0};
++	struct json_object *dhcp6sJsonMsg = NULL;
++	dhcp6sJsonMsg = json_object_new_object();
++	dhcp6sMsg.ClientIPv6release_flag = false;
++	char *msg = NULL;
++	int msgLen = 0;
+ 
+ 	lease_v6fp = fopen(leases6_file, "r");
+ 	if(lease_v6fp != NULL){
+ 		while (fgets(line, sizeof(line), lease_v6fp)) {
+-			num = sscanf(line, "%s %s %*s %*s %*s", ClinetId, IPv6addr, hwaddr, validTime, updatetime);
+-			if(num == 2){
++			num = sscanf(line, "%s %s %*s %*s %*s %*s %s", ClientId, IPv6addr, ipV6LinklocalAddr);
++			if(num == 3){
+ 				if(strcmp(IPv6addr, in6addr2str(&lvia->val_prefix6.addr, 0)) != 0)
+ 				{
+ 					if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL) {
+@@ -3781,7 +3836,22 @@
+ 				}
+ 				else
+ 				{
+-					//printf("IPv6addr = %s, address ipv6 = %s, %s(%d)\n", IPv6addr, in6addr2str(&lvia->val_prefix6.addr, 0), __FUNCTION__, __LINE__);
++					/* delete IA info for update IA info */
++					if(strlen(ClientId) > 30)
++						dhcp6sMsg.isIA_NA = true;
++					else
++						dhcp6sMsg.isIA_NA = false;
++					dhcp6sMsg.ClientIPv6deletAddr = true;
++					dhcp6sMsg.ClientIPv6release_flag = true;
++					sprintf(dhcp6sMsg.ClientIPV6Linklocaladdr, "%s", ipV6LinklocalAddr);
++					sprintf(dhcp6sMsg.ClientIPv6addr, "%s", in6addr2str(&lvia->val_prefix6.addr, 0));
++					dhcp6sMsgToJsonFormat(dhcp6sJsonMsg);
++					msg = json_object_to_json_string(dhcp6sJsonMsg);
++					msgLen = strlen(msg) + 1;
++
++					dhcp6sMsgSend(ZCFG_MSG_DHCP6S_STATE, msgLen, msg);
++					memset(&dhcp6sMsg, 0, sizeof(dhcp6sMsg));
++					json_object_put(dhcp6sJsonMsg);
+ 				}
+ 			}
+ 		}
+@@ -3801,23 +3871,39 @@
+ 	char hwaddr[65] = {0};
+ 	char IPv6addr[48] = {0};
+ 	char ClinetId[48] = {0};
++	char PreferredTime[10] = {0};
+ 	char validTime[12] = {0};
+ 	char lease6Info[512] = {0};
+ 	char *delim = ":";
+ 	char *pch;
+ 	int count = 0, i = 0;
+ 	char *addrtemp[6];
++	char *msg = NULL;
++	int msgLen = 0, clientLen = 0;
+ 
+ 	sprintf(ClinetId, "%s", duidstr(&binding->clientid));
++	clientLen = strlen(ClinetId);
+ 	pch = strtok(ClinetId, delim);
+ 	while(pch != NULL)
+ 	{
+ 		count++;
++		if(clientLen < 30)
++		{
++			if(count >= 5)
++			{
++				addrtemp[i] = pch;
++				//printf("i = %d, addrtemp = %s, pch = %s, %s(%d)\n", i, addrtemp[i], pch, __FUNCTION__, __LINE__);
++				i++;
++			}
++		}
++		else
++		{
+ 		if(count >= 9)
+ 		{
+ 			addrtemp[i] = pch;
+ 			i++;
+ 		}
++		}
+ 
+ 		pch = strtok(NULL, delim);
+ 	}
+@@ -3835,10 +3921,13 @@
+ 
+ 	sprintf(lease6Info, "%s ", duidstr(&binding->clientid));
+ 	sprintf(IPv6addr, "%s ", in6addr2str(&lv->val_statefuladdr6.addr, 0));
+-	sprintf(validTime, "%lu", lv->val_prefix6.vltime);
++	sprintf(PreferredTime, "%lu", lv->val_statefuladdr6.pltime);
++	sprintf(validTime, "%lu", lv->val_statefuladdr6.vltime);
+ 	strcat(lease6Info, IPv6addr);
+ 	strcat(lease6Info, hwaddr);
+ 	strcat(lease6Info, " ");
++	strcat(lease6Info, PreferredTime);
++	strcat(lease6Info, " ");
+ 	strcat(lease6Info, validTime);
+ 
+ 	if ((lease6fp = fopen(leases6_file, "a+")) != NULL) {
+@@ -3853,14 +3942,15 @@
+ {
+ 	FILE *lease_v6fp = NULL;
+ 	FILE *leasetmp_v6fp = NULL;
+-	char line[512]={0};
++	char line[512]={0}, ClientId[48] = {0};
+ 	char updatetime[12] = {0};
+ 
+ 	lease_v6fp = fopen(leases6_file, "r");
+ 	if(lease_v6fp != NULL){
+ 		while (fgets(line, sizeof(line), lease_v6fp)) {
++			sscanf(line, "%s %*s %*s %*s %*s", ClientId);
+ 
+-			if(strlen(line) == 79)
++			if(strcmp(ClientId, duidstr(&binding->clientid)) == 0)
+ 			{
+ 				if(line[strlen(line) - 1] == '\n')
+ 					line[strlen(line) - 1] = '\0';
+@@ -3880,6 +3970,54 @@
+ 			{
+ 				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
+ 				{
++					fprintf(leasetmp_v6fp, "%s", line);
++					fclose(leasetmp_v6fp);
++				}
++			}
++
++		}
++
++		fclose(lease_v6fp);
++		remove(leases6_file);
++		rename(leases6_tmpfile, leases6_file);
++	}
++
++}
++
++static void
++addleases_dhcp6sLocalAddr(optinfo, from)
++	struct dhcp6_optinfo *optinfo;
++	struct sockaddr *from;
++{
++	FILE *lease_v6fp = NULL;
++	FILE *leasetmp_v6fp = NULL;
++	char line[512]={0}, ClientId[48] = {0};
++	char ipV6LinklocalAddr[48] = {0};
++
++	lease_v6fp = fopen(leases6_file, "r");
++	if(lease_v6fp != NULL){
++		while (fgets(line, sizeof(line), lease_v6fp)) {
++			sscanf(line, "%s %*s %*s %*s %*s %*s", ClientId);
++			if(strcmp(ClientId, duidstr(&optinfo->clientID)) == 0)
++			{
++				if(line[strlen(line) - 1] == '\n')
++					line[strlen(line) - 1] = '\0';
++				sprintf(ipV6LinklocalAddr, "%s", addr2str(from));
++				//printf("from = %s, ipV6LinklocalAddr = %s, %s(%d)\n", addr2str(from), ipV6LinklocalAddr, __FUNCTION__, __LINE__);
++				strcat(line, " ");
++				strcat(line, ipV6LinklocalAddr);
++
++				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
++				{
++					//printf("line = %s, strlen(line) = %d, %s(%d)\n", line, strlen(line),__FUNCTION__, __LINE__);
++					fprintf(leasetmp_v6fp, "%s\n", line);
++					fclose(leasetmp_v6fp);
++				}
++			}
++			else
++			{
++				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
++				{
+ 					//printf("line = %s, strlen(line) = %d, %s(%d)\n", line, strlen(line),__FUNCTION__, __LINE__);
+ 					fprintf(leasetmp_v6fp, "%s", line);
+ 					fclose(leasetmp_v6fp);
+@@ -3894,4 +4032,113 @@
+ 	}
+ 
+ }
++
++static void
++addjson_dhcp6sLeases(optinfo)
++	struct dhcp6_optinfo *optinfo;
++{
++	//set dhcp6s json config for TR069
++	struct json_object *dhcp6sJsonMsg = NULL;
++	dhcp6sJsonMsg = json_object_new_object();
++	//dprintf(LOG_ERR, FNAME, "json : %s\n", json_object_to_json_string(dhcp6sJsonMsg));
++	FILE *lease_v6fp = NULL;
++	FILE *leasetmp_v6fp = NULL;
++	char line[512]={0}, ClientId[48] = {0}, IPv6addr[48] = {0}, hwaddr[65] = {0}, PreferredTime[10] = {0},
++		validTime[12] = {0}, updatetime[12] = {0}, ipV6LinklocalAddr[48] = {0};
++	char *msg = NULL;
++	int msgLen = 0, addrEntries = 0, prefixEntries = 0;
++	struct dhcp6_listval *ia, *opt;
++	char iaInfo[100] = {0}, ia_opt[50] = {0}, time_opt[20] = {0};
++	char optInfo_1[5] = {0}, optInfo_2[5] = {0}, optInfo_3[5] = {0}, optInfo[7] = {0};
++	int optCont = 0;
++
++	lease_v6fp = fopen(leases6_file, "r");
++	if(lease_v6fp != NULL){
++		while (fgets(line, sizeof(line), lease_v6fp)) {
++			sscanf(line, "%s %s %s %s %s %s %s", ClientId, IPv6addr, hwaddr, PreferredTime, validTime, updatetime, ipV6LinklocalAddr);
++
++			if(strcmp(ClientId, duidstr(&optinfo->clientID)) == 0)
++			{
++				dhcp6sMsg.ClientIPv6eidtPid = true;
++				strcpy(dhcp6sMsg.ClientIPv6pidfile, pid_file);
++				dhcp6sMsg.ClientIPv6editAddr = true;
++				if(strlen(ClientId) > 30){
++					dhcp6sMsg.isIA_NA = true;
++					addrEntries++;
++					dhcp6sMsg.ClientIPv6addrEntries = addrEntries;
++				}
++				else{
++					dhcp6sMsg.isIA_NA = false;
++					prefixEntries++;
++					dhcp6sMsg.ClientIPv6prefixEntries = prefixEntries;
++				}
++				sprintf(dhcp6sMsg.ClientIPV6Linklocaladdr, "%s", ipV6LinklocalAddr);
++				sprintf(dhcp6sMsg.ClientIPv6addr, "%s", IPv6addr);
++				dhcp6sMsg.ClientIPv6addrPltime = atoi(PreferredTime);
++				dhcp6sMsg.ClientIPv6addrVltime = atoi(validTime);
++
++				//IA_NA opt
++				sprintf(dhcp6sMsg.ClientIPv6clientID, "%s", duidstr(&optinfo->clientID));
++				sprintf(dhcp6sMsg.ClientIPv6serverID, "%s", duidstr(&optinfo->serverID));
++				sprintf(dhcp6sMsg.ClientIPv6elapsedtime, "%ld", optinfo->elapsed_time);
++
++				for (ia = TAILQ_FIRST(&optinfo->iana_list); ia;
++				    ia = TAILQ_NEXT(ia, link)) {
++					sprintf(iaInfo, "%08X%08X%08X", ia->val_ia.iaid, ia->val_ia.t1, ia->val_ia.t2);
++					//printf("	IA_NA: ID=%lu, T1=%lu, T2=%lu, %s(%d)\n",ia->val_ia.iaid, ia->val_ia.t1, ia->val_ia.t2, __FUNCTION__, __LINE__);
++					//printf("	IA_NA: ID=%08x, T1=%08x, T2=%08x, %s(%d)\n",ia->val_ia.iaid, ia->val_ia.t1, ia->val_ia.t2, __FUNCTION__, __LINE__);
++				}
++
++				char v6addr[40] = {0}, str1[40] = {0};
++				int i = 0, j = 0;
++				struct in6_addr in6_addr;
++
++				sprintf(ia_opt, "%04X%04X", 5, 24);
++				inet_pton(AF_INET6, IPv6addr, &in6_addr);
++				//fflush(stdout);
++				for(i = 0, j = 0; i < sizeof(struct in6_addr); i++, j+=2){
++					//fflush(stdout);
++					snprintf(str1 + j, sizeof(str1) ,"%02X", (uint8_t)in6_addr.s6_addr[i]);
++					snprintf(v6addr, sizeof(v6addr), "%c%c", str1[j], str1[j+1]);
++					strcat(ia_opt, v6addr);
++				}
++
++				sprintf(time_opt, "%08X%08X", atoi(PreferredTime), atoi(validTime));
++				strcat(ia_opt, time_opt);
++				strcat(iaInfo, ia_opt);
++				sprintf(dhcp6sMsg.ClientIPv6Indentity, "%s", iaInfo);
++
++				for (opt = TAILQ_FIRST(&optinfo->reqopt_list); opt;
++				     opt = TAILQ_NEXT(opt, link)) {
++
++					if(optCont == 0)
++						sprintf(optInfo_1, "%04X", opt->val_num);
++					else if(optCont == 1)
++						sprintf(optInfo_2, "%04X", opt->val_num);
++					else
++						sprintf(optInfo_3, "%04X", opt->val_num);
++					optCont++;
++					//printf("	val_num = %04X, %s(%d)\n",opt->val_num, __FUNCTION__, __LINE__);
++				}
++				sprintf(optInfo, "%s%s%s", optInfo_1, optInfo_2, optInfo_3);
++				sprintf(dhcp6sMsg.ClientIPv6Option, "%s", optInfo);
++#if 0
++				printf("ORZORZORZORZORZ ClientIPv6addr = %s, addr = %s, %s(%d)\n", dhcp6sMsg.ClientIPv6addr, IPv6addr, __FUNCTION__, __LINE__);
++				printf("ORZORZORZORZORZ ClientIPv6addrPltime = %d,  %s(%d)\n", dhcp6sMsg.ClientIPv6addrPltime, __FUNCTION__, __LINE__);
++				printf("ORZORZORZORZORZ ClientIPv6addrVltime = %d, vltime = %s, %s(%d)\n", dhcp6sMsg.ClientIPv6addrVltime, validTime, __FUNCTION__, __LINE__);
++				printf("ORZORZORZORZORZ ClientIPv6addrVltime = %d, vltime = %s, %s(%d)\n", dhcp6sMsg.ClientIPv6addrPltime, PreferredTime, __FUNCTION__, __LINE__);
++#endif
++				dhcp6sMsgToJsonFormat(dhcp6sJsonMsg);
++				msg = json_object_to_json_string(dhcp6sJsonMsg);
++				msgLen = strlen(msg) + 1;
++
++				dhcp6sMsgSend(ZCFG_MSG_DHCP6S_STATE, msgLen, msg);
++				memset(&dhcp6sMsg, 0, sizeof(dhcp6sMsg));
++				json_object_put(dhcp6sJsonMsg);
++			}
++
++		}
++	}
++
++}
+ 
+Index: wide-dhcpv6-20080615/common.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.c	2017-10-27 09:09:47.810327172 +0800
++++ wide-dhcpv6-20080615/common.c	2017-10-27 19:41:18.052207230 +0800
+@@ -95,6 +95,7 @@
+ #include "zcfg_msg.h"
+ 
+ struct dhcp6c_Msg dhcp6cMsg = {0};
++struct dhcp6s_Msg dhcp6sMsg = {0};
+ //struct json_object *dhcp6cMsg = NULL;
+ 
+ #ifdef __linux__
+@@ -154,6 +155,39 @@
+ 		free(recvBuf);
+ 	}
+ 
++	return ret;
++}
++
++zcfgRet_t dhcp6sMsgSend(int msg_type, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	if((sendBuf = malloc(buf_size)) == NULL){
++		return ZCFG_INTERNAL_ERROR;
++	}
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_UDHCP6S;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		free(recvBuf);
++	}
++
+ 	return ret;
+ }
+ 
+Index: wide-dhcpv6-20080615/common.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.h	2017-10-27 09:09:47.810327172 +0800
++++ wide-dhcpv6-20080615/common.h	2017-10-27 19:42:56.180096340 +0800
+@@ -139,6 +139,26 @@
+ 	int eidtDomain;/*check send domain msg or not*/
+ };
+ 
++struct dhcp6s_Msg {
++	char ClientIPv6addr[49];
++	char ClientIPV6Linklocaladdr[49];
++	int ClientIPv6addrPltime;
++	int ClientIPv6addrVltime;
++	int ClientIPv6addrEntries;
++	int ClientIPv6prefixEntries;
++	char ClientIPv6clientID[48];
++	char ClientIPv6serverID[48];
++	char ClientIPv6elapsedtime[12];
++	char ClientIPv6Indentity[100];
++	char ClientIPv6Option[7];
++	int isIA_NA;
++	int ClientIPv6editAddr;/*check send addr msg or not */
++	char ClientIPv6pidfile[64];
++	int ClientIPv6eidtPid;/*check send Pid msg or not*/
++	int ClientIPv6release_flag;
++	int ClientIPv6deletAddr;/*check send release addr msg or not */
++};
++
+ extern int foreground;
+ extern int debug_thresh;
+ extern char *device;

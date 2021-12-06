@@ -1,0 +1,84 @@
+Index: dropbear-2012.55/Makefile.in
+===================================================================
+--- dropbear-2012.55.orig/Makefile.in	2018-01-03 21:27:06.639628317 +0800
++++ dropbear-2012.55/Makefile.in	2018-01-03 21:28:03.606501785 +0800
+@@ -97,6 +97,10 @@
+ 	CFLAGS += -DZYXEL_REMOTE_ACCESS_PRIVILEGE
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT),y)
++	CFLAGS += -DZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
++endif
++
+ # these are exported so that libtomcrypt's makefile will use them
+ export CC
+ export CFLAGS
+Index: dropbear-2012.55/svr-auth.c
+===================================================================
+--- dropbear-2012.55.orig/svr-auth.c	2018-01-03 21:27:06.639628317 +0800
++++ dropbear-2012.55/svr-auth.c	2018-01-03 21:28:49.827661795 +0800
+@@ -335,6 +335,30 @@
+ 	}
+ }
+ 
++#ifdef ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
++int ipComeFromWiFi(char *remoteIP)
++{
++	char cmd[256] = {0};
++	FILE *fp = NULL;
++	char *lst = calloc(16, sizeof(char));
++	int ret;
++
++	sprintf(cmd, "/tmp/searchIPFromWiFi.sh  %s\n", remoteIP);
++	system(cmd);
++
++	fp = fopen("/tmp/result", "r");
++	if(fp != NULL){
++		while((fgets(lst, 16, fp)) != NULL) {
++			sscanf(lst, "%d", &ret);
++		}
++
++		fclose(fp);
++	}
++	free(lst);
++
++	return ret;
++}
++#endif //ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
+ 
+ /* Check that the username exists, has a non-empty password, and has a valid
+  * shell.
+@@ -424,9 +448,19 @@
+ 			}
+ 			free(logGpObj);
+ 		}
++#ifdef ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
++
++		if (ipComeFromWiFi(remoAddr) == 1){ // Check WLAN
++			syslog(LOG_INFO, "SSH permission denied with WLAN connection.");
++			TRACE(("SSH permission denied with WLAN connection."));
++			return DROPBEAR_FAILURE;
++		}
++		
++#endif //ZYXEL_REMOMGMT_ONLY_HTTPS_ALLOWS_FOR_WLAN_CONNECT
++
+ #ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
+ 
+-		syslog(LOG_INFO, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN >> SSH!!!!");
++		//syslog(LOG_INFO, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN >> SSH!!!!");
+ 		//syslog(LOG_INFO, "Account privilege: get remoAddr = %s ", remoAddr);
+ 
+ 		// check remote IP v4/v6
+@@ -494,12 +528,9 @@
+ 		}
+ 		else if (addrType == AF_INET6){
+ 			//not support V6 for WIND Italy
+-			syslog(LOG_INFO, "Account privilege: %s remoAddr type = %d ", remoAddr, addrType);
+ 		}
+ 	    else{
+ 			//skip check unknow IP type
+-			syslog(LOG_INFO, "Account privilege: %s remoAddr type is invalid !!!! ", remoAddr);
+-			syslog(LOG_INFO, "Account privilege: Account:'%s' SSH permission denied.", username);
+ 	    }
+ 
+ #endif		

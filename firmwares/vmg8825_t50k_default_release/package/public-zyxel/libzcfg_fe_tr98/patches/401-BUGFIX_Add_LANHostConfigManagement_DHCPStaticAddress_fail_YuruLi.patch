@@ -1,0 +1,83 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2016-12-22 14:13:43.925688637 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2016-12-22 15:53:51.875218527 +0800
+@@ -2710,48 +2710,55 @@
+ {
+ 	zcfgRet_t ret;
+ 	char tr181Obj[32] = {0};
+-	char mappingPathName[32] = {0};
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};  /*tr98TmpName is used to look up mapping table*/
+-	objIndex_t objIid, ipIntfIid;
+ 	char *ptr = NULL;
+-	uint32_t  ipIntfOid = 0;
+-	rdm_IpIface_t *ipIntfObj = NULL;
+ 	rdm_Dhcpv4SrvPool_t *dhcpServPoolObj = NULL;
++	char ethLinkPathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char ipIntfPathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	objIndex_t dhcpServPoolIid;
++	bool found = false;
++	char tr181ObjName[64] = {0};
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".LANHostConfigManagement");
+ 	*ptr = '\0';
+ 
+-	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, ethLinkPathName)) != ZCFG_SUCCESS){
+ 		printf("98 to 181 Mapping Fail!!\n");
+ 		return ret;
+ 	}
++	else{
++		/* mappingPathName will be Ethernet.Link.i */
++		printf("TR181 object %s\n", ethLinkPathName);
++	}
++
++	if((ret =zcfgFeTr181IfaceStackHigherLayerGet(ethLinkPathName, ipIntfPathName)) != ZCFG_SUCCESS)
++		return ret;
+ 
+-	/*add object ' Device.DHCPv4.Server.Pool.i'*/
+-	IID_INIT(objIid);
+-	IID_INIT(ipIntfIid);
+-	while(zcfgFeObjStructGetNext(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void **)&dhcpServPoolObj) == ZCFG_SUCCESS){
+-		sprintf(tr181Obj, "Device.%s", dhcpServPoolObj->Interface);
+-		ipIntfOid = zcfgFeObjNameToObjId(tr181Obj, &ipIntfIid);
+-		if((ret = zcfgFeObjStructGet(RDM_OID_IP_IFACE, &ipIntfIid, (void **)&ipIntfObj)) == ZCFG_SUCCESS){
+-			if(!strcmp(ipIntfObj->LowerLayers, mappingPathName)){
+-				zcfgFeObjStructFree(dhcpServPoolObj);
+-				zcfgFeObjStructFree(ipIntfObj);
+-				break;
+-			}
+-			else
+-				zcfgFeObjStructFree(ipIntfObj);
+-		}		
+-		zcfgFeObjStructFree(dhcpServPoolObj);
++	IID_INIT(dhcpServPoolIid);
++	while(zcfgFeObjStructGetNext(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, (void **)&dhcpServPoolObj) == ZCFG_SUCCESS){
++		if (!strcmp(dhcpServPoolObj->Interface, ipIntfPathName)){
++			zcfgFeObjStructFree(dhcpServPoolObj);
++			found = true;
++			break;
++		}
++		else
++			zcfgFeObjStructFree(dhcpServPoolObj);
++	}	
++
++	if(!found){
++		zcfgLog(ZCFG_LOG_ERR, "%s : No such object 'DHCPv4.Server.Pool.i'\n", __FUNCTION__);
++		return  ZCFG_INTERNAL_ERROR;
+ 	}
+ 
+ 	/*add object ' Device.DHCPv4.Server.Pool.i.StaticAddress.i '*/
+-	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &objIid, NULL)) != ZCFG_SUCCESS){
++	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV4_SRV_POOL_STATIC_ADDR, &dhcpServPoolIid, NULL)) != ZCFG_SUCCESS){
+ 		printf("Add Instance Fail!!\n");
+ 		return ret;
+ 	}
+ 
+-	*idx = objIid.idx[1];
++	*idx = dhcpServPoolIid.idx[1];
++
+ 	return ZCFG_SUCCESS;
+ }
+ 

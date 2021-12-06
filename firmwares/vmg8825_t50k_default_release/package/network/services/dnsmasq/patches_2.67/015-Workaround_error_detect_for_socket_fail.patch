@@ -1,0 +1,222 @@
+Index: dnsmasq-2.67/src/dnsmasq.c
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.c	2015-10-28 22:55:50.356457337 +0800
++++ dnsmasq-2.67/src/dnsmasq.c	2015-10-28 22:56:44.478460913 +0800
+@@ -846,6 +846,9 @@
+ 	{
+ 	  /* otherwise undefined after error */
+ 	  FD_ZERO(&rset); FD_ZERO(&wset); FD_ZERO(&eset);
++#ifdef ZYXEL_PATCH 	  
++	  checkListenerSock();
++#endif
+ 	}
+ 
+       now = dnsmasq_time();
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2015-10-28 22:55:50.452457336 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2015-11-05 13:55:28.914663975 +0800
+@@ -1378,4 +1378,9 @@
+ void sendLeaseMessageToESMD(int, struct dhcp_lease *, const char*);
+ void sendCritMessageToESMD(struct CritDhcpInfo *crit);
+ void pruneCritReqList(void);
++int checkListenerSock();
++#if 0
++int chkClose(int fd, const char *func, const int line);
++#define close(fd) chkClose(fd, __FUNCTION__, __LINE__)
++#endif
+ #endif
+\ No newline at end of file
+Index: dnsmasq-2.67/src/extern.c
+===================================================================
+--- dnsmasq-2.67.orig/src/extern.c	2015-10-28 22:55:50.428457336 +0800
++++ dnsmasq-2.67/src/extern.c	2015-11-05 13:55:36.253867552 +0800
+@@ -1,6 +1,23 @@
+ #ifdef ZYXEL_PATCH
+ #include <stdio.h>
+ #include <string.h>
++#include <time.h>
++#if 0
++int __test_sock_fd = -1;
++
++int chkClose(int fd, const char *func, const int line){
++	if(fd == __test_sock_fd){
++		time_t curtime;
++		FILE *fp = fopen("/tmp/dnsmasq_error", "a+");
++		if(fp) {
++			time(&curtime);
++			fprintf(fp, "%s:%d: close general socket(%d) >>> %s", func, line, fd, ctime(&curtime));
++			fclose(fp);
++		}
++	}
++	return close(fd);
++}
++#endif
+ #include "dnsmasq.h"
+ 
+ /*ZyXEL zcfg*/
+@@ -8,6 +25,103 @@
+ #include "zcfg_debug.h"
+ #include "zcfg_msg.h"
+ 
++int checkSocketAlive(int sock)
++{
++	int error_code = -1, retval;
++	int error_code_size = sizeof(error_code);
++	//WPRINT(W_DEBUG,"Enter.\n");
++	
++	retval = getsockopt(sock, SOL_SOCKET, SO_ERROR, &error_code, &error_code_size);
++	
++	//WPRINT(W_DEBUG,"error_code = %d.\n", error_code);
++
++	if(retval != 0 || error_code != 0) {
++		return -1;
++	}
++	else return 0;
++}
++
++extern struct listener *create_listeners(union mysockaddr *addr, int do_tftp, int dienow);
++int checkListenerSock(){
++	int err;
++	struct listener *listener, *l = NULL;
++	union mysockaddr addr;
++	FILE *fp = fopen("/dev/console", "w");
++
++	for (listener = daemon->listeners; listener; listener = listener->next)
++	{
++		err = 0;
++		if(listener->fd != -1){
++			if(checkSocketAlive(listener->fd) < 0){
++				if(fp) fprintf(fp, "%s: listener->fd(%d) is fail.....\n", __FUNCTION__, listener->fd);
++				err = 1;
++				listener->fd = -1;
++			}
++		}
++	
++		if(err == 0 && listener->tcpfd != -1){
++			if(checkSocketAlive(listener->tcpfd) < 0){
++				if(fp) fprintf(fp, "%s: listener->tcpfd (%d) is fail.....\n", __FUNCTION__, listener->tcpfd);
++				err = 1;
++				listener->tcpfd = -1;
++			}
++		}
++		
++		if(err){
++#if 0		
++			__test_sock_fd = -1;
++#endif			
++			if(listener->fd != -1){ close(listener->fd);}
++			if(listener->tcpfd != -1){ close(listener->tcpfd);}
++			if(listener->tftpfd != -1){ close(listener->tftpfd);}
++
++			listener->fd = -1; listener->tcpfd = -1; listener->tftpfd = -1;
++			
++			if(listener->iface){
++				memcpy(&addr, &(listener->iface->addr), sizeof(addr));
++			}
++			else{
++				memset(&addr, 0, sizeof(addr));
++				if(listener->family == AF_INET){
++#ifdef HAVE_SOCKADDR_SA_LEN
++					addr.in.sin_len = sizeof(addr.in);
++#endif
++					addr.in.sin_family = AF_INET;
++					addr.in.sin_addr.s_addr = INADDR_ANY;
++					addr.in.sin_port = htons(daemon->port);
++				}
++#ifdef HAVE_IPV6
++				else{
++#ifdef HAVE_SOCKADDR_SA_LEN
++					addr.in6.sin6_len = sizeof(addr.in6);
++#endif
++					addr.in6.sin6_family = AF_INET6;
++					addr.in6.sin6_addr = in6addr_any;
++					addr.in6.sin6_port = htons(daemon->port);
++				}
++#else
++				else continue;
++#endif
++			}
++			
++			l = create_listeners(&addr, !!option_bool(OPT_TFTP), 1);
++			if(l){
++				listener->fd = l->fd;
++				listener->tcpfd = l->tcpfd;
++				listener->tftpfd = l->tftpfd;
++				free(l); l=NULL;
++				
++				if(fp) fprintf(fp, "%s: reopen socket(%d).....\n", __FUNCTION__, listener->fd);
++#if 0
++				__test_sock_fd = listener->fd;
++#endif
++			}
++		}
++	}
++	
++	if(fp) fclose(fp);
++	return 0;
++}
+ 
+ void dnsmasq_eid_register( void ){	
+ 	zcfgRet_t retzcfg;
+@@ -19,11 +133,10 @@
+ 	retzcfg = zcfgMsgServerInit();
+ 	if(retzcfg != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "Dnsmasq message  server init fail\n");
+-		return 0;
+ 	}
+ }
+ 
+-char *getPhyIfname(const ifname, const char *macaddr, char *reply){
++char *getPhyIfname(const char *ifname, const char *macaddr, char *reply){
+ 	static char phyifname[20];
+ 	char tmp[256] = {0};
+ 	FILE *fp = NULL;
+Index: dnsmasq-2.67/src/network.c
+===================================================================
+--- dnsmasq-2.67.orig/src/network.c	2015-10-28 22:55:50.384457337 +0800
++++ dnsmasq-2.67/src/network.c	2015-11-05 13:56:43.303813326 +0800
+@@ -707,8 +707,11 @@
+  
+   return if_index;
+ }
+-      
++#ifdef ZYXEL_PATCH
++struct listener *create_listeners(union mysockaddr *addr, int do_tftp, int dienow)
++#else
+ static struct listener *create_listeners(union mysockaddr *addr, int do_tftp, int dienow)
++#endif
+ {
+   struct listener *l = NULL;
+   int fd = -1, tcpfd = -1, tftpfd = -1;
+@@ -752,11 +755,16 @@
+       l->fd = fd;
+       l->tcpfd = tcpfd;
+       l->tftpfd = tftpfd;
++#ifdef ZYXEL_PATCH
++	  l->iface = NULL;
++#endif	  
+     }
+ 
+   return l;
+ }
+-
++#if 0 //def ZYXEL_PATCH
++extern int __test_sock_fd;
++#endif
+ void create_wildcard_listeners(void)
+ {
+   union mysockaddr addr;
+@@ -771,7 +779,11 @@
+   addr.in.sin_port = htons(daemon->port);
+ 
+   l = create_listeners(&addr, !!option_bool(OPT_TFTP), 1);
+-
++#if 0 //def ZYXEL_PATCH
++  if(l){
++	 __test_sock_fd = l->fd;
++  }
++#endif
+ #ifdef HAVE_IPV6
+   memset(&addr, 0, sizeof(addr));
+ #  ifdef HAVE_SOCKADDR_SA_LEN

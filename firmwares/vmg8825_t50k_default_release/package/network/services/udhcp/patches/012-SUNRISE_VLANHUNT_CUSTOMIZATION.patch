@@ -1,0 +1,54 @@
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2014-09-25 13:41:51.774447660 +0800
++++ udhcp-0.9.8/Makefile	2014-09-25 13:41:51.958447658 +0800
+@@ -77,6 +77,9 @@
+ ifneq ($(strip $(SUNRISE_RELEASE_DHCP_PPP_BEFORE_IFDOWN)),)
+ CFLAGS += -DSUNRISE_RELEASE_DHCP_PPP_BEFORE_IFDOWN
+ endif
++ifneq ($(strip $(SUNRISE_VLANHUNT_CUSTOMIZATION)),)
++CFLAGS += -DSUNRISE_VLANHUNT_CUSTOMIZATION
++endif
+ 
+ all: clean $(EXEC1) $(EXEC2) $(EXEC3)
+ 	$(STRIP) --remove-section=.note --remove-section=.comment $(EXEC1) $(EXEC2) $(EXEC3)
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2014-09-25 13:41:51.866447659 +0800
++++ udhcp-0.9.8/dhcpc.c	2014-09-25 13:43:10.746533268 +0800
+@@ -634,6 +634,21 @@
+ 			case INIT_SELECTING:
+ 				/* Must be a DHCPOFFER to one of our xid's */
+ 				if (*message == DHCPOFFER) {
++#ifdef SUNRISE_VLANHUNT_CUSTOMIZATION
++					temp = get_option(&packet, 0x2b);
++					if(vlanId != -1){
++						if (temp != NULL)
++							dhcpMsgSend(ZCFG_MSG_VLAN_HUNT_SUCCESS, ZCFG_EID_VLAN_AUTOHUNT, 0, NULL);
++						else
++							dhcpMsgSend(ZCFG_MSG_VLAN_HUNT_TERMINATE, ZCFG_EID_VLAN_AUTOHUNT, 0, NULL);
++						exit_client(0);
++					}
++					if ( (options[last_option_index - 2].flags & OPTION_REQ) && temp == NULL && strstr(client_config.interface, "eth") ){
++						DEBUG(LOG_ERR, "Reveive DHCP OFFER without option43 on Eth interface: %s", client_config.interface);
++						DEBUG(LOG_ERR, "Stop dhcp");
++						exit_client(0);
++					}
++#endif
+ 					if ((temp = get_option(&packet, DHCP_SERVER_ID))) {
+ 						memcpy(&server_addr, temp, 4);
+ 						xid = packet.xid;
+@@ -691,11 +706,13 @@
+ 					timeout = t1 + start;
+ 					requested_ip = packet.yiaddr;
+ #if 1 /* vlan autohunt, ZyXEL, John */
++#ifndef SUNRISE_VLANHUNT_CUSTOMIZATION
+ 					if(vlanId != -1){
+ 						dhcpMsgSend(ZCFG_MSG_VLAN_HUNT_SUCCESS, ZCFG_EID_VLAN_AUTOHUNT, 0, NULL);
+ 						exit_client(0);
+ 					}
+ #endif
++#endif
+ 					run_script(&packet,
+ 						   ((state == RENEWING || state == REBINDING) ? "renew" : "bound"));
+ 

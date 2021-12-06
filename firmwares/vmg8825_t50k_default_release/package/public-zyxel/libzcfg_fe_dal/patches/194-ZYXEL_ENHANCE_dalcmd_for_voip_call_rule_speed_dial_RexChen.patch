@@ -1,0 +1,152 @@
+Index: libzcfg_fe_dal-1.0/voip/callRule/zcfg_fe_dal_call_rule_speed_dial.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/callRule/zcfg_fe_dal_call_rule_speed_dial.c	2017-05-24 20:54:53.806043043 +0800
++++ libzcfg_fe_dal-1.0/voip/callRule/zcfg_fe_dal_call_rule_speed_dial.c	2017-05-24 20:56:54.073041500 +0800
+@@ -15,7 +15,9 @@
+ #define CLEANALL		1
+ 
+ dal_param_t VOIP_CALLRULE_param[]={
+-	{"OrigNumber",								dalType_string,	0,	0,	NULL},
++	{"CleanAll",								dalType_boolean,	0,	0,	NULL},
++	{"Index",									dalType_int,		0,	0,	NULL},
++	{"Number",									dalType_string,		0,	0,	NULL},
+ 	{"Name",									dalType_string,	0,	0,	NULL},
+ 	{NULL,										0,				0,	0,	NULL},
+ };
+@@ -23,6 +25,23 @@
+ struct json_object *multiJobj;
+ struct json_object *speedDailListJobj;
+ 
++void zcfgFeDalShowVoipCallRule(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-10s %-20s %-10s \n","Index","Number","Description");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("%-10s %-20s %-10s \n",
++			json_object_get_string(json_object_object_get(obj, "Index")),
++			json_object_get_string(json_object_object_get(obj, "OrigNumber")),
++			json_object_get_string(json_object_object_get(obj, "Name")));
++	}
++}
+ 
+ objIndex_t CallRuleIid = {0};
+ 
+@@ -46,7 +65,7 @@
+ zcfgRet_t zcfgFeDalCallRuleObjEditIidGet(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+-	cleanAll = json_object_get_boolean(json_object_object_get(Jobj, "cleanAll"));
++	cleanAll = json_object_get_boolean(json_object_object_get(Jobj, "CleanAll"));
+ 	if(cleanAll == TRUE){
+ 		callRuleType = CLEANALL;
+ 	}else{
+@@ -106,7 +125,7 @@
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_SPEED_DIAL_BOOK_LIST, &CallRuleIid, &speedDailListJobj) == ZCFG_SUCCESS) {
+ 		index = CallRuleIid.idx[1];
+ 		callRule = json_object_array_get_idx(Jobj, index-1);
+-		OrigNumber = json_object_get_string(json_object_object_get(callRule, "OrigNumber"));
++		OrigNumber = json_object_get_string(json_object_object_get(callRule, "Number"));
+ 		Name = json_object_get_string(json_object_object_get(callRule, "Name"));
+ 		json_object_object_add(speedDailListJobj, "OrigNumber", json_object_new_string(OrigNumber));
+ 		json_object_object_add(speedDailListJobj, "Name", json_object_new_string(Name));
+@@ -128,8 +147,13 @@
+ zcfgRet_t zcfgFeDalVoipCallRuleEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	json_object *speedDialObj = NULL;
+-	//printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	int idx = 0;
++	char speernum[8] = {0};
++	objIndex_t speedDialLid = {0};
++	const char *number = NULL;
++	const char *name = NULL;
+ 
++	if(json_object_object_get(Jobj, "type") || json_object_object_get(Jobj, "CleanAll")){	// for GUI 
+ 	initSpeedDialGlobalObjects();
+ 	zcfgFeDalCallRuleObjEditIidGet(Jobj);
+ 	multiJobj = zcfgFeJsonObjNew();
+@@ -159,6 +183,49 @@
+ 	freeAllSpeedDialObjects();
+ 	return ret;
+ }
++	else if(json_object_object_get(Jobj, "Index")){	// for dalcmd
++		idx = json_object_get_int(json_object_object_get(Jobj, "Index"));
++		if(idx < 10)
++			sprintf(speernum,"\#0%d",idx);
++		else
++			sprintf(speernum,"\#%d",idx);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_SPEED_DIAL_BOOK_LIST, &speedDialLid, &speedDialObj) == ZCFG_SUCCESS){
++			if(!strcmp(json_object_get_string(json_object_object_get(speedDialObj, "SpeedNumber")),speernum)){
++				number = json_object_get_string(json_object_object_get(Jobj, "Number"));
++				name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++				if(json_object_object_get(Jobj, "Number"))
++					json_object_object_add(speedDialObj, "OrigNumber", json_object_new_string(number));
++				if(json_object_object_get(Jobj, "Name"))
++					json_object_object_add(speedDialObj, "Name", json_object_new_string(name));
++				zcfgFeObjJsonSet(RDM_OID_SPEED_DIAL_BOOK_LIST, &speedDialLid, speedDialObj, NULL);
++				zcfgFeJsonObjFree(speedDialObj);
++				break;
++			}
++			zcfgFeJsonObjFree(speedDialObj);
++		}
++		return ret;
++	}
++	
++}
++
++zcfgRet_t zcfgFeDalVoipCallRuleGet(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *booklistJobj = NULL;
++	objIndex_t booklistLid = {0};
++	int idx = 1;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_SPEED_DIAL_BOOK_LIST, &booklistLid, &booklistJobj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index", json_object_new_int(idx));
++		json_object_object_add(paramJobj, "OrigNumber", JSON_OBJ_COPY(json_object_object_get(booklistJobj, "OrigNumber")));
++		json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(booklistJobj, "Name")));
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(booklistJobj);
++		idx++;
++	}
++	return ret;
++}
++
+ 
+ zcfgRet_t zcfgFeDalVoipCallRule(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+@@ -170,6 +237,8 @@
+ 	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalVoipCallRuleEdit(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDalVoipCallRuleGet(Jobj, NULL);
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-24 20:54:54.406043032 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-24 20:56:19.533041500 +0800
+@@ -191,6 +191,7 @@
+ extern void zcfgFeDalShowPolicyRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallDos(struct json_object *Jarray);
+ extern void zcfgFeDalShowDnsRoute(struct json_object *Jarray);
++extern void zcfgFeDalShowVoipCallRule(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+@@ -249,7 +250,7 @@
+ {"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion,NULL,						"edit",				""},//Phone
+ {"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice,NULL,					"get|edit",			""},//Phone
+ {"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT,NULL,						"edit",				""},//Phone
+-{"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	NULL,						"edit",				""},//Call_Rule
++{"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	zcfgFeDalShowVoipCallRule,	"get|edit",			"Call_Rule"},//Call_Rule
+ {"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock,NULL,						"edit",				""},//Call_Rule
+ #endif
+ {"EMAIL",			MAIL_NOTIFICATION_param,zcfgFeDalMailNotification,NULL,					"add|delete", 		""},//Email_Notify

@@ -1,0 +1,337 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2019-05-17 20:34:08.684029144 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2019-05-17 20:36:48.865354808 +0800
+@@ -3,7 +3,7 @@
+ LIB_PATH = -L$(USRLIBDIR) -L$(INSTALL_DIR)/lib/public -L$(INSTALL_DIR)/lib/private
+ LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+-OBJ_FILES = wanDev.o wanDev_api.o zyExt.o diag.o devInfo.o devTime.o root.o mgmtSrv.o lanDev.o l2bridge.o l3fwd.o lanConfSec.o firewall.o schedule.o qos.o voice.o ipv6Spec.o xgre.o
++OBJ_FILES = wanDev.o wanDev_api.o zyExt.o diag.o devInfo.o devTime.o root.o mgmtSrv.o lanDev.o l2bridge.o l3fwd.o lanConfSec.o firewall.o schedule.o qos.o voice.o ipv6Spec.o xgre.o ispService.o
+ 
+ SSL_LIBS = -lssl -lcrypto
+ LINK_LIBS += $(SSL_LIBS)
+@@ -274,6 +274,10 @@
+ CFLAGS += -DZYXEL_ACS_WPS_ACTIVATION
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_AVAST_AGENT_SUPPORT),y)
++CFLAGS += -DAVAST_AGENT_PACKAGE
++endif
++
+ .PHONY : libzcfg_fe_tr98
+ 
+ all: clean libzcfg_fe_tr98
+Index: libzcfg_fe_tr98-1.0/ispService.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/ispService.c	2019-05-17 19:56:59.319967700 +0800
+@@ -0,0 +1,230 @@
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcmd_schema.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_msg.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_tr98.h"
++#include "ispService_parameter.h"
++
++extern tr98Object_t tr98Obj[];
++
++/* InternetGatewayDevice.Services.IspServices.i */
++
++zcfgRet_t ispSrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char ispSrvObjFormate[128] = "InternetGatewayDevice.Services.IspServices.%hhu";
++	uint32_t  ispSrvOid = 0;
++	objIndex_t ispSrvIid;
++	struct json_object *ispSrvObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++#ifdef AVAST_AGENT_PACKAGE //Avast Agent
++	char buffer[1024] = {0};
++	char sysCmd[512] = {0};
++	char *scriptName = NULL;
++	FILE *fp = NULL;
++#endif
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(ispSrvIid);
++	ispSrvIid.level= 1;
++	if(sscanf(tr98FullPathName, ispSrvObjFormate, ispSrvIid.idx) != 1) return ZCFG_INVALID_OBJECT;	
++	ispSrvOid = RDM_OID_PACKAGE;
++	
++	if((ret = feObjJsonGet(ispSrvOid, &ispSrvIid, &ispSrvObj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	/*fill up tr98 PACKAGE object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(ispSrvObj, paramList->name);
++		if(paramValue != NULL) {	
++#ifdef AVAST_AGENT_PACKAGE //Avast Agent
++			if (strcmp(paramList->name, "Script") == 0){
++				scriptName = json_object_get_string(paramValue);
++				sprintf(sysCmd, "sh /misc/etc/init.d/%s status", scriptName);
++			}
++			if (strcmp(paramList->name, "Status") == 0){
++				if((fp = popen(sysCmd, "r")) != NULL && fgets(buffer, sizeof(buffer), fp) != NULL) {
++					printf("zcfgFeDalPackage3rdPartyGet : syscmd get status buffer: %s\n", buffer);
++				}
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(buffer));
++			}
++			else{
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));	
++			}
++#else
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++#endif
++			paramList++;
++			continue;
++		}
++		/*Not defined in tr181, give it a default value*/
++		zcfgLog(ZCFG_LOG_DEBUG, "Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++	json_object_put(ispSrvObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t ispSrvObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	char ispSrvObjFormate[128] = "InternetGatewayDevice.Services.IspServices.%hhu";
++	uint32_t  ispSrvOid = 0;
++	objIndex_t ispSrvIid;
++	struct json_object *ispSrvObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++	bool bEnable = false;
++#ifdef AVAST_AGENT_PACKAGE //WIND request : enable agent and "Hash" can not be NULL
++	char *pHash = NULL;
++#endif
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(ispSrvIid);
++	ispSrvIid.level= 1;
++	if(sscanf(tr98FullPathName, ispSrvObjFormate, ispSrvIid.idx) != 1) return ZCFG_INVALID_OBJECT;	
++	ispSrvOid = RDM_OID_PACKAGE;
++
++	if((ret = zcfgFeObjJsonGet(ispSrvOid, &ispSrvIid, &ispSrvObj)) != ZCFG_SUCCESS)
++		return ret;
++	if(multiJobj){
++		tmpObj = ispSrvObj;
++		ispSrvObj = NULL;
++		ispSrvObj = zcfgFeJsonMultiObjAppend(ispSrvOid, &ispSrvIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(ispSrvObj, paramList->name);
++			if (strcmp(paramList->name, "Enable") == 0){
++				bEnable = json_object_get_boolean(paramValue);
++			}
++#ifdef AVAST_AGENT_PACKAGE //WIND request : enable agent and "Hash" can not be NULL
++			if (strcmp(paramList->name, "Hash") == 0){
++				pHash = json_object_get_string(paramValue);
++			}
++#endif
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(ispSrvObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				if (strcmp(paramList->name, "Enable") == 0){
++					printf("%s : paramList->name >> %s = %d  \n", __FUNCTION__, paramList->name, bEnable);
++				}
++				paramList++;
++				continue;
++			}
++		}
++		paramList++;	
++	} /*Edn while*/
++	
++	if (bEnable == true){
++		SetParenCtlDisableForce();
++	}
++
++#ifdef AVAST_AGENT_PACKAGE //WIND request : enable agent and "Hash" can not be NULL
++	if ((strlen(pHash) == 0) && (bEnable == true)){
++		printf("%s : Hash is NULL >> %s = %d  \n", __FUNCTION__, paramList->name, bEnable);
++		json_object_object_add(ispSrvObj, "Enable", json_object_new_boolean(false));
++	}
++#endif
++
++	/*Set */
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(ispSrvOid, &ispSrvIid, ispSrvObj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(ispSrvObj);
++			return ret;
++		}
++		json_object_put(ispSrvObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t ispSrvObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	uint32_t  ispSrvOid = 0;
++	objIndex_t ispSrvIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(ispSrvIid);
++	ispSrvOid = RDM_OID_PACKAGE;
++
++	if((ret = zcfgFeObjStructAdd(ispSrvOid, &ispSrvIid, NULL)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG,"%s : Add IspServices Fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	*idx = ispSrvIid.idx[0];
++	
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t ispSrvObjDel(char *tr98FullPathName)
++{
++	zcfgRet_t ret;
++	char ispSrvObjFormate[128] = "InternetGatewayDevice.Services.IspServices.%hhu";
++	uint32_t  ispSrvOid = 0;
++	objIndex_t ispSrvIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(ispSrvIid);
++	ispSrvIid.level= 1;
++	if(sscanf(tr98FullPathName, ispSrvObjFormate, ispSrvIid.idx) != 1) return ZCFG_INVALID_OBJECT;	
++	ispSrvOid = RDM_OID_PACKAGE;
++
++
++	ret = zcfgFeObjStructDel(ispSrvOid, &ispSrvIid, NULL);
++	if (ret != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG, "%s : Delete IspServices.%hhu Fail\n", __FUNCTION__, ispSrvIid.idx[0]);
++	}
++
++	return ret;
++}
++
++void SetParenCtlDisableForce(){
++	printf("Enter : %s\n", __FUNCTION__);
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	objIndex_t objIid = {0};
++	uint32_t  parenCtlOid = 0;
++	struct json_object *paCtlJobj = NULL;
++	struct json_object *tmpObj = NULL;
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PAREN_CTL, &objIid, &paCtlJobj)) != ZCFG_SUCCESS){
++		return;
++	}
++	
++	json_object_object_add(paCtlJobj, "Enable", json_object_new_boolean(false));
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_PAREN_CTL, &objIid, paCtlJobj, NULL)) != ZCFG_SUCCESS ){
++		json_object_put(paCtlJobj);
++		return;
++	}
++	json_object_put(paCtlJobj);
++
++}
++
+Index: libzcfg_fe_tr98-1.0/ispService.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/ispService.h	2019-05-17 19:56:59.323967700 +0800
+@@ -0,0 +1,10 @@
++/*Parameter*/
++extern tr98Parameter_t para_IspSrv[];
++
++/*Handler Function*/
++extern zcfgRet_t ispSrvObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t ispSrvObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t ispSrvObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t ispSrvObjDel(char *tr98FullPathName);
++
++void SetParenCtlDisableForce();
+Index: libzcfg_fe_tr98-1.0/ispService_parameter.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_tr98-1.0/ispService_parameter.h	2019-05-17 19:56:59.355967700 +0800
+@@ -0,0 +1,12 @@
++tr98Parameter_t para_IspSrv[] = {
++	{ "Name", PARAMETER_ATTR_READONLY, 32, json_type_string},
++	{ "Version", PARAMETER_ATTR_WRITE, 32, json_type_string},
++	{ "Script", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "Data", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "FixCustID", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "Hash", PARAMETER_ATTR_WRITE, 256, json_type_string},
++	{ "Status", PARAMETER_ATTR_WRITE, 64, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2019-05-17 20:34:08.684029144 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2019-05-17 20:37:19.428541029 +0800
+@@ -25,6 +25,7 @@
+ #ifdef ONECONNECT
+ #include "oneConnect.h"
+ #endif
++#include "ispService.h"
+ #include "ipv6Spec.h"
+ #ifdef ZYXEL_GRE_SUPPORT
+ #include "xgre.h"
+@@ -103,6 +106,9 @@
+ //{e_TR98_VOICE_FXO                           , &tr98Obj[e_TR98_VOICE_FXO                           -e_TR98_START]},
+ //{e_TR98_VOICE_FXO_PORT                      , &tr98Obj[e_TR98_VOICE_FXO_PORT                      -e_TR98_START]},
+ #endif
++#ifdef AVAST_AGENT_PACKAGE
++{e_TR98_ISP_SERVICE             , &tr98Obj[e_TR98_ISP_SERVICE             -e_TR98_START]},
++#endif
+ {e_TR98_CAPB                    , &tr98Obj[e_TR98_CAPB                    -e_TR98_START]},
+ {e_TR98_PERF_DIAG               , &tr98Obj[e_TR98_PERF_DIAG               -e_TR98_START]},
+ {e_TR98_DEV_INFO                , &tr98Obj[e_TR98_DEV_INFO                -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2019-05-17 20:34:08.684029144 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2019-05-17 20:37:05.911604305 +0800
+@@ -46,6 +46,9 @@
+ #define TR98_VOICE_PHONE_BOOK                     "InternetGatewayDevice.Services.VoiceService.i.X_ZYXEL_VoicePhoneBook.i"
+ #define TR98_VOICE_FXO                            "InternetGatewayDevice.Services.VoiceService.i.X_ZYXEL_FXO"
+ #define TR98_VOICE_FXO_PORT                       "InternetGatewayDevice.Services.VoiceService.i.X_ZYXEL_FXO.Port.i"
++#ifdef AVAST_AGENT_PACKAGE
++#define TR98_ISP_SERVICE                          "InternetGatewayDevice.Services.IspServices.i"
++#endif
+ #define TR98_CAPB                     "InternetGatewayDevice.Capabilities"
+ #define TR98_PERF_DIAG                "InternetGatewayDevice.Capabilities.PerformanceDiagnostic"
+ #define TR98_DEV_INFO                 "InternetGatewayDevice.DeviceInfo"
+@@ -407,6 +410,9 @@
+ //{TR98_VOICE_FXO                         },
+ //{TR98_VOICE_FXO_PORT                    },
+ #endif
++#ifdef AVAST_AGENT_PACKAGE
++{TR98_ISP_SERVICE,				ATTR_INDEX_CREA,para_IspSrv,		    ispSrvObjGet, 		 ispSrvObjSet,		   ispSrvObjAdd,   ispSrvObjDel,  NULL, NULL, NULL},
++#endif
+ {TR98_CAPB,                     0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_PERF_DIAG,                0,              para_PerpDiag,          perfDiagObjGet,          NULL,                   NULL,             NULL,            NULL},
+ {TR98_DEV_INFO,                 0,              para_DevInfo,           devInfoObjGet,           devInfoObjSet,          NULL,             NULL,            devInfoObjNotify, devInfoObjAttrGet, devInfoObjAttrSet},

@@ -1,0 +1,179 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2019-02-13 16:08:43.165427074 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2019-02-18 15:07:52.123511278 +0800
+@@ -646,6 +646,10 @@
+ 	objIndex_t iid;	
+ 	struct json_object *devInfoObj = NULL, *sysInfoObj = NULL, *hostObj = NULL; 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++    char RdpaWanType[16] = {0};
++    char WanRate_RX[8] = {0};
++    char WanRate_TX[8] = {0};
++    const char *optStatus = NULL;
+ 
+ 	IID_INIT(iid);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_DEV_INFO, &iid, &devInfoObj)) != ZCFG_SUCCESS)
+@@ -687,6 +691,56 @@
+ 	IID_INIT(iid);
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_OPT_INTF, &iid, &optIbtfObj) == ZCFG_SUCCESS) {
+ 		json_object_array_add(optIntfJarray, optIbtfObj);
++#if defined(CONFIG_BCM96858)
++        optStatus=json_object_get_string (json_object_object_get(optIbtfObj, "Status"));
++        if (optStatus == NULL)
++        {
++			optStatus = "";
++		}
++        if (strcmp(optStatus, "Up") == 0)
++        {
++            FILE *fp = NULL;
++            system("pspctl dump RdpaWanType > /tmp/pspctl_wanType");
++            fp = fopen("/tmp/pspctl_wanType", "r");
++			if (fp)
++            {
++                char wantype[16] = {0};
++				fread(wantype, 1, sizeof(wantype) - 1, fp);
++                if (strncmp(wantype, "XGS", 3) == 0)
++                {
++                    strcpy(RdpaWanType, "XGSPON");
++                }
++                else
++                {
++                    strcpy(RdpaWanType, "Unknown");
++                }
++				fclose(fp);
++			}
++            
++            system("pspctl dump WanRate > /tmp/pspctl_wanRate");
++            fp = fopen("/tmp/pspctl_wanRate", "r");
++			if (fp)
++            {
++                char wanrate[8] = {0};
++				fread(wanrate, 1, sizeof(wanrate) - 1, fp);
++                if (strncmp(wanrate, "1010", 4) == 0)
++                {
++                    strcpy(WanRate_RX, "10Gbps");
++                    strcpy(WanRate_TX, "10Gbps");
++                }
++                else
++                {
++                    strcpy(WanRate_RX, "-1");
++                    strcpy(WanRate_TX, "-1");
++                }
++				fclose(fp);
++			}
++        }
++#else
++    strcpy(RdpaWanType, "");
++    strcpy(WanRate_RX, "-1");
++    strcpy(WanRate_TX, "-1");
++#endif
+ 	}
+ 
+ 	wwanBackupJarray = json_object_new_array();
+@@ -763,6 +817,9 @@
+ 	json_object_object_add(statusJobj, "VoipProfInfo", voipProfJarray);
+ 	json_object_object_add(statusJobj, "VoipProfSIPInfo", voipProSIPfJarray);
+ 	json_object_object_add(statusJobj, "VoipLineInfo", voipLineJarray);
++    Jadds (statusJobj, "RdpaWanType", RdpaWanType);
++    Jadds (statusJobj, "WanRate_RX", WanRate_RX);
++    Jadds (statusJobj, "WanRate_TX", WanRate_TX);
+ 	
+ 	return ZCFG_SUCCESS;
+ 
+@@ -796,10 +853,17 @@
+ 	struct json_object *ethIfaceJarray = NULL, *ethwanIfaceObj = NULL;
+ 	struct json_object *dslChannelJarray = NULL, *dslChannelObj = NULL;
+ 	struct json_object *gponstatusObj = NULL;
++    struct json_object *optIntfJarray = NULL, *optIbtfObj = NULL;
+ 	objIndex_t iid;
+ 	int count = 0, maxBitRate = 0, len = 0, i;
+-	const char *lanport = NULL, *lanMacAddr = NULL, *duplexMode = NULL, *guestOperatingFrequencyBand = NULL, *mainOperatingFrequencyBand = NULL;
+-	char ethConnectionStatus[16] = {0};
++	const char *lanport = NULL, *lanMacAddr = NULL, *duplexMode = NULL, 
++               *guestOperatingFrequencyBand = NULL, *mainOperatingFrequencyBand = NULL,
++               *optStatus = NULL;
++	char ethConnectionStatus[16] = {0};  
++    char RdpaWanType[16] = {0};
++    char WanRate_RX[8] = {0};
++    char WanRate_TX[8] = {0};
++    
+ 	bool ethPortExist = false, MainSSID = false, Guest24GSSIDEnable = false, Main24GSSIDEnable = false, Guest5GSSIDEnable = false, Main5GSSIDEnable = false, GuestSSIDEnable = false, support24G = false, support5G = false;
+ 	
+ 	IID_INIT(iid);
+@@ -838,6 +902,62 @@
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_DSL_CHANNEL, &iid, &dslChannelObj) == ZCFG_SUCCESS) {
+ 		json_object_array_add(dslChannelJarray, dslChannelObj);
+ 	}
++    
++    optIntfJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_OPT_INTF, &iid, &optIbtfObj) == ZCFG_SUCCESS) {
++		json_object_array_add(optIntfJarray, optIbtfObj);
++#if defined(CONFIG_BCM96858)
++        optStatus=json_object_get_string (json_object_object_get(optIbtfObj, "Status"));
++        if (optStatus == NULL)
++        {
++			optStatus = "";
++		}
++        if (strcmp(optStatus, "Up") == 0)
++        {
++            FILE *fp = NULL;
++            system("pspctl dump RdpaWanType > /tmp/pspctl_wanType");
++            fp = fopen("/tmp/pspctl_wanType", "r");
++			if (fp)
++            {
++                char wantype[16] = {0};
++				fread(wantype, 1, sizeof(wantype) - 1, fp);
++                if (strncmp(wantype, "XGS", 3) == 0)
++                {
++                    strcpy(RdpaWanType, "XGSPON");
++                }
++                else
++                {
++                    strcpy(RdpaWanType, "Unknown");
++                }
++				fclose(fp);
++			}
++            
++            system("pspctl dump WanRate > /tmp/pspctl_wanRate");
++            fp = fopen("/tmp/pspctl_wanRate", "r");
++			if (fp)
++            {
++                char wanrate[8] = {0};
++				fread(wanrate, 1, sizeof(wanrate) - 1, fp);
++                if (strncmp(wanrate, "1010", 4) == 0)
++                {
++                    strcpy(WanRate_RX, "10Gbps");
++                    strcpy(WanRate_TX, "10Gbps");
++                }
++                else
++                {
++                    strcpy(WanRate_RX, "-1");
++                    strcpy(WanRate_TX, "-1");
++                }
++				fclose(fp);
++			}
++        }
++#else
++    strcpy(RdpaWanType, "");
++    strcpy(WanRate_RX, "-1");
++    strcpy(WanRate_TX, "-1");
++#endif            
++	}
+ 
+ 	ethnewObj = json_object_new_object();
+ 	IID_INIT(iid);
+@@ -933,9 +1053,13 @@
+ 	json_object_object_add(statusJobj, "WWANStatsInfo", wwanObj);
+ 	json_object_object_add(statusJobj, "LanInfo", ethIfaceJarray);
+ 	json_object_object_add(statusJobj, "DslChannelInfo", dslChannelJarray);	
++    json_object_object_add(statusJobj, "OptIntfInfo", optIntfJarray);
+ 	json_object_object_add(statusJobj, "GponStatsInfo", gponstatusObj);
+ 	Jaddi(statusJobj,"partctlNum",count);
+ 	Jaddb(statusJobj,"GuestSSIDEnable",GuestSSIDEnable);
++    Jadds (statusJobj, "RdpaWanType", RdpaWanType);
++    Jadds (statusJobj, "WanRate_RX", WanRate_RX);
++    Jadds (statusJobj, "WanRate_TX", WanRate_TX);
+ 
+ 	return ZCFG_SUCCESS;
+ 

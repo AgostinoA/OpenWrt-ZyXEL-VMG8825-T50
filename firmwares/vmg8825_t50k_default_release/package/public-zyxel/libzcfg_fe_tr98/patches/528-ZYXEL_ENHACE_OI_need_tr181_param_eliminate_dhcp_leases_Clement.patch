@@ -1,0 +1,142 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2017-12-18 11:04:37.043108710 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2017-12-18 11:49:31.483356500 +0800
+@@ -484,7 +484,13 @@
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL){
+-		/*Write parameter value from tr181 objects to tr98 object*/
++		if(!strcmp(paramList->name, "X_ZYXEL_DeleteAllLease")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(false));
++			paramList++;
++			continue;
++		}
++		
++		/*Write parameter value from tr181 objects to tr98 object*/ 	
+ 		paramValue = json_object_object_get(hostsObj, paramList->name);
+ 		if(paramValue != NULL){
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -871,6 +877,79 @@
+ }
+ 
+ #ifdef ZYXEL_ELIMINATE_DHCP_LEASE
++zcfgRet_t lanDevHostsObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *hostsObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_HOSTS, &objIid, &hostsObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = hostsObj;
++		hostsObj = NULL;
++		hostsObj = zcfgFeJsonMultiObjAppend(RDM_OID_HOSTS, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			if(!strcmp(paramList->name, "X_ZYXEL_DeleteAllLease")) {
++				objIndex_t hostIid;
++				struct json_object *hostObj = NULL;
++				IID_INIT(hostIid);
++				while((ret = zcfgFeObjJsonGetNext(RDM_OID_HOSTS_HOST, &hostIid, &hostObj)) == ZCFG_SUCCESS) 
++				{
++					paramValue = json_object_object_get(tr98Jobj, paramList->name);
++					//printf("X_ZYXEL_Global_IPv6Enable=%d\n",json_object_get_int(paramValue));
++					json_object_object_add(hostObj, "X_ZYXEL_DeleteLease", JSON_OBJ_COPY(paramValue));
++					ret = zcfgFeObjJsonSet(RDM_OID_HOSTS_HOST, &hostIid, hostObj, NULL);
++					if((ret != ZCFG_SUCCESS) && (ret != ZCFG_DELAY_APPLY)) {
++						json_object_put(hostObj);
++						return ret;
++					}
++					json_object_put(hostObj);
++				}
++			}
++			
++			tr181ParamValue = json_object_object_get(hostsObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(hostsObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_HOSTS, &objIid, hostsObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(hostsObj);
++			return ret;
++		}
++		json_object_put(hostsObj);
++	}
++	
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t lanDevHostObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2017-12-18 11:04:36.911106568 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2017-12-18 11:49:44.794704200 +0800
+@@ -47,6 +47,7 @@
+ 
+ extern zcfgRet_t lanDevHostObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ #ifdef ZYXEL_ELIMINATE_DHCP_LEASE
++extern zcfgRet_t lanDevHostsObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
+ extern zcfgRet_t lanDevHostObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
+ #endif
+ extern zcfgRet_t lanDevHostObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2017-12-18 11:04:36.983107736 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2017-12-18 11:49:55.463902000 +0800
+@@ -409,6 +409,9 @@
+ };
+ 
+ tr98Parameter_t para_Hosts[] = {
++#ifdef ZYXEL_ELIMINATE_DHCP_LEASE
++	{ "X_ZYXEL_DeleteAllLease", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++#endif
+ 	{ "HostNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+ };
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2017-12-18 11:04:37.059108969 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2017-12-18 11:50:10.167227200 +0800
+@@ -466,10 +466,11 @@
+ {TR98_PSK,                      ATTR_INDEXNODE, para_Psk,               lanDevWlanCfgPskObjGet,  lanDevWlanCfgPskObjSet, NULL,             NULL,            NULL},
+ //{TR98_AP_WMM_PARAM,             ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_STA_WMM_PARAM,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_HOSTS,                    0, para_Hosts,				lanDevHostsObjGet,			NULL,                   NULL,             NULL,            lanDevHostsObjNotify, NULL, lanDevHostsObjAttrSet},
+ #ifdef ZYXEL_ELIMINATE_DHCP_LEASE
++{TR98_HOSTS,                    0, para_Hosts,				lanDevHostsObjGet,			lanDevHostsObjSet,                   NULL,             NULL,            lanDevHostsObjNotify, NULL, lanDevHostsObjAttrSet},
+ {TR98_HOST,                     ATTR_INDEXNODE, para_Host,				lanDevHostObjGet,			lanDevHostObjSet,                   NULL,             NULL,            lanDevHostObjNotify, lanDevHostObjAttrGet, lanDevHostObjAttrSet},
+ #else
++{TR98_HOSTS,                    0, para_Hosts,				lanDevHostsObjGet,			NULL,                   NULL,             NULL,            lanDevHostsObjNotify, NULL, lanDevHostsObjAttrSet},
+ {TR98_HOST,                     ATTR_INDEXNODE, para_Host,				lanDevHostObjGet,			NULL,                   NULL,             NULL,            lanDevHostObjNotify, lanDevHostObjAttrGet, lanDevHostObjAttrSet},
+ #endif
+ #ifdef ONECONNECT

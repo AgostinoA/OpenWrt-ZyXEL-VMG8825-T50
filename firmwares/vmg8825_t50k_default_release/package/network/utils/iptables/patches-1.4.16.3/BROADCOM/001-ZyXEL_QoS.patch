@@ -1,0 +1,996 @@
+Index: iptables-1.4.16.3/extensions/libxt_AUTOMAP.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ iptables-1.4.16.3/extensions/libxt_AUTOMAP.c	2014-01-24 22:18:18.347081148 +0800
+@@ -0,0 +1,143 @@
++/* Shared library add-on to iptables to add CLASSIFY target support. */
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++
++//#include <iptables.h>
++//#include <linux/netfilter_ipv4/ip_tables.h>
++//#include <linux/netfilter_ipv4/ipt_AUTOMAP.h>
++#include <xtables.h>
++#include <linux/netfilter/x_tables.h>
++#include "../include/linux/netfilter/xt_AUTOMAP.h"
++//#include <linux/netfilter_ipv4/ipt_AUTOMAP.h>
++
++//#include <linux/types.h>
++//#include <linux/pkt_sched.h>
++
++/* Function which prints out usage message. */
++static void
++AUTOMAP_help(void)
++{
++	printf(
++"AUTOMAP options:\n"
++" --automap-type type\n"
++"				Auto priority mapping by defined type(1:802.1P 2:DSCP 4:IP Length)\n"
++/*
++" --automap-mark-or value\n"
++"				Mark value for auto priority mapping (It will mark value for each queue from value to value+7)\n"
++" --automap-dscp \n"
++"				802.1P  mapping to DSCP\n"
++" --automap-ethpri value\n"
++"				DSCP mapping to 802.1P\n"
++*/
++"\n");
++}
++
++static struct option opts[] = {
++	{ "automap-type", 1, 0, '1' },
++	//{ "automap-mark-or", 1, 0, '2' },	
++	//{ "automap-dscp", 0, 0, '3' },	
++	//{ "automap-ethpri", 0, 0, '4' },	
++	{ 0 }
++};
++
++/* Initialize the target. */
++static void
++AUTOMAP_init(struct xt_entry_target *t)
++{
++	struct xt_automap_target_info *aminfo
++		= (struct xt_automap_target_info *)t->data;
++
++	/* Setup default type	*/
++	aminfo->type=AUTOMAP_TYPE_PKTLEN;
++
++}
++
++static void
++parse_automap_type(const char *typestring, struct xt_automap_target_info *aminfo)
++{
++	int type;
++	type = strtol(typestring, NULL, 0);
++	if((type!=AUTOMAP_TYPE_DSCP)&&
++		(type!=AUTOMAP_TYPE_8021P)&&
++		(type!=AUTOMAP_TYPE_PKTLEN)){
++			xtables_error(PARAMETER_PROBLEM,
++			   "Invalid mapping type (1:802.1P 2:DSCP 4:IP Length)");
++	}
++	aminfo->type = type;
++	return;
++}
++
++/* Function which parses command options; returns true if it
++   ate an option */
++static int
++AUTOMAP_parse(int c, char **argv, int invert, unsigned int *flags,
++      const void *entry,
++      struct xt_entry_target **target)
++{
++	struct xt_automap_target_info *aminfo
++		= (struct xt_automap_target_info *)(*target)->data;
++	switch (c) {
++	case '1':
++		if (*flags & XT_AUTO_TYPE)
++			xtables_error(PARAMETER_PROBLEM,
++				   "Only one `--automap-type' allowed");
++		parse_automap_type(argv[optind-1], aminfo);
++		aminfo->flags |= XT_AUTO_TYPE;
++		*flags |= XT_AUTO_TYPE;
++		break;
++		
++	default:
++		return 0;
++	}
++
++	return 1;
++}
++
++static void
++AUTOMAP_final_check(unsigned int flags)
++{
++	
++}
++
++
++/* Prints out the targinfo. */
++static void
++AUTOMAP_print(const void *ip,
++      const struct xt_entry_target *target,
++      int numeric)
++{
++	const struct xt_automap_target_info *clinfo =
++		(const struct xt_automap_target_info *)target->data;
++}
++/* Prints out the matchinfo. */
++
++/* Saves the union ipt_targinfo in parsable form to stdout. */
++static void
++AUTOMAP_save(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_automap_target_info *clinfo =
++		(const struct xt_automap_target_info *)target->data;
++}
++
++static struct xtables_target xt_automap_target = {
++	.family		= AF_INET,
++	//.next		= NULL,
++	.name		= "AUTOMAP",
++	.version	= XTABLES_VERSION,
++	.size		= XT_ALIGN(sizeof(struct xt_automap_target_info)),
++	.userspacesize	= XT_ALIGN(sizeof(struct xt_automap_target_info)),
++	.help		= AUTOMAP_help,
++	.init		= AUTOMAP_init,
++	.parse		= AUTOMAP_parse,
++	.final_check	= AUTOMAP_final_check,
++	.print		= AUTOMAP_print,
++	.save		= AUTOMAP_save,
++	.extra_opts	= opts,
++};
++
++void _init(void)
++{
++	xtables_register_target(&xt_automap_target);
++}
+Index: iptables-1.4.16.3/extensions/libxt_MARK.c
+===================================================================
+--- iptables-1.4.16.3.orig/extensions/libxt_MARK.c	2012-10-18 16:50:00.000000000 +0800
++++ iptables-1.4.16.3/extensions/libxt_MARK.c	2014-01-24 22:19:13.859080805 +0800
+@@ -13,6 +13,7 @@
+ 	XT_MARK_SET=0,
+ 	XT_MARK_AND,
+ 	XT_MARK_OR,
++	XT_MARK_VTAG_SET
+ };
+ 
+ struct xt_mark_target_info_v1 {
+@@ -24,11 +25,17 @@
+ 	O_SET_MARK = 0,
+ 	O_AND_MARK,
+ 	O_OR_MARK,
++#if 1 /* ZyXEL QoS, John */
++	O_VTAG_SET,
++#endif
+ 	O_XOR_MARK,
+ 	O_SET_XMARK,
+ 	F_SET_MARK  = 1 << O_SET_MARK,
+ 	F_AND_MARK  = 1 << O_AND_MARK,
+ 	F_OR_MARK   = 1 << O_OR_MARK,
++#if 1 /* ZyXEL QoS, John */
++	F_VTAG_SET  = 1 << O_VTAG_SET,
++#endif
+ 	F_XOR_MARK  = 1 << O_XOR_MARK,
+ 	F_SET_XMARK = 1 << O_SET_XMARK,
+ 	F_ANY       = F_SET_MARK | F_AND_MARK | F_OR_MARK |
+@@ -41,7 +48,8 @@
+ "MARK target options:\n"
+ "  --set-mark value                   Set nfmark value\n"
+ "  --and-mark value                   Binary AND the nfmark with value\n"
+-"  --or-mark  value                   Binary OR  the nfmark with value\n");
++"  --or-mark  value                   Binary OR  the nfmark with value\n"
++);
+ }
+ 
+ static const struct xt_option_entry MARK_opts[] = {
+@@ -54,6 +62,31 @@
+ 	XTOPT_TABLEEND,
+ };
+ 
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++static const struct xt_option_entry mark_tg_opts[] = {
++        {.name = "set-mark", .id = O_SET_MARK, .type = XTTYPE_MARKMASK32,
++         .excl = F_ANY},
++        {.name = "and-mark", .id = O_AND_MARK, .type = XTTYPE_UINT32,
++         .excl = F_ANY},
++        {.name = "or-mark", .id = O_OR_MARK, .type = XTTYPE_UINT32,
++         .excl = F_ANY},
++	{.name = "vtag-set", .id = O_VTAG_SET, .type = XTTYPE_UINT32,
++         .excl = F_ANY},
++        XTOPT_TABLEEND,
++};
++
++
++static void mark_tg_help(void)
++{
++        printf(
++"MARK target options:\n"
++"  --set-mark value[/mask]   Clear bits in mask and OR value into nfmark\n"
++"  --and-mark bits           Binary AND the nfmark with bits\n"
++"  --or-mark bits            Binary OR the nfmark with bits\n"
++"  --vtag-set value                   Set Vlan tag value\n"
++"\n");
++}
++#else
+ static const struct xt_option_entry mark_tg_opts[] = {
+ 	{.name = "set-xmark", .id = O_SET_XMARK, .type = XTTYPE_MARKMASK32,
+ 	 .excl = F_ANY},
+@@ -68,6 +101,7 @@
+ 	XTOPT_TABLEEND,
+ };
+ 
++
+ static void mark_tg_help(void)
+ {
+ 	printf(
+@@ -79,6 +113,7 @@
+ "  --xor-mask bits           Binary XOR the nfmark with bits\n"
+ "\n");
+ }
++#endif
+ 
+ static void MARK_parse_v0(struct xt_option_call *cb)
+ {
+@@ -123,6 +158,29 @@
+ 	markinfo->mark = cb->val.u32;
+ }
+ 
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++static void mark_tg_parse(struct xt_option_call *cb)
++{
++        struct xt_mark_tginfo2 *info = cb->data;
++
++        xtables_option_parse(cb);
++        switch (cb->entry->id) {
++        case O_SET_MARK:
++                info->mode = XT_MARK_SET;
++                break;
++        case O_AND_MARK:
++                info->mode = XT_MARK_AND;
++                break;
++        case O_OR_MARK:
++                info->mode = XT_MARK_OR;
++                break;
++	case O_VTAG_SET:
++                info->mode = XT_MARK_VTAG_SET;
++                break;
++        }
++	info->mark = cb->val.u32;
++}
++#else
+ static void mark_tg_parse(struct xt_option_call *cb)
+ {
+ 	struct xt_mark_tginfo2 *info = cb->data;
+@@ -150,7 +208,7 @@
+ 		break;
+ 	}
+ }
+-
++#endif
+ static void mark_tg_check(struct xt_fcheck_call *cb)
+ {
+ 	if (cb->xflags == 0)
+@@ -202,6 +260,28 @@
+ 	print_mark(markinfo->mark);
+ }
+ 
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++static void mark_tg_print(const void *ip, const struct xt_entry_target *target,
++                          int numeric)
++{
++        const struct xt_mark_tginfo2 *info = (const void *)target->data;
++	switch (info->mode) {
++        case XT_MARK_SET:
++                printf(" MARK set");
++                break;
++        case XT_MARK_AND:
++                printf(" MARK and");
++                break;
++        case XT_MARK_OR:
++                printf(" MARK or");
++                break;
++        case XT_MARK_VTAG_SET:
++                printf(" vtag set ");
++                break;
++        }
++	print_mark(info->mark);
++}
++#else
+ static void mark_tg_print(const void *ip, const struct xt_entry_target *target,
+                           int numeric)
+ {
+@@ -218,7 +298,7 @@
+ 	else
+ 		printf(" MARK xset 0x%x/0x%x", info->mark, info->mask);
+ }
+-
++#endif
+ static void MARK_save_v1(const void *ip, const struct xt_entry_target *target)
+ {
+ 	const struct xt_mark_target_info_v1 *markinfo =
+@@ -238,13 +318,34 @@
+ 	print_mark(markinfo->mark);
+ }
+ 
++#if 1 /* ZyXEL QoS, John (porting from MSTC) */
++static void mark_tg_save(const void *ip, const struct xt_entry_target *target)
++{
++        const struct xt_mark_tginfo2 *info = (const void *)target->data;
++	 switch (info->mode) {
++        case XT_MARK_SET:
++                printf(" --set-mark");
++                break;
++        case XT_MARK_AND:
++                printf(" --and-mark");
++                break;
++        case XT_MARK_OR:
++                printf(" --or-mark");
++                break;
++        case XT_MARK_VTAG_SET:
++                printf("--vtag-set ");
++                break;
++        }
++        print_mark(info->mark);
++}
++#else
+ static void mark_tg_save(const void *ip, const struct xt_entry_target *target)
+ {
+ 	const struct xt_mark_tginfo2 *info = (const void *)target->data;
+ 
+ 	printf(" --set-xmark 0x%x/0x%x", info->mark, info->mask);
+ }
+-
++#endif
+ static struct xtables_target mark_tg_reg[] = {
+ 	{
+ 		.family        = NFPROTO_UNSPEC,
+Index: iptables-1.4.16.3/extensions/libxt_policer.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ iptables-1.4.16.3/extensions/libxt_policer.c	2014-01-24 22:18:18.351081148 +0800
+@@ -0,0 +1,504 @@
++/* Shared library add-on to iptables to add policer support, ZyXEL Birken, 20100107 */
++/* __MSTC__, richard, QoS
++ *  Change file name from libipt_policer.c to libxt_policer.c
++ *  Change module struct from iptables_match to xtables_match
++ *  Reference from brcm 405L04 libxt_limit.c
++ */
++#include <stdio.h>
++#include <netdb.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++
++#include <xtables.h>
++#if 1 //__MSTC__, richard, QoS
++#include <stddef.h>
++#include <linux/netfilter/x_tables.h>
++#endif //__MSTC__, richard, QoS
++/* For 64bit kernel / 32bit userspace */
++#include "../include/linux/netfilter/xt_policer.h"
++
++#define IPT_POLICER_RATE_KBPS        10       /* Policer default rate in kbps. */
++#define IPT_POLICER_BURST_KBYTE      10       /* Policer default burst in kbyte. */
++#define IPT_POLICER_MAX_INPUT_VALUE  1000000  /* Max rate value user can input in kbps or mbps. */
++
++#if 1//__MSTC__, Jones For compilation
++#define MODE_TBF   0
++#define MODE_SRTCM 1
++#define MODE_TRTCM 2
++/* Function which prints out usage message. */
++static void policer_help(void)
++{
++	printf(
++	    "policer options:\n"
++	    "--mode name                     mode name match, default is tbf.\n"
++	    "                                If you want to use tbf mode, you can skip this option.\n"
++	    "                                [Support tbf, srtcm, trtcm.]\n" 
++	    "tbf mode: \n"
++	    "--policer rate			max data rate match, default %ukbps\n"
++	    "                                [Bits per second followed by kbps or mbps.\n"
++	    "                                Support 1kbps to 1000000kbps or 1mbps to 1000000mbps.] \n"   
++	    "--policer-burst size		size to match in a burst, default %ukb\n"
++	    "                                [Kilo-bytes followed by kb.\n"
++	    "                                Support 1kb to 1000kb.]\n" 
++	    "srtcm mode: \n"
++	    "The nfmark field of red packet is marked as 0x10000, \n"
++	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "--crate rate			committed data rate match, default %ukbps\n" 
++	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
++	    "--ebs-burst size		size to match in EBS burst, default %ukb\n"
++	    "trtcm mode: \n"
++	    "The nfmark field of red packet is marked as 0x10000, \n"
++	    "yellow packet is 0x20000 and green packet is 0x30000.\n"
++	    "--crate rate			committed data rate match, default %ukbps\n" 
++	    "--cbs-burst size		size to match in CBS burst, default %ukb\n"
++	    "--prate rate			peak data rate match, default %ukbps\n"
++	    "                                [Msut be equal or greater than crate.]\n"
++	    "--pbs-burst size		size to match in PBS burst, default %ukb\n\n",
++	    IPT_POLICER_RATE_KBPS, IPT_POLICER_BURST_KBYTE,
++	    IPT_POLICER_RATE_KBPS, IPT_POLICER_BURST_KBYTE, IPT_POLICER_BURST_KBYTE,
++	    IPT_POLICER_RATE_KBPS, IPT_POLICER_BURST_KBYTE, IPT_POLICER_RATE_KBPS, IPT_POLICER_BURST_KBYTE);
++}
++#else
++/* Function which prints out usage message. */
++static void policer_help(void)
++{
++	printf(
++	    "policer v%s options:\n"
++	    "--policer rate			max data rate match, default %ukbps\n"
++	    "                                [Bits per second followed by kbps or mbps.\n"
++	    "                                Support 1kbps to 1000000kbps or 1mbps to 1000000mbps.] \n"   
++	    "--policer-burst size		size to match in a burst, default %ukb\n"
++	    "                                [Kilo-bytes followed by kb.\n"
++	    "                                Support 1kb to 1000kb.]\n" 
++	    "\n", IPTABLES_VERSION, IPT_POLICER_RATE_KBPS, IPT_POLICER_BURST_KBYTE);
++}
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++static const struct option policer_opts[] = {
++    { "mode",          1, 0, '#' },
++    { "policer",       1, 0, '%' },
++    { "policer-burst", 1, 0, '$' },
++    { "crate",         1, 0, '1' },
++    { "cbs-burst",     1, 0, '2' },
++    { "prate",         1, 0, '3' },
++    { "pbs-burst",     1, 0, '4' },
++    { "ebs-burst",     1, 0, '5' },
++    { 0 }
++};
++#else
++static const struct option policer_opts[] = {
++   { "policer", 1, NULL, '%' },
++   { "policer-burst", 1, NULL, '$' },
++   { 0 }
++};
++#endif
++
++static int
++#if 1//__MSTC__, Jones For compilation
++parse_rate(const char *rate, u_int32_t *val)
++#else
++parse_rate(const char *rate, struct xt_policer_info *val)
++#endif
++{
++	const char *kbps;				
++	const char *mbps;			
++	u_int32_t r;
++	u_int32_t mult = 1;	 			 
++
++	kbps = strstr(rate, "kbps"); /*the string comparation*/
++	mbps = strstr(rate, "mbps"); /*the string comparation*/
++	if ((!kbps && !mbps) || (kbps && mbps)) {
++		return 0;
++	}
++	else if (kbps) {
++		if (strlen(kbps + 4) != 0) {
++			return 0;
++		}
++		mult = 1;                /*kbps scale*/
++	}
++	else if (mbps){
++		if (strlen(mbps + 4) != 0) {
++			return 0;
++		}
++		mult = 1000;             /*mbps scale*/
++	}		
++	r = strtoul(rate, NULL, 0);						
++	if (!r) {
++		return 0;
++	}
++
++	if ( r > IPT_POLICER_MAX_INPUT_VALUE) { /* prevent user enter greater than IPT_POLICER_MAX_INPUT_VALUE */
++		xtables_error(PARAMETER_PROBLEM, "Rate too fast '%s'\n", rate);
++	}
++#if 1//__MSTC__, Jones For compilation
++	*val = r * mult ;
++#else
++	val->avg = r * mult;
++#endif
++	return 1;
++}
++
++#if 1//__MSTC__, Jones For compilation
++/* Initialize the match. */
++static void policer_init(struct xt_entry_match *m)
++{
++	struct xt_policer_info *r = (struct xt_policer_info *)m->data;
++	/* Default mode is TBF. */
++	r->policerMode = MODE_TBF;
++
++	/* Prepare default rate string, such as 10kbps. */
++	char rate_buf[16];
++	sprintf(rate_buf, "%dkbps", IPT_POLICER_RATE_KBPS);
++
++	parse_rate(rate_buf, &r->rate);
++	r->burst = IPT_POLICER_BURST_KBYTE;
++	/* For srtcm and trtcm. */
++	r->pRate = r->rate;
++	r->pbsBurst = IPT_POLICER_BURST_KBYTE;
++#if 1 /* Init creditCap to check if the rule is new or not. __OBM__. ZyXEL, Stan Su, 20100611. */
++	r->creditCap = 0;
++#endif
++}
++/* end init */
++#else
++/* Initialize the match. */
++static void policer_init(struct xt_entry_match *m)
++{
++   struct xt_policer_info *r = (struct xt_policer_info *)m->data;
++
++	/* Prepare default rate string, such as 10kbps. */
++	char rate_buf[16];
++	sprintf(rate_buf, "%dkbps", IPT_POLICER_RATE_KBPS);
++   parse_rate(rate_buf, r);
++
++	r->burst = IPT_POLICER_BURST_KBYTE;
++}
++#endif
++
++#if 1//__MSTC__, Jones For compilation
++/* Function which parses command options; returns true if it
++   ate an option */
++static int
++policer_parse(int c, char **argv, int invert, unsigned int *flags,
++           const void *entry, struct xt_entry_match **match)
++{
++	struct xt_policer_info *r = (struct xt_policer_info *)(*match)->data;
++	const char *str1;
++	char *remainder;
++
++	/* not support invert option */
++	if (invert) {
++                xtables_error(PARAMETER_PROBLEM,
++                    "policer does not support invert");
++        }
++	
++	switch(c) {
++	case '#':
++		if (strcmp(optarg, "tbf") == 0) {
++			r->policerMode = MODE_TBF;
++		}
++		else if (strcmp(optarg, "srtcm") == 0) {
++			r->policerMode = MODE_SRTCM;
++		}
++		else if (strcmp(optarg, "trtcm") == 0) {
++			r->policerMode = MODE_TRTCM;
++		}
++		else {
++			xtables_error(PARAMETER_PROBLEM,
++			    "bad mode '%s'", optarg);
++		}
++		break;
++		
++	case '%':
++		if (r->policerMode == 0) {
++			if (!parse_rate(optarg, &r->rate)) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad rate '%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}	
++
++	case '$':
++		if (r->policerMode == 0) {
++			str1 = optarg;
++			r->burst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad --policer-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '1':
++		if (r->policerMode == 1 || r->policerMode == 2) {
++			if (!parse_rate(optarg, &r->rate)) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad committed information rate '%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '2':
++		if (r->policerMode == 1 || r->policerMode == 2) {
++			str1 = optarg;
++			r->burst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad --cbs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '3':
++		if (r->policerMode == 2) {
++			if (!parse_rate(optarg, &r->pRate)) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad peak information rate '%s'", optarg);
++			}			
++			if (r->rate > r->pRate) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "prate msut be equal or greater than crate");
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '4':
++		if (r->policerMode == 2) {
++			str1 = optarg;
++			r->pbsBurst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->pbsBurst > 1000 || r->pbsBurst <= 0) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad --pbs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++
++	case '5':
++		if (r->policerMode == 1) {
++			str1 = optarg;
++			r->pbsBurst = strtoul(str1, &remainder, 0);
++			if (strcmp(remainder, "kb") !=0 || r->pbsBurst > 1000 || r->pbsBurst <= 0) {
++				xtables_error(PARAMETER_PROBLEM,
++				    "bad --ebs-burst `%s'", optarg);
++			}
++			break;
++		}
++		else {
++			return 0;
++			break;
++		}
++		
++	default:
++		return 0;
++	}
++
++	return 1;
++}
++/* end parse */
++#else
++/* Function which parses command options; returns true if it
++   ate an option */
++static int
++policer_parse(int c, char **argv, int invert, unsigned int *flags,
++           const void *entry, struct xt_entry_match **match)
++{
++	struct xt_policer_info *r = (struct xt_policer_info *)(*match)->data;
++   
++	const char *str1;
++	char *remainder;
++	switch(c) {
++	case '%':
++		if (check_inverse(argv[optind-1], &invert, &optind, 0)) { 
++			break;
++		}
++#if 0 //__MSTC__, richard, QoS
++		if (!parse_rate(optarg, &(r->avg))) {
++#else
++      if (!parse_rate(optarg, r)) {
++#endif //__MSTC__, richard, QoS
++			exit_error(PARAMETER_PROBLEM,
++			    "bad rate '%s'", optarg);
++		}
++      *flags = 1;
++		break;
++
++	case '$':
++		if (check_inverse(argv[optind-1], &invert, &optind, 0)) {
++			break;
++		}
++		str1 = optarg;
++		r->burst = strtoul(str1, &remainder, 0);
++		if (strcmp(remainder, "kb") !=0 || r->burst > 1000 || r->burst <= 0) {
++			exit_error(PARAMETER_PROBLEM,
++			    "bad --policer-burst `%s'", optarg);
++		}
++      *flags = 1;
++		break;
++
++	default:
++		return 0;
++	}
++
++	if (invert) {
++		exit_error(PARAMETER_PROBLEM,
++		    "policer does not support invert");
++	}
++
++	return 1;
++
++}
++#endif
++
++/* Final check; must have specified --policer. */
++static void policer_check(unsigned int flags)
++{
++#if 0//__MSTC__, Jones For compilation
++	if (!flags)
++		exit_error(PARAMETER_PROBLEM,
++			   "POLICER match: You must specify `--policer'");
++#endif
++}
++
++static struct rates {
++   const char *name;
++	u_int32_t mult;
++} rates[] = { { "kbps", 1 },
++              { "mbps", 1000 },
++              { "gbps", 1000000}};
++
++static void print_rate(u_int32_t period)
++{
++	unsigned int i;
++
++	for (i = 1; i < sizeof(rates) / sizeof(struct rates); i++) {
++		if (period < rates[i].mult
++                || period / rates[i].mult < period % rates[i].mult) {
++			break;
++		}
++	}
++
++	printf("%u%s ", period / rates[i - 1].mult, rates[i - 1].name);
++}
++
++#if 1//__MSTC__, Jones For compilation
++/* Prints out the matchinfo. */
++static void policer_print(const void *ip,
++      const struct xt_entry_match *match,
++      int numeric) 
++{
++	struct xt_policer_info *r = (struct xt_policer_info *)match->data;
++
++	switch(r->policerMode) {
++	case MODE_TBF:
++		printf("policer: rate ");
++		print_rate(r->rate);
++		printf("burst %ukbytes ", r->burst);
++		break;
++
++	case MODE_SRTCM:
++		printf("srtcm: cRate ");
++		print_rate(r->rate);
++		printf("cbs-burst %ukbytes ", r->burst);
++		printf("ebs-burst %ukbytes ", r->pbsBurst);
++		break;
++	
++	case MODE_TRTCM:
++		printf("trtcm: cRate ");
++		print_rate(r->rate);
++		printf("cbs-burst %ukbytes ", r->burst);
++		printf("pRate ");
++		print_rate(r->pRate);
++		printf("pbs-burst %ukbytes ", r->pbsBurst);	
++		break;
++	}
++}
++/* end print */
++#else
++/* Prints out the matchinfo. */
++static void
++policer_print(const void *ip, const struct xt_entry_match *match, int numeric)
++{
++   struct xt_policer_info *r = (struct xt_policer_info *)match->data;
++   printf("policer: rate ");
++   print_rate(r->avg);
++   printf("burst %ukbytes ", r->burst);
++}
++#endif
++
++/* Saves the union ipt_matchinfo in parsable form to stdout. */
++static void
++policer_save(const void *ip, const struct xt_entry_match *match)
++{
++	struct xt_policer_info *r = (struct xt_policer_info *)match->data;
++
++	printf("--policer ");
++#if 1//__MSTC__, Jones For compilation
++	print_rate(r->rate);
++#else
++	print_rate(r->avg);
++#endif
++	if (r->burst != IPT_POLICER_BURST_KBYTE) {
++		printf("--policer-burst %ukbytes ", r->burst);
++	}
++}
++
++static struct xtables_match policer_match = {
++	.family		= AF_INET,
++	.name		= "policer",
++	.version	= XTABLES_VERSION,
++	.size		= XT_ALIGN(sizeof(struct xt_policer_info)),
++	.userspacesize	= offsetof(struct xt_policer_info, prev),
++	.help		= policer_help,
++	.parse		= policer_parse,
++	.final_check	= policer_check,
++	.print		= policer_print,
++	.save		= policer_save,
++	.extra_opts	= policer_opts,
++};
++
++static struct xtables_match policer_match6 = {
++	.family		= AF_INET6,
++	.name		= "policer",
++	.version	= XTABLES_VERSION,
++	.size		= XT_ALIGN(sizeof(struct xt_policer_info)),
++	.userspacesize	= offsetof(struct xt_policer_info, prev),
++	.help		= policer_help,
++	.init    = policer_init,
++	.parse		= policer_parse,
++	.final_check	= policer_check,
++	.print		= policer_print,
++	.save		= policer_save,
++	.extra_opts	= policer_opts,
++};
++
++void _init(void)
++{
++	xtables_register_match(&policer_match);
++	xtables_register_match(&policer_match6);
++}
+Index: iptables-1.4.16.3/include/linux/netfilter/xt_AUTOMAP.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ iptables-1.4.16.3/include/linux/netfilter/xt_AUTOMAP.h	2014-01-24 22:18:18.351081148 +0800
+@@ -0,0 +1,65 @@
++/* x_tables module for setting the IPv4/IPv6 DSCP field
++ *
++ * (C) 2002 Harald Welte <laforge@gnumonks.org>
++ * based on ipt_FTOS.c (C) 2000 by Matthew G. Marsh <mgm@paktronix.com>
++ * This software is distributed under GNU GPL v2, 1991
++ *
++ * See RFC2474 for a description of the DSCP field within the IP Header.
++ *
++ * xt_DSCP.h,v 1.7 2002/03/14 12:03:13 laforge Exp
++*/
++#ifndef _XT_AUTOMAP_TARGET_H
++#define _XT_AUTOMAP_TARGET_H
++
++#define XT_AUTO_TYPE	0x1
++//#define XT_AUTO_MARK	0x2
++//#define XT_AUTO_DSCP	0x4
++//#define XT_AUTO_ETHPRI	0x8
++
++/*Automapping Type*/
++#define AUTOMAP_TYPE_8021P	0x1
++#define AUTOMAP_TYPE_DSCP		0x2
++#define AUTOMAP_TYPE_PKTLEN	0x4
++
++#define DSCP_MASK_SHIFT   5
++#define ETHERPRI_MARK_SHIFT   12
++
++		/*
++		Auto Priority Mapping Table
++
++
++			DSCP	|   Packet Length	| 802.1P	|     Queue     |
++		   ---------------------------------------------
++					|				|   001	|       0 		|
++					|				|		|			|
++					|				|   010	|       1		|
++					|				|		|			|
++			0x00       |       >1100		|   000	|       2		|
++					|				|		|			|
++			0x08       |       250-1100	|   011	|       3		|
++					|				|		|			|
++			0x10       |				|   100	|       4		|
++					|				|		|			|
++			0x18       |       <250		|   101	|       5		|
++					|				|		|			|
++		0x20,0x28	|				|   110	|       6		|
++					|				|		|			|
++		0x30,0x38  	|				|   111	|       7		|
++		*/
++
++
++/* accoding to tr181 8021p to DSCP mapping table(upstream) higher value higher priority */
++unsigned short vlan8021pToDSCP[8]= {0x00,0x00,0x00,0x08,0x10,0x18,0x28,0x38};
++unsigned short dscpPrecedenceTo8021p[8] = {0,3,4,5,6,6,7,7};
++
++unsigned short vlan8021pToPriorityQueue[8] = {2,0,1,3,4,5,6,7};
++unsigned short dscpPrecedenceToPriorityQueue[8] = {2,3,4,5,6,6,7,7};
++
++/* target info */
++struct xt_automap_target_info {
++	int type;	
++	int marktable[8];
++	int flags;
++};
++
++#endif /* _XT_AUTOMAP_TARGET_H */
+Index: iptables-1.4.16.3/include/linux/netfilter/xt_mark.h
+===================================================================
+--- iptables-1.4.16.3.orig/include/linux/netfilter/xt_mark.h	2012-10-18 16:50:00.000000000 +0800
++++ iptables-1.4.16.3/include/linux/netfilter/xt_mark.h	2014-01-24 22:18:18.351081148 +0800
+@@ -3,9 +3,17 @@
+ 
+ #include <linux/types.h>
+ 
++#if 1 /* ZyXEL QoS, John */
++/* Version 1 */
++struct xt_mark_tginfo2 {
++        __u32 mark, mask;
++        __u8 mode;
++};
++#else
+ struct xt_mark_tginfo2 {
+ 	__u32 mark, mask;
+ };
++#endif
+ 
+ struct xt_mark_mtinfo1 {
+ 	__u32 mark, mask;
+Index: iptables-1.4.16.3/include/linux/netfilter/xt_policer.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ iptables-1.4.16.3/include/linux/netfilter/xt_policer.h	2014-01-24 22:18:18.351081148 +0800
+@@ -0,0 +1,41 @@
++#ifndef _XT_RATE_H
++#define _XT_RATE_H
++
++struct xt_policer_info {
++#if 1//__MSTC__, Jones For compilation
++    int policerMode;    
++    /* For srTCM and trTCM, rate means cRate and burst means cbsBurst.       
++    For srTCM, pbsBurst means ebsBurst. */    
++    u_int32_t rate, pRate;        
++    u_int32_t burst, pbsBurst;  
++    /* Period multiplier for upper limit. */  
++#ifdef KERNEL_64_USERSPACE_32    
++    u_int64_t prev;    
++    u_int64_t placeholder;
++#else    
++    /* Used internally by the kernel */    
++    unsigned long prev;    
++    struct xt_policer_info *master;
++#endif    
++    /* For srTCM and trTCM, credit means cbsCredit and creditCap means cbsCreditCap.	   
++    For srTCM, pbsCreditCap means ebsCreditCap. */    
++    u_int32_t credit, pbsCredit;    
++    u_int32_t creditCap, pbsCreditCap;
++#else
++    u_int32_t avg;    
++    u_int32_t burst;  
++
++#ifdef KERNEL_64_USERSPACE_32
++    u_int64_t prev;
++    u_int64_t placeholder;
++#else
++	/* Used internally by the kernel */
++    unsigned long prev;
++    struct xt_policer_info *master;
++#endif
++    u_int32_t credit;
++    u_int32_t credit_cap, cost;
++#endif	
++};
++#endif 
++

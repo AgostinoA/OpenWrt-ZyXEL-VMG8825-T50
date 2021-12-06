@@ -1,0 +1,161 @@
+Index: pure-ftpd-1.0.30/src/ftpd.c
+===================================================================
+--- pure-ftpd-1.0.30.orig/src/ftpd.c	2017-06-16 22:45:01.587311634 +0800
++++ pure-ftpd-1.0.30/src/ftpd.c	2017-06-16 22:51:54.483315051 +0800
+@@ -1789,6 +1789,96 @@
+     usleep2(t * PASSWD_FAILURE_DELAY);
+ }
+ 
++int ipType(char *src) {
++    char buf[16];
++    if (inet_pton(AF_INET, src, buf)) {
++        return AF_INET;
++    } else if (inet_pton(AF_INET6, src, buf)) {
++        return AF_INET6;
++    }
++    return -1;
++}
++
++
++int checkCidrBlock(char *spAddr, char *spSubNetMask, char *hostIp){
++	int spAddrType = 0, hostIpAddrType = 0, addrType = 0;
++	char logStr[128] = {0};
++	spAddrType = ipType(spAddr);
++	hostIpAddrType = ipType(hostIp);
++	if (spAddrType == hostIpAddrType){
++		addrType = spAddrType;
++	}
++	else{
++		addrType = -1;
++	}
++	if (addrType == AF_INET){
++		unsigned int ipAddr ;
++		unsigned int hostIpAddr;
++		unsigned int spAddrBytes[4] = {0};
++		unsigned int hostIpBytes[4] = {0};
++		unsigned int subNet ;
++		unsigned int mask = 0xFFFFFFFF;
++		unsigned int maskLen = 0 ;
++
++		if (sscanf(spAddr, "%u.%u.%u.%u", &spAddrBytes[0], &spAddrBytes[1], &spAddrBytes[2], &spAddrBytes[3]) != 4){
++			snprintf(logStr, sizeof(logStr), "'%s' Name or service not known", spAddr);
++			puts(logStr);
++			syslog(LOG_INFO, "'%s' Name or service not known", spAddr);
++			return EXIT_FAILURE;
++
++		}
++		
++		if (sscanf(hostIp, "%u.%u.%u.%u", &hostIpBytes[0], &hostIpBytes[1], &hostIpBytes[2], &hostIpBytes[3]) != 4){
++			snprintf(logStr, sizeof(logStr), "'%s' Name or service not known", hostIp);
++			puts(logStr);
++			syslog(LOG_INFO, "'%s' Name or service not known", hostIp);
++			return EXIT_FAILURE;
++		}
++		maskLen = atoi(spSubNetMask) ;
++		subNet = mask << (32 - maskLen);
++		ipAddr = (spAddrBytes[0] << 24) + (spAddrBytes[1] << 16) + (spAddrBytes[2] << 8) + spAddrBytes[3];
++		hostIpAddr = (hostIpBytes[0] << 24) + (hostIpBytes[1] << 16) + (hostIpBytes[2] << 8) + hostIpBytes[3];
++		if ((ipAddr & subNet) ==  (hostIpAddr & subNet)){
++			return 1;
++		}
++		return 0; 
++	}
++
++	else if (addrType == AF_INET6){
++		struct in6_addr localV6Addr;
++		struct in6_addr netV6Addr;
++		memset(&localV6Addr, 0, sizeof(struct in6_addr));
++		memset(&netV6Addr, 0, sizeof(struct in6_addr));
++		int maskLen = 0;
++		int index = 0;
++		unsigned char mask = 0xFF;		
++		inet_pton(AF_INET6, spAddr, &localV6Addr);
++		inet_pton(AF_INET6, hostIp, &netV6Addr);
++		maskLen = (strcmp(spSubNetMask, "") == 0 ? 128 : atoi(spSubNetMask)) ;
++
++		for (;maskLen >=8 ; maskLen -= 8){
++			if((localV6Addr.s6_addr[index] & mask) == (netV6Addr.s6_addr[index] & mask)){
++				index++;
++			}
++			else{
++				return 0;	
++			}
++		}
++		
++		if(maskLen > 0){
++			mask = ~(0xFF >> maskLen);
++			if((localV6Addr.s6_addr[index] & mask) == (netV6Addr.s6_addr[index] & mask)){
++				return 1; 
++			}
++			return 0;
++		}
++		return 1;
++	}
++	else{
++		return 0;
++	}
++}
++
+ void dopass(char *password)
+ {
+     static unsigned int tapping;    
+@@ -1825,6 +1915,27 @@
+         addreply_noformat(530, MSG_WHOAREYOU);
+         return;
+     }
++	char hostip[64] = {0};
++	getnameinfo((struct sockaddr *) &peer, STORAGE_LEN(peer), hostip, sizeof hostip, NULL, (size_t) 0U, NI_NUMERICHOST);
++	int authGpPrivilege = 1 ;
++
++	char logStr[128] = {0};
++	/*SP Trust Domain RDM_OID_SP_TRUST_DOMAIN*/
++	objIndex_t spTrustDomainObjIid;
++	rdm_SpTrustDomain_t *spTrustDomainObj = NULL;
++	IID_INIT(spTrustDomainObjIid);	
++
++	
++	/*If IP address match SP trust domain, do not Auth GP_Privilege */
++	while(zcfgFeObjStructGetNext(RDM_OID_SP_TRUST_DOMAIN, &spTrustDomainObjIid, (void **) &spTrustDomainObj) == ZCFG_SUCCESS) {
++		if (checkCidrBlock(spTrustDomainObj->IPAddress, spTrustDomainObj->SubnetMask, hostip)){
++			authGpPrivilege = false ; 
++			free(spTrustDomainObj); 
++			break ; 
++		}
++		free(spTrustDomainObj);
++	}
++
+ 
+ 	objIndex_t logAccountObjIid;
+ 	rdm_ZyLogCfgGpAccount_t *accountObj = NULL;
+@@ -1835,9 +1946,31 @@
+ 			lock_period = accountObj->AccountLockTime;
+ 			cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
+ 			cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
++			free(accountObj);
++			break;
+ 		}
+ 		free(accountObj);
+ 	}
++	if (authGpPrivilege){
++		/*Authentication GP_Privilege*/
++		char logStr[128] = {0};
++		objIndex_t logGpObjIid;
++		rdm_ZyLogCfgGp_t *logGpObj = NULL;
++		IID_INIT(logGpObjIid);
++		logGpObjIid.level = logAccountObjIid.level - 1;
++		logGpObjIid.idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID];
++		logGpObjIid.idx[ACCOUNT_IID] = 0;
++		if (zcfgFeObjStructGet(RDM_OID_ZY_LOG_CFG_GP, &logGpObjIid, (void **) &logGpObj) == ZCFG_SUCCESS) {
++			if (strstr(logGpObj->GP_Privilege,"ftp")== NULL){
++				snprintf(logStr, sizeof(logStr), "Account:'%s' FTP permission denied.", account);
++				puts(logStr);
++				logfile(LOG_WARNING, "Account:'%s' FTP permission denied.", account);
++				free(logGpObj);
++				return;
++			}
++			free(logGpObj);
++		}
++	}
+ 
+ 	if(chk_account_is_locked(cur_user_idx, &login_fail_cnt, last_login_time, retry_times, lock_period)){
+ 		puts("Account has been blocked temporarily, please try later!");

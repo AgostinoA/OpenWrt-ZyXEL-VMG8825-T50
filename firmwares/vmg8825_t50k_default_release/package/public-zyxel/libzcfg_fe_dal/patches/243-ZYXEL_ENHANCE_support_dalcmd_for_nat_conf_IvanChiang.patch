@@ -1,0 +1,398 @@
+Index: libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_conf.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_conf.c	2017-07-04 17:04:36.570438400 +0800
+@@ -0,0 +1,177 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++#define CWMP_SOAP_MSG_DEBUG (1 << 1)
++
++dal_param_t NAT_CONF_param[] =
++{
++	//Dmz
++	{"PortMappingNumberOfEntries",		dalType_int,		0,	100,	NULL,	NULL,					dalcmd_Forbid},
++	{"DmzHost",							dalType_v4Addr,		0,	32,		NULL,	NULL,					NULL},
++	//Alg
++	{"Nat",								dalType_boolean,	0,	0,		NULL,	NULL,					NULL},
++	{"Sip",								dalType_boolean,	0,	0,		NULL,	NULL,					NULL},
++	{"Rtsp",							dalType_boolean,	0,	0,		NULL,	NULL,					NULL},
++	{"Pptp",							dalType_boolean,	0,	0,		NULL,	NULL,					NULL},
++	{"Ipsec",							dalType_boolean,	0,	0,		NULL,	NULL,					NULL},
++	//Session
++	{"MaxSessionPerSystem",				dalType_int,		0,	20480,	NULL,	NULL,					dalcmd_Forbid},
++	{"MaxSessionPerHost",				dalType_int,		0,	20480,	NULL,	NULL,					NULL},
++	{NULL,								0,					0,	0,		NULL,	NULL,					NULL},	
++};
++
++zcfgRet_t zcfgFeDalNatConfGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *natDmzAlgJobj = NULL;
++	struct json_object *natSessionJobj = NULL;
++	struct json_object *paramJobj = NULL;
++	objIndex_t objIid;
++
++	IID_INIT(objIid);
++	paramJobj = json_object_new_object();
++	if(zcfgFeObjJsonGet(RDM_OID_NAT, &objIid, &natDmzAlgJobj) == ZCFG_SUCCESS){
++		json_object_object_add(paramJobj, "DMZHost", JSON_OBJ_COPY(json_object_object_get(natDmzAlgJobj, "X_ZYXEL_DMZHost")));
++		json_object_object_add(paramJobj, "NAT_ALG", JSON_OBJ_COPY(json_object_object_get(natDmzAlgJobj, "X_ZYXEL_NAT_ALG")));
++		json_object_object_add(paramJobj, "SIP_ALG", JSON_OBJ_COPY(json_object_object_get(natDmzAlgJobj, "X_ZYXEL_SIP_ALG")));
++		json_object_object_add(paramJobj, "RTSP_ALG", JSON_OBJ_COPY(json_object_object_get(natDmzAlgJobj, "X_ZYXEL_RTSP_ALG")));
++		json_object_object_add(paramJobj, "PPTP_ALG", JSON_OBJ_COPY(json_object_object_get(natDmzAlgJobj, "X_ZYXEL_PPTP_ALG")));
++		json_object_object_add(paramJobj, "IPSEC_ALG", JSON_OBJ_COPY(json_object_object_get(natDmzAlgJobj, "X_ZYXEL_IPSEC_ALG")));
++		zcfgFeJsonObjFree(natDmzAlgJobj);		
++	}
++
++	IID_INIT(objIid);
++	if(zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &objIid, &natSessionJobj) == ZCFG_SUCCESS){
++		json_object_object_add(paramJobj, "MaxSessionPerHost", JSON_OBJ_COPY(json_object_object_get(natSessionJobj, "MaxSessionPerHost")));
++		zcfgFeJsonObjFree(natSessionJobj);
++	}
++	json_object_array_add(Jarray, paramJobj);
++	
++	return ret;
++}
++
++void zcfgFeDalShowNatConf(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("Dmz Configuration\n");
++		printf("%-50s %s \n","Default Server Address :", json_object_get_string(json_object_object_get(obj, "DMZHost")));
++		printf("\nAlg Configuration\n");
++		printf("%-50s %d \n","NAT ALG :", json_object_get_boolean(json_object_object_get(obj, "NAT_ALG")));
++		printf("%-50s %d \n","SIP ALG :", json_object_get_boolean(json_object_object_get(obj, "SIP_ALG")));
++		printf("%-50s %d \n","RTSP ALG :", json_object_get_boolean(json_object_object_get(obj, "RTSP_ALG")));
++		printf("%-50s %d \n","PPTP ALG :", json_object_get_boolean(json_object_object_get(obj, "PPTP_ALG")));
++		printf("%-50s %d \n","IPSEC ALG :", json_object_get_boolean(json_object_object_get(obj, "IPSEC_ALG")));
++		printf("\nSession Configuration\n");
++		printf("%-50s %s \n","MAX NAT Session Per Host (0 - 20480) :", json_object_get_string(json_object_object_get(obj, "MaxSessionPerHost")));
++	}
++}
++
++zcfgRet_t zcfgFeDalNatConfEdit(struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *natDmzAlgJobj = NULL;
++	struct json_object *natSessionJobj = NULL;
++	bool nat = false,sip = false, rtsp = false, pptp = false, ipsec = false;
++	const char *dmzhost;
++	int host = 0;
++	
++	IID_INIT(objIid);
++	ret = zcfgFeObjJsonGet(RDM_OID_NAT, &objIid, &natDmzAlgJobj);
++	if(ret == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "DmzHost") != NULL){
++			dmzhost = json_object_get_string(json_object_object_get(Jobj, "DmzHost"));
++			json_object_object_add(natDmzAlgJobj, "X_ZYXEL_DMZHost", json_object_new_string(dmzhost));
++		}
++
++		if(json_object_object_get(Jobj, "PortMappingNumberOfEntries") != NULL){
++			json_object_object_add(natDmzAlgJobj, "PortMappingNumberOfEntries", JSON_OBJ_COPY(json_object_object_get(Jobj, "PortMappingNumberOfEntries")));
++		}
++
++		if(json_object_object_get(Jobj, "Nat") != NULL){
++			nat = json_object_get_boolean(json_object_object_get(Jobj, "Nat"));
++			json_object_object_add(natDmzAlgJobj, "X_ZYXEL_NAT_ALG", json_object_new_boolean(nat));
++		}
++
++		if(json_object_object_get(Jobj, "Sip") != NULL){
++			sip = json_object_get_boolean(json_object_object_get(Jobj, "Sip"));
++			json_object_object_add(natDmzAlgJobj, "X_ZYXEL_SIP_ALG", json_object_new_boolean(sip));
++		}
++
++		if(json_object_object_get(Jobj, "Rtsp") != NULL){
++			rtsp = json_object_get_boolean(json_object_object_get(Jobj, "Rtsp"));
++			json_object_object_add(natDmzAlgJobj, "X_ZYXEL_RTSP_ALG", json_object_new_boolean(rtsp));
++		}
++
++		if(json_object_object_get(Jobj, "Pptp") != NULL){
++			pptp = json_object_get_boolean(json_object_object_get(Jobj, "Pptp"));
++			json_object_object_add(natDmzAlgJobj, "X_ZYXEL_PPTP_ALG", json_object_new_boolean(pptp));
++		}
++
++		if(json_object_object_get(Jobj, "Ipsec") != NULL){
++			ipsec = json_object_get_boolean(json_object_object_get(Jobj, "Ipsec"));
++			json_object_object_add(natDmzAlgJobj, "X_ZYXEL_IPSEC_ALG", json_object_new_boolean(ipsec));
++		}
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_NAT, &objIid, natDmzAlgJobj, NULL)) != ZCFG_SUCCESS){
++			printf("%s: Write object fail\n", __FUNCTION__);
++			return ret;
++		}
++		zcfgFeJsonObjFree(natDmzAlgJobj);
++	}
++
++	else{
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(objIid);
++	ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &objIid, &natSessionJobj);
++	if(ret == ZCFG_SUCCESS){		
++		if(json_object_object_get(Jobj, "MaxSessionPerHost") != NULL){
++			host = json_object_get_int(json_object_object_get(Jobj, "MaxSessionPerHost"));
++			json_object_object_add(natSessionJobj, "MaxSessionPerHost", json_object_new_int(host));
++		}
++
++		if(json_object_object_get(Jobj, "MaxSessionPerSystem") != NULL){
++			json_object_object_add(natSessionJobj, "MaxSessionPerSystem", JSON_OBJ_COPY(json_object_object_get(Jobj, "MaxSessionPerSystem")));
++		}
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_NAT_SESSION_CTL, &objIid, natSessionJobj, NULL)) != ZCFG_SUCCESS){
++			printf("%s: Write object fail\n", __FUNCTION__);
++			return ret;
++		}
++		zcfgFeJsonObjFree(natSessionJobj);
++	}
++	else{
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalNatConf(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++	if(!strcmp(method, "PUT")) 
++		ret = zcfgFeDalNatConfEdit(Jobj, replyMsg);
++	if(!strcmp(method, "GET")) 
++		ret = zcfgFeDalNatConfGet(Jobj, Jarray, NULL);
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_dmz_alg.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/nat/zcfg_fe_dal_nat_dmz_alg.c	2017-07-04 20:03:23.559091778 +0800
++++ /dev/null	1970-01-01 00:00:00.000000000 +0000
+@@ -1,82 +0,0 @@
+-
+-#include <json/json.h>
+-
+-#include "zcfg_common.h"
+-#include "zcfg_rdm_oid.h"
+-#include "zcfg_rdm_obj.h"
+-#include "zcfg_debug.h"
+-#include "zcfg_fe_rdm_string.h"
+-#include "zcfg_fe_dal_common.h"
+-
+-#define CWMP_SOAP_MSG_DEBUG (1 << 1)
+-
+-dal_param_t NAT_DMZ_ALG_param[] =
+-{
+-	{"PortMappingNumberOfEntries",		dalType_int,	0,	100,	NULL},
+-	{"X_ZYXEL_DMZHost",		dalType_string,	0,	32,	NULL},
+-	{"X_ZYXEL_NAT_ALG",		dalType_boolean,	0,	0,	NULL},
+-	{"X_ZYXEL_SIP_ALG",		dalType_boolean,	0,	0,	NULL},
+-	{"X_ZYXEL_RTSP_ALG",		dalType_boolean,	0,	0,	NULL},
+-	{"X_ZYXEL_PPTP_ALG",		dalType_boolean,	0,	0,	NULL},
+-	{"X_ZYXEL_IPSEC_ALG",		dalType_boolean,	0,	0,	NULL},
+-	{NULL,		0,	0,	0,	NULL}
+-	
+-};
+-
+-zcfgRet_t zcfgFeDalNatDMZALGEdit(struct json_object *Jobj, char *replyMsg)
+-{
+-
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+-	objIndex_t objIid;
+-	struct json_object *natDmzAlgJobj = NULL;
+-	int paramModified = 0, n = 0;
+-
+-	paraName = (const char *)NAT_DMZ_ALG_param[n++].paraName;
+-	
+-	IID_INIT(objIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &objIid, &natDmzAlgJobj)) != ZCFG_SUCCESS) {
+-		printf("%s: Object retrieve fail\n", __FUNCTION__);
+-		return ret;
+-	}
+-	
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			paraName = (const char *)NAT_DMZ_ALG_param[n++].paraName;
+-			continue;
+-		}
+-
+-		json_object_object_add(natDmzAlgJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paramModified = 1;			
+-
+-		paraName = (const char *)NAT_DMZ_ALG_param[n++].paraName;
+-	}
+-
+-	if(paramModified) {
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_NAT, &objIid, natDmzAlgJobj, NULL)) != ZCFG_SUCCESS)
+-			printf("%s: Write object fail\n", __FUNCTION__);
+-	}
+-	
+-	json_object_put(natDmzAlgJobj);
+-	return ret;
+-}
+-zcfgRet_t zcfgFeDalNatDMZALG(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+-{
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	if(!method || !Jobj)
+-		return ZCFG_INTERNAL_ERROR;
+-
+-	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalNatDMZALGEdit(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "POST")) {
+-		
+-	}
+-	else if(!strcmp(method, "DELETE")) {
+-		
+-	}
+-
+-	return ret;
+-}
+Index: libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_session.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/nat/zcfg_fe_dal_nat_session.c	2017-07-04 20:03:23.559091778 +0800
++++ /dev/null	1970-01-01 00:00:00.000000000 +0000
+@@ -1,78 +0,0 @@
+-
+-#include <json/json.h>
+-
+-#include "zcfg_common.h"
+-#include "zcfg_rdm_oid.h"
+-#include "zcfg_rdm_obj.h"
+-#include "zcfg_debug.h"
+-#include "zcfg_fe_rdm_string.h"
+-#include "zcfg_fe_dal_common.h"
+-
+-#define CWMP_SOAP_MSG_DEBUG (1 << 1)
+-
+-dal_param_t NAT_SESSION_CTL_param[] =
+-{
+-	{"MaxSessionPerSystem",		dalType_int,	0,	20480,	NULL},
+-	{"MaxSessionPerHost",		dalType_int,	0,	20480,	NULL},
+-	{NULL,		0,	0,	0,	NULL}
+-	
+-};
+-
+-zcfgRet_t zcfgFeDalNatSessionCtlEdit(struct json_object *Jobj, char *replyMsg)
+-{
+-
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+-	objIndex_t objIid;
+-	struct json_object *natSessionJobj = NULL;
+-	int paramModified = 0, n = 0;
+-
+-	paraName = (const char *)NAT_SESSION_CTL_param[n++].paraName;
+-	
+-	IID_INIT(objIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &objIid, &natSessionJobj)) != ZCFG_SUCCESS) 
+-	{
+-		printf("%s: Object retrieve fail\n", __FUNCTION__);
+-		return ret;
+-	}
+-	
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			paraName = (const char *)NAT_SESSION_CTL_param[n++].paraName;
+-			continue;
+-		}
+-
+-		json_object_object_add(natSessionJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paramModified = 1;			
+-
+-		paraName = (const char *)NAT_SESSION_CTL_param[n++].paraName;
+-	}
+-
+-	if(paramModified) {
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_NAT_SESSION_CTL, &objIid, natSessionJobj, NULL)) != ZCFG_SUCCESS)
+-			printf("%s: Write object fail\n", __FUNCTION__);
+-	}
+-	
+-	json_object_put(natSessionJobj);
+-	return ret;
+-}
+-zcfgRet_t zcfgFeDalNatSessionCtl(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+-{
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	if(!method || !Jobj)
+-		return ZCFG_INTERNAL_ERROR;
+-
+-	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalNatSessionCtlEdit(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "POST")) {
+-		
+-	}
+-	else if(!strcmp(method, "DELETE")) {
+-		
+-	}
+-
+-	return ret;
+-}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-04 20:03:23.587091777 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-04 20:06:10.902221600 +0800
+@@ -23,9 +23,8 @@
+ extern dal_param_t RIP_param[];
+ extern dal_param_t NatPortFwd_param[];
+ extern dal_param_t NAT_PORT_TRIGGERING_param[];
+-extern dal_param_t NAT_DMZ_ALG_param[];
+ extern dal_param_t NAT_ADDR_MAPPING_param[];
+-extern dal_param_t NAT_SESSION_CTL_param[];
++extern dal_param_t NAT_CONF_param[];
+ extern dal_param_t NAT_Application_param[];
+ extern dal_param_t IntfGrp_param[];
+ extern dal_param_t LANADV_param[];
+@@ -100,9 +99,8 @@
+ extern zcfgRet_t zcfgFeDalRip(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatPortMapping(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatPortTriggering(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+-extern zcfgRet_t zcfgFeDalNatDMZALG(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalNatConf(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatAddrMapping(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+-extern zcfgRet_t zcfgFeDalNatSessionCtl(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatApplication(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalIntrGrp(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalLanAdvance(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -169,6 +167,7 @@
+ extern void zcfgFeDalShowPortFwd(struct json_object *Jarray);
+ extern void zcfgFeDalShowPortTrigger(struct json_object *Jarray);
+ extern void zcfgFeDalShowAddrMapping(struct json_object *Jarray);
++extern void zcfgFeDalShowNatConf(struct json_object *Jarray);
+ extern void zcfgFeDalShowNetworkMAP(struct json_object *Jarray);
+ extern void zcfgFeDalShowEthCtl(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallACL(struct json_object *Jarray);
+@@ -219,10 +218,9 @@
+ {"rip", 			RIP_param,			zcfgFeDalRip,			zcfgFeDalShowRip,			"get|edit",				"Routing"}, //Routing
+ {"nat",				NatPortFwd_param,	zcfgFeDalNatPortMapping,zcfgFeDalShowPortFwd,		"get|add|edit|delete", "NAT"},
+ {"nat_trigger",NAT_PORT_TRIGGERING_param,zcfgFeDalNatPortTriggering,zcfgFeDalShowPortTrigger,			"get|add|edit|delete", 	"NAT"}, //NAT
+-{"NAT_DMZ_ALG",		NAT_DMZ_ALG_param,	zcfgFeDalNatDMZALG, 	NULL,						"edit",				""}, //NAT
+ {"nat_addr_map",NAT_ADDR_MAPPING_param,	zcfgFeDalNatAddrMapping,zcfgFeDalShowAddrMapping,	"get|add|edit|delete",	 "NAT"}, //NAT
+-{"NAT_SESSION_CTL", NAT_SESSION_CTL_param,	zcfgFeDalNatSessionCtl,NULL,					"edit",				""}, //NAT
+ {"NAT_APPLICATION",NAT_Application_param,	zcfgFeDalNatApplication,NULL,					"add|delete",		""}, //NAT
++{"nat_conf",		NAT_CONF_param,		zcfgFeDalNatConf, 		zcfgFeDalShowNatConf,		"edit|get",				"NAT"}, //NAT
+ {"intf_group",		IntfGrp_param,		zcfgFeDalIntrGrp,		zcfgFeDalShowIntrGrp,		"add|edit|delete|get",	"Interface_Grouping"},//
+ {"lanadv",			LANADV_param, 		zcfgFeDalLanAdvance,	zcfgFeDalShowLanAdv,		"edit|get",			"Home_Networking"},
+ {"LANSETUP",		LANSETUP_param, 	zcfgFeDalLanSetup,		NULL,						"edit", 			"Home_Networking"},

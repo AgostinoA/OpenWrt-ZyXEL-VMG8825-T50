@@ -1,0 +1,134 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_broadband.c	2016-03-15 15:40:56.367781220 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_broadband.c	2016-03-15 15:42:53.475017600 +0800
+@@ -76,6 +76,7 @@
+ 	{"IP6Address",			dalType_v6AddrPrefix,	0,	0,	NULL},
+ 	{"NextHop",				dalType_v6Addr,	0,	0,	NULL},
+ 	//DHCP
++	{"option42Enable",		dalType_boolean,	0,	0,	NULL},
+ 	{"option43Enable",		dalType_boolean,	0,	0,	NULL},
+ 	{"option120Enable",		dalType_boolean,	0,	0,	NULL},
+ 	{"option121Enable",		dalType_boolean,	0,	0,	NULL},
+@@ -118,6 +119,7 @@
+ struct json_object *pppIfaceObj = NULL;
+ struct json_object *ipIfaceObj = NULL;
+ struct json_object *v4ClientObj = NULL;
++struct json_object *opt42Obj = NULL;
+ struct json_object *opt43Obj = NULL;
+ struct json_object *opt120Obj = NULL;
+ struct json_object *opt121Obj = NULL;
+@@ -152,6 +154,7 @@
+ objIndex_t pppIfaceIid = {0};
+ objIndex_t ipIfaceIid = {0};
+ objIndex_t v4ClientIid = {0};
++objIndex_t opt42Iid = {0};
+ objIndex_t opt43Iid = {0};
+ objIndex_t opt120Iid = {0};
+ objIndex_t opt121Iid = {0};
+@@ -1140,7 +1143,11 @@
+ 	oid = RDM_OID_DHCPV4_REQ_OPT;
+ 	while(zcfgFeSubInObjJsonGetNextWithoutUpdate(oid, dhcpv4ClinetIid, &iid, &obj)== ZCFG_SUCCESS) {
+ 		tag = json_object_get_int(json_object_object_get(obj, "Tag"));
+-		if(tag == 43){
++		if(tag == 42){
++			memcpy(&opt42Iid, &iid, sizeof(objIndex_t));
++			opt42Obj = obj;
++		}
++		else if(tag == 43){
+ 			memcpy(&opt43Iid, &iid, sizeof(objIndex_t));
+ 			opt43Obj = obj;
+ 		}
+@@ -1276,13 +1283,14 @@
+ 	//struct json_object *opt60obj = NULL, *opt61obj = NULL, *opt125obj = NULL;
+ 	//const char *Encapsulation, *ipMode;
+ 	//bool ipStatic;
+-	bool option43Enable=false, option120Enable=false, option121Enable=false, option212Enable=false;
++	bool option42Enable=false,option43Enable=false, option120Enable=false, option121Enable=false, option212Enable=false;
+ 	bool option60Enable=false, option61Enable=false, option125Enable=false;
+ 	int tag;
+ 
+ 	if(!strcmp(Encapsulation, "PPPoA") || !strcmp(Encapsulation, "PPPoE"))
+ 		return ret;
+ 
++	option42Enable = json_object_get_boolean(json_object_object_get(Jobj, "option42Enable"));
+ 	option43Enable = json_object_get_boolean(json_object_object_get(Jobj, "option43Enable"));
+ 	option120Enable = json_object_get_boolean(json_object_object_get(Jobj, "option120Enable"));
+ 	option121Enable = json_object_get_boolean(json_object_object_get(Jobj, "option121Enable"));
+@@ -1300,12 +1308,16 @@
+ 			zcfgFeObjJsonGetWithoutUpdate(RDM_OID_DHCPV4_CLIENT, &v4ClientIid, &v4ClientObj);
+ 		}
+ 
+-		//option 43, 120, 121, 212
++		//option 42, 43, 120, 121, 212
+ 		IID_INIT(iid);
+ 		oid = RDM_OID_DHCPV4_REQ_OPT;
+ 		while(zcfgFeSubInObjJsonGetNextWithoutUpdate(oid, &v4ClientIid, &iid, &obj)== ZCFG_SUCCESS) {
+ 			tag = json_object_get_int(json_object_object_get(obj, "Tag"));
+-			if(tag == 43 && option43Enable){
++			if(tag == 42 && option42Enable){
++				memcpy(&opt42Iid, &iid, sizeof(objIndex_t));
++				opt42Obj = obj;
++			}
++			else if(tag == 43 && option43Enable){
+ 				memcpy(&opt43Iid, &iid, sizeof(objIndex_t));
+ 				opt43Obj = obj;
+ 			}
+@@ -1325,6 +1337,7 @@
+ 				json_object_put(obj);
+ 		}
+ 
++		if(option42Enable) setDhcpReqOption(Jobj, &opt42Obj, &opt42Iid, &v4ClientIid, 42, "ntpsrv");
+ 		if(option43Enable) setDhcpReqOption(Jobj, &opt43Obj, &opt43Iid, &v4ClientIid, 43, "acsinfo");
+ 		if(option120Enable) setDhcpReqOption(Jobj, &opt120Obj, &opt120Iid, &v4ClientIid, 120, "sipsrv");
+ 		if(option121Enable) setDhcpReqOption(Jobj, &opt121Obj, &opt121Iid, &v4ClientIid, 121, "sroute");
+@@ -1509,7 +1522,8 @@
+ void editDhcpOption(struct json_object *Jobj, int action){
+ 
+ 	if(action == dal_Delete){
+-		json_object_object_add(Jobj, "option43Enable", json_object_new_boolean(false));
++		json_object_object_add(Jobj, "option42Enable", json_object_new_boolean(false));
++        json_object_object_add(Jobj, "option43Enable", json_object_new_boolean(false));
+ 		json_object_object_add(Jobj, "option120Enable", json_object_new_boolean(false));
+ 		json_object_object_add(Jobj, "option121Enable", json_object_new_boolean(false));
+ 		json_object_object_add(Jobj, "option212Enable", json_object_new_boolean(false));
+@@ -1518,6 +1532,7 @@
+ 		json_object_object_add(Jobj, "option125Enable", json_object_new_boolean(false));
+ 	}
+ 
++	editDhcpReqOption(Jobj, &opt42Obj, &opt42Iid, &v4ClientIid, 42, "ntpsrv");
+ 	editDhcpReqOption(Jobj, &opt43Obj, &opt43Iid, &v4ClientIid, 43, "acsinfo");
+ 	editDhcpReqOption(Jobj, &opt120Obj, &opt120Iid, &v4ClientIid, 120, "sipsrv");
+ 	editDhcpReqOption(Jobj, &opt121Obj, &opt121Iid, &v4ClientIid, 121, "sroute");
+@@ -2034,6 +2049,7 @@
+ 	if(v4AddrObj)zcfgFeObjJsonSetWithoutApply(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, v4AddrObj, NULL);
+ 	if(v6FwdObj)zcfgFeObjJsonSetWithoutApply(RDM_OID_ROUTING_ROUTER_V6_FWD, &v6FwdIid, v6FwdObj, NULL);
+ 	if(v6AddrObj)zcfgFeObjJsonSetWithoutApply(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, v6AddrObj, NULL);
++	if(opt42Obj)zcfgFeObjJsonSetWithoutApply(RDM_OID_DHCPV4_REQ_OPT, &opt42Iid, opt42Obj, NULL);
+ 	if(opt43Obj)zcfgFeObjJsonSetWithoutApply(RDM_OID_DHCPV4_REQ_OPT, &opt43Iid, opt43Obj, NULL);
+ 	if(opt120Obj)zcfgFeObjJsonSetWithoutApply(RDM_OID_DHCPV4_REQ_OPT, &opt120Iid, opt120Obj, NULL);
+ 	if(opt121Obj)zcfgFeObjJsonSetWithoutApply(RDM_OID_DHCPV4_REQ_OPT, &opt121Iid, opt121Obj, NULL);
+@@ -2068,6 +2084,7 @@
+ 	if(v4AddrObj) json_object_put(v4AddrObj);
+ 	if(v6FwdObj) json_object_put(v6FwdObj);
+ 	if(v6AddrObj) json_object_put(v6AddrObj);
++	if(opt42Obj) json_object_put(opt42Obj);
+ 	if(opt43Obj) json_object_put(opt43Obj);
+ 	if(opt120Obj) json_object_put(opt120Obj);
+ 	if(opt121Obj) json_object_put(opt121Obj);
+@@ -2113,6 +2130,7 @@
+ 	pppIfaceObj = NULL;
+ 	ipIfaceObj = NULL;
+ 	v4ClientObj = NULL;
++	opt42Obj = NULL;
+ 	opt43Obj = NULL;
+ 	opt120Obj = NULL;
+ 	opt121Obj = NULL;
+@@ -2147,6 +2165,7 @@
+ 	IID_INIT(pppIfaceIid);
+ 	IID_INIT(ipIfaceIid);
+ 	IID_INIT(v4ClientIid);
++	IID_INIT(opt42Iid);
+ 	IID_INIT(opt43Iid);
+ 	IID_INIT(opt120Iid);
+ 	IID_INIT(opt121Iid);

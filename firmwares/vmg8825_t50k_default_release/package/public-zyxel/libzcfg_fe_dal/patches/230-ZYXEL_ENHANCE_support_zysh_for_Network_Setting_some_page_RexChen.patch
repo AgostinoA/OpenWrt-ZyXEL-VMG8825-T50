@@ -1,0 +1,706 @@
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c	2017-06-26 16:18:14.500705108 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_addnl_subnet.c	2017-06-26 16:27:08.116733200 +0800
+@@ -15,10 +15,10 @@
+ 
+ dal_param_t SUBNET_param[]={
+ 	{"GroupName",				dalType_LanName,	0,	0,	NULL,	NULL,	dal_Edit},
+-	{"ipAlias_Enable", 			dalType_boolean,	0,	0,	NULL,	NULL,	dal_Edit},
++	{"ipAlias_Enable", 			dalType_boolean,	0,	0,	NULL,	NULL,	NULL},
+ 	{"ipAlias_IPAddress", 		dalType_v4Addr,		0,	0,	NULL,	NULL,	NULL},
+ 	{"ipAlias_SubnetMask", 		dalType_v4Mask,		0,	0,	NULL,	NULL,	NULL},
+-	{"PubLan_Enable",			dalType_boolean,	0,	0,	NULL,	NULL,	dal_Edit},
++	{"PubLan_Enable",			dalType_boolean,	0,	0,	NULL,	NULL,	NULL},
+ 	{"PubLan_IP", 				dalType_v4Addr,		0,	0,	NULL,	NULL,	NULL},
+ 	{"PubLan_SubnetMask", 		dalType_v4Mask,		0,	0,	NULL,	NULL,	NULL},
+ 	{"PubLan_DHCP", 			dalType_boolean,	0,	0,	NULL,	NULL,	NULL},
+@@ -105,7 +105,7 @@
+ 		ipAliasObj = ipv4AddrObj;
+ 		break;                                          
+ 	}
+-
++	if(json_object_object_get(Jobj, "ipAlias_Enable")){
+ 	if(aliasEnable){
+ 		aliasAddr = json_object_get_string(json_object_object_get(Jobj, "ipAlias_IPAddress"));
+ 		aliasSubMask = json_object_get_string(json_object_object_get(Jobj, "ipAlias_SubnetMask"));
+@@ -140,6 +140,7 @@
+ 			ret = zcfgFeObjJsonDel(RDM_OID_IP_IFACE_V4_ADDR, &ipAliasIid, NULL);
+ 		}
+ 	}
++	}
+ 	zcfgFeJsonObjFree(ipv4AddrObj);
+ 	return ret;
+ }
+@@ -164,16 +165,24 @@
+ 		curPubLanMask = json_object_get_string(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_Mask"));
+ 		curPubDHCP = json_object_get_boolean(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_DHCP"));
+ 		curPubARP = json_object_get_boolean(json_object_object_get(ipIntfObj, "X_ZYXEL_PubLan_ARP"));
+-
++		if(json_object_object_get(Jobj, "PubLan_Enable"))
+ 			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan", json_object_new_boolean(pubLan));
+-		if(json_object_object_get(Jobj, "PubLan_IP"))
++		if(json_object_object_get(Jobj, "PubLan_IP") && pubLan)
+ 			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_IP", json_object_new_string(pubLanIP));
+-		if(json_object_object_get(Jobj, "PubLan_SubnetMask"))
++		else if(!pubLan)
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_IP", json_object_new_string(""));
++		if(json_object_object_get(Jobj, "PubLan_SubnetMask") && pubLan)
+ 			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_Mask", json_object_new_string(pubLanMask));
++		else if(!pubLan)
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_Mask", json_object_new_string(""));
+ 		if(json_object_object_get(Jobj, "PubLan_DHCP"))
+ 			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_DHCP", json_object_new_boolean(pubLanDHCP));
++		else if(!pubLan)
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_DHCP", json_object_new_boolean(false));
+ 		if(json_object_object_get(Jobj, "PubLan_ARP"))
+ 			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_ARP", json_object_new_boolean(pubLanARP));
++		else if(!pubLan)
++			json_object_object_add(ipIntfObj, "X_ZYXEL_PubLan_ARP", json_object_new_boolean(false));
+ 			
+ 			zcfgFeObjJsonSet(RDM_OID_IP_IFACE, ipIntfIid, ipIntfObj, NULL);
+ 		zcfgFeJsonObjFree(ipIntfObj);
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c	2017-06-26 16:28:16.658733200 +0800
+@@ -0,0 +1,186 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t LANADV_param[]={
++	{"STBVendorID1", dalType_string,	0,	0,	NULL},
++	{"STBVendorID2", dalType_string,	0,	0,	NULL},
++	{"STBVendorID3", dalType_string,	0,	0,	NULL},
++	{"STBVendorID4", dalType_string,	0,	0,	NULL},
++	{"STBVendorID5", dalType_string,	0,	0,	NULL},
++	{"TFTPServerName", dalType_string,	0,	0,	NULL},
++	{"UPnPEnable", dalType_boolean,	0,	0,	NULL},
++	{"NATTEnable", dalType_boolean,	0,	0,	NULL},
++	{NULL,					0,	0,	0,	NULL},
++
++};
++
++void zcfgFeDalShowLanAdv(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray, 0);
++	printf("STB Vendor ID: \n");
++	printf("Vendor ID 1: %s \n",json_object_get_string(json_object_object_get(obj, "STBVendor1")));
++	printf("Vendor ID 2: %s \n",json_object_get_string(json_object_object_get(obj, "STBVendor2")));
++	printf("Vendor ID 3: %s \n",json_object_get_string(json_object_object_get(obj, "STBVendor3")));
++	printf("Vendor ID 4: %s \n",json_object_get_string(json_object_object_get(obj, "STBVendor4")));
++	printf("Vendor ID 5: %s \n",json_object_get_string(json_object_object_get(obj, "STBVendor5")));
++	printf("\nTFTP Server: \n");
++	printf("TFTP Server Name: %s \n",json_object_get_string(json_object_object_get(obj, "TFTPServerName")));
++	printf("\nUPnP State: \n");
++	printf("UPnP: %s \n",json_object_get_string(json_object_object_get(obj, "UPNPEnable")));
++	printf("UPnP NAT-T: %s \n",json_object_get_string(json_object_object_get(obj, "NATTEnable")));
++
++}
++
++zcfgRet_t zcfgFeDal_LanAdv_GET(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid = {0};
++	struct json_object *obj = NULL;
++	struct json_object *upnpObj = NULL, *stbObj = NULL, *tftpObj = NULL;
++
++	IID_INIT(iid);
++	obj = json_object_new_object();
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &iid, &stbObj);
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(obj, "STBVendor1", JSON_OBJ_COPY(json_object_object_get(stbObj, "STBVendorID1")));
++		json_object_object_add(obj, "STBVendor2", JSON_OBJ_COPY(json_object_object_get(stbObj, "STBVendorID2")));
++		json_object_object_add(obj, "STBVendor3", JSON_OBJ_COPY(json_object_object_get(stbObj, "STBVendorID3")));
++		json_object_object_add(obj, "STBVendor4", JSON_OBJ_COPY(json_object_object_get(stbObj, "STBVendorID4")));
++		json_object_object_add(obj, "STBVendor5", JSON_OBJ_COPY(json_object_object_get(stbObj, "STBVendorID5")));
++		zcfgFeJsonObjFree(stbObj);
++	}
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_T_F_T_P_SRV_NAME, &iid, &tftpObj);
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(obj, "TFTPServerName", JSON_OBJ_COPY(json_object_object_get(tftpObj, "TFTPServerName")));
++		zcfgFeJsonObjFree(tftpObj);
++	}
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &iid, &upnpObj);
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(obj, "UPNPEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "Enable")));
++		json_object_object_add(obj, "NATTEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable")));
++		zcfgFeJsonObjFree(upnpObj);
++	}
++	json_object_array_add(Jarray, obj);
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_LanAdv_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *upnpObj = NULL,*stbObj = NULL, *tftpObj = NULL, *origArry = NULL, *origObj = NULL;
++	objIndex_t Iid = {0};
++	const char *stb1 = NULL, *stb2 = NULL, *stb3 = NULL, *stb4 = NULL, *stb5 = NULL;
++	const char *thtpname = NULL;
++	bool upnpEnable = false, natEnable = false, origupnpEnable = false, orignatEnable = false;
++	origArry = json_object_new_array();
++	IID_INIT(Iid);
++	stb1 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID1"));
++	stb2 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID2"));
++	stb3 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID3"));
++	stb4 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID4"));
++	stb5 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID5"));
++	thtpname = json_object_get_string(json_object_object_get(Jobj, "TFTPServerName"));
++	upnpEnable = json_object_get_boolean(json_object_object_get(Jobj, "UPnPEnable"));
++	natEnable = json_object_get_boolean(json_object_object_get(Jobj, "NATTEnable"));
++	zcfgFeDal_LanAdv_GET(origArry,NULL);
++	origObj = json_object_array_get_idx(origArry, 0);
++	origupnpEnable = json_object_get_boolean(json_object_object_get(origObj, "UPNPEnable"));
++	orignatEnable = json_object_get_boolean(json_object_object_get(origObj, "NATTEnable"));
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &Iid, &stbObj);
++	if(ret == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "STBVendorID1"))
++			json_object_object_add(stbObj, "STBVendorID1", json_object_new_string(stb1));
++		if(json_object_object_get(Jobj, "STBVendorID2"))
++			json_object_object_add(stbObj, "STBVendorID2", json_object_new_string(stb2));
++		if(json_object_object_get(Jobj, "STBVendorID3"))
++			json_object_object_add(stbObj, "STBVendorID3", json_object_new_string(stb3));
++		if(json_object_object_get(Jobj, "STBVendorID4"))
++			json_object_object_add(stbObj, "STBVendorID4", json_object_new_string(stb4));
++		if(json_object_object_get(Jobj, "STBVendorID5"))
++			json_object_object_add(stbObj, "STBVendorID5", json_object_new_string(stb5));
++
++		ret = zcfgFeObjJsonSet(RDM_OID_S_T_B_VENDOR_I_D, &Iid, stbObj, NULL);
++		zcfgFeJsonObjFree(stbObj);
++	}
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_T_F_T_P_SRV_NAME, &Iid, &tftpObj);
++	if(ret == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "TFTPServerName"))
++			json_object_object_add(tftpObj, "TFTPServerName", json_object_new_string(thtpname));
++		
++		ret = zcfgFeObjJsonSet(RDM_OID_T_F_T_P_SRV_NAME, &Iid, tftpObj, NULL);
++		zcfgFeJsonObjFree(tftpObj);
++	}
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &Iid, &upnpObj);
++	if(ret == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "UPnPEnable")){
++			if(json_object_object_get(Jobj, "NATTEnable")){
++				if(!upnpEnable && natEnable){
++					if(replyMsg)
++						strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
++			else{
++				if(!upnpEnable && orignatEnable){
++					if(replyMsg)
++						strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
++		}
++		else{
++			if(json_object_object_get(Jobj, "NATTEnable")){
++				if(natEnable && !origupnpEnable){
++					if(replyMsg)
++						strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
++		}
++		if(json_object_object_get(Jobj, "UPnPEnable"))
++			json_object_object_add(upnpObj, "Enable", json_object_new_boolean(upnpEnable));
++		if(json_object_object_get(Jobj, "NATTEnable"))
++			json_object_object_add(upnpObj, "X_ZYXEL_NATTEnable", json_object_new_boolean(natEnable));
++		
++		ret = zcfgFeObjJsonSet(RDM_OID_UPNP_DEV, &Iid, upnpObj, NULL);
++		zcfgFeJsonObjFree(upnpObj);
++	}
++	
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalLanAdvance(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!strcmp(method, "PUT")){
++		ret = zcfgFeDal_LanAdv_Edit(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_LanAdv_GET(Jobj, NULL);
++	}
++	else{
++		printf("Unknown method:%s\n", method);
++	}
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_stb_vendor_id.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_stb_vendor_id.c	2017-06-26 16:18:14.496705108 +0800
++++ /dev/null	1970-01-01 00:00:00.000000000 +0000
+@@ -1,134 +0,0 @@
+-#include <ctype.h>
+-#include <json/json.h>
+-//#include <json/json_object.h>
+-#include <time.h>
+-
+-#include "zcfg_common.h"
+-#include "zcfg_fe_rdm_string.h"
+-#include "zcfg_fe_rdm_struct.h"
+-#include "zcfg_rdm_oid.h"
+-#include "zcfg_rdm_obj.h"
+-#include "zcfg_debug.h"
+-//#include "zcfg_eid.h"
+-#include "zcfg_msg.h"
+-#include "zcfg_fe_dal_common.h"
+-
+-dal_param_t STB_param[]={
+-	{"STBVendorID1", dalType_string,	0,	0,	NULL},
+-	{"STBVendorID2", dalType_string,	0,	0,	NULL},
+-	{"STBVendorID3", dalType_string,	0,	0,	NULL},
+-	{"STBVendorID4", dalType_string,	0,	0,	NULL},
+-	{"STBVendorID5", dalType_string,	0,	0,	NULL},
+-	{NULL,					0,	0,	0,	NULL},
+-};
+-
+-void zcfgFeDalShowSTBVendorID(struct json_object *Jarray){
+-	int i, j, len;
+-	struct json_object *obj;
+-
+-	if(json_object_get_type(Jarray) != json_type_array){
+-		printf("wrong Jobj format!\n");
+-		return;
+-	}
+-
+-	len = json_object_array_length(Jarray);
+-	for(i=0;i<len;i++){
+-		obj = json_object_array_get_idx(Jarray,i);
+-		j=0;
+-		while(STB_param[j].paraName!=NULL){
+-			printf("STB Vendor ID %d: %-10s\n",j+1,json_object_get_string(json_object_object_get(obj,STB_param[j].paraName)));
+-			j++;
+-		}
+-	}
+-}
+-
+-zcfgRet_t zcfgFeDal_STB_VendorID_Get(struct json_object *Jarray, char *replyMsg){
+-
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t iid;
+-	struct json_object *obj = NULL;
+-	struct json_object *STBObj = NULL;
+-	const char *STBVendorID1 = NULL;
+-	const char *STBVendorID2 = NULL;
+-	const char *STBVendorID3 = NULL;
+-	const char *STBVendorID4 = NULL;
+-	const char *STBVendorID5 = NULL;
+-
+-	IID_INIT(iid);
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D,&iid,&obj);
+-	if(ret==ZCFG_SUCCESS){
+-		STBObj = json_object_new_object();
+-
+-		STBVendorID1 = json_object_get_string(json_object_object_get(obj, "STBVendorID1"));
+-		STBVendorID2 = json_object_get_string(json_object_object_get(obj, "STBVendorID2"));
+-		STBVendorID3 = json_object_get_string(json_object_object_get(obj, "STBVendorID3"));
+-		STBVendorID4 = json_object_get_string(json_object_object_get(obj, "STBVendorID4"));
+-		STBVendorID5 = json_object_get_string(json_object_object_get(obj, "STBVendorID5"));
+-
+-		json_object_object_add(STBObj, "STBVendorID1", json_object_new_string(STBVendorID1));
+-		json_object_object_add(STBObj, "STBVendorID2", json_object_new_string(STBVendorID2));
+-		json_object_object_add(STBObj, "STBVendorID3", json_object_new_string(STBVendorID3));
+-		json_object_object_add(STBObj, "STBVendorID4", json_object_new_string(STBVendorID4));
+-		json_object_object_add(STBObj, "STBVendorID5", json_object_new_string(STBVendorID5));
+-		
+-		json_object_array_add(Jarray, STBObj);
+-		zcfgFeJsonObjFree(obj);
+-	}
+-
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDal_STB_VendorID_Edit(struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *STBObj = NULL;
+-	objIndex_t STBIid = {0};
+-	const char *STBVendorID1 = NULL;
+-	const char *STBVendorID2 = NULL;
+-	const char *STBVendorID3 = NULL;
+-	const char *STBVendorID4 = NULL;
+-	const char *STBVendorID5 = NULL;
+-
+-	STBVendorID1 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID1"));
+-	STBVendorID2 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID2"));
+-	STBVendorID3 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID3"));
+-	STBVendorID4 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID4"));
+-	STBVendorID5 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID5"));
+-	
+-	IID_INIT(STBIid);
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &STBIid, &STBObj);
+-	if(ret == ZCFG_SUCCESS){
+-		if(STBVendorID1!=NULL)
+-			json_object_object_add(STBObj, "STBVendorID1", json_object_new_string(STBVendorID1));
+-		if(STBVendorID2!=NULL)
+-			json_object_object_add(STBObj, "STBVendorID2", json_object_new_string(STBVendorID2));
+-		if(STBVendorID3!=NULL)
+-			json_object_object_add(STBObj, "STBVendorID3", json_object_new_string(STBVendorID3));
+-		if(STBVendorID4!=NULL)
+-			json_object_object_add(STBObj, "STBVendorID4", json_object_new_string(STBVendorID4));
+-		if(STBVendorID5!=NULL)
+-			json_object_object_add(STBObj, "STBVendorID5", json_object_new_string(STBVendorID5));
+-
+-		zcfgFeObjJsonSet(RDM_OID_S_T_B_VENDOR_I_D, &STBIid, STBObj, NULL);
+-		zcfgFeJsonObjFree(STBObj);
+-	}
+-
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDalSTBVendorID(const char *method, struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	
+-	if(!strcmp(method, "PUT")){
+-		ret = zcfgFeDal_STB_VendorID_Edit(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "GET")){
+-		ret = zcfgFeDal_STB_VendorID_Get(Jobj, NULL);
+-	}
+-	else{
+-		printf("Unknown method:%s\n", method);
+-	}
+-	
+-	return ret;
+-}
+-
+-
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_tftp_ser_name.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_tftp_ser_name.c	2017-06-26 16:18:14.496705108 +0800
++++ /dev/null	1970-01-01 00:00:00.000000000 +0000
+@@ -1,92 +0,0 @@
+-#include <ctype.h>
+-#include <json/json.h>
+-//#include <json/json_object.h>
+-#include <time.h>
+-
+-#include "zcfg_common.h"
+-#include "zcfg_fe_rdm_string.h"
+-#include "zcfg_fe_rdm_struct.h"
+-#include "zcfg_rdm_oid.h"
+-#include "zcfg_rdm_obj.h"
+-#include "zcfg_debug.h"
+-//#include "zcfg_eid.h"
+-#include "zcfg_msg.h"
+-#include "zcfg_fe_dal_common.h"
+-
+-dal_param_t TFTPSerName_param[]={
+-	{"TFTPServerName", dalType_string,	0,	0,	NULL},
+-	{NULL,					0,	0,	0,	NULL},
+-};
+-
+-void zcfgFeDalShowTFTPSerName(struct json_object *Jarray){
+-	int i, len;
+-	struct json_object *obj;
+-
+-	if(json_object_get_type(Jarray) != json_type_array){
+-		printf("wrong Jobj format!\n");
+-		return;
+-	}
+-	
+-	len = json_object_array_length(Jarray);
+-	for(i=0;i<len;i++){
+-		obj = json_object_array_get_idx(Jarray,i);
+-		printf("%-20s %-10s\n","TFTP Server Name:",json_object_get_string(json_object_object_get(obj,"TFTPServerName")));
+-	}
+-}
+-
+-zcfgRet_t zcfgFeDal_TFTPSerName_Get(struct json_object *Jarray, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *tftpObj = NULL;
+-	objIndex_t tftpIid = {0};
+-	const char *parameterName = NULL;
+-	struct json_object *paraObj = NULL;
+-
+-	IID_INIT(tftpIid);
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_T_F_T_P_SRV_NAME, &tftpIid, &tftpObj);
+-	if(ret == ZCFG_SUCCESS){
+-		paraObj = json_object_new_object();
+-		json_object_object_add(paraObj, "TFTPServerName", json_object_new_string(json_object_get_string(json_object_object_get(tftpObj, "TFTPServerName"))));
+-		json_object_array_add(Jarray, paraObj);
+-		zcfgFeJsonObjFree(tftpObj);
+-	}
+-
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDal_TFTPSerName_Edit(struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *tftpObj = NULL;
+-	objIndex_t tftpIid = {0};
+-	const char *tftpServerName = NULL;
+-
+-	IID_INIT(tftpIid);
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_T_F_T_P_SRV_NAME, &tftpIid, &tftpObj);
+-
+-	if(ret == ZCFG_SUCCESS){
+-		tftpServerName = json_object_get_string(json_object_object_get(Jobj, "TFTPServerName"));
+-		json_object_object_add(tftpObj, "TFTPServerName", json_object_new_string(tftpServerName));
+-		ret = zcfgFeObjJsonSet(RDM_OID_T_F_T_P_SRV_NAME, &tftpIid, tftpObj, NULL);
+-		zcfgFeJsonObjFree(tftpObj);
+-	}
+-	
+-	return ret;
+-}
+-
+-
+-zcfgRet_t zcfgFeDalTFTPSerName(const char *method, struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	
+-	if(!strcmp(method, "PUT")){
+-		ret = zcfgFeDal_TFTPSerName_Edit(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "GET")){
+-		ret = zcfgFeDal_TFTPSerName_Get(Jobj, NULL);
+-	}
+-	else{
+-		printf("Unknown method:%s\n", method);
+-	}
+-
+-	return ret;
+-}
+-
+-
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_upnp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_upnp.c	2017-06-26 16:18:14.496705108 +0800
++++ /dev/null	1970-01-01 00:00:00.000000000 +0000
+@@ -1,129 +0,0 @@
+-#include <ctype.h>
+-#include <json/json.h>
+-//#include <json/json_object.h>
+-#include <time.h>
+-
+-#include "zcfg_common.h"
+-#include "zcfg_fe_rdm_string.h"
+-#include "zcfg_fe_rdm_struct.h"
+-#include "zcfg_rdm_oid.h"
+-#include "zcfg_rdm_obj.h"
+-#include "zcfg_debug.h"
+-//#include "zcfg_eid.h"
+-#include "zcfg_msg.h"
+-#include "zcfg_fe_dal_common.h"
+-
+-dal_param_t UPNP_param[]={
+-	{"Enable", dalType_boolean,	0,	0,	NULL},
+-	{"NATTEnable", dalType_boolean,	0,	0,	NULL},
+-	{NULL,					0,	0,	0,	NULL},
+-
+-};
+-
+-void zcfgFeDalShowUPnP(struct json_object *Jarray){
+-	int i, len = 0;
+-	struct json_object *obj;
+-
+-	if(json_object_get_type(Jarray) != json_type_array){
+-		printf("wrong Jobj format!\n");
+-		return;
+-	}
+-
+-	len = json_object_array_length(Jarray);
+-	for(i=0;i<len;i++){
+-		obj = json_object_array_get_idx(Jarray,i);
+-
+-		if(json_object_get_boolean(json_object_object_get(obj,"Enable")))
+-			printf("UPnP State: true \n");
+-		else
+-			printf("UPnP State: false \n");
+-
+-		if(json_object_get_boolean(json_object_object_get(obj,"NATTEnable")))
+-			printf("UPnP NAT-T State: true \n");
+-		else
+-			printf("UPnP NAT-T State: false \n");
+-	}
+-}
+-
+-zcfgRet_t zcfgFeDal_UPnP_GET(struct json_object *Jarray, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t iid;
+-	struct json_object *obj = NULL;
+-	struct json_object *upnpObj = NULL;
+-	bool enable = false;
+-	bool natEnable = false;
+-
+-	IID_INIT(iid);
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &iid, &obj);
+-	if(ret == ZCFG_SUCCESS){
+-		upnpObj = json_object_new_object();
+-		enable = json_object_get_boolean(json_object_object_get(obj, "Enable"));
+-		natEnable = json_object_get_boolean(json_object_object_get(obj, "X_ZYXEL_NATTEnable"));
+-		json_object_object_add(upnpObj, "Enable", json_object_new_boolean(enable));
+-		json_object_object_add(upnpObj, "NATTEnable", json_object_new_boolean(natEnable));
+-		json_object_array_add(Jarray, upnpObj);
+-		zcfgFeJsonObjFree(obj);
+-	}
+-	
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDal_UPnP_Edit(struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *upnpObj = NULL;
+-	objIndex_t upnpIid = {0};
+-	bool enable = false;
+-	bool natEnable = false;
+-
+-	IID_INIT(upnpIid);
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &upnpIid, &upnpObj);
+-
+-	if(ret == ZCFG_SUCCESS){
+-
+-		if(json_object_object_get(Jobj, "Enable")!=NULL){
+-			enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-		}
+-		else{
+-			enable = json_object_get_boolean(json_object_object_get(upnpObj, "Enable"));
+-		}
+-
+-		if(json_object_object_get(Jobj, "NATTEnable")!=NULL){
+-			natEnable = json_object_get_boolean(json_object_object_get(Jobj, "NATTEnable"));
+-		}
+-		else{
+-			natEnable = json_object_get_boolean(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable"));
+-		}
+-
+-		if(!enable){
+-			printf("Note: If UPnP is disabled, UPnP NAT-T is also disabled..\n");
+-			natEnable = false;
+-		}
+-
+-		json_object_object_add(upnpObj, "Enable", json_object_new_boolean(enable));
+-		json_object_object_add(upnpObj, "X_ZYXEL_NATTEnable", json_object_new_boolean(natEnable));
+-
+-		ret = zcfgFeObjJsonSet(RDM_OID_UPNP_DEV, &upnpIid, upnpObj, NULL);
+-		zcfgFeJsonObjFree(upnpObj);
+-	}
+-	
+-	return ret;
+-}
+-
+-
+-zcfgRet_t zcfgFeDalUPnP(const char *method, struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	if(!strcmp(method, "PUT")){
+-		ret = zcfgFeDal_UPnP_Edit(Jobj, NULL);
+-	}
+-	else if(!strcmp(method, "GET")){
+-		ret = zcfgFeDal_UPnP_GET(Jobj, NULL);
+-	}
+-	else{
+-		printf("Unknown method:%s\n", method);
+-	}
+-
+-	return ret;
+-}
+-
+-
+Index: libzcfg_fe_dal-1.0/network/igmp_mld/zcfg_fe_dal_igmp_mld.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/igmp_mld/zcfg_fe_dal_igmp_mld.c	2017-06-26 16:18:14.476705108 +0800
++++ libzcfg_fe_dal-1.0/network/igmp_mld/zcfg_fe_dal_igmp_mld.c	2017-06-26 16:26:41.325733200 +0800
+@@ -15,26 +15,26 @@
+ dal_param_t IGMPMLD_param[] =
+ {
+ 	//IGMP
+-	{"Igmp_Version", 				dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_QueryInterval", 			dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_QueryResponseInterval",	dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_LastMemberQueryInterval", dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_RobustnessValue", 		dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_MaxGroups", 				dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_MaxSources", 			dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Igmp_MaxMembers", 			dalType_int,	0,	0,	NULL,	NULL,	NULL},
++	{"Igmp_Version", 				dalType_int, 	1, 	3, 		NULL,	NULL,	NULL},
++	{"Igmp_QueryInterval", 			dalType_int, 	0, 	30000, 	NULL,	NULL,	NULL},
++	{"Igmp_QueryResponseInterval",	dalType_int, 	0, 	30000, 	NULL,	NULL,	NULL},
++	{"Igmp_LastMemberQueryInterval", dalType_int, 	0, 	30000, 	NULL,	NULL,	NULL},
++	{"Igmp_RobustnessValue", 		dalType_int, 	1, 	7, 		NULL,	NULL,	NULL},
++	{"Igmp_MaxGroups", 				dalType_int, 	1, 	25, 	NULL,	NULL,	NULL},
++	{"Igmp_MaxSources", 			dalType_int, 	1, 	10, 	NULL,	NULL,	NULL},
++	{"Igmp_MaxMembers", 			dalType_int,	1,	25,		NULL,	NULL,	NULL},
+ 	{"Igmp_FastLeave", 				dalType_boolean,0,	0,	NULL,	NULL,	NULL},
+ 	{"Igmp_LanToLanEnable", 		dalType_boolean,0, 	0, 	NULL,	NULL,	NULL},
+ 	{"Igmp_JoinImmediate", 			dalType_boolean,0, 	0, 	NULL,	NULL,	NULL},
+ 	//MLD
+-	{"Mld_Version", 				dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_QueryInterval", 			dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_QueryResponseInterval",	dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_LastMemberQueryInterval", dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_RobustnessValue", 		dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_MaxGroups", 				dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_MaxSources", 				dalType_int, 	0, 	0, 	NULL,	NULL,	NULL},
+-	{"Mld_MaxMembers", 				dalType_int,	0,	0,	NULL,	NULL,	NULL},
++	{"Mld_Version", 				dalType_int, 	1, 	2, 		NULL,	NULL,	NULL},
++	{"Mld_QueryInterval", 			dalType_int, 	0, 	30000, 	NULL,	NULL,	NULL},
++	{"Mld_QueryResponseInterval",	dalType_int, 	0, 	30000, 	NULL,	NULL,	NULL},
++	{"Mld_LastMemberQueryInterval", dalType_int, 	0, 	30000, 	NULL,	NULL,	NULL},
++	{"Mld_RobustnessValue", 		dalType_int, 	1, 	7, 		NULL,	NULL,	NULL},
++	{"Mld_MaxGroups", 				dalType_int, 	1, 	25, 	NULL,	NULL,	NULL},
++	{"Mld_MaxSources", 				dalType_int, 	1, 	10, 	NULL,	NULL,	NULL},
++	{"Mld_MaxMembers", 				dalType_int,	1,	25,		NULL,	NULL,	NULL},
+ 	{"Mld_FastLeave", 				dalType_boolean,0,	0,	NULL,	NULL,	NULL},
+ 	{"Mld_LanToLanEnable", 			dalType_boolean,0, 	0, 	NULL,	NULL,	NULL},
+ 	{NULL, 							0,				0, 	0, 	NULL,	NULL,	NULL}
+Index: libzcfg_fe_dal-1.0/network/vlanGroup/zcfg_fe_dal_vlan_group.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/vlanGroup/zcfg_fe_dal_vlan_group.c	2017-06-26 16:18:14.536705107 +0800
++++ libzcfg_fe_dal-1.0/network/vlanGroup/zcfg_fe_dal_vlan_group.c	2017-06-26 16:26:30.875733200 +0800
+@@ -18,9 +18,9 @@
+ 	{"Enable", 		dalType_boolean, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
+ 	{"type", 		dalType_string, 	0, 	0, 	NULL,	NULL,	dalcmd_Forbid},
+ 	{"GroupName", 	dalType_string, 	0, 	0, 	NULL,	NULL,	dal_Add},
+-	{"VlanId", 		dalType_int, 		0, 	0, 	NULL,	NULL,	dal_Add},
++	{"VlanId", 		dalType_int, 		1, 	4094, 	NULL,	NULL,	dal_Add},
+ 	{"IntfList", 	dalType_IntfGrpLanPortListNoWiFi,		0,	0,	NULL,	NULL,	dal_Add},
+-	{"TagList", 	dalType_IntfGrpLanPortListNoWiFi,		0,	0,	NULL,	NULL,	dal_Add},
++	{"TagList", 	dalType_IntfGrpLanPortListNoWiFi,		0,	0,	NULL,	NULL,	NULL},
+ 	{NULL, 			0, 					0, 	0, 	NULL}
+ };
+ void zcfgFeDalShowVlanGroup(struct json_object *Jarray){
+@@ -145,8 +145,10 @@
+ 	tagList = json_object_get_string(json_object_object_get(Jobj, "TagList"));
+ 	intfList = json_object_get_string(json_object_object_get(Jobj, "IntfList"));
+ 	dalcmdLanListParse(intfList, untag);
++	if(json_object_object_get(Jobj, "TagList"))
+ 	dalcmdLanListParse(tagList, tag);
+ 	if(!json_object_object_get(Jobj, "type")){
++		if(json_object_object_get(Jobj, "TagList"))
+ 		ret = dalcmdTagCheck(untag, tag, replyMsg);
+ 		if (ret != ZCFG_SUCCESS)	
+ 			return ret;
+@@ -154,7 +156,7 @@
+ 		if(ret != ZCFG_SUCCESS)
+ 			return ret;
+ 		oid = RDM_OID_VLAN_GROUP;
+-		ret = dalcmdParamCheck(groupName, oid, "GroupName", replyMsg);
++		ret = dalcmdParamCheck(NULL, groupName, oid, "GroupName", "GroupName", replyMsg);
+ 		if(ret != ZCFG_SUCCESS)
+ 			return ret;
+ 	}

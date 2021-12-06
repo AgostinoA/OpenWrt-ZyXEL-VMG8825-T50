@@ -1,0 +1,194 @@
+--- a/zcfg_fe_tr98.c
++++ b/zcfg_fe_tr98.c
+@@ -40,6 +40,7 @@ static zcfgRet_t zcfgFeTr98ClassNameGet(
+ 
+ 	if(*(tmpName + strlen(tmpName) - 1) == '.') {
+ 		printf("%s : Invalid object Name %s ended with '.'\n", __FUNCTION__, objName);
++		free(tmpName);
+ 		return ZCFG_INVALID_OBJECT;
+ 	}
+ 
+--- a/lanDev.c
++++ b/lanDev.c
+@@ -1753,6 +1753,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 	struct json_object *apSecJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
++	bool freeflag = 0;
+ 
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, wifiSsid) != ZCFG_SUCCESS) {
+ 		/*  The instance number of WLANConfiguration.i will be continuous because of the tr98 to tr181 mapping table. 
+@@ -1810,6 +1811,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
++		freeflag = 0;
+ 		paramValue = json_object_object_get(ssidJobj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -1844,6 +1846,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 		}
+ 		else if(!strcmp(paramList->name, "PeerBSSID")) {
+ 			paramValue = json_object_new_string("");
++			freeflag = 1;
+ 		}
+ 		else if(!strcmp(paramList->name, "WMMSupported")) {
+ 			paramValue = json_object_object_get(apJobj, "WMMCapability");
+@@ -1853,18 +1856,22 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 		}
+ 		else if(!strcmp(paramList->name, "LocationDescription")) {
+ 			paramValue = json_object_new_string("");
++			freeflag = 1;
+ 		}
+ 		else if(!strcmp(paramList->name, "MACAddressControlEnabled")) {
+ 			paramValue = json_object_new_boolean(false);
++			freeflag = 1;
+ 		}
+ 		else if(!strcmp(paramList->name, "Standard")) {
+ 			paramValue = json_object_object_get(radioJobj, "SupportedStandards");
+ 		}
+ 		else if(!strcmp(paramList->name, "WEPKeyIndex")) {
+ 			paramValue = json_object_new_int(1);
++			freeflag = 1;
+ 		}
+ 		else if(!strcmp(paramList->name, "WPAEncryptionModes") || !strcmp(paramList->name, "IEEE11iEncryptionModes")) {
+ 			paramValue = json_object_new_string("TKIPandAESEncryption");
++			freeflag = 1;
+ 		}
+ 		else if(!strcmp(paramList->name, "WPAAuthenticationMode")) {
+ 			paramValue = json_object_object_get(apSecJobj, "ModeEnabled");
+@@ -1880,6 +1887,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 				else {
+ 					paramValue = json_object_new_string("");
+ 				}
++				freeflag = 1;
+ 			}
+ 		}
+ 		else if(!strcmp(paramList->name, "IEEE11iAuthenticationMode")) {
+@@ -1896,6 +1904,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 				else {
+ 					paramValue = json_object_new_string("");
+ 				}
++				freeflag = 1;
+ 			}
+ 		}
+ 		else if(!strcmp(paramList->name, "BeaconType")) {
+@@ -1913,6 +1922,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 				else {
+ 					paramValue = json_object_new_string("Basic");
+ 				}
++				freeflag = 1;
+ 			}
+ 		}
+ 		else if(!strcmp(paramList->name, "BasicEncryptionModes")) {
+@@ -1923,6 +1933,7 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 			else {
+ 				paramValue = json_object_new_string("None");
+ 			}
++			freeflag = 1;
+ 		}
+ 		else if(!strcmp(paramList->name, "WEPEncryptionLevel")) {
+ 			char wepEncryp[32] = {0};
+@@ -1940,11 +1951,13 @@ zcfgRet_t lanDevWlanCfgObjGet(char *tr98
+ 			}
+ 
+ 			paramValue = json_object_new_string(wepEncryp);
++			freeflag = 1;
+ 		}
+ 
+ 		if(paramValue != NULL) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 			paramList++;
++			if(freeflag) json_object_put(paramValue);
+ 			continue;
+ 		}
+ 
+@@ -1970,51 +1983,64 @@ static void wifiSecuritySet(struct json_
+ {
+ 	char type[12] = {0};
+ 	struct json_object *tr98ParamValue = NULL;
++	struct json_object *paramValue = NULL;
+ 
+ 	strcpy(type, json_object_get_string(beaconType));
+ 
+ 	if(!strcmp(type, "Basic")) {
+ 		tr98ParamValue = json_object_object_get(tr98Jobj, "BasicEncryptionModes");
+ 		if(!strcmp(json_object_get_string(tr98ParamValue), "None")) {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("None")));
++			paramValue = json_object_new_string("None");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}
+ 		else {
+-			if(wepKeyLen == 5 || wepKeyLen == 10)
+-				json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WEP-64")));
+-			else if(wepKeyLen == 0 || wepKeyLen == 13 || wepKeyLen == 26)
+-				json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WEP-128")));
++			if(wepKeyLen == 5 || wepKeyLen == 10){
++				paramValue = json_object_new_string("WEP-64");
++				json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
++			}
++			else if(wepKeyLen == 0 || wepKeyLen == 13 || wepKeyLen == 26){
++				paramValue = json_object_new_string("WEP-128");
++				json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
++			}
+ 		}
+ 	}
+ 	else if(!strcmp(type, "WPA")) {
+ 		tr98ParamValue = json_object_object_get(tr98Jobj, "WPAAuthenticationMode");
+ 
+ 		if(!strcmp(json_object_get_string(tr98ParamValue), "EAPAuthentication")) {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WPA-Enterprise")));
++			paramValue = json_object_new_string("WPA-Enterprise");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}
+ 		else {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WPA-Personal")));
++			paramValue = json_object_new_string("WPA-Personal");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}
+ 	}
+ 	else if(!strcmp(type, "11i")) {
+ 		tr98ParamValue = json_object_object_get(tr98Jobj, "IEEE11iAuthenticationMode");
+ 
+ 		if(!strcmp(json_object_get_string(tr98ParamValue), "EAPAuthentication")) {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WPA2-Enterprise")));
++			paramValue = json_object_new_string("WPA2-Enterprise");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}
+ 		else {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WPA2-Personal")));
++			paramValue = json_object_new_string("WPA2-Personal");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}
+ 	}
+ 	else if(!strcmp(type, "WPAand11i")) {
+ 		tr98ParamValue = json_object_object_get(tr98Jobj, "IEEE11iAuthenticationMode");
+ 
+ 		if(!strcmp(json_object_get_string(tr98ParamValue), "EAPAuthentication")) {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WPA-WPA2-Enterprise")));
++			paramValue = json_object_new_string("WPA-WPA2-Enterprise");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}
+ 		else {
+-			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(json_object_new_string("WPA-WPA2-Personal")));
++			paramValue = json_object_new_string("WPA-WPA2-Personal");
++			json_object_object_add(apSecJobj, "ModeEnabled", JSON_OBJ_COPY(paramValue));
+ 		}				
+ 	}	
++	json_object_put(paramValue);
+ }
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i
+  *
+@@ -2486,9 +2512,9 @@ zcfgRet_t lanDevWlanCfgPskObjGet(char *t
+ 			paramList++;
+ 			continue;
+ 		}
+-
+-		json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(json_object_new_string("")));
+-
++		paramValue = json_object_new_string("");
++		json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		json_object_put(paramValue);
+ 		paramList++;
+ 	}
+ 

@@ -1,0 +1,88 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-10-27 14:44:44.874270652 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-10-27 14:44:44.894270652 +0800
+@@ -171,6 +171,11 @@
+ CFLAGS += -DZYXEL_NAT_LOG
+ endif
+ 
++##Co-FW
++ifeq ($(CONFIG_SAME_FW_FOR_TWO_BOARD),y)
++CFLAGS += -DSAME_FW_FOR_TWO_BOARD
++endif
++
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+ 
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2017-10-27 14:44:44.874270652 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2017-10-27 14:45:26.357829500 +0800
+@@ -14,6 +14,9 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_net.h"
++#if defined(SAME_FW_FOR_TWO_BOARD)
++#include "zyutil_cofw.h"
++#endif
+ 
+ //#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+ 
+@@ -3359,6 +3362,17 @@
+ 	initGlobalObjects();
+ 	getBasicInfo(Jobj);
+ 
++#if defined(SAME_FW_FOR_TWO_BOARD)
++	if (strcmp(Type, "ETH") == 0)
++	{
++		/* Not support ETHWAN */
++	    if (zyutil_cofw_productNameGet() == MODEL_VMG1312_T20A)
++	    {
++	    	return ZCFG_REQUEST_REJECT;
++	    }
++	}
++#endif
++
+ 	//check if duplicate Name exist
+ 	if(getSpecificObj(RDM_OID_IP_IFACE, "X_ZYXEL_SrvName", json_type_string, Name, NULL, NULL)){
+ 		if(replyMsg)
+@@ -4240,9 +4254,23 @@
+ 		
+ 		pramJobj = json_object_new_object();
+ 		ret = parseIpIfaceObj(pramJobj, ipIfaceIid, ipIfObj);
+-		if( ret == ZCFG_SUCCESS ){
+-				count++;
+-				json_object_object_add(pramJobj, "index", json_object_new_int(count));
++		if( ret == ZCFG_SUCCESS )
++		{
++			count++;
++			json_object_object_add(pramJobj, "index", json_object_new_int(count));
++
++#if defined(SAME_FW_FOR_TWO_BOARD)
++			if (strcmp(CurrType, "ETH") == 0)
++			{
++				/* Not support ETHWAN */
++			    if (zyutil_cofw_productNameGet() == MODEL_VMG1312_T20A)
++	            {
++		            zcfgFeJsonObjFree(pramJobj);
++		            zcfgFeJsonObjFree(ipIfObj);
++		    	    continue;
++	            }
++			}
++#endif
+ 			if(strcmp(CurrMode, "IP_Bridged")){
+ 				getWanInfo(pramJobj, ipIfaceIid, ipIfObj);
+ 				getStaticInfo(pramJobj, ipIfaceIid, ipIfObj);
+@@ -4254,8 +4282,10 @@
+ 						json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
+ 					}
+ 				}
+-				else
+-			json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++                else
++                {
++			        json_object_array_add(Jarray, JSON_OBJ_COPY(pramJobj));
++                }
+ 			zcfgFeJsonObjFree(pramJobj);
+ 		}
+ 		zcfgFeJsonObjFree(ipIfObj);

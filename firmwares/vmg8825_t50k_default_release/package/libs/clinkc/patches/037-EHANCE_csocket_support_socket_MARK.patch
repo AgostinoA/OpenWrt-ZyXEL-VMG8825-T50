@@ -1,0 +1,129 @@
+Index: clinkc/include/cybergarage/net/csocket.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/csocket.h	2014-09-23 10:06:54.393648846 +0800
++++ clinkc/include/cybergarage/net/csocket.h	2014-09-23 10:24:50.790667526 +0800
+@@ -184,8 +184,11 @@
+ BOOL cg_socket_accept(CgSocket *sock, CgSocket *clientSock);
+ #ifdef ZYXEL_PATCH /*support binding interface*/
+ BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, BOOL bindFlag, BOOL reuseFlag);
++BOOL cg_socket_bind_MARK(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, unsigned int MARK, BOOL bindFlag, BOOL reuseFlag);
+ 
+ BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName);
++BOOL cg_socket_connect_MARK(CgSocket *sock, char *addr, int port, const char *boundIfName, unsigned int MARK);
++
+ int cg_socket_sendfile(CgSocket *sock, int fp, ssize_t flen);
+ #else
+ BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, BOOL bindFlag, BOOL reuseFlag);
+Index: clinkc/src/cybergarage/net/csocket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/csocket.c	2014-09-23 10:06:54.393648846 +0800
++++ clinkc/src/cybergarage/net/csocket.c	2014-09-25 11:38:04.641328698 +0800
+@@ -536,7 +536,10 @@
+ * cg_socket_bind
+ ****************************************/
+ #ifdef ZYXEL_PATCH
+-BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, BOOL bindFlag, BOOL reuseFlag)
++BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, BOOL bindFlag, BOOL reuseFlag){
++	return cg_socket_bind_MARK(sock, bindPort, bindAddr, boundIfName, 0, bindFlag, reuseFlag);
++}
++BOOL cg_socket_bind_MARK(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, unsigned int MARK, BOOL bindFlag, BOOL reuseFlag)
+ #else
+ BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, BOOL bindFlag, BOOL reuseFlag)
+ #endif
+@@ -648,13 +651,20 @@
+ 	setsockopt(sock->id, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+ #endif
+ #ifdef ZYXEL_PATCH /*support binding interface*/
+-		if (boundIfName != NULL && strlen(boundIfName) > 0){
+-			strncpy(boundIf.ifr_name, boundIfName, IFNAMSIZ);
++	if (boundIfName != NULL && strlen(boundIfName) > 0){
++		strncpy(boundIf.ifr_name, boundIfName, IFNAMSIZ);
+ 	
+-			printf("cg_socket_bind() Bind to interface %s\n", boundIf.ifr_name);
+-			sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_BINDTODEVICE, (char *)&boundIf,  sizeof(boundIf)); 
+-			printf("Ret=%d\n", sockOptRet);
+-		}
++		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_BINDTODEVICE, (char *)&boundIf,  sizeof(boundIf));	
++#if defined DEBUG
++		printf("%s: Bind to interface %s, ret = %d\n", __FUNCTION__, boundIf.ifr_name, sockOptRet);
++#endif
++	}
++	if(MARK > 0){ /*support set socket socket*/
++		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_MARK, &MARK, sizeof(MARK));	
++#if defined DEBUG
++		printf("%s: set socket Mark %d, ret = %d\n", __FUNCTION__, MARK);
++#endif		
++	}
+ #endif
+ 
+ 	ret = bind(sock->id, addrInfo->ai_addr, addrInfo->ai_addrlen);
+@@ -815,7 +825,10 @@
+ * cg_socket_connect
+ ****************************************/
+ #ifdef ZYXEL_PATCH /*support binding interface*/
+-BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName)
++BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName){
++	return cg_socket_connect_MARK(sock,addr,port,boundIfName,0);
++}
++BOOL cg_socket_connect_MARK(CgSocket *sock, char *addr, int port, const char *boundIfName, unsigned int MARK)
+ #else
+ BOOL cg_socket_connect(CgSocket *sock, char *addr, int port)
+ #endif
+@@ -890,10 +903,17 @@
+ #ifdef ZYXEL_PATCH /*support binding interface*/
+ 	if (boundIfName != NULL && strlen(boundIfName) > 0){
+ 		strncpy(boundIf.ifr_name, boundIfName, IFNAMSIZ);
+-
+-		printf("Bind to interface %s\n", boundIf.ifr_name);
++	
+ 		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_BINDTODEVICE, (char *)&boundIf,  sizeof(boundIf));	
+-		printf("Ret=%d\n", sockOptRet);
++#if defined DEBUG
++		printf("%s: Bind to interface %s, ret = %d\n", __FUNCTION__, boundIf.ifr_name, sockOptRet);
++#endif
++	}
++	if(MARK > 0){ /*support set socket socket*/
++		sockOptRet = setsockopt(sock->id, SOL_SOCKET, SO_MARK, &MARK, sizeof(MARK));	
++#if defined DEBUG
++		printf("%s: set socket Mark %d, ret = %d\n", __FUNCTION__, MARK);
++#endif		
+ 	}
+ #endif
+ 
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-09-23 10:06:54.385648846 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-09-25 11:36:02.225186518 +0800
+@@ -664,6 +664,7 @@
+ void cg_http_server_delete(CgHttpServer *httpServer);
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ BOOL cg_http_server_open(CgHttpServer * httpServer,int bindPort,char * bindAddr, char* boundIfName, BOOL isSecure,void * ctxdata);
++BOOL cg_http_server_open_MARK(CgHttpServer *httpServer, int bindPort, char *bindAddr, char *boundIfName, unsigned int MARK, BOOL isSecure, void *ctxdata);
+ #else
+ BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr);
+ #endif
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2014-09-23 10:06:54.389648846 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2014-09-25 11:37:04.049489654 +0800
+@@ -108,7 +108,10 @@
+ * cg_http_server_delete
+ ****************************************/
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+-BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr, char *boundIfName, BOOL isSecure, void *ctxdata)
++BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr, char *boundIfName, BOOL isSecure, void *ctxdata){
++	return cg_http_server_open_MARK(httpServer, bindPort, bindAddr, boundIfName, 0, isSecure, ctxdata);
++}
++BOOL cg_http_server_open_MARK(CgHttpServer *httpServer, int bindPort, char *bindAddr, char *boundIfName, unsigned int MARK, BOOL isSecure, void *ctxdata)
+ #else
+ BOOL cg_http_server_open(CgHttpServer *httpServer, int bindPort, char *bindAddr)
+ #endif
+@@ -134,7 +137,7 @@
+ #endif
+ 
+ #ifdef ZYXEL_PATCH /*support binding interface*/
+-	if (cg_socket_bind(httpServer->sock, bindPort, bindAddr, boundIfName, TRUE, FALSE) == FALSE) {
++	if (cg_socket_bind_MARK(httpServer->sock, bindPort, bindAddr, boundIfName, MARK, TRUE, FALSE) == FALSE) {
+ #else
+ 	if (cg_socket_bind(httpServer->sock, bindPort, bindAddr, TRUE, FALSE) == FALSE) {
+ #endif

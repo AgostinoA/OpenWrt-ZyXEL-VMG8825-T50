@@ -1,0 +1,215 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2014-06-11 18:04:21.977898152 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2014-06-11 18:11:11.821576232 +0800
+@@ -1695,6 +1695,12 @@
+ 			paramList++;
+ 			continue;
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")){
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(isIGMPProxyEnable(ipIface)));
++
++			paramList++;
++			continue;
++		}
+ 		else if(!strcmp(paramList->name, "PossibleConnectionTypes")) {
+ 			paramValue = json_object_object_get(ipIfaceJobj, "X_ZYXEL_PossibleConnectionTypes");
+ 			if(paramValue != NULL) {
+@@ -1836,19 +1842,20 @@
+ 	char ipIface[32] = {0};
+ 	char devIpIface[32] = {0};
+ 	objIndex_t ipIfaceIid;
+-	objIndex_t dnsSrvIid, dnsSrvV6Iid, dnsIid;
++	objIndex_t dnsSrvIid, dnsSrvV6Iid, dnsIid, igmpIid;
+ 	struct json_object *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *paramValue2 = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;	
+-	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL;
++	struct json_object *dnsSrvJobj = NULL, *dnsSrvV6Jobj = NULL, *dnsJobj = NULL, *igmpJobj = NULL;
+ 	const char *addrType = NULL, *connType = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char typeBuf[20] = {0};
+-	bool isDnsObjExist = false;
+-	
++	char tmpbuf[256] = {0};
++	char *igmpInterface = NULL, *intf = NULL, *tmp_ptr = NULL;
++	bool isDnsObjExist = false, firstEnter = true;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -1878,6 +1885,10 @@
+ 		zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
+ 	}
+ 
++	IID_INIT(igmpIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS)
++		return ret;
++
+ 	if(multiJobj){
+ 
+ 		if(dnsSrvJobj){
+@@ -1900,6 +1911,13 @@
+ 			dnsJobj = zcfgFeJsonMultiObjAppend(RDM_OID_DNS, &dnsIid, multiJobj, tmpObj);			
+ 			json_object_put(tmpObj);
+ 		}
++
++		if(igmpJobj){
++			tmpObj = igmpJobj;
++			igmpJobj = NULL;
++			igmpJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_IGMP, &igmpIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 		
+ 		if(ipIfaceJobj){
+ 			tmpObj = ipIfaceJobj;
+@@ -1978,7 +1996,46 @@
+ 					paramList++;
+ 					continue;
+ 				}
+-			}			
++			}
++			else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")) {
++				igmpInterface = strdup(json_object_get_string(json_object_object_get(igmpJobj, "Interface")));
++				if(json_object_get_boolean(paramValue)){
++					if(!strcmp(igmpInterface, "")){
++						strcpy(tmpbuf, ipIface);
++					}
++					else{
++						strcpy(tmpbuf, igmpInterface);
++						if(!strstr(igmpInterface, ipIface)){
++							strcat(tmpbuf, ",");
++							strcat(tmpbuf, ipIface);
++						}
++					}
++				}
++				else{
++					if(strstr(igmpInterface, ipIface) != NULL){
++						intf = strtok_r(igmpInterface, ",", &tmp_ptr);
++						while(intf != NULL){
++							if(*intf != '\0' && !strstr(intf, ipIface)){
++								if(!firstEnter && intf != NULL){
++									strcat(tmpbuf, ",");
++								}
++								strcat(tmpbuf, intf);
++								firstEnter = false;
++							}
++							intf = strtok_r(NULL, ",", &tmp_ptr);
++						}
++					}
++					else
++						strcpy(tmpbuf, igmpInterface);
++				}
++				json_object_object_add(igmpJobj, "Interface", json_object_new_string(tmpbuf));
++
++				if(igmpInterface)
++					free(igmpInterface);
++
++				paramList++;
++				continue;
++			}
+ #ifdef IPV6INTERFACE_PROFILE		
+ 			else if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 				json_object_object_add(ipIfaceJobj, "IPv6Enable", JSON_OBJ_COPY(paramValue));
+@@ -2052,6 +2109,16 @@
+ 			}
+ 			json_object_put(dnsJobj);
+ 		}
++
++		if(igmpJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_IGMP, &igmpIid, igmpJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.X_ZYXEL_IGMP Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.X_ZYXEL_IGMP Success\n", __FUNCTION__);
++			}
++			json_object_put(igmpJobj);
++		}
+ 		
+ 		if(ipIfaceJobj){
+ 			if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ipIfaceIid, ipIfaceJobj, NULL)) != ZCFG_SUCCESS ) {
+@@ -2379,6 +2446,9 @@
+ 		else if(!strcmp(paramList->name, "DNSServers") || !strcmp( paramList->name, "X_ZYXEL_IPv6DNSServers")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_DNS_CLIENT_SRV, "DNSServer");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ZY_IGMP, "Enable");
++		}
+ 		else if(!strcmp(paramList->name, "NATEnabled")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_INTF_SETTING, "Enable");
+ 		}
+@@ -3069,6 +3139,12 @@
+ 			paramList++;
+ 			continue;
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_IGMPProxyEnable")){
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(isIGMPProxyEnable(ipIface)));
++
++			paramList++;
++			continue;
++		}
+ 		else if(!strcmp(paramList->name, "PortMappingNumberOfEntries")){
+ 			for(i = 1; i<=254; i++){
+ 				snprintf(pmPath, sizeof(pmPath), "%s.PortMapping.%d", tr98FullPathName, i);
+Index: libzcfg_fe_tr98-1.0/wanDev_api.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.c	2014-06-11 18:04:21.981898152 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.c	2014-06-11 18:10:27.096186898 +0800
+@@ -157,6 +157,23 @@
+ }
+ #endif
+ 
++bool isIGMPProxyEnable(char *ipIface)
++{
++	bool enable = false;
++    objIndex_t objIid;
++	rdm_ZyIgmp_t *igmpObj = NULL;
++
++    IID_INIT(objIid);
++    if(zcfgFeObjStructGetWithoutUpdate(RDM_OID_ZY_IGMP, &objIid, (void **)&igmpObj) == ZCFG_SUCCESS) {
++        if(igmpObj->Enable && strstr(igmpObj->Interface, ipIface)) {
++			enable = true;
++        }
++        zcfgFeObjStructFree(igmpObj);
++    }
++
++    return enable;
++}
++
+ zcfgRet_t ethLinkAdd(char *ethLinkPathName, char *lowerLayer)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/wanDev_api.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_api.h	2014-06-11 18:04:21.981898152 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_api.h	2014-06-11 18:10:22.540518619 +0800
+@@ -10,6 +10,7 @@
+ zcfgRet_t dnsInfoGetJobj(char *, objIndex_t *, struct json_object **, bool, bool);
+ zcfgRet_t dnsAddJobj(char *, objIndex_t *, struct json_object **);
+ #endif
++bool isIGMPProxyEnable(char *ipIface);
+ zcfgRet_t ethLinkAdd(char *, char *);
+ zcfgRet_t ipIfaceAdd(char *, char *);
+ zcfgRet_t pppIfaceAdd(char *, char *);
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2014-06-11 18:04:21.797898154 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2014-06-11 18:10:17.323154219 +0800
+@@ -264,6 +264,7 @@
+ 	{ "ShapingBurstSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "PortMappingNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "X_ZYXEL_DNSType", PARAMETER_ATTR_WRITE, 19, json_type_string},
++	{ "X_ZYXEL_IGMPProxyEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6RD_PROFILE
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #endif
+@@ -425,6 +426,7 @@
+ 	{ "ShapingBurstSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "PortMappingNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "X_ZYXEL_DNSType", PARAMETER_ATTR_WRITE, 19, json_type_string},
++	{ "X_ZYXEL_IGMPProxyEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6INTERFACE_PROFILE
+ 	{ "X_ZYXEL_IPv6Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPv6Status", PARAMETER_ATTR_READONLY, 10, json_type_string},

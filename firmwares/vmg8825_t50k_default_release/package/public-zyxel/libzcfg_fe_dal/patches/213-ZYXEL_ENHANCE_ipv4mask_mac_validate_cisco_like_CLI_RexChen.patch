@@ -1,0 +1,180 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-09 15:11:11.517656196 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-09 15:13:28.649954500 +0800
+@@ -1,7 +1,8 @@
+ #include "zcfg_common.h"
+ #include <json/json.h>
+ #include <netinet/in.h>
+-
++#include <ctype.h>
++#include "zcfg_rdm_oid.h"
+ #include "zcfg_fe_dal_common.h"
+ 
+ #define isdigit(c) ((c >= 0x30) && (c < 0x3A))
+@@ -341,18 +342,7 @@
+ 
+ 
+ 
+-/*
+- * return WAN and LAN list in Jason Array.
+- * Format:Jarray.i.NAME = Name
+- *           Jarray.i.IpIfacePath = IP.Interface.i
+- *           Jarray.i.Type : LAN|WAN
+- *           Jarray.i.LinkType = ATM|PTM|ETH|PON|USB (For WAN only)
+- *           Jarray.i.ConnectionType = IP_Routed|IP_Bridged (For WAN only)
+- *           Jarray.i.Encapsulation = IPoE|IPoA|PPPoE|PPPoA (For WAN only, NUL if LinkType is USB))
+- *           Jarray.i.BindToIntfGrp = true|false (For WAN only)
+- *           Jarray.i.Group_WAN_IpIface = IP.Interface.i,IP.Interface.i,IP.Interface.i,... (For LAN only)
+- *           Jarray.i.BridgingBrPath = Bridging.Bridge.i (For LAN only)
+- */
++
+ 
+ //Suppose parameter need to check is string.
+ zcfgRet_t dalcmdParamCheck(objIndex_t *Iid, const char *param, zcfg_offset_t oid, char *key, char *key1, char *replyMsg){
+@@ -470,7 +460,18 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
+-
++/*
++ * return WAN and LAN list in Jason Array.
++ * Format:Jarray.i.NAME = Name
++ *           Jarray.i.IpIfacePath = IP.Interface.i
++ *           Jarray.i.Type : LAN|WAN
++ *           Jarray.i.LinkType = ATM|PTM|ETH|PON|USB (For WAN only)
++ *           Jarray.i.ConnectionType = IP_Routed|IP_Bridged (For WAN only)
++ *           Jarray.i.Encapsulation = IPoE|IPoA|PPPoE|PPPoA (For WAN only, NUL if LinkType is USB))
++ *           Jarray.i.BindToIntfGrp = true|false (For WAN only)
++ *           Jarray.i.Group_WAN_IpIface = IP.Interface.i,IP.Interface.i,IP.Interface.i,... (For LAN only)
++ *           Jarray.i.BridgingBrPath = Bridging.Bridge.i (For LAN only)
++ */
+ zcfgRet_t getWanLanList(struct json_object **Jarray){
+ 	struct json_object *ipIfaceJarray, *pppIfaceJarray, *vlanTermJarray, *ethLinkJarray, *bridgeBrJarray;
+ 	struct json_object *ipIfaceObj, *pppIfaceObj, *vlanTermObj, *ethLinkObj, *bridgeBrObj;
+@@ -673,6 +674,79 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*
++ * return WAN and LAN list in Jason Array.
++ * Format:Jarray.i.NAME = Name
++ *           Jarray.i.BrPortPath = Bridging.Bridge.i.Port.i
++ *           Jarray.i.IntfPath : Ethernet.Interface.i|WiFi.SSID.i
++ *           Jarray.i.Type : ETHLAN|WiFiSSID
++ */
++zcfgRet_t getLanPortList(struct json_object **Jarray){
++	objIndex_t iid;	
++	struct json_object *Obj = NULL;
++	struct json_object *mappingObj = NULL;
++	struct json_object *Jobj = NULL;
++	char intfPath[64] = {0}, brPortPath[64] = {0};
++	const char *LowerLayers, *X_ZYXEL_LanPort, *SSID, *BrPortPath;
++
++
++	*Jarray = json_object_new_array();
++
++	mappingObj = json_object_new_object();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_BR_PORT, &iid, &Obj) == ZCFG_SUCCESS) {
++		LowerLayers = json_object_get_string(json_object_object_get(Obj, "LowerLayers"));
++		if(!strncmp(LowerLayers, "Ethernet.Interface.", 19) || !strncmp(LowerLayers, "WiFi.SSID.", 10)){
++			sprintf(brPortPath, "Bridging.Bridge.%u.Port.%u", iid.idx[0], iid.idx[1]);
++			json_object_object_add(mappingObj, LowerLayers, json_object_new_string(brPortPath));
++		}
++		json_object_put(Obj);
++	}
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ETH_IFACE, &iid, &Obj) == ZCFG_SUCCESS) {
++		if(json_object_get_boolean(json_object_object_get(Obj, "Upstream")) || json_object_get_boolean(json_object_object_get(Obj, "X_ZYXEL_Upstream")))
++			continue;
++
++		sprintf(intfPath, "Ethernet.Interface.%u", iid.idx[0]);
++		X_ZYXEL_LanPort = json_object_get_string(json_object_object_get(Obj, "X_ZYXEL_LanPort"));
++		BrPortPath = json_object_get_string(json_object_object_get(mappingObj, intfPath));
++		if(BrPortPath == NULL)
++			BrPortPath = "";
++		if(X_ZYXEL_LanPort == NULL)
++			X_ZYXEL_LanPort = "";
++			
++		Jobj = json_object_new_object();
++		json_object_object_add(Jobj, "Name", json_object_new_string(X_ZYXEL_LanPort));
++		json_object_object_add(Jobj, "BrPortPath", json_object_new_string(BrPortPath));
++		json_object_object_add(Jobj, "IntfPath", json_object_new_string(intfPath));
++		json_object_object_add(Jobj, "Type", json_object_new_string("ETHLAN"));
++		json_object_array_add(*Jarray, Jobj);
++
++		json_object_put(Obj);
++	}
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &iid, &Obj) == ZCFG_SUCCESS) {
++		sprintf(intfPath, "WiFi.SSID.%u", iid.idx[0]);
++		SSID = json_object_get_string(json_object_object_get(Obj, "SSID"));
++		BrPortPath = json_object_get_string(json_object_object_get(mappingObj, intfPath));
++		if(BrPortPath == NULL)
++			BrPortPath = "";
++		Jobj = json_object_new_object();
++		json_object_object_add(Jobj, "Name", json_object_new_string(SSID ));
++		json_object_object_add(Jobj, "BrPortPath", json_object_new_string(BrPortPath));
++		json_object_object_add(Jobj, "IntfPath", json_object_new_string(intfPath));
++		json_object_object_add(Jobj, "Type", json_object_new_string("WiFiSSID"));
++		json_object_array_add(*Jarray, Jobj);
++
++		json_object_put(Obj);
++	}
++	json_object_put(mappingObj);
++	return ZCFG_SUCCESS;
++}
++
++
+ bool findInList(char *list, char *target, char *separator){
+ 	char *buf, *ptr, *tmp_ptr = NULL;
+ 
+@@ -758,6 +832,45 @@
+ 	return true;
+ }
+ 
++bool validateMacAddr(const char *macaddr){
++	char buff[32] = {0};
++	char c, d;
++	char *macstr = NULL, *tmp = NULL;
++	int count = 0;
++
++	strcpy(buff,macaddr);
++	macstr = strtok_r(buff, ":", &tmp);
++	while(macstr != NULL){
++		c = *macstr; 
++		d = *(macstr+1); 
++		if(!isxdigit(c) || !isxdigit(d))
++			return false;
++		macstr = strtok_r(tmp, ":", &tmp);
++		count++;
++	}
++	if(count != 6)
++		return false;
++	return true;
++}
++
++bool validateIPv4mask(const char *submask){
++	unsigned char oneFound = 0;
++	unsigned long int netmask = inet_addr(submask);
++	if(!strcmp(submask, "255.255.255.255"))
++		return true;
++	else if(netmask == -1)
++		return false;
++	netmask = ntohl(netmask);
++	unsigned long int mask;
++	for (mask = 1; mask; mask <<= 1){
++		if (netmask & mask)
++			oneFound++;
++		else if(oneFound)
++			return false;
++	}
++	return true;
++}
++
+ //bool validateParam(struct json_object *Jobj, dal_param_t *paramList) //return invalidParm to gui
+ bool validateParam(struct json_object *Jobj, dal_param_t *paramList, char *invalidParm)
+ {

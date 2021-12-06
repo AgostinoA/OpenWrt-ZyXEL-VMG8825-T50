@@ -1,0 +1,119 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2017-09-26 13:32:34.212694398 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2017-09-26 13:32:34.244694398 +0800
+@@ -9249,6 +9249,8 @@
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
++	struct json_object *paramDiagStatValueObj = NULL;
++	char runningDiagStat[30] = {0};
+ 	
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 	
+@@ -9260,26 +9262,53 @@
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, atmLink)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-
++#if 0
+ 	if(strstr(atmLink, "ATM") == NULL) {
+ 		printf("%s : Not a ATM Link\n", __FUNCTION__);
+ 		return ZCFG_NO_SUCH_OBJECT;
+ 	}
+-
++#endif
++	struct json_object *atmLinkObj;
++	objIndex_t atmLinkIid;
++	IID_INIT(atmLinkIid);
++	atmLinkIid.level = 1;
++	if(sscanf(atmLink, "ATM.Link.%hhu", &atmLinkIid.idx[0]) != 1){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ATM_LINK, &atmLinkIid, (void **)&atmLinkObj) != ZCFG_SUCCESS){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++	bool atmLinkStatus = 0;
++	const char *atmLinkStatusStr = json_object_get_string(json_object_object_get(atmLinkObj, "Status"));
++	if(!strcmp(atmLinkStatusStr, TR181_UP)){
++		atmLinkStatus = 1;
++	}
++	json_object_put(atmLinkObj);
+ 
+ 	/*Get Device.ATM.Diagnostics.F5Loopback*/
+ 	IID_INIT(atmF5LoIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, &atmF5LoJobj)) != ZCFG_SUCCESS) {
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, &atmF5LoJobj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
++	const char *tr181DiagStatStr = json_object_get_string(json_object_object_get(atmF5LoJobj, "DiagnosticsState"));
++	if(tr181DiagStatStr && strlen(tr181DiagStatStr))
++		strcpy(runningDiagStat, tr181DiagStatStr);
++	json_object_put(atmF5LoJobj);
++
++	atmF5LoJobj = json_object_new_object();
+ 
+ 	if(multiJobj){
++		multiJobj = zcfgFeSessMultiObjSetUtilize(multiJobj);
++
+ 		tmpObj = atmF5LoJobj;
+ 		atmF5LoJobj = NULL;
+ 		atmF5LoJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, multiJobj, tmpObj);
+ 		json_object_put(tmpObj);
++		zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, "partialset", json_object_new_boolean(true));
+ 	}
+ 		
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++
+ 	/*write tr181 Device.ATM.Diagnostics.F5Loopback  object*/
+ 	paramList = tr98Obj[handler].parameter;	
+ 	json_object_object_add(atmF5LoJobj, "Interface", json_object_new_string(atmLink));
+@@ -9287,15 +9316,12 @@
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL) {
+ 			/*Write value from WANATMF5LoopbackDiagnostics to Device.ATM.Diagnostics.F5Loopback*/
+-			tr181ParamValue = json_object_object_get(atmF5LoJobj, paramList->name);
+-			if(tr181ParamValue != NULL) {
+-				json_object_object_add(atmF5LoJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				paramList++;
+-				continue;
++			if(!strcmp(paramList->name, "DiagnosticsState")){
++				paramDiagStatValueObj = paramValue;
+ 			}
+-  
+-			/*Not defined in tr181, give it a default value*/
++			json_object_object_add(atmF5LoJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 
++			/*Not defined in tr181, give it a default value*/
+ 			ztrdbg(ZTR_DL_INFO, "%s: Can't find parameter %s in TR181\n", __FUNCTION__, paramList->name);
+ 
+ 			paramList++;
+@@ -9303,11 +9329,26 @@
+ 		else {
+ 			paramList++;
+ 		}
+-	}   
++	}
++
++ 	const char *diagnosticsState = json_object_get_string(paramDiagStatValueObj);
++	if(diagnosticsState){
++		if(!strcmp(diagnosticsState, "Requested") && !atmLinkStatus){
++			sprintf(paramfault, "ATM Link not ready");
++			if(!multiJobj) json_object_put(atmF5LoJobj);
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++	}else{
++		if(strcmp(runningDiagStat, "Requested"))
++			zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, "apply", json_object_new_boolean(false));
++	}
+ 	json_object_object_add(atmF5LoJobj, "X_ZYXEL_Creator", json_object_new_string("ACS"));
+ 		
+ 	if(multiJobj == NULL){
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, atmF5LoJobj, NULL)) != ZCFG_SUCCESS ) {
++		//if((ret = zcfgFeObjJsonSet(RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, atmF5LoJobj, NULL)) != ZCFG_SUCCESS ) {
++		const char *atmdiagobjstr;
++		atmdiagobjstr = json_object_to_json_string(atmF5LoJobj);
++		if((ret = zcfgFeObjWrite(RDM_OID_ATM_DIAG_F5_LO, &atmF5LoIid, atmdiagobjstr, REQUEST_SET_OBJ | ZCFG_PARTIAL_OBJECT_SET, NULL)) != ZCFG_SUCCESS ) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.ATM.Diagnostics.F5Loopback fail\n", __FUNCTION__);
+ 			json_object_put(atmF5LoJobj);
+ 			return ret;

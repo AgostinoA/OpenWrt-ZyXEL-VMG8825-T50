@@ -1,0 +1,200 @@
+Index: libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_SPmgmt_srv.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/mgmt/zcfg_fe_dal_SPmgmt_srv.c	2017-06-28 10:53:45.319180239 +0800
++++ libzcfg_fe_dal-1.0/maintenance/mgmt/zcfg_fe_dal_SPmgmt_srv.c	2017-06-28 11:08:05.378170100 +0800
+@@ -12,14 +12,73 @@
+ #include "zcfg_fe_dal_common.h"
+ 
+ dal_param_t SP_MGMT_SRV_param[]={		//RDM_OID_SP_REMO_SRV
+-	{"Name", 					dalType_string,	0,	0,		NULL},
+-	{"Enable",					dalType_boolean,	0,	0,		NULL},
+-	{"Port", 	 				dalType_int,	1,	65535,	NULL},
+-	{"Index", 	 				dalType_int,	0,	0,		NULL},
+-	{"RestartDeamon", 		 	dalType_boolean,0,	0,		NULL},
+-	{NULL,						0,				0,	0,		NULL},
++	{"Name", 					dalType_string,	0,	0,		NULL,	NULL,	dalcmd_Forbid},
++	{"Enable",					dalType_boolean,0,	0,		NULL,	NULL,	NULL},
++	{"Port", 	 				dalType_int,	1,	65535,	NULL,	NULL,	NULL},
++	{"Index", 	 				dalType_int,	0,	0,		NULL,	NULL,	dal_Edit},
++	{"RestartDeamon", 		 	dalType_boolean,0,	0,		NULL,	NULL,	dalcmd_Forbid},
++	{NULL,						0,				0,	0,		NULL,	NULL,	NULL},
+ };
+ 
++zcfgRet_t zcfgFeDal_SPmgmtSrv_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_SP_REMO_SRV, &iid, &obj) == ZCFG_SUCCESS) {
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Index", json_object_new_int(iid.idx[0]));
++		json_object_object_add(pramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(obj, "Name")));
++		json_object_object_add(pramJobj, "Port", JSON_OBJ_COPY(json_object_object_get(obj, "Port")));
++		json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
++		json_object_array_add(Jarray, pramJobj);
++		zcfgFeJsonObjFree(obj);
++	}
++	
++	return ret;
++}
++
++
++void zcfgFeDalShowSPMgmtSrv(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++	int Index, Port;
++	const char *Name;
++	char port[32] = {0};
++	bool Enable;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-7s %-10s %-12s %-10s\n",
++		    "Index", "Name", "Port", "Enable");
++	
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj != NULL){
++			Index = json_object_get_int(json_object_object_get(obj, "Index"));
++			Name = json_object_get_string(json_object_object_get(obj, "Name"));
++			Port = json_object_get_int(json_object_object_get(obj, "Port"));
++			Enable = json_object_get_boolean(json_object_object_get(obj, "Enable"));
++
++			if(strcmp(Name, "PING"))
++				sprintf(port, "%d", Port);
++			else
++				strcpy(port, "N/A");
++
++			printf("%-7u %-10s %-12s %-10d\n",Index,Name,port,Enable);
++		}
++
++	}
++	
++}
++
+ zcfgRet_t zcfgFeDal_SPmgmtSrv_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *SPmgmtSrvObj = NULL;
+@@ -30,11 +89,53 @@
+ 	int port = 0;
+ 	bool restartdeamon = false, RestartHttpDeamon = false, EnableService =false, EnableHttpService = false;
+ 	int index = 0, HttpIndex = 1;
+-	int NewHttpPort = 0;
+-	int OriginalHttpPort = 0;
++	int NewPort = 0;
++	int OriginalPort = 0;
+ 	int len = 0;
+ 	len = json_object_array_length(Jobj);
+-			
++
++	if(json_object_get_type(Jobj) == json_type_object){// set by dalcmd
++		IID_INIT(SPmgmtSrvIid);
++		index = json_object_get_int(json_object_object_get(Jobj,"Index"));
++		SPmgmtSrvIid.level = 1;
++		SPmgmtSrvIid.idx[0] = index;
++
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, &SPmgmtSrvObj) != ZCFG_SUCCESS) {
++			if(replyMsg)
++				sprintf(replyMsg, "Can't find remote Mgmt rule of index %d\n", index);
++			return ZCFG_NOT_FOUND;
++		}
++
++		OriginalPort = json_object_get_int(json_object_object_get(SPmgmtSrvObj, "Port"));
++		ServiceName = json_object_get_string(json_object_object_get(SPmgmtSrvObj,"Name"));
++		if(json_object_object_get(Jobj, "Port") != NULL){
++			port = json_object_get_int(json_object_object_get(Jobj, "Port"));
++			if(!strcmp(ServiceName, "HTTP")){
++				if(OriginalPort != port)
++					json_object_object_add(SPmgmtSrvObj, "RestartDeamon", json_object_new_boolean(true));
++				json_object_object_add(SPmgmtSrvObj, "Port", json_object_new_int(port));
++			}
++			else{
++				strcpy(replyMsg, "Only HTTP can modify port.");
++				zcfgFeJsonObjFree(SPmgmtSrvObj);
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++
++		if(json_object_object_get(Jobj, "Enable") != NULL){
++			EnableService = json_object_get_int(json_object_object_get(Jobj, "Enable"));
++			json_object_object_add(SPmgmtSrvObj, "Enable", json_object_new_boolean(EnableService));
++		}
++
++		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, SPmgmtSrvObj, NULL)) != ZCFG_SUCCESS){
++			if(replyMsg)
++				sprintf(replyMsg, "Set remote Mgmt rule fail!");
++			return ret;
++		}
++
++		zcfgFeJsonObjFree(SPmgmtSrvObj);
++		return ret;
++	}
+ 	for(int reqObjIdx = 0;reqObjIdx<len;reqObjIdx++){
+ 		reqObject = json_object_array_get_idx(Jobj, reqObjIdx);
+ 
+@@ -47,14 +148,14 @@
+ 				EnableService = json_object_get_boolean(json_object_object_get(reqObject, "Enable"));
+ 				port = json_object_get_int(json_object_object_get(reqObject, "Port"));
+ 				ServiceName = json_object_get_string(json_object_object_get(SPmgmtSrvObj, "Name"));
+-				OriginalHttpPort = json_object_get_int(json_object_object_get(SPmgmtSrvObj, "Port"));
++				OriginalPort = json_object_get_int(json_object_object_get(SPmgmtSrvObj, "Port"));
+ 				/*if port of http or https have be modified, let it be PUT at last*/
+ 				if( !strcmp(ServiceName, "HTTP") ){
+-					if(port != OriginalHttpPort){
++					if(port != OriginalPort){
+ 						EnableHttpService = EnableService;
+ 						RestartHttpDeamon = true;
+ 						HttpIndex = index;
+-						NewHttpPort = port;
++						NewPort = port;
+ 						continue;
+ 					}else{
+ 						json_object_object_add(SPmgmtSrvObj, "Port", json_object_new_int(port));
+@@ -76,7 +177,7 @@
+ 		ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, &SPmgmtSrvObj);
+ 		if(ret == ZCFG_SUCCESS){
+ 			json_object_object_add(SPmgmtSrvObj, "Enable", json_object_new_int(EnableHttpService));
+-			json_object_object_add(SPmgmtSrvObj, "Port", json_object_new_int(NewHttpPort));
++			json_object_object_add(SPmgmtSrvObj, "Port", json_object_new_int(NewPort));
+ 			json_object_object_add(SPmgmtSrvObj, "RestartDeamon", json_object_new_int(RestartHttpDeamon));
+ 			zcfgFeObjJsonBlockedSet(RDM_OID_SP_REMO_SRV, &SPmgmtSrvIid, SPmgmtSrvObj, NULL);
+ 		}
+@@ -91,7 +192,9 @@
+ zcfgRet_t zcfgFeDalSPMgmtSrv(const char *method, struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	if(!strcmp(method, "PUT"))
+-		ret = zcfgFeDal_SPmgmtSrv_Edit(Jobj, NULL);
++		ret = zcfgFeDal_SPmgmtSrv_Edit(Jobj, replyMsg);
++	else if(!strcmp(method, "GET"))
++		ret = zcfgFeDal_SPmgmtSrv_Get(Jobj, NULL);
+ 	else
+ 		printf("Unknown method:%s\n", method);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-28 10:53:46.071180226 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-28 11:07:05.844217300 +0800
+@@ -166,6 +166,7 @@
+ 
+ extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowMgmtSrv(struct json_object *Jarray);
++extern void zcfgFeDalShowSPMgmtSrv(struct json_object *Jarray);
+ extern void zcfgFeDalShowPortFwd(struct json_object *Jarray);
+ extern void zcfgFeDalShowNetworkMAP(struct json_object *Jarray);
+ extern void zcfgFeDalShowEthCtl(struct json_object *Jarray);
+@@ -275,7 +276,7 @@
+ {"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	""},//Certificates
+ {"HOME_CONNECTIVYITY", HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity
+ {"mgmt_srv", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			zcfgFeDalShowMgmtSrv,		"edit|get",			"Remote_MGMT"},
+-{"SP_MGMT_SRV", 		SP_MGMT_SRV_param,	zcfgFeDalSPMgmtSrv,			NULL,		"edit",			""},
++{"sp_mgmt_srv", 	SP_MGMT_SRV_param,	zcfgFeDalSPMgmtSrv,		zcfgFeDalShowSPMgmtSrv,		"edit|get",			"SP_Domain"},//SP_Domain
+ {"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",				""},//root_only
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				""},//root_only
+ {"USER_ACCOUNT",	USER_ACCOUNT_param, zcfgFeDalUserAccount,	zcfgFeDalShowUserAccount,	"get|add|edit|delete",	"User_Account"}, //temporarily root_only //User_Account

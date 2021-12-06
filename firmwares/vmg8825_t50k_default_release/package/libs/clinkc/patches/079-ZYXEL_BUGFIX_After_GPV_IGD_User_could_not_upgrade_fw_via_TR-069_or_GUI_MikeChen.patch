@@ -1,0 +1,148 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2016-07-06 17:47:48.001630860 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2016-07-06 18:48:01.316358858 +0800
+@@ -336,6 +336,7 @@
+ #endif
+ } CgHttpServer, CgHttpServerList;
+ 
++extern BOOL bRemoveDaemonsWirelessModule;
+ 
+ /****************************************
+ * Function 
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2016-07-06 17:47:48.001630860 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2016-07-06 18:49:22.721927249 +0800
+@@ -58,6 +58,9 @@
+ 
+ #define READBUF_LENGTH 4096
+ 
++BOOL bRemoveDaemonsWirelessModule = FALSE;
++
++static int memory_check(int buflen, char *remoteIP);
+ /****************************************
+ * cg_http_packet_new
+ ****************************************/
+@@ -548,8 +551,7 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
+-	if(memory_check(conLen) == FALSE){
+-		printf("upgrade firmware fail: out of memory!!!\n");
++	if(memory_check(conLen, cg_socket_getremoteaddress(sock)) == FALSE){
+ 		return FALSE;
+ 	}	
+ 	content = NULL;
+@@ -652,20 +654,11 @@
+ 	char boundary[BOUNDARY_SIZE] = {0};
+ 	BOOL hasboundary = FALSE;
+ 	int parseFlag = 0;
+-	int checkMemCnt=0;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+ 	
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
+-check_again:
+-	if(memory_check(conLen) == FALSE){
+-		printf("upgrade firmware fail: out of memory!!!\n");
+-		if (checkMemCnt <= 3) {
+-			checkMemCnt++;
+-			goto check_again;
+-		}
+-		// download fail, reboot device
+-		system("reboot");
++	if(memory_check(conLen, cg_socket_getremoteaddress(sock)) == FALSE){
+ 		return FALSE;
+ 	}
+ 	
+@@ -787,7 +780,43 @@
+ 	return (size*1024);
+ }
+ 
+-int memory_check(int buflen){
++void removeDaemonsWLModule(BOOL wifiHost)
++{
++	int i;
++	char cmd[64];
++
++	printf("killall processes to release memory\n");
++	bRemoveDaemonsWirelessModule = TRUE;
++	system("killall -q smbd zupnp snmpd ramonitor zhotplugd wwanbackupd vcautohunt syslog-ng zybtnchk dropbear ztzu zebra bcmmserver acsd wps_monitor zstun ntpclient ntfs-3g mcpd telnetd pure-ftpd tty_log_echo lld2d eapd nas crond");
++	system("echo 1 > /proc/sys/vm/drop_caches");
++
++#ifdef ZYPRJ_VMG1312
++	if (wifiHost == FALSE) {
++		sprintf(cmd, "/tmp/shutDownWifi.sh\n");
++		system(cmd);
++	}
++#endif
++}
++
++static BOOL ipComeFromWiFi(char *remoteIP)
++{
++	char cmd[256] = {0};
++	int ret;
++
++	sprintf(cmd, "/tmp/searchIPFromWiFi.sh  %s\n", remoteIP);
++
++	ret = system(cmd);
++	if (ret) {
++		printf("%s comes from wifi (%d)\n",  remoteIP, ret);
++			return TRUE;
++		}
++	printf("%s does not come from wifi (%d)\n", remoteIP, ret);
++	return FALSE;
++}
++
++static int memory_check(int buflen, char *remoteIP){
++	int checkMemCnt=0;
++check_again:
+ 	if(buflen >= get_free_memory()){
+ 		system("echo 1 > /proc/sys/vm/drop_caches");
+ 		if(buflen >= get_free_memory()){
+@@ -796,21 +825,25 @@
+ 				system("rm /var/log/*.1");
+ 				system("rm /var/log/zcfg.log");
+ 				if(buflen >= get_free_memory()){
+-#ifdef SMALL_RAM  //__ZyXEL__, David, gain more free memory to upgrade FW for VMG1312 with small RAM.
+-                    printf("killall processes to release memory\n");
+-                    system("killall -q smbd zupnp snmpd ramonitor zhotplugd wwanbackupd vcautohunt syslog-ng zybtnchk dropbear ztzu zebra bcmmserver acsd wps_monitor zstun ntpclient ntfs-3g mcpd telnetd pure-ftpd tty_log_echo lld2d eapd nas crond");
+-                    system("echo 1 > /proc/sys/vm/drop_caches");
+-                    if(buflen >= get_free_memory())
+-                        return FALSE;
+-#else
+-					return FALSE;
+-#endif
++					removeDaemonsWLModule(ipComeFromWiFi(remoteIP));
++					if(buflen >= get_free_memory())
++						goto check_again1;
+ 				}
+ 			}
+ 		}
+ 	}
+ 
+ 	return TRUE;
++
++check_again1:
++	if (checkMemCnt <= 3) {
++		checkMemCnt++;
++		goto check_again;
++	}
++	// Daemons/wireless module have been removed, CPE must reboot if upgrade firmware fail.
++	printf("upgrade firmware fail: out of memory!!!\n");
++	system("reboot");
++	return FALSE;
+ }
+ 
+ static char *find_boundary(char *ptr, int buflen, char *boundary, int len){
+@@ -859,8 +892,7 @@
+ 
+ 	boundaryLen = strlen(boundary);
+ 	conLen = cg_http_packet_getcontentlength(httpPkt);
+-	if(memory_check(conLen) == FALSE){
+-		printf("upgrade firmware fail: out of memory!!!\n");
++	if(memory_check(conLen, cg_socket_getremoteaddress(sock)) == FALSE){
+ 		return FALSE;
+ 	}
+ 	if (0 < conLen /* && conLen <= HTTPD_MAX_UPLOAD_SIZE */ ) {

@@ -1,0 +1,265 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2017-08-30 19:25:18.239793151 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2017-08-30 19:26:00.835793151 +0800
+@@ -4653,14 +4653,23 @@
+ #define WIFI5_LAST_AP  8
+ 
+ #define BANDWIDTH24_20Mhz { 1, 13};
+-#define BANDWIDTH24_40Mhz { 1, 9};
++#define BANDWIDTH24_L40Mhz { 1, 9};
++#define BANDWIDTH24_U40Mhz { 5, 13};
+ 
+ #define BANDWIDTH5_20Mhz { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165, 0};
+-#define BANDWIDTH5_40Mhz { 36, 44, 52, 60, 100, 108, 116, 124, 132, 149, 157, 0};
++#define BANDWIDTH5_L40Mhz { 36, 44, 52, 60, 100, 108, 116, 124, 132, 149, 157, 0};
++#define BANDWIDTH5_U40Mhz { 40, 48, 56, 64, 104, 112, 120, 128, 136, 153, 161, 0};
+ #define BANDWIDTH5_80Mhz { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 149, 153, 157, 161, 0};
+ #define BANDWIDTH5_160Mhz { 0};
+ 
+-zcfgRet_t lanDevWlanConfirmRadio(objIndex_t *apIid, struct json_object *tr98Jobj, struct json_object *radioJobj)
++typedef enum {
++	CHAN_OK=0,     //channel is ok, it doesn't require identifying Lower or Upper
++	CHAN_UPPER_OK, //primary channel becomes Lower channel
++	CHAN_LOWER_OK, //primary channel becomes Upper channel
++	CHAN_NOT_OK,   //internal error
++} wlanChanStat;
++
++wlanChanStat lanDevWlanConfirmRadio(objIndex_t *apIid, struct json_object *tr98Jobj, struct json_object *radioJobj)
+ {
+ 	const char *beaconType = json_object_get_string(json_object_object_get(tr98Jobj, "BeaconType"));
+ 
+@@ -4671,6 +4680,8 @@
+ 	const char *tr181OpBandwidth = json_object_get_string(json_object_object_get(radioJobj, "OperatingChannelBandwidth"));
+ 	const char *opBand = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingFrequencyBand"));
+ 	const char *opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
++	const char *ExtChan = json_object_get_string(json_object_object_get(radioJobj, "ExtensionChannel"));
++	const char *UpperChan = json_object_get_string(json_object_object_get(radioJobj, "X_ZYXEL_UpperChannels"));
+ 
+ 	if(!strcmp(beaconType, "Basic")) {
+ 		const char *basicAuthMode = json_object_get_string(json_object_object_get(tr98Jobj, "BasicAuthenticationMode"));
+@@ -4683,53 +4694,99 @@
+ 				&& (apIid->idx[0] == WIFI5_FIRST_AP))
+ 			json_object_object_add(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth", json_object_new_string("20MHz"));
+ 		else if(strcmp(opBandwidth, tr181OpBandwidth) && (apIid->idx[0] != WIFI24_FIRST_AP) && (apIid->idx[0] != WIFI5_FIRST_AP))
+-			return ZCFG_INVALID_PARAM_VALUE;
++			return CHAN_NOT_OK;
+ 	}
+ 	else if(strcmp(opBandwidth, tr181OpBandwidth) && (apIid->idx[0] != WIFI24_FIRST_AP) && (apIid->idx[0] != WIFI5_FIRST_AP))
+-		return ZCFG_INVALID_PARAM_VALUE;
++		return CHAN_NOT_OK;
+ 
+ 	opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
+ 
+ 
+ 	if(!strcmp(opBand, "2.4GHz")) {
+ 		int bandwidth20Mhz[] = BANDWIDTH24_20Mhz
+-		int bandwidth40Mhz[] = BANDWIDTH24_40Mhz
++		int bandwidthLo40Mhz[] = BANDWIDTH24_L40Mhz
++		int bandwidthUp40Mhz[] = BANDWIDTH24_U40Mhz
+ 		int *bandwidthChannelNum = NULL;
++		int *bandwidthChannelNum_another = NULL;
++
++		if(strstr(UpperChan, ",13") == NULL){//US maximum supported channel number
++			bandwidthLo40Mhz[1] = 7;
++			bandwidthUp40Mhz[1] = 11;
++			bandwidth20Mhz[1] = 11;
++		}
+ 
+ 		if(!strcmp(opBandwidth, "20MHz")) {
+ 			bandwidthChannelNum = bandwidth20Mhz;
+ 		}
+ 		else if(!strcmp(opBandwidth, "40MHz")) {
+-			bandwidthChannelNum = bandwidth40Mhz;
++			if(!strcmp(ExtChan, "BelowControlChannel")){
++				bandwidthChannelNum = bandwidthUp40Mhz;
++				bandwidthChannelNum_another = bandwidthLo40Mhz;
++			}
++			else if(!strcmp(ExtChan, "AboveControlChannel")){
++				bandwidthChannelNum = bandwidthLo40Mhz;
++				bandwidthChannelNum_another = bandwidthUp40Mhz;
++			}
+ 		}
+ 		else
+-			return ZCFG_INVALID_PARAM_VALUE;
++			return CHAN_NOT_OK;
+ 
+ 		if(tr98AutoChannel)
+-			return ZCFG_SUCCESS;
++			return CHAN_OK;
+ 
+-		if(tr181Channel != tr98SetChannel) {
+-			if(apIid->idx[0] > WIFI24_FIRST_AP && apIid->idx[0] <= WIFI24_LAST_AP)
+-				return ZCFG_INVALID_PARAM_VALUE;
++		if(tr181Channel != tr98SetChannel){
++			if(apIid->idx[0] > WIFI24_FIRST_AP && apIid->idx[0] <= WIFI24_LAST_AP){
++				return CHAN_NOT_OK;
++			}
+ 
+-			if((tr98SetChannel >= bandwidthChannelNum[0]) && (tr98SetChannel <= bandwidthChannelNum[1]))
+-				return ZCFG_SUCCESS;
+-			else
+-				return ZCFG_INVALID_PARAM_VALUE;
++			if(!strcmp(opBandwidth, "20MHz")){
++				if((tr98SetChannel >= bandwidthChannelNum[0]) && (tr98SetChannel <= bandwidthChannelNum[1])){
++					return CHAN_OK;
++				}
++				else{
++					return CHAN_NOT_OK;
++				}
++			}
++			else if(!strcmp(opBandwidth, "40MHz")){
++				if((tr98SetChannel >= bandwidthChannelNum[0]) && (tr98SetChannel <= bandwidthChannelNum[1])){
++					return CHAN_OK;
++				}
++				else if((tr98SetChannel >= bandwidthChannelNum_another[0])
++					&& (tr98SetChannel <= bandwidthChannelNum_another[1])){
++					if(!strcmp(ExtChan, "BelowControlChannel")){
++						return CHAN_LOWER_OK;
++					}
++					else{
++						return CHAN_UPPER_OK;
++					}
++				}
++				else{
++					return CHAN_NOT_OK;
++				}
++			}
+ 		}
+ 	}
+ 	else if(!strcmp(opBand, "5GHz")) {
+ 		int bandwidth20Mhz[] = BANDWIDTH5_20Mhz
+-		int bandwidth40Mhz[] = BANDWIDTH5_40Mhz
++		int bandwidthLo40Mhz[] = BANDWIDTH5_L40Mhz
++		int bandwidthUp40Mhz[] = BANDWIDTH5_U40Mhz
+ 		int bandwidth80Mhz[] = BANDWIDTH5_80Mhz
+ 		int bandwidth160Mhz[] = BANDWIDTH5_160Mhz
+ 		int *bandwidthChannelNum = NULL;
++		int *bandwidthChannelNum_another = NULL;
+ 
+ 		if(!strcmp(opBandwidth, "20MHz")) {
+ 			bandwidthChannelNum = bandwidth20Mhz;
+ 		}
+ 		else if(!strcmp(opBandwidth, "40MHz")) {
+-			bandwidthChannelNum = bandwidth40Mhz;
++			if(!strcmp(ExtChan, "BelowControlChannel")){
++				bandwidthChannelNum = bandwidthUp40Mhz;
++				bandwidthChannelNum_another = bandwidthLo40Mhz;
++			}
++			else if(!strcmp(ExtChan, "AboveControlChannel")){
++				bandwidthChannelNum = bandwidthLo40Mhz;
++				bandwidthChannelNum_another = bandwidthUp40Mhz;
++			}
+ 		}
+ 		else if(!strcmp(opBandwidth, "80MHz")) {
+ 			bandwidthChannelNum = bandwidth80Mhz;
+@@ -4738,24 +4795,47 @@
+ 			bandwidthChannelNum = bandwidth160Mhz;
+ 		}
+ 		else
+-			return ZCFG_INVALID_PARAM_VALUE;
++			return CHAN_NOT_OK;
+ 
+ 		if(tr98AutoChannel)
+-			return ZCFG_SUCCESS;
++			return CHAN_OK;
+ 
+ 		if(tr181Channel != tr98SetChannel) {
+ 			if(apIid->idx[0] > WIFI5_FIRST_AP && apIid->idx[0] <= WIFI5_LAST_AP)
+-				return ZCFG_INVALID_PARAM_VALUE;
++				return CHAN_NOT_OK;
+ 
+ 			int n = 0;
+-			while(bandwidthChannelNum[n] && (tr98SetChannel != bandwidthChannelNum[n]))
+-				n++;
+-			
+-			return (bandwidthChannelNum[n]) ? ZCFG_SUCCESS : ZCFG_INVALID_PARAM_VALUE;
++			if(!strcmp(opBandwidth, "40MHz")){
++				while(bandwidthChannelNum[n]){
++					if(tr98SetChannel == bandwidthChannelNum[n]){
++						return CHAN_OK;
++					}
++					n++;
++				}
++				n=0;
++				while(bandwidthChannelNum_another[n]){
++					if(tr98SetChannel == bandwidthChannelNum_another[n]){
++						if(!strcmp(ExtChan, "BelowControlChannel")){
++							return CHAN_LOWER_OK;
++						}
++						else{
++							return CHAN_UPPER_OK;
++						}
++					}
++					n++;
++				}
++				return CHAN_NOT_OK;
++			}
++			else{
++				while(bandwidthChannelNum[n] && (tr98SetChannel != bandwidthChannelNum[n]))
++					n++;
++
++				return (bandwidthChannelNum[n]) ? CHAN_OK : CHAN_NOT_OK;
++			}
+ 		}
+ 	}
+ 
+-	return ZCFG_SUCCESS;
++	return CHAN_OK;
+ }
+ 
+ #define MAX_WEPKEY_NUM   4
+@@ -4775,6 +4855,7 @@
+ 	char wifiSsid[32] = {0};
+ 	char wifiRadio[32] = {0};
+ 	char ssidRef[32] = {0};
++	char ExtChan40M[32] = {0};
+ 	objIndex_t ssidIid, radioIid, apIid;
+ 	struct json_object *radioJobj = NULL;
+ 	struct json_object *ssidJobj = NULL, *ssidJobjBak = NULL;
+@@ -4784,7 +4865,8 @@
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	int wepKeyLen = 0, wepKey64Len = 0;
++	int wepKeyLen = 0, wepKey64Len = 0, chan = 0;
++	wlanChanStat ret_chan;
+ 	struct json_object *wepKey = NULL, *wepKey64 = NULL;
+ 	bool apWpsEnable = false;
+ 	struct json_object *paramGuardObj = NULL;
+@@ -5006,8 +5088,21 @@
+ 		}
+ 		else {
+ 			if(!strcmp(paramList->name, "Channel")) {
+-				if((ret = lanDevWlanConfirmRadio(&apIid, tr98Jobj, radioJobj)) != ZCFG_SUCCESS)
++				if((ret_chan = lanDevWlanConfirmRadio(&apIid, tr98Jobj, radioJobj)) == CHAN_NOT_OK){
++					ret = ZCFG_INVALID_PARAM_VALUE;
+ 					goto finish;
++				}
++				else{
++					ret = ZCFG_SUCCESS;
++					if(ret_chan == CHAN_LOWER_OK){ //primary channel becomes lower, extension channel should be above
++						strcpy(ExtChan40M, "AboveControlChannel");
++						json_object_object_add(radioJobj, "ExtensionChannel", json_object_new_string(ExtChan40M));
++					}
++					else if(ret_chan == CHAN_UPPER_OK){ //vise versa
++						strcpy(ExtChan40M, "BelowControlChannel");
++						json_object_object_add(radioJobj, "ExtensionChannel", json_object_new_string(ExtChan40M));
++					}
++				}
+ 			}
+ 			tr181ParamValue = json_object_object_get(radioJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2017-08-30 19:25:18.243793151 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2017-08-30 19:25:18.251793151 +0800
+@@ -285,7 +285,7 @@
+ 	{ "TotalPacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "TotalPacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ "TotalAssociations", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "X_ZYXEL_Auto_Channel_Skip", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_Auto_Channel_Skip", PARAMETER_ATTR_WRITE, 0, json_type_string},
+ #ifdef ONECONNECT
+ 	{ "X_ZYXEL_AP_AutoConfig", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #endif

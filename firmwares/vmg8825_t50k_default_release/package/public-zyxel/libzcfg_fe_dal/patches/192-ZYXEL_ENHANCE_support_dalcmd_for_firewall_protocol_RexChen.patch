@@ -1,0 +1,348 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_protocol.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_protocol.c	2017-05-24 20:38:04.350061120 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_protocol.c	2017-05-24 20:39:17.086041500 +0800
+@@ -12,19 +12,52 @@
+ 
+ dal_param_t FIREWALL_PROTOCOL_param[] =
+ {
+-	{"Index", 				dalType_int, 	0, 	0, 	NULL},
+-	{"SourcePort", 			dalType_int, 	-1, 	65535, 	NULL},
+-	{"SourcePortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL},
+-	{"DestPort", 			dalType_int, 	-1, 	65535, 	NULL},
+-	{"DestPortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL},
+-	{"Name", 				dalType_string,		0,	0,	NULL},
+-	{"Description", 		dalType_string,		0,	0,	NULL},
+-	{"Protocol", 			dalType_int, 	-2, 	255, 	NULL},
+-	{"ICMPType", 			dalType_int, 	-1, 	143, 	NULL},
+-	{"ICMPTypeCode", 		dalType_int, 	-1, 	4, 	NULL},
+-	{NULL, 					0, 				0, 	0, 	NULL}
++	{"Index", 				dalType_int, 		0, 		0, 		NULL,	NULL,	dal_Edit|dal_Delete},
++	{"Name", 				dalType_string,		0,		0,		NULL,	NULL,	dal_Add},
++	{"Description", 		dalType_string,		0,		0,		NULL,	NULL,	dal_Add},
++	{"Protocol", 			dalType_string, 	0, 		0, 		NULL,	"TCP|UDP|ICMP|ICMPv6|Other",	dal_Add},
++	{"SourcePort", 			dalType_int, 		-1, 	65535, 	NULL,	NULL,	NULL},
++	{"SourcePortEnd", 	dalType_int, 		-1, 	65535, 	NULL,	NULL,	NULL},
++	{"DestPort", 			dalType_int, 		-1, 	65535, 	NULL,	NULL,	NULL},
++	{"DestPortEnd", 	dalType_int, 		-1, 	65535, 	NULL,	NULL,	NULL},
++	{"ICMPType", 			dalType_int, 		-1, 	143,	NULL,	NULL, 	dalcmd_Forbid},
++	{"ICMPTypeCode", 		dalType_int, 		-1, 	4,		NULL,	NULL, 	dalcmd_Forbid},
++	{"ICMPv6Type", 			dalType_ICMPv6, 	0, 		0, 		NULL,	NULL,	NULL},
++	{"ProtocolNumber", 		dalType_int, 		0, 		255, 	NULL,	NULL,	NULL},
++	{NULL, 					0, 					0, 		0, 		NULL,	NULL,	NULL}
+ };
+ 
++void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++	const char *icmpv6type = NULL;
++	char *procotolport[64] = {0};
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-10s %-10s %-15s %-30s \n","Index","Name","Description","Ports/Protocol Number");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		procotolport[0] = '\0';
++		obj = json_object_array_get_idx(Jarray, i);
++		icmpv6type = json_object_get_string(json_object_object_get(obj, "ICMPv6Type"));
++		if(json_object_object_get(obj, "ICMPv6Type")){
++			strcat(procotolport,json_object_get_string(json_object_object_get(obj, "ProtocolPort")));
++			strcat(procotolport,json_object_get_string(json_object_object_get(obj, "ICMPv6Type")));
++		}
++		else
++			strcat(procotolport,json_object_get_string(json_object_object_get(obj, "ProtocolPort")));
++		printf("%-10s %-10s %-15s %-30s \n",
++			json_object_get_string(json_object_object_get(obj, "Index")),
++			json_object_get_string(json_object_object_get(obj, "Name")),
++			json_object_get_string(json_object_object_get(obj, "Description")),
++			procotolport);
++	}
++	
++}
++
++
+ zcfgRet_t zcfgFeDal_Firewall_Protocol_Add(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *protocolObj = NULL;
+@@ -38,6 +71,7 @@
+ 	int protocol = -1;
+ 	int ICMPType = -1;
+ 	int ICMPTypeCode = -1;
++	int protocolNum = 0;
+ 
+ 	IID_INIT(protocolIid);
+ 	ret = zcfgFeObjJsonAdd(RDM_OID_NETWORK_SRV_GP, &protocolIid, NULL);
+@@ -46,11 +80,43 @@
+ 	}
+ 
+ 	if(ret == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "SourcePort"))
+ 		sourceport = json_object_get_int(json_object_object_get(Jobj, "SourcePort"));
+-		sourcePortRangeMax = json_object_get_int(json_object_object_get(Jobj, "SourcePortRangeMax"));
++		else
++			sourceport = -1;
++		if(json_object_object_get(Jobj, "SourcePortEnd"))
++			sourcePortRangeMax = json_object_get_int(json_object_object_get(Jobj, "SourcePortEnd"));
++		else 
++			sourcePortRangeMax = -1;
++		if(json_object_object_get(Jobj, "DestPort"))
+ 		destPort = json_object_get_int(json_object_object_get(Jobj, "DestPort"));
+-		destPortRangeMax = json_object_get_int(json_object_object_get(Jobj, "DestPortRangeMax"));
+-		protocol = json_object_get_int(json_object_object_get(Jobj, "Protocol"));
++		else
++			destPort = -1;
++		if(json_object_object_get(Jobj, "DestPortEnd"))
++			destPortRangeMax = json_object_get_int(json_object_object_get(Jobj, "DestPortEnd"));
++		else
++			destPortRangeMax = -1;
++		protocol = json_object_get_string(json_object_object_get(Jobj, "Protocol"));
++		if(!strcmp(protocol,"TCP")){
++			protocolNum = 6;
++		}
++		else if(!strcmp(protocol,"UDP")){
++			protocolNum = 17;
++		}
++		else if(!strcmp(protocol,"ICMP")){
++			protocolNum = 1;
++		}
++		else if(!strcmp(protocol,"ICMPv6")){
++			protocolNum = 58;
++		}
++		else if(!strcmp(protocol,"Other")){
++			protocolNum = json_object_get_int(json_object_object_get(Jobj, "ProtocolNumber"));
++			if(!json_object_object_get(Jobj, "ProtocolNumber")){
++				strcpy(replyMsg, "Protocol Number is empty.");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++		
+ 		ICMPType = json_object_get_int(json_object_object_get(Jobj, "ICMPType"));
+ 		ICMPTypeCode = json_object_get_int(json_object_object_get(Jobj, "ICMPTypeCode"));
+ 		name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+@@ -60,7 +126,7 @@
+ 		json_object_object_add(protocolObj, "SourcePortRangeMax", json_object_new_int(sourcePortRangeMax));
+ 		json_object_object_add(protocolObj, "DestPort", json_object_new_int(destPort));
+ 		json_object_object_add(protocolObj, "DestPortRangeMax", json_object_new_int(destPortRangeMax));
+-		json_object_object_add(protocolObj, "Protocol", json_object_new_int(protocol));
++		json_object_object_add(protocolObj, "Protocol", json_object_new_int(protocolNum));
+ 		json_object_object_add(protocolObj, "ICMPType", json_object_new_int(ICMPType));
+ 		json_object_object_add(protocolObj, "ICMPTypeCode", json_object_new_int(ICMPTypeCode));
+ 		json_object_object_add(protocolObj, "Name", json_object_new_string(name));
+@@ -87,40 +153,59 @@
+ 	int ICMPType = -1;
+ 	int ICMPTypeCode = -1;
+ 	int index = 0;
+-	int count = 0;
+-	bool found = false;
+-	
++	int protocolNum = 0;
++	zcfg_offset_t oid;
++	oid = RDM_OID_NETWORK_SRV_GP;
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+-
+-	IID_INIT(protocolIid);
+-	while(zcfgFeObjJsonGetNext(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolObj) == ZCFG_SUCCESS) {
+-		if(count == index){
+-			found = true;
+-			break;
+-		}
+-		else
+-			count++;
+-	}
+-	
+-	if(found){
++	ret = convertIndextoIid(index, &protocolIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	if(zcfgFeObjJsonGetWithoutUpdate(oid, &protocolIid, &protocolObj) == ZCFG_SUCCESS){
+ 		sourceport = json_object_get_int(json_object_object_get(Jobj, "SourcePort"));
+-		sourcePortRangeMax = json_object_get_int(json_object_object_get(Jobj, "SourcePortRangeMax"));
++		sourcePortRangeMax = json_object_get_int(json_object_object_get(Jobj, "SourcePortEnd"));
+ 		destPort = json_object_get_int(json_object_object_get(Jobj, "DestPort"));
+-		destPortRangeMax = json_object_get_int(json_object_object_get(Jobj, "DestPortRangeMax"));
+-		protocol = json_object_get_int(json_object_object_get(Jobj, "Protocol"));
++		destPortRangeMax = json_object_get_int(json_object_object_get(Jobj, "DestPortEnd"));
++		protocol = json_object_get_string(json_object_object_get(Jobj, "Protocol"));
++		if(!strcmp(protocol,"TCP")){
++			protocolNum = 6;
++		}
++		else if(!strcmp(protocol,"UDP")){
++			protocolNum = 17;
++		}
++		else if(!strcmp(protocol,"ICMP")){
++			protocolNum = 1;
++		}
++		else if(!strcmp(protocol,"ICMPv6")){
++			protocolNum = 58;
++		}
++		else if(!strcmp(protocol,"Other")){
++			protocolNum = json_object_get_int(json_object_object_get(Jobj, "ProtocolNumber"));
++			if(!json_object_object_get(Jobj, "ProtocolNumber")){
++				strcpy(replyMsg, "Protocol Number is empty.");
++				return ZCFG_INVALID_PARAM_VALUE;
++		}
++	}
+ 		ICMPType = json_object_get_int(json_object_object_get(Jobj, "ICMPType"));
+ 		ICMPTypeCode = json_object_get_int(json_object_object_get(Jobj, "ICMPTypeCode"));
+ 		name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+ 		description = json_object_get_string(json_object_object_get(Jobj, "Description"));
+-
++		if(json_object_object_get(Jobj, "SourcePort"))
+ 		json_object_object_add(protocolObj, "SourcePort", json_object_new_int(sourceport));
++		if(json_object_object_get(Jobj, "SourcePortEnd"))
+ 		json_object_object_add(protocolObj, "SourcePortRangeMax", json_object_new_int(sourcePortRangeMax));
++		if(json_object_object_get(Jobj, "DestPort"))
+ 		json_object_object_add(protocolObj, "DestPort", json_object_new_int(destPort));
++		if(json_object_object_get(Jobj, "DestPortEnd"))
+ 		json_object_object_add(protocolObj, "DestPortRangeMax", json_object_new_int(destPortRangeMax));
+-		json_object_object_add(protocolObj, "Protocol", json_object_new_int(protocol));
++		if(json_object_object_get(Jobj, "Protocol"))
++			json_object_object_add(protocolObj, "Protocol", json_object_new_int(protocolNum));
++		if(json_object_object_get(Jobj, "ICMPType"))
+ 		json_object_object_add(protocolObj, "ICMPType", json_object_new_int(ICMPType));
++		if(json_object_object_get(Jobj, "ICMPTypeCode"))
+ 		json_object_object_add(protocolObj, "ICMPTypeCode", json_object_new_int(ICMPTypeCode));
++		if(json_object_object_get(Jobj, "Name"))
+ 		json_object_object_add(protocolObj, "Name", json_object_new_string(name));
++		if(json_object_object_get(Jobj, "Description"))
+ 		json_object_object_add(protocolObj, "Description", json_object_new_string(description));
+ 		
+ 		ret = zcfgFeObjJsonSet(RDM_OID_NETWORK_SRV_GP, &protocolIid, protocolObj, NULL);
+@@ -134,26 +219,90 @@
+ 	struct json_object *protocolObj = NULL;
+ 	objIndex_t protocolIid = {0};
+ 	int index = 0;
+-	int count = 0;
+-	bool found = false;
+-
++	zcfg_offset_t oid;
++	oid = RDM_OID_NETWORK_SRV_GP;
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 
+-	IID_INIT(protocolIid);
+-	while(zcfgFeObjJsonGetNext(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolObj) == ZCFG_SUCCESS) {
+-		if(count == index){
+-			found = true;
+-			break;
++	ret = convertIndextoIid(index, &protocolIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	ret = zcfgFeObjJsonDel(oid, &protocolIid, NULL);
++
++	return ret;
++		}
++
++zcfgRet_t zcfgFeDal_Firewall_Protocol_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *protocolJobj = NULL;
++	objIndex_t protocolIid = {0};
++	int count = 1, protocol = 0, icmptype = 0, icmptypecode = 0, sourceport = 0, sourceportrange = 0, destport = 0, destportrange = 0;
++	char ProtocolNum[256] = {0}, tmp1[32] = {0}, tmp2[32] = {0}, icmpv6[8] = {0};
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_NETWORK_SRV_GP, &protocolIid, &protocolJobj) == ZCFG_SUCCESS){
++		ProtocolNum[0] = '\0';
++		tmp1[0] = '\0';
++		tmp2[0] = '\0';
++		protocol = json_object_get_int(json_object_object_get(protocolJobj, "Protocol"));
++		icmptype = json_object_get_int(json_object_object_get(protocolJobj, "ICMPType"));
++		icmptypecode = json_object_get_int(json_object_object_get(protocolJobj, "ICMPTypeCode"));
++		sourceport = json_object_get_int(json_object_object_get(protocolJobj, "SourcePort"));
++		sourceportrange = json_object_get_int(json_object_object_get(protocolJobj, "SourcePortRangeMax"));
++		destport = json_object_get_int(json_object_object_get(protocolJobj, "DestPort"));
++		destportrange = json_object_get_int(json_object_object_get(protocolJobj, "DestPortRangeMax"));
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index", json_object_new_int(count));
++		json_object_object_add(paramJobj, "Name", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Name")));
++		json_object_object_add(paramJobj, "Description", JSON_OBJ_COPY(json_object_object_get(protocolJobj, "Description")));
++		if(protocol == 1){			// ICMP
++			strcat(ProtocolNum,"ICMP");
+ 		}
++		else if(protocol == 6){		//TCP
++			if((sourceport == -1) && (sourceportrange == -1))
++				strcat(tmp1,"TCP: Any Port-->");
++			else if((sourceport != -1) && (sourceportrange == -1))
++				sprintf(tmp1,"TCP: %d-->",sourceport);
++			else 
++				sprintf(tmp1,"TCP: %d:%d-->",sourceport,sourceportrange);
++			if((destport == -1) && (destportrange == -1))
++				strcat(tmp2,"Any Port");
++			else if((destport != -1) && (destportrange == -1))
++				sprintf(tmp2,"%d",destport);
+ 		else
+-			count++;
++				sprintf(tmp2,"%d:%d",destport,destportrange);
++			strcat(ProtocolNum,tmp1);
++			strcat(ProtocolNum,tmp2);
++		}
++		else if(protocol == 17){	//UDP
++			if((sourceport == -1) && (sourceportrange == -1))
++				strcat(tmp1,"UDP: Any Port-->");
++			else if((sourceport != -1) && (sourceportrange == -1))
++				sprintf(tmp1,"UDP: %d-->",sourceport);
++			else 
++				sprintf(tmp1,"UDP: %d:%d-->",sourceport,sourceportrange);
++
++			if((destport == -1) && (destportrange == -1))
++				strcat(tmp2,"Any Port");
++			else if((destport != -1) && (destportrange == -1))
++				sprintf(tmp2,"%d",destport);
++			else 
++				sprintf(tmp2,"%d:%d",destport,destportrange);
++			strcat(ProtocolNum,tmp1);
++			strcat(ProtocolNum,tmp2);
++		}
++		else if(protocol == 58){	//ICMPv6
++			sprintf(icmpv6,"%d,%d",icmptype,icmptypecode);
++			json_object_object_add(paramJobj, "ICMPv6Type", json_object_new_string(icmpv6));
++			strcat(ProtocolNum,"ICMPv6:");
++		}
++		else{						//Other
++			sprintf(ProtocolNum,"Other:%d",protocol);
+ 	}
++		json_object_object_add(paramJobj, "ProtocolPort", json_object_new_string(ProtocolNum));
+ 
+-	if(found){
+-		ret = zcfgFeObjJsonDel(RDM_OID_NETWORK_SRV_GP, &protocolIid, NULL);
++		json_object_array_add(Jarray, paramJobj);
++		count++;
++		zcfgFeJsonObjFree(protocolJobj);
+ 	}
+-	
+-	zcfgFeJsonObjFree(protocolObj);
+ 	return ret;
+ }
+ 
+@@ -169,7 +318,9 @@
+ 		ret = zcfgFeDal_Firewall_Protocol_Add(Jobj, NULL);
+ 	}else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDal_Firewall_Protocol_Delete(Jobj, NULL);
+-	}else
++	}else if(!strcmp(method, "GET"))
++		ret = zcfgFeDal_Firewall_Protocol_Get(Jobj, NULL);
++	else
+ 		printf("Unknown method:%s\n", method);
+ 
+ 	return ret;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-24 20:38:05.266061104 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-24 20:40:26.399041500 +0800
+@@ -191,6 +191,7 @@
+ extern void zcfgFeDalShowPolicyRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallDos(struct json_object *Jarray);
+ extern void zcfgFeDalShowDnsRoute(struct json_object *Jarray);
++extern void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -221,7 +222,7 @@
+ {"IGMPMLD", 		IGMPMLD_param,		zcfgFeDalIGMPMLD,		zcfgFeDalShowIGMPMLD,		"get|edit",			"IGMP/MLD"},//IGMP_MLD
+ {"FIREWALL",		FIREWALL_param, 	zcfgFeDalFirewall,		zcfgFeDalShowFirewall,		"get|add|edit",			"Firewall"}, //Firewall
+ {"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	zcfgFeDalShowFirewallDos,	"get|edit",				"Firewall"},
+-{"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,NULL,				"add|edit|delete", 	""},//Firewall
++{"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,zcfgFeDalShowFirewallProtocol,	"get|add|edit|delete", 	"Firewall"},//Firewall
+ {"FirewallAcl", 	FIREWALL_ACL_param, zcfgFeDalFirewallACL,	zcfgFeDalShowFirewallACL,	"add|edit|delete|get",	"Firewall"},
+ {"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,   zcfgFeDalShowWifiGeneral,	"edit|get",			"Wireless"},
+ {"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter,		zcfgFeDalShowMACFilter,		"get|add|edit|delete",	"MAC Filter"},//MAC_Filter

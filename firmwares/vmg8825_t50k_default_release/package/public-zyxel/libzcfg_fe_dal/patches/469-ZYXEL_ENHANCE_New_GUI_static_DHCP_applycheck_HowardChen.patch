@@ -1,0 +1,119 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2018-02-20 16:15:30.469592217 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2018-02-20 16:31:48.421623512 +0800
+@@ -975,6 +975,9 @@
+ 		
+ 		if(!strcmp("", Jgets(obj,"DeviceName")))
+ 			Jadds(obj, "DeviceName", "Unknown");
++
++		if(!strcmp("", Jgets(obj,"HostName")))
++			Jadds(obj, "HostName", "Unknown");
+ 		
+ 		//DHCPv4 static address info
+ 		Jaddb(obj, "dhcp4PoolExist", false);
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_static_dhcp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_static_dhcp.c	2018-02-20 16:15:30.529592219 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_static_dhcp.c	2018-02-21 20:45:22.456875173 +0800
+@@ -22,6 +22,35 @@
+ 	{"BrWan", 		dalType_Lan,		0,	0,	NULL,	NULL,	dal_Add},
+ 	{NULL, 			0, 					0, 	0, 	NULL,	NULL,	NULL}
+ };
++bool subnetCheck(struct json_object *Jobj){
++	bool applyFail = false;
++	struct json_object *brObj = NULL;
++	struct json_object *v4AddrObj = NULL;
++	struct json_object *dhcpSrvObj = NULL;
++	objIndex_t brIid = {0};
++	objIndex_t v4AddrIid = {0};
++	objIndex_t dhcpSrvIid = {0};
++	int iid = 0;
++	char *brName = NULL, *ipIfacePath = NULL,*staticIPAddr = NULL, *lanIPAddress = NULL, *SubnetMask = NULL;
++
++	IID_INIT(brIid);
++	brName = json_object_get_string(json_object_object_get(Jobj, "BrWan"));
++	staticIPAddr = json_object_get_string(json_object_object_get(Jobj, "IPAddr"));
++
++	IID_INIT(v4AddrIid);
++	sscanf(brName, "IP.Interface.%hhu", &v4AddrIid.idx[0]);
++	v4AddrIid.level = 2;
++	v4AddrIid.idx[1] = 1;
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, &v4AddrObj) == ZCFG_SUCCESS) {
++		SubnetMask  = json_object_get_string(json_object_object_get(v4AddrObj, "SubnetMask"));
++		lanIPAddress = json_object_get_string(json_object_object_get(v4AddrObj, "IPAddress"));
++		if(isSameSubNet(lanIPAddress, SubnetMask, staticIPAddr) == false)
++			applyFail = true;
++	}
++   
++	zcfgFeJsonObjFree(v4AddrObj);
++	return applyFail;
++}
+ 
+ void zcfgFeDalShowStaticDHCP(struct json_object *Jarray){
+ 	int i, len = 0;
+@@ -63,6 +92,12 @@
+ 	const char *brwan = NULL;
+ 	char ifacePath[32] = {0};
+ 
++	if(subnetCheck(Jobj)){
++		printf("subnetCheck return fail\n");
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Home_Networking.StaticDHCP.Error.invalid_subnet"));
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++
+ 	brwan = json_object_get_string(json_object_object_get(Jobj, "BrWan"));
+ 
+ 	/*while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ifaceIid, &ipIfaceObj) == ZCFG_SUCCESS) {
+@@ -125,6 +160,12 @@
+ 	const char *mac = NULL;
+ 	bool found = false;
+ 
++	if(subnetCheck(Jobj)){
++		printf("subnetCheck return fail\n");
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.Home_Networking.StaticDHCP.Error.invalid_subnet"));
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++
+ 	rowIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 
+ 	IID_INIT(dhcpSrvIid);
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-02-21 20:46:48.916877940 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-02-21 20:52:54.012889623 +0800
+@@ -2075,6 +2075,24 @@
+ 	return false;
+ }
+ 
++bool isSameSubNet( char *lanIp, char *lansubnetMask, char *staticIP) {
++	unsigned int ip_n[4] = {0}, subnetMask_n[4] = {0}, staticIP_n[4] = {0};
++	int count = 0;
++
++	sscanf(lanIp, "%u.%u.%u.%u", &ip_n[3], &ip_n[2], &ip_n[1], &ip_n[0]);
++	sscanf(lansubnetMask, "%u.%u.%u.%u", &subnetMask_n[3], &subnetMask_n[2], &subnetMask_n[1], &subnetMask_n[0]);
++	sscanf(staticIP, "%u.%u.%u.%u", &staticIP_n[3], &staticIP_n[2], &staticIP_n[1], &staticIP_n[0]);
++	for (int i = 0; i < 4; i++) {
++		if ((ip_n[i] & subnetMask_n[i]) == (staticIP_n[i] & subnetMask_n[i]))
++		  count++;
++	}
++
++	if (count == 4)
++		return true;
++	else
++		return false;
++}
++
+ //support only for char
+ bool checkValidateParameter (char *ptr, struct json_object **obj, char *key) {
+ 	int len = 0, i;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.h	2018-02-20 16:15:27.533592123 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.h	2018-02-21 20:46:18.092876954 +0800
+@@ -4,4 +4,4 @@
+ int isDigitString(char *getString);
+ zcfgRet_t insertLoginUserInfo(struct json_object *Jobj, const char *userName, const char *level);
+ zcfgRet_t getLoginUserInfo(struct json_object *Jobj, char *userName, char *level);
+-
++bool isSameSubNet( char *lanIp, char *lansubnetMask, char *staticIP);

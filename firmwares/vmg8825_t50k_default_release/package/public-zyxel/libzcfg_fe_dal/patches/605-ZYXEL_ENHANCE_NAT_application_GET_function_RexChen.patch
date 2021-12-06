@@ -1,0 +1,126 @@
+Index: libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_application.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/nat/zcfg_fe_dal_nat_application.c	2018-07-23 19:59:23.455163636 -0700
++++ libzcfg_fe_dal-1.0/network/nat/zcfg_fe_dal_nat_application.c	2018-07-23 20:02:25.490155600 -0700
+@@ -81,27 +81,36 @@
+ 	
+ 	}
+ 
+-zcfgRet_t zcfgFeDalNatApplicationDelete(struct json_object *Jobj, char *replyMsg)
+-{
+-
++zcfgRet_t zcfgFeDalNatApplicationDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *NatAppJobj = NULL;
++	struct json_object *obj = NULL;
+ 	struct json_object *iidArray = NULL;
+-	objIndex_t natIid = {0};
+-	int index = 0;
+-	int i=0;
++	objIndex_t iid = {0};
++	const char *key = NULL, *description = NULL;
++	key = json_object_get_string(json_object_object_get(Jobj, "key"));
+ 	iidArray = json_object_object_get(Jobj, "iid");
+-	for(i=0;i<10;i++){
+-		index = json_object_get_int( json_object_array_get_idx(iidArray, i));
+-		if(index == 0)
+-			break;
+-		natIid.idx[0] = index;
+-		natIid.level = 1;
+-		zcfgFeObjJsonDel(RDM_OID_NAT_PORT_MAPPING, &natIid, NULL);
++	int i, index = 0;
++	if(json_object_object_get(Jobj, "key")){	//new GUI delete parameter from webGUI
++		while(zcfgFeObjJsonGetNext(RDM_OID_NAT_PORT_MAPPING, &iid, &obj) == ZCFG_SUCCESS){
++			description = json_object_get_string(json_object_object_get(obj, "Description"));
++			if(!strcmp(key, description)){
++				zcfgFeObjJsonDel(RDM_OID_NAT_PORT_MAPPING, &iid, NULL);
++
++			}		
++			zcfgFeJsonObjFree(obj);
++		}
+ 	}
+-	zcfgFeJsonObjFree(NatAppJobj);
+-	return ret;
+-	
++	else if(iidArray != NULL){
++		for(i=0;i<10;i++){
++			index = json_object_get_int( json_object_array_get_idx(iidArray, i));
++			if(index == 0)
++				break;
++			iid.idx[0] = index;
++			iid.level = 1;
++			zcfgFeObjJsonDel(RDM_OID_NAT_PORT_MAPPING, &iid, NULL);
++		}
++	}
++	return ret;	
+ }
+ zcfgRet_t zcfgFeDalNatApplicationCheck(struct json_object *Jobj, char *replyMsg){	
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -118,7 +127,6 @@
+ 	const char *protocol = NULL;
+ 	const char *protocol_datamodel = NULL;
+ 	while((reqObject = json_object_array_get_idx(Jobj, reqObjIdx)) !=NULL){
+-		printf("reqObject = %d\n",reqObjIdx);
+ 		IID_INIT(natIid);
+ 		reqObjIdx++;
+ 		externalport = json_object_get_int(json_object_object_get(reqObject, "ExternalPortStart"));
+@@ -141,6 +149,49 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalNatApplicationGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *obj = NULL, *JarrObj = NULL;
++	objIndex_t iid = {0};
++	char *description = NULL;
++	int len = 0, i;
++	bool AddRule = false;
++
++	while(zcfgFeObjJsonGetNext(RDM_OID_NAT_PORT_MAPPING, &iid, &obj) == ZCFG_SUCCESS){
++		description = json_object_get_string(json_object_object_get(obj, "Description"));
++		if(!strncmp("APP:", description, 4)){
++			len = json_object_array_length(Jarray);
++			if(len == 0){
++				AddRule = true;
++			}
++			else{
++				for(i = 0; i < len; i++){
++					JarrObj	= json_object_array_get_idx(Jarray, i);
++					if(!strcmp(json_object_get_string(json_object_object_get(JarrObj, "Original_Description")), description)){
++						AddRule = false;
++					}
++					else {
++						AddRule = true;
++					}
++				}
++			}
++			if(AddRule){
++				paramJobj = json_object_new_object();
++				json_object_object_add(paramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(obj, "Interface")));
++				json_object_object_add(paramJobj, "InternalClient", JSON_OBJ_COPY(json_object_object_get(obj, "InternalClient")));
++				json_object_object_add(paramJobj, "Original_Description", json_object_new_string(description));
++				description = (description + 5);
++				json_object_object_add(paramJobj, "Description", json_object_new_string(description));
++				json_object_array_add(Jarray, paramJobj);
++			}
++		}
++		zcfgFeJsonObjFree(obj);
++	}
++	return ret;
++}
++
++
+ zcfgRet_t zcfgFeDalNatApplication(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -155,6 +206,9 @@
+ 	else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDalNatApplicationDelete(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalNatApplicationGet(Jobj, Jarray, NULL);
++	}
+ 
+ 	return ret;
+ }

@@ -1,0 +1,186 @@
+Index: libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_filesharing.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/usbService/zcfg_fe_dal_usb_filesharing.c	2017-08-02 10:57:55.554807347 +0800
++++ libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_filesharing.c	2017-08-02 11:01:22.512494800 +0800
+@@ -78,7 +78,6 @@
+ 	struct json_object *fileshare_idxarray = NULL;
+ 	struct json_object *browseable_array = NULL;
+ 	int len = 0, i;
+-	printf("%s \n",json_object_to_json_string(Jobj));
+ 	if(json_object_object_get(Jobj, "FileShare")){
+ 		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_SAMBA, &sambaIid, &sambaObj) == ZCFG_SUCCESS){
+ 			fileshare_enable = json_object_get_boolean(json_object_object_get(Jobj, "FileShare"));
+@@ -90,17 +89,13 @@
+ 	if(json_object_object_get(Jobj, "fsShareDirIid")){	//for GUI edit
+ 		fileshare_idxarray = json_object_object_get(Jobj, "fsShareDirIid");
+ 		browseable_array = json_object_object_get(Jobj, "Browseable");
+-		printf("browseable_array = %s \n",json_object_to_json_string(browseable_array));
+ 		len = json_object_array_length(fileshare_idxarray);
+-		printf("len = %d \n",len);
+ 		for(i=0;i<len;i++){
+ 			IID_INIT(sambadirIid);
+ 			sambadirIid.level = 1;
+ 			sambadirIid.idx[0] = atoi(json_object_get_string(json_object_array_get_idx(fileshare_idxarray, i)));
+-			printf("PPP = %s \n",json_object_array_get_idx(fileshare_idxarray, i));
+ 			if(zcfgFeObjJsonGet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, &sambadirObj) == ZCFG_SUCCESS){
+ 				browseable = atoi(json_object_get_string(json_object_array_get_idx(browseable_array, i)));
+-				printf("browseable = %d \n", browseable);
+ 				json_object_object_add(sambadirObj, "X_ZYXEL_Browseable", json_object_new_boolean(browseable));
+ 				ret = zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, sambadirObj, NULL);
+ 				zcfgFeJsonObjFree(sambadirObj);
+Index: libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_samba.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/usbService/zcfg_fe_dal_usb_samba.c	2017-08-02 10:57:55.554807347 +0800
++++ libzcfg_fe_dal-1.0/network/usbService/zcfg_fe_dal_usb_samba.c	2017-08-02 11:04:42.717513300 +0800
+@@ -19,11 +19,11 @@
+ 	//Mandatory parameter for dalcmd
+ 	{"Index",			dalType_int,	0,	0,	NULL,	NULL,	dal_Delete|dal_Edit},
+ 	//SAMBA Dir
+-	{"HostName",		dalType_string,	0,	0,	NULL,	NULL, 	dal_Add},
+-	{"FolderName",		dalType_string,	0,	0,	NULL,	NULL, 	dal_Add},
++	{"HostName",		dalType_usbInfo,	0,	0,	NULL,	NULL, 	dal_Add},
++	{"FolderName",		dalType_sambafolder,0,	0,	NULL,	NULL, 	dal_Add},
+ 	{"Description",		dalType_string,	0,	0,	NULL,	NULL, 	dal_Add},
+ 	{"Public",			dalType_boolean,	0,	0,	NULL},	
+-	{"ValidUsers",		dalType_string,	0,	0,	NULL},
++	{"ValidUsers",		dalType_usrAccount,	0,	0,	NULL},
+ 	//{"ValidUsers_GUI",		dalType_string,	0,	0,	NULL},
+ 	{NULL,		0,	0,	0,	NULL},
+ };
+@@ -106,14 +106,12 @@
+  	char buff[128] = {0};
+ 	char *tmp = NULL;
+ 	
+-	printf("Jobj = %s \n",json_object_to_json_string(Jobj));
+-
+ 	HostName = json_object_get_string(json_object_object_get(Jobj, "HostName"));
+ 	FolderName = json_object_get_string(json_object_object_get(Jobj, "FolderName"));
+ 	Description = json_object_get_string(json_object_object_get(Jobj, "Description"));
+ 	//Browseable = json_object_get_boolean(json_object_object_get(Jobj, "Browseable"));	 //not necessary parameter
+ 	Public = json_object_get_boolean(json_object_object_get(Jobj, "Public"));
+-
++	
+ 	if(json_object_object_get(Jobj, "ValidUsers_GUI")){
+ 		Validuser_gui = json_object_get_string(json_object_object_get(Jobj, "ValidUsers_GUI"));
+ 		strcpy(ValidUser,Validuser_gui);
+@@ -144,9 +142,10 @@
+ 			json_object_object_add(sambadirObj, "X_ZYXEL_Comment", json_object_new_string(Description));
+ 			json_object_object_add(sambadirObj, "X_ZYXEL_Browseable", json_object_new_boolean(true));
+ 			json_object_object_add(sambadirObj, "X_ZYXEL_Public", json_object_new_boolean(Public));
++			if(json_object_object_get(Jobj, "ValidUsers")){
+ 			if(strcmp(ValidUser,""))
+ 				json_object_object_add(sambadirObj, "X_ZYXEL_ValidUsers", json_object_new_string(ValidUser));
+-			
++			}
+ 			ret = zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, sambadirObj, NULL);
+ 			zcfgFeJsonObjFree(sambadirObj);
+ 		}
+@@ -188,18 +187,23 @@
+ 	 		user = strtok_r(tmp, ",", &tmp);
+ 	 	}
+ 	 }
++	if(json_object_object_get(Jobj, "Public")){
+ 	if(!Public){
+ 		if(!json_object_object_get(Jobj, "ValidUsers")){
+ 			strcpy(replyMsg, "Please enter the valid users.");
+ 			return ZCFG_INVALID_PARAM_VALUE;
+ 		}
+ 	} 
++	}
+ 	if(zcfgFeObjJsonGet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, &sambadirObj) == ZCFG_SUCCESS){
++		if(json_object_object_get(Jobj, "Description"))
+  		json_object_object_add(sambadirObj, "X_ZYXEL_Comment", json_object_new_string(Description));
++		if(json_object_object_get(Jobj, "Public"))
+ 		json_object_object_add(sambadirObj, "X_ZYXEL_Public", json_object_new_boolean(Public));
++		if(json_object_object_get(Jobj, "ValidUsers")){
+ 		if(strcmp(ValidUser,""))
+ 			json_object_object_add(sambadirObj, "X_ZYXEL_ValidUsers", json_object_new_string(ValidUser));
+-			
++		}
+ 		ret = zcfgFeObjJsonSet(RDM_OID_ZY_SAMBA_DIR, &sambadirIid, sambadirObj, NULL);
+ 		zcfgFeJsonObjFree(sambadirObj);
+ 	}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-02 10:57:56.498807330 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-02 11:07:50.818321500 +0800
+@@ -286,13 +286,13 @@
+ {"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag,			NULL,						"edit",				""},//Diagnostic_Result
+ {"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah,			NULL,						"edit",				""},//Diagnostic_Result
+ {"OAMPING", 		OAMPING_param,		zcfgFeOamPing,			NULL,						"edit",				""},//Diagnostic_Result
+-{"USB_FILESHARING", USB_FILESHARING_param,	zcfgFeDalUsbFilesharing,zcfgFeDalShowUsbFilesharing,	"get|edit", 	"USB_Service"},//USB_Service
+-{"USB_SAMBA",		USB_SAMBA_param,	zcfgFeDalUsbSamba,		zcfgFeDalShowUsbSamba,		"get|add|edit|delete",	"USB_Service"},//USB_Service
++{"usb_info", 		USB_FILESHARING_param,	zcfgFeDalUsbFilesharing,zcfgFeDalShowUsbFilesharing,	"get|edit", 	"USB_Service"},//USB_Service
++{"usb_filesharing",	USB_SAMBA_param,	zcfgFeDalUsbSamba,		zcfgFeDalShowUsbSamba,		"get|add|edit|delete",	"USB_Service"},//USB_Service
+ {"media_server", 	USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver,	zcfgFeDalShowUsbMediaserver,"edit|get", 	"USB_Service"},
+ {"paren_ctl", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		zcfgFeDalShowParentCtl,						"get|add|edit|delete",	"Parental_Control"},//Parental_Control
+ {"scheduler",		SCHEDULE_param, 	zcfgFeDalSchedule,		zcfgFeDalShowSchedule,		"get|add|edit|delete",	"Scheduler_Rule"},
+ {"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	""},//Certificates
+-{"HOME_CONNECTIVYITY", 	HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity
++{"one_connect", 	HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,zcfgFeDalShowHomeConnect, 	"get|edit", 		"Home_Connectivity"},//Home_Connectivity
+ {"mgmt_srv", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			zcfgFeDalShowMgmtSrv,		"edit|get",			"Remote_MGMT"},
+ {"sp_mgmt_srv", 	SP_MGMT_SRV_param,	zcfgFeDalSPMgmtSrv,		zcfgFeDalShowSPMgmtSrv,		"edit|get",			"SP_Domain"},
+ {"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",				""},//root_only
+@@ -1104,6 +1104,46 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t getAccountObj(struct json_object **AccountObj){
++	//This function jsut get admin and user level account, for usb file share
++	struct json_object *accountObj = NULL, *obj = NULL;
++	objIndex_t accountIid = {0};
++	accountIid.level = 2;
++	accountIid.idx[0] = 2;
++	*AccountObj = json_object_new_array();
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, &accountObj) == ZCFG_SUCCESS){
++		obj = json_object_new_object();
++		if(json_object_object_get(accountObj, "Enabled") && json_object_object_get(accountObj, "Username")){
++			json_object_object_add(obj, "Status", JSON_OBJ_COPY(json_object_object_get(accountObj, "Enabled")));
++			json_object_object_add(obj, "Username", JSON_OBJ_COPY(json_object_object_get(accountObj, "Username")));
++			json_object_array_add(*AccountObj, obj);
++		}
++		json_object_put(accountObj);
++	}
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t getUSBinfoObj(struct json_object **UsbObj){
++	//This function jsut get admin and user level account, for usb file share
++	struct json_object *usbObj = NULL, *obj = NULL;
++	objIndex_t usbIid = {0};
++	usbIid.level = 3;
++	usbIid.idx[0] = 1;
++	usbIid.idx[1] = 2;
++
++	*UsbObj = json_object_new_array();
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_USB_USBHOSTS_HOST_DEV_PAR, &usbIid, &usbObj) == ZCFG_SUCCESS){
++		obj = json_object_new_object();
++		json_object_object_add(obj, "PartitionName", JSON_OBJ_COPY(json_object_object_get(usbObj, "PartitionName")));
++		json_object_object_add(obj, "Capacity", JSON_OBJ_COPY(json_object_object_get(usbObj, "Capacity")));
++		json_object_object_add(obj, "UsedSpace", JSON_OBJ_COPY(json_object_object_get(usbObj, "UsedSpace")));
++		json_object_array_add(*UsbObj, obj);
++		json_object_put(usbObj);
++	}
++	return ZCFG_SUCCESS;
++}
++
++
+ int isDigitString(char *getString)
+ {
+ 	while(*getString != '\0'){
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-08-02 10:57:55.958807340 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-08-02 11:05:18.667107900 +0800
+@@ -116,7 +116,10 @@
+ 	dalType_URLFilterList,
+ 	dalType_timezone,
+ 	dalType_HourMin,
+-	dalType_serveraddr
++	dalType_serveraddr,
++	dalType_sambafolder, 
++	dalType_usbInfo,
++	dalType_usrAccount
+ };
+ 
+ bool getSpecificObj(zcfg_offset_t oid, char *key, json_type type, void *value, objIndex_t *outIid, struct json_object **outJobj);

@@ -1,0 +1,201 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2015-09-10 18:07:50.000000000 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-01-14 17:12:14.826792702 +0800
+@@ -3,7 +3,7 @@
+ LIB_PATH = -L$(USRLIBDIR) -L$(INSTALL_DIR)/lib/public -L$(INSTALL_DIR)/lib/private
+ LINK_LIB = -ljson -lzcfg_msg -lzcfg_fe_rdm_access -lzcfg_fe_rdm_string -lzcfg_fe_rdm_struct
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+-OBJ_FILES = zcfg_fe_dal.o zcfg_fe_dal_broadband.o
++OBJ_FILES = zcfg_fe_dal.o zcfg_fe_dal_broadband.o  zcfg_fe_dal_mgmt.o
+ CFLAGS += -fPIC -Wall
+ 
+ 
+@@ -18,6 +18,9 @@
+ zcfg_fe_dal_broadband.o : zcfg_fe_dal_broadband.c zcfg_fe_dal_common.h
+ 	$(CC) $(CFLAGS) -c $< $(INC_PATH) $(LIB_PATH) $(LINK_LIB) -std=gnu99
+ 
++zcfg_fe_dal_mgmt.o : zcfg_fe_dal_mgmt.c zcfg_fe_dal_common.h
++	$(CC) $(CFLAGS) -c $< $(INC_PATH) $(LIB_PATH) $(LINK_LIB) -std=gnu99
++	
+ zcfg_fe_dal.o : zcfg_fe_dal.c zcfg_fe_dal_common.h
+ 	$(CC) $(CFLAGS) -c zcfg_fe_dal.c $(INC_PATH) $(LIB_PATH) $(LINK_LIB) -std=gnu99
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_broadband.c	2016-01-14 17:12:14.798792701 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_broadband.c	2016-01-14 17:12:14.842792702 +0800
+@@ -13,7 +13,7 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ 
+-#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
++//#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+ 
+ dal_param_t WAN_param[]={
+ 	{"Name",				dalType_string,	1,	32,	NULL},
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2015-09-10 18:09:28.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2016-01-14 17:12:14.842792702 +0800
+@@ -1,5 +1,7 @@
+ 
+ 
++#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
++
+ typedef struct dal_param_s {
+ 	char		*paraName;
+ 	json_type 	type;
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_mgmt.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_mgmt.c	2016-01-14 17:12:14.842792702 +0800
+@@ -0,0 +1,124 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++#define CWMP_SOAP_MSG_DEBUG (1 << 1)
++
++dal_param_t MGMT_param[] =
++{
++	{"EnableCWMP", dalType_boolean, 0, 0, NULL},
++	{"URL", dalType_string, 1, 256, NULL},
++	{"Username", dalType_string, 1, 256, NULL},
++	{"Password", dalType_string, 1, 256, NULL},	
++	{"ConnectionRequestUsername", dalType_string, 1, 256, NULL},	
++	{"ConnectionRequestPassword", dalType_string, 1, 256, NULL},	
++	{"PeriodicInformEnable", dalType_boolean, 0, 0, NULL},	
++	{"PeriodicInformInterval", dalType_int, 0, 0, NULL},
++	{"PeriodicInformTime", dalType_string, 1, 256, NULL},
++	{"X_ZYXEL_ActiveNotifyUpdateInterval", dalType_int, 0, 0, NULL},
++	{"DebugLevelEnable", dalType_int, 0, 0, NULL},
++	{"DebugLevelDisable", dalType_int, 0, 0, NULL},
++	{"FetureOptionEnable", dalType_int, 0, 0, NULL},
++	{"FetureOptionDisable", dalType_int, 0, 0, NULL},
++	{"X_ZYXEL_IPv6_Protocol", dalType_boolean, 0, 0, NULL},
++	{NULL, 0, 0, 0, NULL}
++};
++
++static zcfgRet_t zcfgFeDalMgmtSet(struct json_object *paramObj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char *paraName;
++	objIndex_t objIid;
++	struct json_object *mgmtJobj = NULL;
++	int paramModified = 0, n = 0;
++
++	paraName = (const char *)MGMT_param[n++].paraName;
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_MGMT_SRV, &objIid, &mgmtJobj)) != ZCFG_SUCCESS) {
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
++
++	while(paraName) {
++		struct json_object *paramValue = json_object_object_get(paramObj, paraName);
++		if(!paramValue) {
++			paraName = (const char *)MGMT_param[n++].paraName;
++			continue;
++		}
++		
++		if(!strcmp(paraName, "DebugLevelEnable")) {
++			int debugLevels = json_object_get_int(json_object_object_get(mgmtJobj, "X_ZYXEL_DebugLevel"));
++			int debugLevel = json_object_get_int(paramValue);
++			debugLevels |= debugLevel;
++			json_object_object_add(mgmtJobj, "X_ZYXEL_DebugLevel", json_object_new_int(debugLevels));
++			if(debugLevels & CWMP_SOAP_MSG_DEBUG)
++				json_object_object_add(mgmtJobj, "X_ZYXEL_DisplaySOAP", json_object_new_boolean(true));
++			paramModified = 1;
++		}
++		else if(!strcmp(paraName, "DebugLevelDisable")) {
++			int debugLevels = json_object_get_int(json_object_object_get(mgmtJobj, "X_ZYXEL_DebugLevel"));
++			int debugLevel = json_object_get_int(paramValue);
++			debugLevels &= ~debugLevel;
++			json_object_object_add(mgmtJobj, "X_ZYXEL_DebugLevel", json_object_new_int(debugLevels));
++			if(!(debugLevels & CWMP_SOAP_MSG_DEBUG))
++				json_object_object_add(mgmtJobj, "X_ZYXEL_DisplaySOAP", json_object_new_boolean(false));
++			paramModified = 1;
++		}
++		else if(!strcmp(paraName, "FetureOptionEnable")) {
++			int features = json_object_get_int(json_object_object_get(mgmtJobj, "X_ZYXEL_Feature"));
++			int featureEnable = json_object_get_int(paramValue);
++			features |= featureEnable;
++			json_object_object_add(mgmtJobj, "X_ZYXEL_Feature", json_object_new_int(features));	
++			paramModified = 1;			
++		}
++		else if(!strcmp(paraName, "FetureOptionDisable")) {
++			int features = json_object_get_int(json_object_object_get(mgmtJobj, "X_ZYXEL_Feature"));
++			int featureEnable = json_object_get_int(paramValue);
++			features &= ~featureEnable;
++			json_object_object_add(mgmtJobj, "X_ZYXEL_Feature", json_object_new_int(features));		
++			paramModified = 1;			
++		}
++		else {
++			json_object_object_add(mgmtJobj, paraName, JSON_OBJ_COPY(paramValue));
++			paramModified = 1;			
++		}
++
++		paraName = (const char *)MGMT_param[n++].paraName;
++	}
++
++	if(paramModified) {
++		if((ret = zcfgFeObjJsonSet(RDM_OID_MGMT_SRV, &objIid, mgmtJobj, NULL)) != ZCFG_SUCCESS)
++			printf("%s: Write object fail\n", __FUNCTION__);
++	}
++
++	json_object_put(mgmtJobj);
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++	
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalMgmtSet(Jobj, NULL);
++	}
++	else if(!strcmp(method, "DELETE")) {
++	
++	}
++
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2015-09-10 18:07:50.000000000 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-01-14 17:14:15.298795013 +0800
+@@ -8,9 +8,9 @@
+ 
+ 
+ extern dal_param_t WAN_param[];
+-
++extern dal_param_t MGMT_param[];
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, char *replyMsg);
+-
++extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg);
+ 
+ typedef struct dal_handler_s {
+ 	char				*name;
+@@ -21,6 +21,7 @@
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan},
++{"MGMT",			MGMT_param,			zcfgFeDalMgmt},
+ {NULL,				NULL,				NULL}
+ };
+ 

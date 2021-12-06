@@ -1,0 +1,532 @@
+Index: dnsmasq-2.78/src/dnsmasq.c
+===================================================================
+--- dnsmasq-2.78.orig/src/dnsmasq.c	2018-10-29 18:12:09.617732825 +0800
++++ dnsmasq-2.78/src/dnsmasq.c	2018-10-29 18:12:09.793732832 +0800
+@@ -90,6 +90,10 @@
+ 
+   read_opts(argc, argv, compile_opts);
+ 
++#ifdef ZYXEL_PATCH              /* register to zyxel zcfg, by charisse */
++  dnsmasq_eid_register();
++#endif
++
+   if (daemon->edns_pktsz < PACKETSZ)
+     daemon->edns_pktsz = PACKETSZ;
+ 
+Index: dnsmasq-2.78/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.78.orig/src/dnsmasq.h	2018-10-29 18:12:09.661732827 +0800
++++ dnsmasq-2.78/src/dnsmasq.h	2018-10-29 18:12:09.797732832 +0800
+@@ -694,6 +694,10 @@
+   } *slaac_address;
+   int vendorclass_count;
+ #endif
++#ifdef ZYXEL_PATCH
++  char *vendorid;
++  unsigned char *oui, *serial, *pclass;
++#endif
+   struct dhcp_lease *next;
+ };
+ 
+@@ -1562,6 +1566,16 @@
+                       char *interface, struct dhcp_lease *leases);
+ #endif
+ 
++/* extern.c */
++#ifdef ZYXEL_PATCH
++void lease_set_vendor(struct dhcp_lease *, const char* , int );
++void lease_set_oui(struct dhcp_lease *, const char* , int );
++void lease_set_serial(struct dhcp_lease *, const char* , int );
++void lease_set_class(struct dhcp_lease *, const char* , int );
++void dnsmasq_eid_register(void);
++void sendLeaseMessageToESMD(int, struct dhcp_lease *, const char*);
++#endif
++
+ /* loop.c */
+ #ifdef HAVE_LOOP
+ void loop_send_probes(void);
+Index: dnsmasq-2.78/src/lease.c
+===================================================================
+--- dnsmasq-2.78.orig/src/lease.c	2018-10-29 18:12:09.693732828 +0800
++++ dnsmasq-2.78/src/lease.c	2018-10-29 18:12:09.797732832 +0800
+@@ -29,6 +29,9 @@
+   int clid_len, hw_len, hw_type;
+   int items;
+   char *domain = NULL;
++#ifdef ZYXEL_PATCH
++  int parse_count = 0;
++#endif
+ 
+   *daemon->dhcp_buff3 = *daemon->dhcp_buff2 = '\0';
+ 
+@@ -60,8 +63,15 @@
+     }
+ #endif
+ 
++#ifdef ZYXEL_PATCH
++    parse_count = fscanf(leasestream, " %64s %255s %764s %[^\n]s\n",
++                           daemon->namebuff, daemon->dhcp_buff,
++                           daemon->packet, daemon->dhcp_buff3);
++    if (parse_count != 3 && parse_count != 4)
++#else
+     if (fscanf(leasestream, " %64s %255s %764s",
+                daemon->namebuff, daemon->dhcp_buff, daemon->packet) != 3)
++#endif
+       return 0;
+ 
+     if (inet_pton(AF_INET, daemon->namebuff, &addr.addr.addr4)) {
+@@ -74,6 +84,13 @@
+       /* For backwards compatibility, no explicit MAC address type means ether. */
+       if (hw_type == 0 && hw_len != 0)
+         hw_type = ARPHRD_ETHER;
++
++#ifdef ZYXEL_PATCH
++      if (parse_count == 4 && strcmp(daemon->dhcp_buff3, "*") != 0) {
++        lease_set_vendor(lease, daemon->dhcp_buff3,
++                         strlen(daemon->dhcp_buff3));
++      }
++#endif
+     }
+ #ifdef HAVE_DHCP6
+     else if (inet_pton(AF_INET6, daemon->namebuff, &addr.addr.addr6)) {
+@@ -88,6 +105,12 @@
+       if ((lease = lease6_allocate(&addr.addr.addr6, lease_type))) {
+         lease_set_iaid(lease, strtoul(s, NULL, 10));
+         domain = get_domain6((struct in6_addr *) lease->hwaddr);
++#ifdef ZYXEL_PATCH
++        if (parse_count == 4 && strcmp(daemon->dhcp_buff3, "*") != 0) {
++          lease_set_vendor(lease, daemon->dhcp_buff3,
++                           strlen(daemon->dhcp_buff3));
++        }
++#endif
+       }
+     }
+ #endif
+@@ -283,9 +306,21 @@
+       if (lease->clid && lease->clid_len != 0) {
+         for (i = 0; i < lease->clid_len - 1; i++)
+           ourprintf(&err, "%.2x:", lease->clid[i]);
++#ifdef ZYXEL_PATCH
++        ourprintf(&err, "%.2x ", lease->clid[i]);
++#else
+         ourprintf(&err, "%.2x\n", lease->clid[i]);
++#endif
+       } else
++#ifdef ZYXEL_PATCH
++        ourprintf(&err, "* ");
++#else
+         ourprintf(&err, "*\n");
++#endif
++
++#ifdef ZYXEL_PATCH
++      ourprintf(&err, "%s\n", (lease->vendorid) ? lease->vendorid : "*");
++#endif
+     }
+ 
+ #ifdef HAVE_DHCP6
+@@ -315,9 +350,21 @@
+         if (lease->clid && lease->clid_len != 0) {
+           for (i = 0; i < lease->clid_len - 1; i++)
+             ourprintf(&err, "%.2x:", lease->clid[i]);
++#ifdef ZYXEL_PATCH
++          ourprintf(&err, "%.2x ", lease->clid[i]);
++#else
+           ourprintf(&err, "%.2x\n", lease->clid[i]);
++#endif
+         } else
++#ifdef ZYXEL_PATCH
++          ourprintf(&err, "* ");
++#else
+           ourprintf(&err, "*\n");
++#endif
++
++#ifdef ZYXEL_PATCH
++        ourprintf(&err, "%s\n", (lease->vendorid) ? lease->vendorid : "*");
++#endif
+       }
+     }
+ #endif
+@@ -1016,6 +1063,84 @@
+     lease->flags |= LEASE_CHANGED;
+ }
+ 
++#ifdef ZYXEL_PATCH
++void lease_set_vendor(struct dhcp_lease *lease, const char *vendor, int len)
++{
++  char *new_vendor = NULL;
++
++  if (vendor <= 0)
++    return;
++  if (lease->vendorid) {
++    if (!strcmp(lease->vendorid, vendor))
++      return;
++    free(lease->vendorid);
++    lease->vendorid = NULL;
++  }
++  if ((new_vendor = whine_malloc(len + 1))) {
++    strncpy(new_vendor, vendor, len);
++    *(new_vendor + len) = '\0';
++  }
++
++  lease->vendorid = new_vendor;
++
++  lease->flags |= LEASE_CHANGED;
++}
++
++void lease_set_oui(struct dhcp_lease *lease, const char *value, int len)
++{
++  char *new_val = NULL;
++
++  if (value <= 0)
++    return;
++  if (lease->oui) {
++    free(lease->oui);
++    lease->oui = NULL;
++  }
++  if ((new_val = whine_malloc(len + 1))) {
++    strncpy(new_val, value, len);
++    *(new_val + len) = '\0';
++  }
++
++  lease->oui = new_val;
++}
++
++void lease_set_serial(struct dhcp_lease *lease, const char *value, int len)
++{
++  char *new_val = NULL;
++
++  if (value <= 0)
++    return;
++  if (lease->serial) {
++    free(lease->serial);
++    lease->serial = NULL;
++  }
++  if ((new_val = whine_malloc(len + 1))) {
++    strncpy(new_val, value, len);
++    *(new_val + len) = '\0';
++  }
++
++  lease->serial = new_val;
++}
++
++void lease_set_class(struct dhcp_lease *lease, const char *value, int len)
++{
++  char *new_val = NULL;
++
++  if (value <= 0)
++    return;
++  if (lease->pclass) {
++    free(lease->pclass);
++    lease->pclass = NULL;
++  }
++  if ((new_val = whine_malloc(len + 1))) {
++    strncpy(new_val, value, len);
++    *(new_val + len) = '\0';
++  }
++
++  lease->pclass = new_val;
++}
++#endif
++
+ /* deleted leases get transferred to the old_leases list.
+    remove them here, after calling the lease change
+    script. Also run the lease change script on new/modified leases.
+@@ -1053,6 +1178,9 @@
+         free(slaac);
+       }
+ #endif
++#ifdef ZYXEL_PATCH
++      sendLeaseMessageToESMD(ACTION_DEL, lease, NULL);
++#endif
+       kill_name(lease);
+ #ifdef HAVE_SCRIPT
+       queue_script(ACTION_DEL, lease, lease->old_hostname, now);
+@@ -1062,6 +1190,20 @@
+ #endif
+       old_leases = lease->next;
+ 
++#ifdef ZYXEL_PATCH
++      if (lease->vendorid) {
++        free(lease->vendorid);
++      }
++      if (lease->oui) {
++        free(lease->oui);
++      }
++      if (lease->serial) {
++        free(lease->serial);
++      }
++      if (lease->pclass) {
++        free(lease->pclass);
++      }
++#endif
+       free(lease->old_hostname);
+       free(lease->clid);
+       free(lease->extradata);
+Index: dnsmasq-2.78/src/extern.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ dnsmasq-2.78/src/extern.c	2018-10-29 18:15:39.754640600 +0800
+@@ -0,0 +1,151 @@
++#ifdef ZYXEL_PATCH
++#include "dnsmasq.h"
++
++
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++
++
++
++void dnsmasq_eid_register(void)
++{
++  zcfgRet_t retzcfg;
++
++  /*Register dnsmasq eid which is defined in zcfg_eid.h */
++  zcfgEidInit(ZCFG_EID_DNSMASQ, NULL);
++
++  /*init message server */
++  retzcfg = zcfgMsgServerInit();
++  if (retzcfg != ZCFG_SUCCESS) {
++    zcfgLog(ZCFG_LOG_ERR, "Dnsmasq message  server init fail\n");
++
++  }
++}
++
++static zcfgRet_t dnsmasq_msg_send(int msg_type, int payloadLen,
++                                  const char *payload, char **reply)
++{
++  zcfgRet_t ret = 0;
++  void *sendBuf = NULL;
++  void *recvBuf = NULL;
++  zcfgMsg_t *sendMsgHdr = NULL;
++  zcfgMsg_t *recvMsgHdr = NULL;
++  char *recv_str = NULL;
++  int buf_size = 0;
++
++  buf_size = sizeof(zcfgMsg_t) + payloadLen + 1;
++  sendBuf = calloc(1, buf_size);
++  sendMsgHdr = (zcfgMsg_t *) sendBuf;
++
++  sendMsgHdr->type = msg_type;
++  sendMsgHdr->length = payloadLen + 1;
++  sendMsgHdr->srcEid = ZCFG_EID_DNSMASQ;
++  sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++  if (payload != NULL)
++    memcpy(sendBuf + sizeof(zcfgMsg_t), payload, payloadLen);
++
++  ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **) & recvBuf, 0);
++  if (ret == ZCFG_SUCCESS) {
++    recvMsgHdr = (zcfgMsg_t *) recvBuf;
++    if (recvMsgHdr) {
++      if (recvMsgHdr->type == RESPONSE_SUCCESS) {
++        recv_str = (char *) recvBuf + sizeof(zcfgMsg_t);
++        if (recvMsgHdr->length > 0 && reply) {
++          *reply = calloc(1, recvMsgHdr->length + 1);
++          if (*reply)
++            memcpy(*reply, recv_str, recvMsgHdr->length);
++        }
++      }
++      free(recvBuf);
++    }
++  }
++
++  return ret;
++}
++
++void sendLeaseMessageToESMD(int action, struct dhcp_lease *lease,
++                            const char *ifname)
++{
++  zcfgRet_t ret = 0;
++  char buf[2048] = { 0 }, *bufPtr, tmp[256] = {
++  0}, *tmpPtr;
++  char *actionStr = NULL;
++  int i;
++  my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
++
++  bufPtr = buf;
++  bufPtr += sprintf(bufPtr, "{");
++
++  switch (action) {
++  case ACTION_ADD:
++    actionStr = "add";
++    break;
++  case ACTION_DEL:
++    actionStr = "del";
++    break;
++  case ACTION_OLD_HOSTNAME:
++  case ACTION_OLD:
++    actionStr = "up";
++    break;
++  }
++  if (actionStr)
++    bufPtr += sprintf(bufPtr, "\"ac\":\"%s\",", actionStr);
++
++  bufPtr += sprintf(bufPtr, "\"expire\":\"%lu\",", lease->expires);
++
++  tmpPtr = tmp;
++  for (i = 0; i < lease->hwaddr_len - 1; i++)
++    tmpPtr += sprintf(tmpPtr, "%.2x:", lease->hwaddr[i]);
++  tmpPtr += sprintf(tmpPtr, "%.2x", lease->hwaddr[i]);
++  bufPtr += sprintf(bufPtr, "\"mac\":\"%s\",", tmp);
++
++#ifdef HAVE_DHCP6
++  if ((lease->flags & (LEASE_TA | LEASE_NA))) {
++    bufPtr +=
++        sprintf(bufPtr, "\"ip\":\"%s\",",
++                inet_ntop(AF_INET6, &lease->addr6, tmp, ADDRSTRLEN));
++  } else
++#endif
++    bufPtr +=
++        sprintf(bufPtr, "\"ip\":\"%s\",",
++                inet_ntop(AF_INET, &lease->addr, tmp, ADDRSTRLEN));
++
++  bufPtr +=
++      sprintf(bufPtr, "\"host\":\"%s\",",
++              (lease->hostname) ? lease->hostname : "*");
++  //option 60
++  bufPtr +=
++      sprintf(bufPtr, "\"vendor\":\"%s\",",
++              (lease->vendorid) ? lease->vendorid : "*");
++  //option 125
++  bufPtr +=
++      sprintf(bufPtr, "\"moui\":\"%s\",", (lease->oui) ? (char *)lease->oui : "*");
++  bufPtr +=
++      sprintf(bufPtr, "\"serial\":\"%s\",",
++              (lease->serial) ? (char *)lease->serial : "*");
++  bufPtr +=
++      sprintf(bufPtr, "\"pclass\":\"%s\",",
++              (lease->pclass) ? (char *)lease->pclass : "*");
++  //option 61
++  if (lease->clid && lease->clid_len != 0) {
++    tmpPtr = tmp;
++    for (i = 0; i < lease->clid_len - 1; i++)
++      tmpPtr += sprintf(tmpPtr, "%.2x:", lease->clid[i]);
++    tmpPtr += sprintf(tmpPtr, "%.2x", lease->clid[i]);
++  } else
++    sprintf(tmp, "*");
++  bufPtr += sprintf(bufPtr, "\"cid\":\"%s\",", tmp);
++
++  bufPtr += sprintf(bufPtr, "\"ifname\":\"%s\"", (ifname) ? ifname : "*");
++  bufPtr += sprintf(bufPtr, "}");
++
++  bufPtr = '\0';
++
++  my_syslog(MS_DHCP | LOG_INFO, "%s send to esmd buf = %s", __func__, buf);
++  ret = dnsmasq_msg_send(ZCFG_MSG_DHCPD_OPTION, strlen(buf), buf, NULL);
++  my_syslog(MS_DHCP | LOG_INFO, "%s esmd reply=%d", __func__, ret);
++}
++
++#endif
+Index: dnsmasq-2.78/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.78.orig/src/rfc2131.c	2018-10-29 18:12:09.757732831 +0800
++++ dnsmasq-2.78/src/rfc2131.c	2018-10-29 18:12:09.797732832 +0800
+@@ -117,6 +117,10 @@
+ #ifdef HAVE_SCRIPT
+   unsigned char *class = NULL;
+ #endif
++#ifdef ZYXEL_PATCH
++  char *vendor_class_ptr = NULL;
++
++#endif
+ 
+   subnet_addr.s_addr = override.s_addr = 0;
+ 
+@@ -471,6 +475,9 @@
+   if ((opt = option_find(mess, sz, OPTION_VENDOR_ID, 1))) {
+     memcpy(daemon->dhcp_buff3, option_ptr(opt, 0), option_len(opt));
+     vendor_class_len = option_len(opt);
++#ifdef ZYXEL_PATCH
++    vendor_class_ptr = option_ptr(opt, 0);
++#endif
+   }
+   match_vendor_opts(opt, daemon->dhcp_opts);
+ 
+@@ -608,6 +615,16 @@
+         if (hostname)
+           lease_set_hostname(lease, hostname, 1, get_domain(lease->addr),
+                              domain);
++#ifdef ZYXEL_PATCH
++        if (vendor_class_len)
++          lease_set_vendor(lease, vendor_class_ptr, vendor_class_len);
++        if (oui)
++          lease_set_oui(lease, option_ptr(oui, 0), option_len(oui));
++        if (serial)
++          lease_set_serial(lease, option_ptr(serial, 0), option_len(serial));
++        if (class)
++          lease_set_class(lease, option_ptr(class, 0), option_len(class));
++#endif
+         /* infinite lease unless nailed in dhcp-host line. */
+         lease_set_expires(lease,
+                           have_config(config,
+@@ -1386,7 +1403,16 @@
+       if (hostname)
+         lease_set_hostname(lease, hostname, hostname_auth,
+                            get_domain(lease->addr), domain);
+-
++#ifdef ZYXEL_PATCH
++      if (vendor_class_len)
++        lease_set_vendor(lease, vendor_class_ptr, vendor_class_len);
++      if (oui)
++        lease_set_oui(lease, option_ptr(oui, 0), option_len(oui));
++      if (serial)
++        lease_set_serial(lease, option_ptr(serial, 0), option_len(serial));
++      if (class)
++        lease_set_class(lease, option_ptr(class, 0), option_len(class));
++#endif
+       lease_set_expires(lease, time, now);
+       lease_set_interface(lease, int_index, now);
+ 
+@@ -1406,6 +1432,9 @@
+       do_options(context, mess, end, req_options, hostname,
+                  get_domain(mess->yiaddr), netid, subnet_addr, fqdn_flags,
+                  borken_opt, pxearch, uuid, vendor_class_len, now, time, fuzz);
++#ifdef ZYXEL_PATCH
++      sendLeaseMessageToESMD(ACTION_ADD, lease, iface_name);
++#endif
+     }
+ 
+     return dhcp_packet_size(mess, agent_id, real_end);
+Index: dnsmasq-2.78/src/util.c
+===================================================================
+--- dnsmasq-2.78.orig/src/util.c	2018-10-29 18:12:09.777732832 +0800
++++ dnsmasq-2.78/src/util.c	2018-10-29 18:12:09.797732832 +0800
+@@ -354,6 +354,9 @@
+   return 1;
+ }
+ 
++#ifdef ZYXEL_PATCH
++#include <sys/sysinfo.h>
++#endif
+ time_t dnsmasq_time(void)
+ {
+ #ifdef HAVE_BROKEN_RTC
+@@ -365,8 +368,14 @@
+ 
+   return (time_t) (times(&dummy) / tps);
+ #else
++#ifdef ZYXEL_PATCH
++  struct sysinfo sysinfoObject;
++  sysinfo(&sysinfoObject);
++  return sysinfoObject.uptime;
++#else
+   return time(NULL);
+ #endif
++#endif
+ }
+ 
+ int netmask_length(struct in_addr mask)
+Index: dnsmasq-2.78/Makefile
+===================================================================
+--- dnsmasq-2.78.orig/Makefile	2017-10-02 21:13:51.000000000 +0800
++++ dnsmasq-2.78/Makefile	2018-10-29 18:12:09.797732832 +0800
+@@ -78,6 +78,8 @@
+        domain.o dnssec.o blockdata.o tables.o loop.o inotify.o \
+        poll.o rrfilter.o edns0.o arp.o
+ 
++objs += extern.o
++
+ hdrs = dnsmasq.h config.h dhcp-protocol.h dhcp6-protocol.h \
+        dns-protocol.h radv-protocol.h ip6addr.h
+ 

@@ -1,0 +1,636 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_scheduler_access.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_scheduler_access.c	2017-09-05 22:09:35.751449634 +0800
+@@ -0,0 +1,90 @@
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++#define CWMP_SOAP_MSG_DEBUG (1 << 1)
++
++dal_param_t WLAN_SCH_ACCESS_param[] =
++{
++	//Schedule
++	{"Enable",		dalType_boolean,	0,	0,	NULL,	NULL,	dal_Edit},		
++	{NULL,		0,	0,	0,	NULL,	NULL,	0}
++};
++
++void zcfgFeDalShowWlanSchAccess(struct json_object *Jarray){
++	int i;
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	obj = json_object_array_get_idx(Jarray,0);
++	printf("WLAN Scheduler Access : ");
++	if(json_object_get_boolean(json_object_object_get(obj,"Enable")))
++		printf("Enabled\n");
++	else
++		printf("Disabled\n");
++	printf("\n");
++}
++
++zcfgRet_t zcfgFeDalWlanSchedulerAccessGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *wlanSchObj = NULL;
++	struct json_object *pramJobj = NULL;
++	struct json_object *enable = NULL;
++	
++	IID_INIT(objIid);
++	ret = zcfgFeObjJsonGet(RDM_OID_WLAN_SCHEDULER_ACCESS, &objIid, &wlanSchObj);
++	enable = json_object_object_get(wlanSchObj, "Enable");
++	pramJobj = json_object_new_object();
++	json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(enable));
++	json_object_array_add(Jarray, pramJobj);
++	zcfgFeJsonObjFree(wlanSchObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalWlanSchedulerAccessEdit(struct json_object *Jobj, char *replyMsg){ 
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *wlanSchedulerActiveObj = NULL;
++	struct json_object *reqObj = NULL;
++	objIndex_t schedulerIid = {0};
++	bool enable = false;
++
++	struct json_object *objA = NULL;
++	struct json_object *objB = NULL;
++	reqObj = json_object_object_get(Jobj,"Enable");
++	enable = json_object_get_boolean(reqObj);
++
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WLAN_SCHEDULER_ACCESS, &schedulerIid, &wlanSchedulerActiveObj)) != ZCFG_SUCCESS){
++		printf("Get object fail!\n");
++		return ret;
++	}
++	else{
++		json_object_object_add(wlanSchedulerActiveObj, "Enable", json_object_new_boolean(enable));
++		ret = zcfgFeObjJsonSet(RDM_OID_WLAN_SCHEDULER_ACCESS, &schedulerIid, wlanSchedulerActiveObj, NULL);
++	}
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalWlanSchAccess(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalWlanSchedulerAccessEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalWlanSchedulerAccessGet(Jobj, Jarray, NULL);
++	}
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_scheduler.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_scheduler.c	2017-09-05 22:05:03.429874331 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_scheduler.c	2017-09-05 23:53:05.470122576 +0800
+@@ -13,27 +13,186 @@
+ dal_param_t WLAN_SCHEDULER_param[] =
+ {
+ 	//Schedule
+-	{"Enable",		dalType_boolean,	0,	0,	NULL},
+-	{"Name",		dalType_string,	0,	0,	NULL},
+-	{"Description",		dalType_string,	0,	0,	NULL},
+-	{"SSID",		dalType_string,	0,	0,	NULL},
+-	{"Interface",		dalType_int,	0,	0,	NULL},
+-	{"Days",		dalType_int,	0,	0,	NULL},
+-	{"TimeStartHour",		dalType_int,	0,	0,	NULL},
+-	{"TimeStartMin",		dalType_int,	0,	0,	NULL},
+-	{"TimeStopHour",		dalType_int,	0,	0,	NULL},
+-	{"TimeStopMin",		dalType_int,	0,	0,	NULL},		
+-	{NULL,		0,	0,	0,	NULL}
++	{"Index",			dalType_int,		0,	0,	NULL,	NULL,	dal_Edit|dal_Delete},
++	{"Enable",			dalType_boolean,	0,	0,	NULL,	NULL,	dal_Add},
++	{"Name",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"Description",		dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"SSID",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"Interface",		dalType_int,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"Days",			dalType_string,		0,	0,	NULL,	NULL,	dal_Add},
++	{"TimeStartHour",	dalType_int,		0,	23,	NULL,	NULL,	dal_Add},
++	{"TimeStartMin",	dalType_int,		0,	59,	NULL,	NULL,	dal_Add},
++	{"TimeStopHour",	dalType_int,		0,	23,	NULL,	NULL,	dal_Add},
++	{"TimeStopMin",		dalType_int,		0,	59,	NULL,	NULL,	dal_Add},
++	{NULL,		0,	0,	0,	NULL,	NULL,	0}
+ };
+ 
++/* if found ret Iid.idx[0] else return 0 */
++int getWifiSSIDIndexFromSSID(char *ssid){
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *ssidObj = NULL;
++	char inputSSID[256]={0};
++	char *tmpSSID = NULL;
++	bool found = false;
++	int foundIndex = 0;
++
++	strcpy(inputSSID,ssid);
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_WIFI_SSID, &iid, &ssidObj) == ZCFG_SUCCESS){
++
++		tmpSSID = json_object_get_string(json_object_object_get(ssidObj,"SSID"));
++		if(!strcmp(inputSSID,tmpSSID)){
++			found = true;
++			foundIndex = iid.idx[0];
++			zcfgFeJsonObjFree(ssidObj);
++			break;
++		}
++		zcfgFeJsonObjFree(ssidObj);
++	}
++
++	return foundIndex;
++}
++
++void zcfgFeDalShowWlanScheduler(struct json_object *Jarray){
++
++	int i, len = 0;
++	char *dayString = NULL;
++	int index = 0, startHour = 0, startMin = 0, stopHour = 0, stopMin = 0;
++	char timeStr [15] = {0};
++	struct json_object *obj;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-6s %-10s %-15s %-20s %-30s %-15s %-30s\n", "Index", "Status", "Rule Name", "SSID", "Days", "Time", "Description");
++	printf("---------------------------------------------------------------------------------------------------------\n");
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj!=NULL){
++
++			dayString = json_object_get_string(json_object_object_get(obj, "Days"));			
++			startHour = json_object_get_int(json_object_object_get(obj, "TimeStartHour"));
++			startMin = json_object_get_int(json_object_object_get(obj, "TimeStartMin"));
++			stopHour = json_object_get_int(json_object_object_get(obj, "TimeStopHour"));
++			stopMin = json_object_get_int(json_object_object_get(obj, "TimeStopMin"));
++
++			memset(timeStr, '\0', sizeof(timeStr));
++			sprintf(timeStr, "%02d:%02d~%02d:%02d",startHour,startMin,stopHour,stopMin);
++
++			printf("%-6d ",i+1);
++			if(json_object_get_boolean(json_object_object_get(obj, "Enable")))
++				printf("%-10s ","Enabled");
++			else
++				printf("%-10s ","Disabled");
++			printf("%-15s ",json_object_get_string(json_object_object_get(obj, "Name")));
++			printf("%-20s ",json_object_get_string(json_object_object_get(obj, "SSID")));
++			printf("%-30s ",dayString);
++			printf("%-15s ",timeStr);
++			printf("%-30s ",json_object_get_string(json_object_object_get(obj, "Description")));
++			printf("\n");
++
++		}
++		else{
++			printf("ERROR!\n");
++		}
++		
++	}
++
++}
++
++zcfgRet_t zcfgFeDalWlanSchedulerGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *wlanSchObj = NULL;
++	struct json_object *pramJobj = NULL;
++
++	int index = 0;
++	struct json_object *enable = NULL;
++	struct json_object *name = NULL;
++	struct json_object *description = NULL;
++	struct json_object *ssid = NULL;
++	uint32_t days;
++	char dayString[30]={0};
++	struct json_object *timeStartHour = NULL;
++	struct json_object *timeStartMin = NULL;
++	struct json_object *timeStopHour = NULL;
++	struct json_object *timeStopMin = NULL;
++	
++	IID_INIT(objIid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_WLAN_SCHEDULER, &objIid, &wlanSchObj) == ZCFG_SUCCESS){
++		index = objIid.idx[0];
++		enable = json_object_object_get(wlanSchObj, "Enable");
++		name = json_object_object_get(wlanSchObj, "Name");
++		description = json_object_object_get(wlanSchObj, "Description");
++		ssid = json_object_object_get(wlanSchObj, "SSID");
++
++		days = json_object_get_int64(json_object_object_get(wlanSchObj, "Days"));
++		memset(dayString, '\0', sizeof(dayString));
++		schedule_days_int_to_string(days,dayString);
++		
++		timeStartHour = json_object_object_get(wlanSchObj, "TimeStartHour");
++		timeStartMin = json_object_object_get(wlanSchObj, "TimeStartMin");
++		timeStopHour = json_object_object_get(wlanSchObj, "TimeStopHour");
++		timeStopMin = json_object_object_get(wlanSchObj, "TimeStopMin");
++
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Index", json_object_new_int(index));
++		json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(enable));
++		json_object_object_add(pramJobj, "Name", JSON_OBJ_COPY(name));
++		json_object_object_add(pramJobj, "Description", JSON_OBJ_COPY(description));
++		json_object_object_add(pramJobj, "SSID", JSON_OBJ_COPY(ssid));
++		json_object_object_add(pramJobj, "Days", json_object_new_string(dayString));
++		json_object_object_add(pramJobj, "TimeStartHour", JSON_OBJ_COPY(timeStartHour));
++		json_object_object_add(pramJobj, "TimeStartMin", JSON_OBJ_COPY(timeStartMin));
++		json_object_object_add(pramJobj, "TimeStopHour", JSON_OBJ_COPY(timeStopHour));
++		json_object_object_add(pramJobj, "TimeStopMin", JSON_OBJ_COPY(timeStopMin));
++		json_object_array_add(Jarray, pramJobj);
++		
++		zcfgFeJsonObjFree(wlanSchObj);
++	}
++	dbg_printf("%s : Jarray=%s\n",__FUNCTION__,json_object_to_json_string(Jarray));
++	
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDalWlanSchedulerAdd(struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+ 	objIndex_t objIid;
+ 	struct json_object *WlanSchedulerJobj = NULL;
+-	int n=0;
+-	paraName = (const char *)WLAN_SCHEDULER_param[n++].paraName;
++	char *name = NULL;
++	char msg[30]={0};
++	int startHr = 0, startMin = 0, stopHr = 0, stopMin = 0;
++	int ssidIndex = 0;
++	char *ssidName = NULL;
++
++	// Name validation
++	if(!ISSET("DontCheckDupName") && json_object_object_get(Jobj, "Name")){
++		name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++		ret = dalcmdParamCheck(NULL,name, RDM_OID_WLAN_SCHEDULER, "Name", "Name", msg);
++		if(ret != ZCFG_SUCCESS){
++			printf("%s\n",msg);
++			return ret; 		
++		}
++	}
++
++	// Time autofill
++	if(!json_object_object_get(Jobj, "TimeStartHour") || !json_object_object_get(Jobj, "TimeStartMin")){
++		json_object_object_add(Jobj, "TimeStartHour", json_object_new_int(0));
++		json_object_object_add(Jobj, "TimeStartMin", json_object_new_int(0));
++		printf("Incomplete start time: set to 00:00\n");
++	}
++	if(!json_object_object_get(Jobj, "TimeStopHour") || !json_object_object_get(Jobj, "TimeStopMin")){
++		json_object_object_add(Jobj, "TimeStopHour", json_object_new_int(23));
++		json_object_object_add(Jobj, "TimeStopMin", json_object_new_int(59));
++		printf("Incomplete stop time: set to 23:59\n");
++	}
+ 
+ 	IID_INIT(objIid);
+ 	zcfgFeObjJsonAdd(RDM_OID_WLAN_SCHEDULER, &objIid, NULL);
+@@ -41,16 +200,58 @@
+ 		printf("%s: Object retrieve fail\n", __FUNCTION__);
+ 		return ret;
+ 	}	
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			printf("function:%s, Line =%d\n", __FUNCTION__,__LINE__);
+-			paraName = (const char *)WLAN_SCHEDULER_param[n++].paraName;
+-			continue;
+-		}
+-		json_object_object_add(WlanSchedulerJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paraName = (const char *)WLAN_SCHEDULER_param[n++].paraName;
++
++	if(json_object_object_get(Jobj, "Enable")){
++		json_object_object_add(WlanSchedulerJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Enable")));
+ 	}
++	if(json_object_object_get(Jobj, "Name")){
++		ssidName = json_object_get_string(json_object_object_get(Jobj, "Name"));
++		if(!strcmp(ssidName,"ALL_WLAN"))
++			json_object_object_add(WlanSchedulerJobj, "Name", json_object_new_string("ALL WLAN"));
++		else
++			json_object_object_add(WlanSchedulerJobj, "Name", json_object_new_string(ssidName));
++	}
++	if(json_object_object_get(Jobj, "Description")){
++		json_object_object_add(WlanSchedulerJobj, "Description", JSON_OBJ_COPY(json_object_object_get(Jobj, "Description")));
++	}
++	if(json_object_object_get(Jobj, "SSID")){
++		json_object_object_add(WlanSchedulerJobj, "SSID", JSON_OBJ_COPY(json_object_object_get(Jobj, "SSID")));
++	}
++
++	// For CLI, use SSID to prepare Interface
++	if(json_object_object_get(Jobj, "SSID") && !json_object_object_get(Jobj, "Interface")){
++		ssidIndex = getWifiSSIDIndexFromSSID(json_object_get_string(json_object_object_get(Jobj, "SSID")));
++		json_object_object_add(WlanSchedulerJobj, "Interface", json_object_new_int(ssidIndex));
++	}
++
++	if(json_object_object_get(Jobj, "Interface")){
++		json_object_object_add(WlanSchedulerJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(Jobj, "Interface")));
++	}
++	if(json_object_object_get(Jobj, "Days")){
++		json_object_object_add(WlanSchedulerJobj, "Days", json_object_new_int(schedule_days_string_to_int(json_object_get_string(json_object_object_get(Jobj, "Days")))));
++	}
++	if(json_object_object_get(Jobj, "TimeStartHour")||
++		json_object_object_get(Jobj, "TimeStartMin")||
++		json_object_object_get(Jobj, "TimeStopHour")||
++		json_object_object_get(Jobj, "TimeStopMin")){
++		json_object_object_add(WlanSchedulerJobj, "TimeStartHour", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStartHour")));
++		json_object_object_add(WlanSchedulerJobj, "TimeStartMin", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStartMin")));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopHour", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStopHour")));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopMin", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStopMin")));
++	}
++
++	// Time validation
++	startHr = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStartHour"));
++	startMin = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStartMin"));
++	stopHr = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStopHour"));
++	stopMin = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStopMin"));
++	if(!isValidTimePeriod(startHr,startMin,stopHr,stopMin)){
++		json_object_object_add(WlanSchedulerJobj, "TimeStartHour", json_object_new_int(0));
++		json_object_object_add(WlanSchedulerJobj, "TimeStartMin", json_object_new_int(0));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopHour", json_object_new_int(23));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopMin", json_object_new_int(59));
++		printf("Time set to 00:00-23:59..\n");
++	}	
+ 
+ 	if((ret = zcfgFeObjJsonSet(RDM_OID_WLAN_SCHEDULER, &objIid, WlanSchedulerJobj, NULL)) != ZCFG_SUCCESS)
+ 	{
+@@ -64,35 +265,104 @@
+ {
+ 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+-	objIndex_t objIid;
++	objIndex_t objIid={0};
+ 	struct json_object *WlanSchedulerJobj = NULL;
+-	int paramModified = 0, n = 0;
+-	struct json_object *iidArray = NULL;
+-	uint8_t iidIdx =0;
+-	paraName = (const char *)WLAN_SCHEDULER_param[n++].paraName;
++	bool paramModified = false;
++	int objIndex = 0;
++	char *name = NULL;
++	char msg[30]={0};
++	int startHr = 0, startMin = 0, stopHr = 0, stopMin = 0;
++	int ssidIndex = 0;
++	char *ssidName = NULL;
++	// name check
++	struct json_object *pramJobj = NULL;
++	char *newName= NULL;
++	char *oldName=NULL;
+ 	
+ 	//IID_INIT(objIid);
+-	iidArray = json_object_object_get(Jobj, "iid");
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		objIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(objIid.idx[iidIdx] != 0)
+-			objIid.level = iidIdx+1;
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_WLAN_SCHEDULER, NULL, NULL);
++	if(ret != ZCFG_SUCCESS){
++		printf("Wrong index..\n");
++		return ret;
+ 	}
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_WLAN_SCHEDULER, &objIid, &WlanSchedulerJobj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			paraName = (const char *)WLAN_SCHEDULER_param[n++].paraName;
+-			continue;
+-		}
+-		json_object_object_add(WlanSchedulerJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paramModified = 1;				
+-		paraName = (const char *)WLAN_SCHEDULER_param[n++].paraName;
++
++	// Name validation
++	if((pramJobj = json_object_object_get(Jobj, "Name")) != NULL){
++		newName = json_object_get_string(pramJobj);
++		oldName = json_object_get_string(json_object_object_get(WlanSchedulerJobj, "Name"));
++		if(strcmp(newName,oldName)!=0){ // if newName != oldName
++			ret = dalcmdParamCheck(&objIid, newName, RDM_OID_WLAN_SCHEDULER, "Name", "Name", msg);
++			if(ret != ZCFG_SUCCESS){
++				printf("%s\n",msg);
++				json_object_put(WlanSchedulerJobj);
++				return ret; 		
++			}
++		}
+ 	}
+ 
++	if(json_object_object_get(Jobj, "Enable")){
++		paramModified = true;
++		json_object_object_add(WlanSchedulerJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(Jobj, "Enable")));
++	}
++	if(json_object_object_get(Jobj, "Name")){
++		paramModified = true;
++		ssidName = json_object_get_string(json_object_object_get(Jobj, "Name"));
++		if(!strcmp(ssidName,"ALL_WLAN"))
++			json_object_object_add(WlanSchedulerJobj, "Name", json_object_new_string("ALL WLAN"));
++		else
++			json_object_object_add(WlanSchedulerJobj, "Name", json_object_new_string(ssidName));
++	}
++	if(json_object_object_get(Jobj, "Description")){
++		paramModified = true;
++		json_object_object_add(WlanSchedulerJobj, "Description", JSON_OBJ_COPY(json_object_object_get(Jobj, "Description")));
++	}
++	if(json_object_object_get(Jobj, "SSID")){
++		paramModified = true;
++		json_object_object_add(WlanSchedulerJobj, "SSID", JSON_OBJ_COPY(json_object_object_get(Jobj, "SSID")));
++	}
++
++	// For CLI, use SSID to prepare Interface
++	if(json_object_object_get(Jobj, "SSID") && !json_object_object_get(Jobj, "Interface")){
++		ssidIndex = getWifiSSIDIndexFromSSID(json_object_get_string(json_object_object_get(Jobj, "SSID")));
++		json_object_object_add(WlanSchedulerJobj, "Interface", json_object_new_int(ssidIndex));
++	}
++
++	if(json_object_object_get(Jobj, "Interface")){
++		paramModified = true;
++		json_object_object_add(WlanSchedulerJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(Jobj, "Interface")));
++	}
++	if(json_object_object_get(Jobj, "Days")){
++		paramModified = true;
++		json_object_object_add(WlanSchedulerJobj, "Days", json_object_new_int(schedule_days_string_to_int(json_object_get_string(json_object_object_get(Jobj, "Days")))));
++	}
++	if(json_object_object_get(Jobj, "TimeStartHour")||
++		json_object_object_get(Jobj, "TimeStartMin")||
++		json_object_object_get(Jobj, "TimeStopHour")||
++		json_object_object_get(Jobj, "TimeStopMin")){
++		paramModified = true;
++		json_object_object_add(WlanSchedulerJobj, "TimeStartHour", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStartHour")));
++		json_object_object_add(WlanSchedulerJobj, "TimeStartMin", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStartMin")));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopHour", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStopHour")));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopMin", JSON_OBJ_COPY(json_object_object_get(Jobj, "TimeStopMin")));
++	}
++
++	// Time validation
++	startHr = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStartHour"));
++	startMin = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStartMin"));
++	stopHr = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStopHour"));
++	stopMin = json_object_get_int(json_object_object_get(WlanSchedulerJobj, "TimeStopMin"));
++	if(!isValidTimePeriod(startHr,startMin,stopHr,stopMin)){
++		json_object_object_add(WlanSchedulerJobj, "TimeStartHour", json_object_new_int(0));
++		json_object_object_add(WlanSchedulerJobj, "TimeStartMin", json_object_new_int(0));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopHour", json_object_new_int(23));
++		json_object_object_add(WlanSchedulerJobj, "TimeStopMin", json_object_new_int(59));
++		printf("Time set to 00:00-23:59..\n");
++	}	
++
+ 	if(paramModified) {
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_WLAN_SCHEDULER, &objIid, WlanSchedulerJobj, NULL)) != ZCFG_SUCCESS);
+ 	}
+@@ -136,36 +406,35 @@
+ }
+ 
+ zcfgRet_t zcfgFeDalWlanSchedulerDelete(struct json_object *Jobj, char *replyMsg)
+-{
+-	
++{	
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t objIid;
+-	struct json_object *iidArray = NULL;
+-	uint8_t iidIdx =0;
+-
++	objIndex_t objIid={0};
++	int objIndex = 0;
+ 	
+-	//IID_INIT(objIid);
+-	iidArray = json_object_object_get(Jobj, "iid");
+-	
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		objIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(objIid.idx[iidIdx] != 0)
+-			objIid.level = iidIdx+1;
++	objIndex = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	ret = convertIndextoIid(objIndex, &objIid, RDM_OID_WLAN_SCHEDULER, NULL, NULL);
++	if(ret != ZCFG_SUCCESS){
++		printf("Wrong index..\n");
++		return ret;
+ 	}
+ 	
+ 	ret = zcfgFeObjJsonDel(RDM_OID_WLAN_SCHEDULER, &objIid, NULL);
+ 	return ret;
+ 	
+ }
+-zcfgRet_t zcfgFeDalWlanScheduler(const char *method, struct json_object *Jobj, char *replyMsg)
++zcfgRet_t zcfgFeDalWlanScheduler(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalWlanSchedulerEdit(Jobj, NULL);
++		if(json_object_get_type(Jobj) == json_type_array){ // for GUI, tmp solution
++			ret = zcfgFeDalWlanSchedulerActiveEdit(Jobj, NULL); 
++		}
++	 	else{
++			ret = zcfgFeDalWlanSchedulerEdit(Jobj, NULL); 	
++		}
+ 	}
+ 	else if(!strcmp(method, "POST")) {
+ 		ret = zcfgFeDalWlanSchedulerAdd(Jobj, NULL);
+@@ -173,20 +442,13 @@
+ 	else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDalWlanSchedulerDelete(Jobj, NULL);
+ 	}
+-
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDalWlanSchedulerActive(const char *method, struct json_object *Jobj, char *replyMsg)
+-{
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	if(!method || !Jobj)
+-		return ZCFG_INTERNAL_ERROR;
+-
+-	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalWlanSchedulerActiveEdit(Jobj, NULL);
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalWlanSchedulerGet(Jobj, Jarray, NULL);
++	}
++	else{
++		printf("Unknown method.\n");
+ 	}
++
+ 	return ret;
+ }
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-09-05 22:05:04.149874358 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-09-05 22:35:02.050544392 +0800
+@@ -59,6 +59,7 @@
+ #endif
+ extern dal_param_t WIFI_OTHERS_param[];
+ extern dal_param_t WLAN_SCHEDULER_param[];
++extern dal_param_t WLAN_SCH_ACCESS_param[];
+ extern dal_param_t SNMP_param[];
+ extern dal_param_t TIME_param[];
+ extern dal_param_t TRUST_DOMAIN_param[];
+@@ -135,7 +136,7 @@
+ extern zcfgRet_t zcfgFeDalWifiSoniq(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ #endif
+ extern zcfgRet_t zcfgFeDalWlanScheduler(const char *method, struct json_object *Jobj, char *replyMsg);
+-extern zcfgRet_t zcfgFeDalWlanSchedulerActive(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalWlanSchAccess(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalWifiOthers(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalSNMP(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalTime(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -236,6 +237,8 @@
+ extern void zcfgFeDalShowWifiMACFilter(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiOthers(struct json_object *Jarray);
+ extern void zcfgFeDalShowEthWanLan(struct json_object *Jarray);
++extern void zcfgFeDalShowWlanScheduler(struct json_object *Jarray);
++extern void zcfgFeDalShowWlanSchAccess(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -280,8 +283,8 @@
+ {"WIFI_SONIQ",		WIFI_SONIQ_param, 	zcfgFeDalWifiSoniq,		NULL,						"edit", 			""},//Wireless
+ #endif
+ {"wifi_others",		WIFI_OTHERS_param,	zcfgFeDalWifiOthers,	zcfgFeDalShowWifiOthers,	"edit|get",				"Wireless"},//
+-{"WLAN_SCHEDULER",	WLAN_SCHEDULER_param, zcfgFeDalWlanScheduler,	NULL,						"add|edit|delete",	""},//Wireless
+-{"WLAN_SCHEDULER_ACTIVE",	WLAN_SCHEDULER_param, zcfgFeDalWlanSchedulerActive,	NULL,			"edit",	""},//Wireless
++{"wlan_scheduler",	WLAN_SCHEDULER_param, zcfgFeDalWlanScheduler,	zcfgFeDalShowWlanScheduler,	"add|edit|delete|get",	"Wireless"},
++{"wlan_sch_access",	WLAN_SCH_ACCESS_param, zcfgFeDalWlanSchAccess,	zcfgFeDalShowWlanSchAccess, "edit|get",	"Wireless"},
+ {"snmp",			SNMP_param, 		zcfgFeDalSNMP,			zcfgFeDalShowSNMP,			"edit|get",				"SNMP"},
+ {"time",			TIME_param, 		zcfgFeDalTime,			zcfgFeDalShowTime,			"edit|get",				"Time"},//Time
+ {"trust_domain",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain,	zcfgFeDalShowTrustDomain,	"get|add|delete",		"Remote_MGMT"},//Remote_MGMT
+@@ -609,8 +612,21 @@
+ 	return false;
+ }
+ 
++zcfgRet_t getWifiSsidList(struct json_object **Jarray){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *ssidObj = NULL;
++	char *ssid = NULL;
++	
++	*Jarray = json_object_new_array();
++	while(zcfgFeObjJsonGetNext(RDM_OID_WIFI_SSID, &iid, &ssidObj) == ZCFG_SUCCESS){
++		ssid = json_object_get_string(json_object_object_get(ssidObj,"SSID"));
++		json_object_array_add(*Jarray, json_object_new_string(ssid));
++		json_object_put(ssidObj);
++	}
+ 
+-
++	return ret;
++}
+ 
+ zcfgRet_t getCertList(struct json_object **Jarray){
+ 	struct json_object *obj = NULL;

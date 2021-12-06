@@ -1,0 +1,114 @@
+Index: ppp-2.4.3/linux/Makefile.top
+===================================================================
+--- ppp-2.4.3.orig/linux/Makefile.top	2015-05-21 16:26:01.122748200 +0800
++++ ppp-2.4.3/linux/Makefile.top	2015-05-21 16:37:37.378439043 +0800
+@@ -9,7 +9,7 @@
+ # uid 0 = root
+ INSTALL= install
+ 
+-export CONFIG_ZyXEL_WEB_REDIRECT
++export CONFIG_ZyXEL_WEB_REDIRECT CONFIG_ZyXEL_PPP_LCP_ECHO
+ 
+ all:
+ 	cd chat; $(MAKE) $(MFLAGS) all
+Index: ppp-2.4.3/pppd/Makefile.linux
+===================================================================
+--- ppp-2.4.3.orig/pppd/Makefile.linux	2015-05-21 16:26:01.122748200 +0800
++++ ppp-2.4.3/pppd/Makefile.linux	2015-05-21 16:38:11.798506019 +0800
+@@ -90,6 +90,10 @@
+ CFLAGS += -DZyXEL_WEB_REDIRECT
+ endif
+ 
++ifeq ($(CONFIG_ZyXEL_PPP_LCP_ECHO),y)
++CFLAGS += -DZyXEL_PPP_LCP_ECHO
++endif
++
+ ifdef CHAPMS
+ CFLAGS   += -DCHAPMS=1
+ NEEDDES=y
+Index: ppp-2.4.3/pppd/main.c
+===================================================================
+--- ppp-2.4.3.orig/pppd/main.c	2015-05-21 16:26:01.122748200 +0800
++++ ppp-2.4.3/pppd/main.c	2015-05-21 16:40:05.613296273 +0800
+@@ -246,6 +246,9 @@
+ static void hup __P((int));
+ static void term __P((int));
+ static void chld __P((int));
++#ifdef ZyXEL_PPP_LCP_ECHO  /* __ZyXEL__, Albert, 20150520, Supports PPPoE Connection Delay and LCP Echo  */
++static void Zyxel_PPP_LCP_Echo_Update __P((int));
++#endif
+ static void toggle_debug __P((int));
+ static void open_ccp __P((int));
+ static void bad_signal __P((int));
+@@ -313,6 +316,29 @@
+ #define PPP_DRV_NAME	"ppp"
+ #endif /* !defined(PPP_DRV_NAME) */
+ 
++#ifdef ZyXEL_PPP_LCP_ECHO  /* __ZyXEL__, Albert, 20150520, Supports PPPoE Connection Delay and LCP Echo  */
++extern int	lcp_echo_interval; 	/* Interval between LCP echo-requests */
++extern int	lcp_echo_fails;	/* Tolerance to unanswered echo-requests */
++
++zcfgRet_t ZyxelPPPLcp_set(char *value ){
++
++    char *delim = ",";
++    char * pch;
++    int lcp_echo_inter_tmp = 0, lcp_echo_fail_tmp = 0;
++    
++    pch = strtok(value, delim);
++    lcp_echo_inter_tmp = atoi (pch);
++    
++    if (pch != NULL)
++    {
++       pch = strtok (NULL, delim);
++       lcp_echo_fail_tmp = atoi (pch);
++    } 
++    lcp_echo_interval = lcp_echo_inter_tmp;
++    lcp_echo_fails = lcp_echo_fail_tmp;
++}
++#endif    
++
+ #if 1 /* ZyXEL zcfg */
+ zcfgRet_t pppdMsgSend(uint32_t msgType, zcfgEid_t dstEid, int payloadLen, const char *payload)
+ {
+@@ -342,6 +368,14 @@
+ 	if(ret == ZCFG_SUCCESS) {
+ 		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
+ 		printf("Receive message : %s\n", recv_str);
++
++#ifdef ZyXEL_PPP_LCP_ECHO  /* __ZyXEL__, Albert, 20150520, Supports PPPoE Connection Delay and LCP Echo  */
++        switch(msgType){
++            case ZCFG_MSG_PPP_LCP_ECHO_GET:
++                ZyxelPPPLcp_set(recv_str);
++                break;
++        }        
++#endif
+ 	}
+ 
+ 	return ret;
+@@ -741,7 +775,11 @@
+     SIGNAL(SIGTERM, term);		/* Terminate */
+     SIGNAL(SIGCHLD, chld);
+ 
++#ifdef ZyXEL_PPP_LCP_ECHO  /* __ZyXEL__, Albert, 20150520, Supports PPPoE Connection Delay and LCP Echo  */
++    SIGNAL(SIGUSR1, Zyxel_PPP_LCP_Echo_Update);
++#else
+     SIGNAL(SIGUSR1, toggle_debug);	/* Toggle debug flag */
++#endif    
+     SIGNAL(SIGUSR2, open_ccp);		/* Reopen CCP */
+ 
+     /*
+@@ -1527,6 +1565,14 @@
+     }
+ }
+ 
++#ifdef ZyXEL_PPP_LCP_ECHO  /* __ZyXEL__, Albert, 20150520, Supports PPPoE Connection Delay and LCP Echo  */
++static void
++Zyxel_PPP_LCP_Echo_Update(sig)
++    int sig;
++{  
++  pppdMsgSend(ZCFG_MSG_PPP_LCP_ECHO_GET , ZCFG_EID_ESMD, strlen(pppname)+1, pppname);    
++}
++#endif 
+ 
+ /*
+  * open_ccp - Catch SIGUSR2 signal.

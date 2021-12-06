@@ -1,0 +1,210 @@
+Index: dnsmasq-2.78/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.78.orig/src/dnsmasq.h	2018-11-02 13:29:27.803054642 +0800
++++ dnsmasq-2.78/src/dnsmasq.h	2018-11-02 13:33:49.881217800 +0800
+@@ -708,6 +708,15 @@
+   struct dhcp_lease *next;
+ };
+ 
++#if 1                           //oneconnect dhcp.leases2 file
++//[WWH] add
++struct dhcp_lease_tmp {
++  char hwaddr[64];
++  char hostname[512];
++  struct dhcp_lease_tmp *next;
++};
++#endif
++
+ struct dhcp_netid {
+   char *net;
+   struct dhcp_netid *next;
+Index: dnsmasq-2.78/src/lease.c
+===================================================================
+--- dnsmasq-2.78.orig/src/lease.c	2018-11-02 13:29:27.807054642 +0800
++++ dnsmasq-2.78/src/lease.c	2018-11-02 13:47:48.143135600 +0800
+@@ -21,6 +21,98 @@
+ static struct dhcp_lease *leases = NULL, *old_leases = NULL;
+ static int dns_dirty, file_dirty, leases_left;
+ 
++#if 1                           //oneconnect dhcp.leases2 file
++//WWH add
++static struct dhcp_lease_tmp *kill_leases = NULL;
++
++/** WWH add *********************************************************/
++static void save_killname(char *hwaddr, char *hostname)
++{
++  if (hwaddr == NULL || hostname == NULL) {
++    return;
++  }
++
++  struct dhcp_lease_tmp *lease;
++  lease = calloc(1, sizeof(struct dhcp_lease_tmp));
++  lease->next = NULL;
++
++  strcpy(lease->hwaddr, hwaddr);
++  strcpy(lease->hostname, hostname);
++
++  if (kill_leases == NULL) {
++    kill_leases = lease;
++  } else {
++    struct dhcp_lease_tmp *lease_tmp;
++    lease_tmp = kill_leases;
++    while (lease_tmp->next) {
++      lease_tmp = lease_tmp->next;
++    }
++    lease_tmp->next = lease;
++  }
++}
++
++void get_kill_leases_hostname(char *hwaddr, char *hostname)
++{
++  if (hwaddr == NULL || kill_leases == NULL) {
++    return;
++  }
++
++  struct dhcp_lease_tmp *lease;
++  lease = kill_leases;
++  while (lease) {
++    if (strncmp(hwaddr, lease->hwaddr, 17) == 0)        //find same mac
++    {
++      strcpy(hostname, lease->hostname);
++      return;
++    }
++    lease = lease->next;
++  }
++  strncpy(hostname, "*", 1);
++}
++
++void Removeoutputfile(void)
++{
++  char buf[1024];
++  FILE *fp = fopen("/tmp/dhcp.leases2", "r");
++  if (fp) {
++    while (fgets(buf, sizeof(buf), fp)) {
++      char hwaddr[64] = "";
++      char ip[64] = "";
++      char hostname[512] = "";
++      sscanf(buf, "%s %s %s", hwaddr, ip, hostname);
++      save_killname(hwaddr, hostname);
++    }
++    fclose(fp);
++  }
++
++  remove("/tmp/dhcp.leases2");
++  system("touch /tmp/dhcp.leases2");
++}
++
++void outputData(char *outputdata)
++{
++  char output[1024];
++  sprintf(output, "echo \"%s\" >> %s", outputdata, "/tmp/dhcp.leases2");
++  system(output);
++}
++
++
++void free_kill_leases()
++{
++  struct dhcp_lease_tmp *lease_f;
++  struct dhcp_lease_tmp *lease_tmp;
++  lease_f = kill_leases;
++  while (lease_f) {
++    lease_tmp = lease_f->next;
++    free(lease_f);
++    lease_f = lease_tmp;
++  }
++  kill_leases = NULL;
++}
++
++/** WWH *************************************************************/
++#endif
++
+ static int read_leases(time_t now, FILE * leasestream)
+ {
+   unsigned long ei;
+@@ -230,6 +322,12 @@
+   file_dirty = 0;
+   lease_prune(NULL, now);
+   dns_dirty = 1;
++
++#if 1  //oneconnect dhcp.leases2 file
++  //[WWH] add
++  system("touch /tmp/dhcp.leases2");
++#endif
++
+ }
+ 
+ void lease_update_from_configs(void)
+@@ -277,6 +375,11 @@
+     if (errno != 0 || ftruncate(fileno(daemon->lease_stream), 0) != 0)
+       err = errno;
+ 
++#if 1   //oneconnect dhcp.leases2 file
++    //WWH add
++    Removeoutputfile();
++#endif
++
+     for (lease = leases; lease; lease = lease->next) {
+ 
+ #ifdef HAVE_DHCP6
+@@ -303,6 +406,33 @@
+       ourprintf(&err, " %s ", daemon->addrbuff);
+       ourprintf(&err, "%s ", lease->hostname ? lease->hostname : "*");
+ 
++#if 1    //oneconnect dhcp.leases2 file
++      //[WWH] output file
++      int macCount = 0;
++      char outputdata[1024] = "";
++      char output_hwaddr[64] = "";
++      char output_hostname[512] = "";
++      for (macCount = 0; macCount < lease->hwaddr_len; macCount++) {
++        sprintf(output_hwaddr + (macCount * 3), "%.2x",
++                lease->hwaddr[macCount]);
++        if (macCount != lease->hwaddr_len - 1) {
++          sprintf(output_hwaddr + ((macCount * 3) + 2), ":");
++        }
++      }
++
++      if (!lease->hostname)     //lease->hostname is NULL, find kill_leases
++      {
++        //get hostname in kill_leases
++        get_kill_leases_hostname(output_hwaddr, output_hostname);
++      } else {
++        strcpy(output_hostname, lease->hostname);
++      }
++      sprintf(outputdata, "%s %s %s\0", output_hwaddr, daemon->addrbuff,
++              output_hostname);
++      //output file
++      outputData(outputdata);
++#endif
++
+       if (lease->clid && lease->clid_len != 0) {
+         for (i = 0; i < lease->clid_len - 1; i++)
+           ourprintf(&err, "%.2x:", lease->clid[i]);
+@@ -412,6 +542,11 @@
+   }
+ 
+   send_alarm(next_event, now);
++
++#if 1  //oneconnect dhcp.leases2 file
++  //clear kill_leases
++  free_kill_leases();
++#endif
+ }
+ 
+ 
+@@ -934,6 +1069,15 @@
+ 
+ static void kill_name(struct dhcp_lease *lease)
+ {
++#if 1   //oneconnect dhcp.leases2 file
++  //save kill name
++  char hwaddr_tmp[64] = "";
++  sprintf(hwaddr_tmp, "%.2x:%.2x:%.2x:%.2x:%.2x:%.2x", lease->hwaddr[0],
++          lease->hwaddr[1], lease->hwaddr[2], lease->hwaddr[3],
++          lease->hwaddr[4], lease->hwaddr[5]);
++  save_killname(hwaddr_tmp, lease->hostname);
++#endif
++
+   /* run script to say we lost our old name */
+ 
+   /* this shouldn't happen unless updates are very quick and the

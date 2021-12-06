@@ -1,0 +1,456 @@
+Index: libzyutil-1.0/Makefile
+===================================================================
+--- libzyutil-1.0.orig/Makefile	2015-09-30 18:22:31.584212439 +0800
++++ libzyutil-1.0/Makefile	2015-09-30 18:22:31.640212440 +0800
+@@ -22,6 +22,28 @@
+ INC_PATH += $(ALLOWED_INCLUDE_PATHS)
+ endif
+ 
++ifeq ($(ZCFG_PLATFORM),ECONET)
++INC_PATH += -I$(STAGING_DIR_HOST)/include -I$(STAGING_DIR_HOST)/include/trx
++ifneq ($(strip $(TCSUPPORT_MTD_ENCHANCEMENT)),)
++ZCFLAGS+=-DTCSUPPORT_MTD_ENCHANCEMENT
++endif
++ifneq ($(strip $(TCSUPPORT_RESERVEAREA_BLOCK)),)
++ZCFLAGS+=-DTCSUPPORT_RESERVEAREA_BLOCK=$(TCSUPPORT_RESERVEAREA_BLOCK)
++endif
++ifneq ($(strip $(TCSUPPORT_CT)),)
++ZCFLAGS+=-DTCSUPPORT_CT
++endif
++ifneq ($(strip $(TCSUPPORT_NAND_BMT)),)
++ZCFLAGS+=-DTCSUPPORT_NAND_BMT
++endif
++ifneq ($(strip $(TCSUPPORT_NAND_BADBLOCK_CHECK)),)
++ZCFLAGS+=-DTCSUPPORT_NAND_BADBLOCK_CHECK
++endif
++ifneq ($(strip $(TCSUPPORT_PRODUCTIONLINE)),)
++ZCFLAGS+=-DTCSUPPORT_PRODUCTIONLINE
++endif
++endif
++
+ ZCFLAGS += -DZYXEL=1 -std=gnu99
+ LIB_OBJS = common.o flash.o skconn.o
+ 
+Index: libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_econet_wrapper.h	2015-09-30 18:22:31.628212439 +0800
++++ libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h	2015-09-30 18:25:11.440215584 +0800
+@@ -4,12 +4,22 @@
+ #include "zcfg_common.h"
+ 
+ #if 1//defined(ZYXEL)
+-#define CHIP_ID_LEN 		8
+-#define BOARD_ID_LEN 		16
+-#define SW_VERSION_LEN 		32
+-#define MODEL_ID_LEN		4
+-
+-#define ZY_MODELID_PREFIX 		0x5a590000 /* prefix must be ZY */
++#include "tc_partition.h"
++#include "trx.h"
++#define FLASH_READ_CMD                "/sbin/mtd -q -q readflash %s %lu %lu %s"
++#define FLASH_WRITE_CMD               "/sbin/mtd -q -q writeflash %s %lu %lu %s"
++#define BOOT_FLAG_SIZE                1
++#define BOOT_FLAG_OFFSET              (MRD_RA_OFFSET - BOOT_FLAG_SIZE)
++#define BOOT_FLAG_FILE                "/tmp/boot_flag"
++#define MRDINFO_PARTITON_NAME         "bootloader"
++#define MRDINFO_OFFSET                0xff00
++#define MRDINFO_SIZE                  0x100
++#define MRDINFO_FILE                  "/tmp/MRD_info"
++#define MAIN_ROOTFS_PARTITION_NAME    "tclinux"
++#define SLAVE_ROOTFS_PARTITION_NAME   "tclinux_slave"
++#define BOOTIMG_HEADER_OFFSET         0x0
++#define BOOTIMG_HEADER_SIZE           sizeof(struct trx_header)
++#define BOOTIMG_HEADER_FILE           "/tmp/BootImg_info"
+ #endif
+ 
+ #define MRD_SERIAL_NUM_LEN              14
+@@ -72,41 +82,4 @@
+ #endif
+ } __attribute__((packed)) MRD_DATA, *PMRD_DATA;
+ 
+-struct trx_header {
+-	unsigned int magic;			/* "HDR0" */
+-	unsigned int header_len;    /*Length of trx header*/
+-	unsigned int len;			/* Length of file including header */
+-	unsigned int crc32;			/* 32-bit CRC from flag_version to end of file */
+-	unsigned char version[32];  /*firmware version number*/
+-	unsigned char customerversion[32];  /*firmware version number*/
+-//	unsigned int flag_version;	/* 0:15 flags, 16:31 version */
+-#if 0
+-	unsigned int reserved[44];	/* Reserved field of header */
+-#else
+-	unsigned int kernel_len;	//kernel length
+-	unsigned int rootfs_len;	//rootfs length
+-	unsigned int romfile_len;	//romfile length
+-	#if 0
+-	unsigned int reserved[42];  /* Reserved field of header */
+-	#else
+-	unsigned char Model[32];
+-	unsigned int decompAddr;//kernel decompress address
+-	unsigned int reserved[32];  /* Reserved field of header */
+-	#endif
+-#endif
+-#if 1//defined(ZYXEL)
+-	unsigned char chipId[CHIP_ID_LEN];		/* Provided by Makefile */
+-	unsigned char boardId[BOARD_ID_LEN];		/* Provided by Makefile */
+-	unsigned char modelId[MODEL_ID_LEN];			/* Provided by Makefile */
+-	unsigned int defcfg_len;	//default config length
+-	unsigned int imageSequence;
+-	unsigned char swVersionInt[SW_VERSION_LEN];	/* Provided by Makefile */
+-	unsigned char swVersionExt[SW_VERSION_LEN];	/* Provided by Makefile */
+- 	unsigned int rootfsChksum;
+-	unsigned int kernelChksum;
+-	unsigned int defcfgChksum;
+-    unsigned int headerChksum;
+-#endif
+-};
+-
+ #endif
+\ No newline at end of file
+Index: libzyutil-1.0/ECONET/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_wrapper.c	2015-09-30 18:22:31.628212439 +0800
++++ libzyutil-1.0/ECONET/libzyutil_wrapper.c	2015-09-30 18:27:14.117782810 +0800
+@@ -8,9 +8,6 @@
+ #include "libzyutil_wrapper.h"
+ #include "libzyutil_econet_wrapper.h"
+ 
+-#define BOOTLOADER "bootloader"
+-#define TCLINUX "tclinux"
+-
+ int mtd_open(const char *mtd, int flags)
+ {
+ 	FILE *fp;
+@@ -55,28 +52,76 @@
+ 	return 0;
+ }
+ 
+-int read_mrd_info(PMRD_DATA mrd)
++#if 0
++static void dumpMRDinfo(PMRD_DATA mrd)
+ {
+-	FILE *fp;
+-	int mrd_len = sizeof(struct mrd);
+-
+-    /* Read bootloader from flash */
+-    system("cat /dev/mtd0 > /tmp/boot.bin");
+-
+-    fp = fopen("/tmp/boot.bin", "r+b");
+-    if( fp == NULL ){
+-        printf("open file error!!\n");
+-        system("rm /tmp/boot.bin");
+-        return -1;
++    int i;
++    printf("\nMRD Dump(%d):\n", sizeof(MRD_DATA));
++    printf("SDRAM_CONF_array[4]: 0x%02X 0x%02X 0x%02X 0x%02X\n",
++           mrd->SDRAM_CONF_array[0], mrd->SDRAM_CONF_array[1], mrd->SDRAM_CONF_array[2], mrd->SDRAM_CONF_array[3]);
++    printf("VENDOR_NAME[32]    : %s\n", mrd->VENDOR_NAME);
++    printf("PRODUCT_NAME[32]   : %s\n", mrd->PRODUCT_NAME);
++    printf("FUNC_BYTE[4]       : 0x%02X 0x%02X 0x%02X 0x%02X\n",
++           mrd->FUNC_BYTE[0], mrd->FUNC_BYTE[1], mrd->FUNC_BYTE[2], mrd->FUNC_BYTE[3]);
++    printf("ETHER_ADDR[6]      : %02X:%02X:%02X:%02X:%02X:%02X\n",
++           mrd->ETHER_ADDR[0], mrd->ETHER_ADDR[1], mrd->ETHER_ADDR[2], mrd->ETHER_ADDR[3],
++           mrd->ETHER_ADDR[4], mrd->ETHER_ADDR[5]);
++    printf("COUNTRY_array      : 0x%02X\n", mrd->COUNTRY_array);
++    printf("ether_gpio         : 0x%02X\n", mrd->ether_gpio);
++    printf("power_gpio[2]      : 0x%02X 0x%02X\n", mrd->power_gpio[0], mrd->power_gpio[1]);
++    printf("restore_flag       : 0x%02X\n", mrd->restore_flag);
++    printf("dsl_gpio           : 0x%02X\n", mrd->dsl_gpio);
++    printf("internet_gpio      : 0x%02X\n", mrd->internet_gpio);
++    printf("SN[18]             : %s\n", mrd->SN);
++    printf("SerialNumber[14]   : %s\n", mrd->SerialNumber);
++    printf("NumMacAddrs        : %d\n", mrd->NumMacAddrs);
++    printf("MrdVer             : 0x%02X\n", mrd->MrdVer);
++    printf("EngDebugFlag       : 0x%02X\n", mrd->EngDebugFlag);
++    printf("MainFeatureBit     : 0x%02X\n", mrd->MainFeatureBit);
++    printf("FeatureBits[30]    :");
++    for (i=0; i<30; i++) {
++        if (i%15==0) puts("\n     ");
++        printf("0x%02X ", mrd->FeatureBits[i]);
+     }
++    printf("\nHTP_Switch         : 0x%02X\n", mrd->HTP_Switch);
++    printf("WpaPskKey[16]      :");
++    for (i=0; i<16; i++) {
++        if (i%16==0) puts("\n     ");
++        printf("0x%02X ", mrd->WpaPskKey[i]);
++    }
++    printf("\nBM_VER[3]          : %d.%d.%d\n", mrd->BM_VER_MAJ, mrd->BM_VER_MIN, mrd->BM_VER_ECO);
++    printf("builddate[4]       : %02X/%02X/%02X%02X\n", mrd->builddate[0], mrd->builddate[1],
++           mrd->builddate[2], mrd->builddate[3]);
++    printf("buildtime[3]       : %02X:%02X:%02X\n", mrd->buildtime[0], mrd->buildtime[1],
++           mrd->buildtime[2]);
++}
++#else
++#define dumpMRDinfo(x)
++#endif
+ 
+-	/*mrd offset 0xff00*/
+-    fseek(fp, 0x0000ff00L, SEEK_SET);
+-    fread(mrd, mrd_len, 1, fp);
+-    fflush(fp);
+-    fclose(fp);
++static zcfgRet_t zyUtilGetMrdInfo(PMRD_DATA mrd)
++{
++	char sysCmd[128] = {0};
++	FILE *fptr = NULL;
+ 
+-	return 0;
++	// clean the MRD info
++	memset(mrd, 0x0, sizeof(MRD_DATA));
++	// Get MRD info from bootloader partition with offset 0xff00
++	sprintf(sysCmd,FLASH_READ_CMD,MRDINFO_FILE,(long unsigned int)MRDINFO_SIZE,(long unsigned int)MRDINFO_OFFSET,MRDINFO_PARTITON_NAME);
++	system(sysCmd);
++	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++
++    /*Read boot flag to buffer*/
++    if((fptr = fopen(MRDINFO_FILE, "rb")) == NULL) {
++        printf("Can't fopen %s\n", MRDINFO_FILE);
++		unlink(MRDINFO_FILE);
++        return ZCFG_INTERNAL_ERROR;
++    }
++	fread(mrd, 1, (uint32_t)MRDINFO_SIZE, fptr);
++	dumpMRDinfo(mrd);
++	fclose(fptr);
++	unlink(MRDINFO_FILE);
++	return ZCFG_SUCCESS;
+ }
+ 
+ #ifdef SUPPORT_LANVLAN
+@@ -87,25 +132,11 @@
+ }
+ #endif
+ 
+-zcfgRet_t zyUtilIGetSerailNum(char *sn)
+-{
+-	struct mrd mrd_buff;
+-
+-	if(0 != read_mrd_info(&mrd_buff))
+-		return -1;
+-
+-	strcpy(sn, mrd_buff.SerialNumber);
+-
+-	//printf("SerialNumber:%s\n",sn);
+-
+-	return ZCFG_SUCCESS;
+-}
+-
+ zcfgRet_t zyUtilIGetBaseMAC(char *mac)
+ {
+ 	struct mrd mrd_buff;
+ 
+-	if(0 != read_mrd_info(&mrd_buff))
++	if(0 != zyUtilGetMrdInfo(&mrd_buff))
+ 		return -1;
+ 
+ 	sprintf(mac ,"%02X%02X%02X%02X%02X%02X",
+@@ -126,7 +157,7 @@
+ {
+ 	struct mrd mrd_buff;
+ 
+-	if(0 != read_mrd_info(&mrd_buff))
++	if(0 != zyUtilGetMrdInfo(&mrd_buff))
+ 		return -1;
+ 
+ 	if(num) *num =  mrd_buff.NumMacAddrs;
+@@ -136,11 +167,25 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t zyUtilIGetModelID(char *model_id)
++{
++	struct mrd mrd_buff;
++
++	if(0 != zyUtilGetMrdInfo(&mrd_buff))
++		return ZCFG_INTERNAL_ERROR;
++
++	memcpy(model_id, mrd_buff.FeatureBits, 4);
++
++	//printf("ModelID:%x %x %x %x\n",model_id[0] model_id[1] model_id[2] model_id[3]);
++
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t zyUtilIGetProductName(char *pdname)
+ {
+ 	struct mrd mrd_buff;
+ 
+-	if(0 != read_mrd_info(&mrd_buff))
++	if(0 != zyUtilGetMrdInfo(&mrd_buff))
+ 		return -1;
+ 
+ 	strcpy(pdname, mrd_buff.PRODUCT_NAME);
+@@ -154,7 +199,7 @@
+ {
+ 	struct trx_header trx_header_buff;
+ 
+-	if(0 != read_mtd_info(TCLINUX,&trx_header_buff))
++	if(0 != zyUtilGetBootImageHeader((void *)&trx_header_buff))
+ 		return -1;
+ 
+ 	strcpy(fwversion, trx_header_buff.swVersionInt);
+@@ -168,7 +213,7 @@
+ {
+ 	struct mrd mrd_buff;
+ 
+-	if(0 != read_mrd_info(&mrd_buff))
++	if(0 != zyUtilGetMrdInfo(&mrd_buff))
+ 		return -1;
+ 
+ 	strcpy(serianumber, mrd_buff.SerialNumber);
+@@ -182,7 +227,7 @@
+ {
+ 	struct mrd mrd_buff;
+ 
+-	if(0 != read_mrd_info(&mrd_buff))
++	if(0 != zyUtilGetMrdInfo(&mrd_buff))
+ 		return -1;
+ 
+ 	memcpy(serianumber, mrd_buff.GponSerialNumber,MRD_GPON_SERIAL_NUM_LEN);
+@@ -191,6 +236,78 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
++zcfgRet_t zyUtilIGetBootingFlag(int *boot_flag)
++{
++	char sysCmd[128] = {0};
++	FILE *fptr = NULL;
++	char bootflag[2];
++
++	sprintf(sysCmd,FLASH_READ_CMD,BOOT_FLAG_FILE,(long unsigned int)BOOT_FLAG_SIZE,(long unsigned int)BOOT_FLAG_OFFSET,RESERVEAREA_NAME);
++	system(sysCmd);
++	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++
++    /*Read boot flag to buffer*/
++    if((fptr = fopen(BOOT_FLAG_FILE, "rb")) == NULL) {
++        unlink(BOOT_FLAG_FILE);
++        printf("Can't fopen %s\n", BOOT_FLAG_FILE);
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++	memset(bootflag, 0x0, 2);
++	fread(bootflag, 1, (uint32_t)BOOT_FLAG_SIZE, fptr);
++	*boot_flag = bootflag[0] - '0';
++	//printf("%s : Current boot flag is %s(%d)\n", __FUNCTION__, bootflag, *boot_flag);
++	fclose(fptr);
++	unlink(BOOT_FLAG_FILE);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilISetBootingFlag(int boot_flag)
++{
++	char sysCmd[128] = {0};
++	if(boot_flag !=0 && boot_flag != 1) return ZCFG_INTERNAL_ERROR;
++	sprintf(sysCmd, "echo %d > %s", boot_flag, BOOT_FLAG_FILE);
++	system(sysCmd);
++	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++
++	sprintf(sysCmd,FLASH_WRITE_CMD,BOOT_FLAG_FILE,(long unsigned int)BOOT_FLAG_SIZE,(long unsigned int)BOOT_FLAG_OFFSET,RESERVEAREA_NAME);
++	system(sysCmd);
++	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++	unlink(BOOT_FLAG_FILE);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilGetBootImageHeader(void *booting_header)
++{
++	char sysCmd[128] = {0};
++	FILE *fptr = NULL;
++	struct trx_header *local_booting_header = (struct trx_header *)booting_header;
++	int currentBootFlag;
++
++	zyUtilIGetBootingFlag(&currentBootFlag);
++	sprintf(sysCmd,FLASH_READ_CMD,BOOTIMG_HEADER_FILE,(long unsigned int)BOOTIMG_HEADER_SIZE,(long unsigned int)BOOTIMG_HEADER_OFFSET, \
++			(currentBootFlag==1)?SLAVE_ROOTFS_PARTITION_NAME:MAIN_ROOTFS_PARTITION_NAME);
++	system(sysCmd);
++	//printf("%s:sysCmd = %s\n", __FUNCTION__, sysCmd);
++
++    /*Read boot flag to buffer*/
++    if((fptr = fopen(BOOTIMG_HEADER_FILE, "rb")) == NULL) {
++		unlink(BOOTIMG_HEADER_FILE);
++        printf("Can't fopen %s\n", BOOTIMG_HEADER_FILE);
++        return ZCFG_INTERNAL_ERROR;
++    }
++
++	memset(local_booting_header, 0x0, BOOTIMG_HEADER_SIZE);
++	fread(local_booting_header, 1, (uint32_t)BOOTIMG_HEADER_SIZE, fptr);
++	//printf("%s : Current sequence is %d\n", __FUNCTION__, local_booting_header->imageSequence);
++	fclose(fptr);
++	unlink(BOOTIMG_HEADER_FILE);
++	return ZCFG_SUCCESS;
++}
++
+ int zyUtilGetGPIO(int gpioNum)
+ {
+ 	/*This function is only used to check VMG3926-B10A and VMG8924-B10B, so Cross Platform is not need*/
+Index: libzyutil-1.0/BROADCOM/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/BROADCOM/libzyutil_wrapper.c	2015-09-30 18:22:31.628212439 +0800
++++ libzyutil-1.0/BROADCOM/libzyutil_wrapper.c	2015-09-30 18:22:31.644212440 +0800
+@@ -131,19 +131,6 @@
+ 	return 0;
+ }
+ 
+-zcfgRet_t zyUtilIGetSerailNum(char *sn)
+-{
+-	NVRAM_DATA nvramData;
+-
+-	memset(&nvramData, 0, sizeof(NVRAM_DATA));
+-
+-	if(nvramDataGet(&nvramData) < 0)
+-		return ZCFG_INTERNAL_ERROR;
+-
+-	strcpy(sn, nvramData.SerialNumber);
+-	return ZCFG_SUCCESS;
+-}
+-
+ zcfgRet_t zyUtilIGetBaseMAC(char *mac)
+ {
+ 	NVRAM_DATA nvramData;
+@@ -177,6 +164,19 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t zyUtilIGetModelID(char *model_id)
++{
++	NVRAM_DATA nvramData;
++
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++
++    memcpy(model_id, nvramData.FeatureBits, 4);
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t zyUtilIGetProductName(char *pdname)
+ {
+ 	if(!strcmp(ZYXEL_PRODUCT_NAME, "VMG3926-B10A") || !strcmp(ZYXEL_PRODUCT_NAME, "VMG8924-B10B")){
+Index: libzyutil-1.0/libzyutil_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/libzyutil_wrapper.h	2015-09-30 18:22:31.616212439 +0800
++++ libzyutil-1.0/libzyutil_wrapper.h	2015-09-30 18:22:31.644212440 +0800
+@@ -5,11 +5,17 @@
+ #ifdef SUPPORT_LANVLAN
+ zcfgRet_t zyUtilISetIfState(char *ifName, bool up);
+ #endif
+-zcfgRet_t zyUtilIGetSerailNum(char *sn);
++#define zyUtilIGetSerailNum zyUtilIGetSerialNumber
+ zcfgRet_t zyUtilIGetBaseMAC(char *mac);
+ zcfgRet_t zyUtilIGetNumberOfMAC(int *num);
++zcfgRet_t zyUtilIGetModelID(char *model_id);
+ zcfgRet_t zyUtilIGetProductName(char *pdname);
+ zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion);
+ zcfgRet_t zyUtilIGetSerialNumber(char *serianumber);
++#ifdef ECONET_PLATFORM
+ zcfgRet_t zyUtilIGetGponSerialNumber(char *serianumber);
+-int zyUtilGetGPIO(int gpioNum);
+\ No newline at end of file
++zcfgRet_t zyUtilIGetBootingFlag(int *boot_flag);
++zcfgRet_t zyUtilISetBootingFlag(int boot_flag);
++zcfgRet_t zyUtilGetBootImageHeader(void *booting_header);  //should conver to "struct trx_header"
++#endif
++int zyUtilGetGPIO(int gpioNum);

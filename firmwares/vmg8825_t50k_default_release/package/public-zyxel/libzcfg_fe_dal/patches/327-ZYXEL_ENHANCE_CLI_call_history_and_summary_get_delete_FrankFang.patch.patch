@@ -1,0 +1,490 @@
+Index: libzcfg_fe_dal-1.0/voip/callHistory/zcfg_fe_dal_call_history.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/voip/callHistory/zcfg_fe_dal_call_history.c	2017-09-01 15:32:00.584651110 +0800
+@@ -0,0 +1,193 @@
++#include <json/json.h>
++#include <sys/stat.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++#include "zcfg_msg_voice.h"
++
++#define CALLLIST_PATH 			"/data/calllist.dat"
++
++dal_param_t VOIP_CALLHISTORY_param[]={
++	{"range",	dalType_string,	0,	0,	NULL,	"All",	dal_Delete},
++	{NULL,		dalType_int,	0,	0,	NULL,	NULL,	0},
++};
++
++zcfgRet_t validateCallHistoryJarray(struct json_object *Jarray){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i, len=0;
++	struct json_object *obj = NULL;
++	struct json_object *callInfo = NULL;
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray,i);
++		if(obj!=NULL){
++			callInfo = json_object_object_get(obj,"CallInfo");
++			if(callInfo != NULL){
++				if(!json_object_object_get(callInfo,"CallType"))
++					ret = ZCFG_INTERNAL_ERROR;
++				if(!json_object_object_get(callInfo,"Date"))
++					ret = ZCFG_INTERNAL_ERROR;
++				if(!json_object_object_get(callInfo,"PeerName"))
++					ret = ZCFG_INTERNAL_ERROR;
++				if(!json_object_object_get(callInfo,"PeerNumber"))
++					ret = ZCFG_INTERNAL_ERROR;
++				if(!json_object_object_get(callInfo,"LocalDevice"))
++					ret = ZCFG_INTERNAL_ERROR;
++				if(!json_object_object_get(callInfo,"OutgoingNumber"))
++					ret = ZCFG_INTERNAL_ERROR;
++				if(!json_object_object_get(callInfo,"Duration"))
++					ret = ZCFG_INTERNAL_ERROR;
++			}
++			else
++				ret = ZCFG_INTERNAL_ERROR;
++		} 
++
++		printf("%s : callInfo = %s\n",__FUNCTION__,json_object_to_json_string(callInfo));
++		if(ret != ZCFG_SUCCESS){
++			printf("Incomplete call history object!\n");
++			printf("%s : callInfo = %s\n",__FUNCTION__,json_object_to_json_string(callInfo));
++			return ret;
++		}
++	}
++
++	return ret;
++}
++
++void zcfgFeDalShowVoipCallHistory(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *historyObj;
++	struct json_object *contentObj;
++	char *callType = NULL;	
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	
++	printf("%-7s %-10s %-25s %-10s %-10s %-12s %-12s %-10s \n","Index","Type","Date","Name","Number","Phone Dev.","Out Number","Duration(hh:mm:ss)");
++	printf("-------------------------------------------------------------------------------------------------------------------\n");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		historyObj = json_object_array_get_idx(Jarray, len-i-1);
++		if(historyObj!=NULL){
++			contentObj = json_object_object_get(historyObj,"CallInfo");
++			printf("%-7d ",i+1);
++			callType = json_object_get_string(json_object_object_get(contentObj,"CallType"));
++			
++			if(!strcmp(callType,"0"))
++				printf("%-10s ","Missed");
++			else if(!strcmp(callType,"1"))
++				printf("%-10s ","Outgoing");
++			else if(!strcmp(callType,"2"))
++				printf("%-10s ","Incoming");
++			else
++				printf("%-10s ","N/A");
++
++			printf("%-25s ",json_object_get_string(json_object_object_get(contentObj,"Date")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(contentObj,"PeerName")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(contentObj,"PeerNumber")));
++			printf("%-12s ",json_object_get_string(json_object_object_get(contentObj,"LocalDevice")));
++			printf("%-12s ",json_object_get_string(json_object_object_get(contentObj,"OutgoingNumber")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(contentObj,"Duration")));
++			printf("\n");
++			zcfgFeJsonObjFree(historyObj);
++		}
++	}
++	printf("\n");
++	
++}
++
++zcfgRet_t zcfgFeDalVoipCallHistoryGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct stat dectFile;
++	struct json_object *callListDatabase = NULL;
++	struct json_object *responseObj = NULL;
++
++	if(!stat(CALLLIST_PATH, &dectFile) ){
++		callListDatabase = json_object_from_file(CALLLIST_PATH);
++		if(is_error(callListDatabase)) {
++			printf("get dect book fail\n");
++			return ZCFG_INTERNAL_ERROR;
++		}
++		json_object_object_foreach(callListDatabase,itemCallHistory,val){
++			if(!strcmp(itemCallHistory, "CallHistory")){
++				json_object_object_foreach(val,key,callInfo){
++					responseObj = json_object_new_object();
++					json_object_object_add(responseObj, "Index", json_object_new_string(key));
++					json_object_object_add(responseObj, "CallInfo", callInfo);
++					json_object_array_add(Jarray, JSON_OBJ_COPY(responseObj));
++					zcfgFeJsonObjFree(responseObj);
++				}
++			}
++		}
++	}
++	else{
++		printf("get file error, file not exist\n");
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(callListDatabase != NULL){
++		json_object_put(callListDatabase);
++	}
++
++	ret = validateCallHistoryJarray(Jarray);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipCallHistoryDelete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	voiceListAccessReq_t *voiceLAReq = NULL;
++
++	/* allocate message buffer */
++	if ((sendBuf = calloc(1, (sizeof(zcfgMsg_t)+sizeof(voiceListAccessReq_t)))) == NULL) {
++		printf("%s(): <<Error>> Fail to allocate buffer for message xmit\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	sendMsgHdr = (zcfgMsg_t *)sendBuf;
++
++	sendMsgHdr->type = ZCFG_MSG_VOICE_LIST_ACCESS;
++	sendMsgHdr->srcEid = ZCFG_EID_DALCMD;
++	sendMsgHdr->dstEid = ZCFG_EID_ZYIMS;
++	sendMsgHdr->length = sizeof(voiceListAccessReq_t);
++
++	voiceLAReq = (voiceListAccessReq_t *)(sendMsgHdr + 1);
++	voiceLAReq->Type = VOICE_LIST_ACCESS_REQ_CALLHISTORY_CLEAR;
++	voiceLAReq->Payload = NULL;
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, ZCFG_MSG_VOICE_REPLY_WAIT_TIMEOUT);
++	if (ret != ZCFG_SUCCESS){
++		printf("Send Error! ret:%d\n", ret);
++	}
++	free(recvBuf);
++	
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipCallHistory(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalVoipCallHistoryDelete(Jobj, NULL);
++	}else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalVoipCallHistoryGet(Jobj, Jarray, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/voip/callHistory/zcfg_fe_dal_call_summary.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/voip/callHistory/zcfg_fe_dal_call_summary.c	2017-09-01 15:29:15.992014966 +0800
+@@ -0,0 +1,227 @@
++#include <json/json.h>
++#include <sys/stat.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++#include "zcfg_msg_voice.h"
++
++#define CALLLIST_PATH 			"/data/calllist.dat"
++
++dal_param_t VOIP_CALLSUMMARY_param[]={
++	{"range",			dalType_string,	0,	0,	NULL,	"All",	dal_Delete},
++	{NULL,				dalType_int,	0,	0,	NULL,	NULL,	0},
++};
++
++void zcfgFeDalShowVoipCallSummary(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *historyObj;
++	struct json_object *contentObj;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-20s %-10s %-10s %-10s %-10s %-20s\n","Date","Total","Incoming","Outgoing","Missed","Duration");
++	printf("------------------------------------------------------------------------------------------\n");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		historyObj = json_object_array_get_idx(Jarray, i);
++		if(historyObj!=NULL){
++			printf("%-20s ",json_object_get_string(json_object_object_get(historyObj,"Date")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(historyObj,"Total")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(historyObj,"Incoming")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(historyObj,"Outgoing")));
++			printf("%-10s ",json_object_get_string(json_object_object_get(historyObj,"Missed")));
++			printf("%-20s ",json_object_get_string(json_object_object_get(historyObj,"Duration")));
++			printf("\n");
++		}
++	}
++	printf("\n");
++	
++}
++
++// e.g. addDur="12:13:14" curDur="22:23:24" then newDur="34:36:38"
++void accumDuration(char *addDur, char *curDur, char *newDur){
++	char str1[256]={0};
++	char str2[256]={0};
++	char str3[256]={0};
++	char str4[256]={0};
++	strcpy(str1,addDur);
++	strcpy(str2,curDur);
++	int hh1=0, hh2=0, hh=0;
++	int mm1=0, mm2=0, mm=0;
++	int ss1=0, ss2=0, ss=0;
++	int t1=0, t2=0, t3=0;
++
++	strncpy(str3,str1,2);
++	*(str3+2)='\0';
++	hh1 = (int)strtol(str3,NULL,10);		
++	strncpy(str3,str1+3,2);
++	*(str3+2)='\0';
++	mm1 = (int)strtol(str3,NULL,10);		
++	strncpy(str3,str1+6,2);
++	*(str3+2)='\0';
++	ss1 = (int)strtol(str3,NULL,10);
++
++	t1 = hh1*3600 + mm1*60 + ss1;
++
++	strncpy(str4,str2,2);
++	*(str4+2)='\0';
++	hh2 = (int)strtol(str4,NULL,10);		
++	strncpy(str4,str2+3,2);
++	*(str4+2)='\0';
++	mm2 = (int)strtol(str4,NULL,10);		
++	strncpy(str4,str2+6,2);
++	*(str4+2)='\0';
++	ss2 = (int)strtol(str4,NULL,10);
++	
++	t2 = hh2*3600 + mm2*60 + ss2;
++
++	t3 = t1 + t2;
++	ss = t3%60;
++	mm = ((t3-ss)/60)%60;
++	hh = (int) t3/3600;
++	sprintf(str3,"%02d:%02d:%02d",hh,mm,ss);
++	strcpy(newDur,str3);
++
++}
++
++zcfgRet_t zcfgFeDalVoipCallSummaryGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *histJarray = NULL;
++	struct json_object *histObj = NULL;
++	struct json_object *callInfoObj = NULL;
++	int i, histArrLen = 0;
++	int j, JarrayLen = 0;
++	struct json_object *sumObj = NULL;
++	char date[32]={0};
++	char *callType=NULL;
++	int totalCount = -1;
++	int inCount = -1;
++	int outCount = -1;
++	int missedCount = -1;
++	char *tmpDate=NULL;
++	char *ptr=NULL;
++	char tmpStr[2]={0};
++	char *tmpDuration=NULL;
++	int hh=0, mm=0, ss=0;
++	bool foundEntry = false;
++	int foundIndex = -1;
++	
++	histJarray = json_object_new_array();
++	if((ret=zcfgFeDalVoipCallHistoryGet(Jobj,histJarray,NULL))!=ZCFG_SUCCESS){
++		return ret;
++	}
++	
++	histArrLen = json_object_array_length(histJarray);
++	for(i=0;i<histArrLen;i++){
++		histObj = json_object_array_get_idx(histJarray, i);
++		if(histObj!=NULL){
++			callInfoObj = json_object_object_get(histObj,"CallInfo");
++
++			// date
++			tmpDate = json_object_get_string(json_object_object_get(callInfoObj,"Date"));
++			ptr = strchr(tmpDate,' ');
++			strncpy(date,tmpDate,ptr-tmpDate);
++
++			// tmpDuration
++			tmpDuration = json_object_get_string(json_object_object_get(callInfoObj,"Duration"));
++
++			// callType
++			callType = json_object_get_string(json_object_object_get(callInfoObj,"CallType"));
++			
++			JarrayLen = json_object_array_length(Jarray);
++			foundEntry = false;
++			foundIndex = -1;
++
++			if(JarrayLen > 0){ // update existed entry
++				for(j=0;j<JarrayLen;j++){
++					sumObj = json_object_array_get_idx(Jarray, j);
++				
++					if(!strcmp(date,json_object_get_string(json_object_object_get(sumObj,"Date")))){
++						foundEntry = true;
++						foundIndex = j;
++						totalCount = json_object_get_int(json_object_object_get(sumObj,"Total"));
++						json_object_object_add(sumObj,"Total",json_object_new_int((totalCount+1)));
++						if(!strcmp(callType,"0")){
++							missedCount = json_object_get_int(json_object_object_get(sumObj,"Missed"));
++							json_object_object_add(sumObj,"Missed",json_object_new_int((missedCount+1)));
++						}
++						else if(!strcmp(callType,"1")){
++							outCount = json_object_get_int(json_object_object_get(sumObj,"Outgoing"));
++							json_object_object_add(sumObj,"Outgoing",json_object_new_int((outCount+1)));
++						}
++						else{
++							inCount = json_object_get_int(json_object_object_get(sumObj,"Incoming"));
++							json_object_object_add(sumObj,"Incoming",json_object_new_int((inCount+1)));
++						}
++						
++						char *curDuration = json_object_get_string(json_object_object_get(sumObj,"Duration"));
++						char newDuration[32]={0};
++						accumDuration(tmpDuration,curDuration,newDuration);
++						json_object_object_add(sumObj,"Duration",json_object_new_string(newDuration));
++						json_object_array_put_idx(Jarray,j,JSON_OBJ_COPY(sumObj));
++						break;
++					}
++				}
++			}
++
++			if(!foundEntry){ // Add new entry
++				sumObj = json_object_new_object();
++				json_object_object_add(sumObj, "Date", json_object_new_string(date));
++				json_object_object_add(sumObj, "Total", json_object_new_int(1));
++				if(!strcmp(callType,"0")){
++					json_object_object_add(sumObj, "Incoming", json_object_new_int(0));
++					json_object_object_add(sumObj, "Outgoing", json_object_new_int(0));
++					json_object_object_add(sumObj, "Missed", json_object_new_int(1));
++				}
++				else if(!strcmp(callType,"1")){
++					json_object_object_add(sumObj, "Incoming", json_object_new_int(0));
++					json_object_object_add(sumObj, "Outgoing", json_object_new_int(1));
++					json_object_object_add(sumObj, "Missed", json_object_new_int(0));
++				}
++				else{
++					json_object_object_add(sumObj, "Incoming", json_object_new_int(1));
++					json_object_object_add(sumObj, "Outgoing", json_object_new_int(0));
++					json_object_object_add(sumObj, "Missed", json_object_new_int(0));
++				}
++				json_object_object_add(sumObj, "Duration", json_object_new_string(tmpDuration));
++				json_object_array_add(Jarray,JSON_OBJ_COPY(sumObj));
++			}
++		}
++	}
++
++	if(histJarray)
++		zcfgFeJsonObjFree(histJarray);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipCallSummaryDelete(struct json_object *Jobj, char *replyMsg){
++	return zcfgFeDalVoipCallHistoryDelete(NULL,NULL);
++}
++
++zcfgRet_t zcfgFeDalVoipCallSummary(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalVoipCallSummaryDelete(Jobj, NULL);
++	}else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalVoipCallSummaryGet(Jobj, Jarray, NULL);
++	}
++
++	return ret;
++}
++
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-30 23:40:48.610637511 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-31 11:40:13.094747738 +0800
+@@ -71,6 +71,8 @@
+ extern dal_param_t VOIP_PHONEDECT_param[];
+ extern dal_param_t VOIP_CALLRULE_param[];
+ extern dal_param_t VOIP_CALLBLOCK_param[];
++extern dal_param_t VOIP_CALLHISTORY_param[];
++extern dal_param_t VOIP_CALLSUMMARY_param[];
+ #endif
+ extern dal_param_t MAIL_NOTIFICATION_param[];
+ extern dal_param_t LOG_SETTING_param[];
+@@ -147,6 +149,8 @@
+ extern zcfgRet_t zcfgFeDalVoipPhoneDECT(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoipCallRule(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoipCallBlock(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalVoipCallHistory(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalVoipCallSummary(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ #endif
+ extern zcfgRet_t zcfgFeDalMailNotification(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalLogSetting(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -204,6 +208,8 @@
+ extern void zcfgFeDalShowVoipCallRule(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipRegion(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipPhoneDevice(struct json_object *Jarray);
++extern void zcfgFeDalShowVoipCallHistory(struct json_object *Jarray);
++extern void zcfgFeDalShowVoipCallSummary(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipLine(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipProfile(struct json_object *Jarray);
+@@ -288,6 +294,8 @@
+ {"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT,NULL,						"edit",				""},//Phone
+ {"speeddial",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	zcfgFeDalShowVoipCallRule,	"get|edit|delete",	"Call_Rule"},//Call_Rule
+ {"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock,NULL,						"edit",				""},//Call_Rule
++{"call_history",	VOIP_CALLHISTORY_param,zcfgFeDalVoipCallHistory,	zcfgFeDalShowVoipCallHistory,	"get|delete",	"Call_Rule"},
++{"call_summary",	VOIP_CALLSUMMARY_param,zcfgFeDalVoipCallSummary,	zcfgFeDalShowVoipCallSummary,	"get|delete",	"Call_Rule"},
+ #endif
+ {"email_ntfy",		MAIL_NOTIFICATION_param,zcfgFeDalMailNotification,zcfgFeDalShowMailNotification,	"add|delete|get", 		"Email_Notify"},//Email_Notify
+ {"logset",			LOG_SETTING_param,	zcfgFeDalLogSetting,	zcfgFeDalShowLogSetting,	"get|edit", 		"Log"}, //Log
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-09-01 15:35:57.194349752 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-09-01 15:37:20.952043714 +0800
+@@ -28,6 +28,7 @@
+ VOIP_SIP_PATH = ./voip/sip
+ VOIP_PHONE_PATH = ./voip/phone
+ VOIP_CALLRULE_PATH = ./voip/callRule
++VOIP_CALLHISTORY_PATH = ./voip/callHistory
+ SECURITY_FIREWALL_PATH = ./security/firewall
+ SECURITY_MACFILTER_PATH = ./security/macFilter
+ SECURITY_PARENTALCTL_PATH = ./security/parentalControl
+@@ -55,6 +56,7 @@
+ SOURCES += $(wildcard $(VOIP_SIP_PATH)/*.c)
+ SOURCES += $(wildcard $(VOIP_PHONE_PATH)/*.c)
+ SOURCES += $(wildcard $(VOIP_CALLRULE_PATH)/*.c)
++SOURCES += $(wildcard $(VOIP_CALLHISTORY_PATH)/*.c)
+ endif
+ SOURCES += $(wildcard $(MAINTENANCE_EMAIL_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_LOG_PATH)/*.c)

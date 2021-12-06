@@ -1,0 +1,131 @@
+Index: libzcfg_msg-1.0/zcfg_msg.c
+===================================================================
+--- libzcfg_msg-1.0.orig/zcfg_msg.c	2017-09-08 15:10:11.676686552 +0800
++++ libzcfg_msg-1.0/zcfg_msg.c	2017-09-08 16:39:03.581655429 +0800
+@@ -220,6 +220,7 @@
+ zcfgRet_t zcfgMsgRepSend(zcfgMsg_t *sendMsg)
+ {
+ 	int sendSize = 0, len = 0;
++    int errorNo = 0;
+ 	struct sockaddr_un clientaddr;
+ 
+ 	if( myEid == -1 ){
+@@ -227,20 +228,54 @@
+ 		free(sendMsg);
+ 		return ZCFG_INVALID_EID;
+ 	}
+-#if 0
+-	sendSize = send(sendMsg->connFd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, MSG_NOSIGNAL);
+-#else
+ 	clientaddr.sun_family = AF_UNIX;
+ 	sprintf(clientaddr.sun_path, "%s%hhu-%u", ZCFG_ADDRESS_PREFIX, sendMsg->dstEid, sendMsg->clientPid);
+ 	len = sizeof(clientaddr);
++#if 0 /* BellChi, enhance sendto errno is EAGAIN or EWOULDBLOCK, 2017-09-08 14:36:30 */
+ 	sendSize = sendto(myMsgfd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, 0, (struct sockaddr*)&clientaddr, len);
+-#endif
+ 	if(sendSize != (sizeof(zcfgMsg_t) + sendMsg->length)){
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : sendto %s fail. Error is %s\n", __FUNCTION__, clientaddr.sun_path, strerror(errno));
+ 		//close(sendMsg->connFd);
+ 		free(sendMsg);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
++#else
++    while (1)
++    {
++        sendSize = sendto(myMsgfd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, 0, (struct sockaddr*)&clientaddr, len);
++        errorNo = errno;
++        if (sendSize < 0)
++        {
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendto %s fail.\n", __FUNCTION__, __LINE__, clientaddr.sun_path);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendSize is %d\n", __FUNCTION__, __LINE__, sendSize);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : Error no is %d\n", __FUNCTION__, __LINE__, errno);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : Error msg is %s\n", __FUNCTION__, __LINE__, strerror(errno));
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->type is %d\n", __FUNCTION__, __LINE__, sendMsg->type);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->oid is %d\n", __FUNCTION__, __LINE__, sendMsg->oid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->srcEid is %d\n", __FUNCTION__, __LINE__, sendMsg->srcEid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->dstEid is %d\n", __FUNCTION__, __LINE__, sendMsg->dstEid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->length is %d\n", __FUNCTION__, __LINE__, sendMsg->length);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sizeof(zcfgMsg_t) + sendMsg->length is %d\n", __FUNCTION__, __LINE__, sizeof(zcfgMsg_t) + sendMsg->length);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->clientPid is %d\n", __FUNCTION__, __LINE__, sendMsg->clientPid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->statCode is %d\n", __FUNCTION__, __LINE__, sendMsg->statCode);
++
++            if (errorNo == EAGAIN || errorNo == EWOULDBLOCK)
++            {
++                sleep(1); //wait 1 seconds
++                continue;
++            }
++        }
++        
++        if (sendSize != (sizeof(zcfgMsg_t) + sendMsg->length))
++        {
++            //close(sendMsg->connFd);
++            free(sendMsg);
++            return ZCFG_INTERNAL_ERROR;
++        }
++        break;
++    }
++    
++#endif
+ #if MSG_DEBUG
+ 	zcfgLog(ZCFG_LOG_DEBUG, "message transmission success !!\n");
+ #endif
+@@ -268,6 +303,7 @@
+ 	int flags;
+ 	sigset_t mask;
+ 	int32_t seqid;
++    int errorNo = 0;
+ #if 0
+ 	sigemptyset(&mask);
+ 	sigaddset(&mask, SIGUSR1);
+@@ -329,6 +365,7 @@
+ 
+ 	msgHdr = (zcfgMsg_t*)sendMsg;
+ 	msgHdr->srcEid = myEid; 
++#if 0 /* BellChi, enhance sendto errno is EAGAIN or EWOULDBLOCK, 2017-09-08 14:36:30 */
+ 	sendSize = sendto(fd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, 0, (struct sockaddr*)&saun, len);
+ 	if(sendSize != (sizeof(zcfgMsg_t) + sendMsg->length)){
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : sendto %s fail. Error is %s\n", __FUNCTION__, saun.sun_path, strerror(errno));
+@@ -337,6 +374,43 @@
+ 		unlink(clientaddr.sun_path);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
++#else
++    while (1)
++    {
++        sendSize = sendto(fd, (char *)sendMsg, sizeof(zcfgMsg_t) + sendMsg->length, 0, (struct sockaddr*)&saun, len);
++        errorNo = errno;
++        if (sendSize < 0)
++        {
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendto %s fail.\n", __FUNCTION__, __LINE__, saun.sun_path);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendSize is %d\n", __FUNCTION__, __LINE__, sendSize);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : Error no is %d\n", __FUNCTION__, __LINE__, errno);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : Error msg is %s\n", __FUNCTION__, __LINE__, strerror(errno));
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->type is %d\n", __FUNCTION__, __LINE__, sendMsg->type);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->oid is %d\n", __FUNCTION__, __LINE__, sendMsg->oid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->srcEid is %d\n", __FUNCTION__, __LINE__, sendMsg->srcEid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->dstEid is %d\n", __FUNCTION__, __LINE__, sendMsg->dstEid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->length is %d\n", __FUNCTION__, __LINE__, sendMsg->length);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sizeof(zcfgMsg_t) + sendMsg->length is %d\n", __FUNCTION__, __LINE__, sizeof(zcfgMsg_t) + sendMsg->length);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->clientPid is %d\n", __FUNCTION__, __LINE__, sendMsg->clientPid);
++            zcfgLog(ZCFG_LOG_ERR, "%s:%d : sendMsg->statCode is %d\n", __FUNCTION__, __LINE__, sendMsg->statCode);
++
++            if (errorNo == EAGAIN || errorNo == EWOULDBLOCK)
++            {
++                sleep(1); //wait 1 seconds
++                continue;
++            }
++        }
++        
++        if (sendSize != (sizeof(zcfgMsg_t) + sendMsg->length))
++        {          
++            close(fd);
++            free(sendMsg);
++            unlink(clientaddr.sun_path);
++            return ZCFG_INTERNAL_ERROR;
++        }                
++        break;
++    }
++#endif
+ 
+ 	/*Check whether it needs to wait reply message*/
+ 	if(sendMsg->type & ZCFG_NO_WAIT_REPLY) {

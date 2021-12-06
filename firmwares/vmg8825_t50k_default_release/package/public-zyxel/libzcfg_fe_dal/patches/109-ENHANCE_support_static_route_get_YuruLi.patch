@@ -1,0 +1,348 @@
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_static_route.c	2017-01-19 15:04:28.446734039 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c	2017-01-23 16:44:57.119937865 +0800
+@@ -10,16 +10,16 @@
+ 
+ dal_param_t STATICROUTE_param[] =
+ {
+-	{"GatewayIPAddress",					dalType_string,	0,	0,	NULL},
+-	{"NextHop",								dalType_string,	0,	0,	NULL},
+-	{"DestIPPrefix",						dalType_string,	0,	0,	NULL},
+-	{"ipver",								dalType_string,	0,	0,	NULL},
+-	{"Enable",								dalType_boolean,0,	0,	NULL},
+-	{"Alias",								dalType_string,	0,	0,	NULL},
+-	{"DestIPAddress",						dalType_string,	0,	0,	NULL},
+-	{"DestSubnetMask",						dalType_string,	0,	0,	NULL},
+-	{"Interface",							dalType_string,	0,	0,	NULL},
+-	{NULL,									0,				0,	0,	NULL},
++	{"GatewayIPAddress",	dalType_v4Addr,	0,	0,	NULL, NULL,			0},
++	{"NextHop",				dalType_v6Addr,	0,	0,	NULL, NULL,			0},
++	{"DestIPPrefix",		dalType_v6AddrPrefix,	0,	0,	NULL, NULL,			0},
++	{"ipver",				dalType_string,	0,	0,	NULL, "IPv4|IPv6",	dal_Add},
++	{"Enable",				dalType_boolean,0,	0,	NULL, NULL,			dal_Add},
++	{"Alias",				dalType_string,	1,	32,	NULL, NULL, 		dal_Add|dal_Edit|dal_Delete},
++	{"DestIPAddress",		dalType_string,	0,	0,	NULL, NULL,			0},
++	{"DestSubnetMask",		dalType_v4Mask,	0,	0,	NULL, NULL,			0},
++	{"Interface",			dalType_string,	0,	0,	NULL, NULL,			0},
++	{NULL,					0,				0,	0,	NULL, NULL,			dal_Add},
+ 
+ };
+ 
+@@ -51,6 +51,47 @@
+ 	return;
+ }
+ 
++void zcfgFeDalShowStaticRoute(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++	const char *ipver = NULL;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-25s %-7s %-7s %-35s %-17s %-22s %-22s\n",
++		    "Name", "Enable", "IPver", "DestIPAddress/DestPrefix", "DestMask", "Interface", "Gateway/NextHop");
++	
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		ipver = json_object_get_string(json_object_object_get(obj, "ipver"));
++		if(!strcmp(ipver, "IPv4")){
++			printf("%-25s %-7u %-7s %-35s %-17s %-22s %-22s\n",
++				    json_object_get_string(json_object_object_get(obj, "Alias")),
++				    json_object_get_boolean(json_object_object_get(obj, "Enable")),
++				    ipver,
++				    json_object_get_string(json_object_object_get(obj, "DestIPAddress")),
++				    json_object_get_string(json_object_object_get(obj, "DestSubnetMask")),
++				    json_object_get_string(json_object_object_get(obj, "Interface")),
++				    json_object_get_string(json_object_object_get(obj, "GatewayIPAddress")));
++		}
++		else{
++			printf("%-25s %-7u %-7s %-35s %-17s %-22s %-22s\n",
++					json_object_get_string(json_object_object_get(obj, "Alias")),
++					json_object_get_boolean(json_object_object_get(obj, "Enable")),
++					ipver,
++					json_object_get_string(json_object_object_get(obj, "DestIPPrefix")),
++					json_object_get_string(json_object_object_get(obj, "")),
++					json_object_get_string(json_object_object_get(obj, "Interface")),
++					json_object_get_string(json_object_object_get(obj, "NextHop")));
++		}
++	}
++	
++}
+ void getStaticRouteBasicInfo(struct json_object *Jobj){
+ 	GatewayIPAddress = json_object_get_string(json_object_object_get(Jobj, "GatewayIPAddress"));
+ 	NextHop = json_object_get_string(json_object_object_get(Jobj, "NextHop"));
+@@ -86,6 +127,62 @@
+ 	return;
+ }
+ 
++zcfgRet_t zcfgFeDalStaticRouteGetAll(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++	bool StaticRoute;
++	const char *Alias, *DestIPAddress, *Origin, *DestIPPrefix;
++	int intVal;
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &iid, &obj) == ZCFG_SUCCESS) {
++		Alias = json_object_get_string(json_object_object_get(obj, "Alias"));
++		DestIPAddress = json_object_get_string(json_object_object_get(obj, "DestIPAddress"));
++		StaticRoute = json_object_get_boolean(json_object_object_get(obj, "StaticRoute"));
++		if(StaticRoute && strcmp(Alias, "") && strcmp(DestIPAddress, "")){
++			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Alias", json_object_new_string(Alias));
++			json_object_object_add(pramJobj, "DestIPAddress", json_object_new_string(DestIPAddress));
++			json_object_object_add(pramJobj, "StaticRoute", json_object_new_boolean(StaticRoute));
++			json_object_object_add(pramJobj, "ipver", json_object_new_string("IPv4"));
++			json_object_object_add(pramJobj, "GatewayIPAddress", JSON_OBJ_COPY(json_object_object_get(obj, "GatewayIPAddress")));
++			json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
++			json_object_object_add(pramJobj, "DestSubnetMask", JSON_OBJ_COPY(json_object_object_get(obj, "DestSubnetMask")));
++			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(obj, "Interface")));
++			json_object_array_add(Jobj, pramJobj);
++		}
++		zcfgFeJsonObjFree(obj);
++	}
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V6_FWD, &iid, &obj) == ZCFG_SUCCESS) {
++		Alias = json_object_get_string(json_object_object_get(obj, "Alias"));
++		DestIPPrefix = json_object_get_string(json_object_object_get(obj, "DestIPPrefix"));
++		Origin = json_object_get_string(json_object_object_get(obj, "Origin"));
++		if(!strcmp(Origin, "Static") && strcmp(Alias, "") && strcmp(DestIPPrefix, "")){
++			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Alias", json_object_new_string(Alias));
++			json_object_object_add(pramJobj, "DestIPPrefix", json_object_new_string(DestIPPrefix));
++			json_object_object_add(pramJobj, "ipver", json_object_new_string("IPv6"));
++			json_object_object_add(pramJobj, "NextHop", JSON_OBJ_COPY(json_object_object_get(obj, "NextHop")));
++			json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
++			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(obj, "Interface")));
++			json_object_array_add(Jobj, pramJobj);
++			zcfgFeJsonObjFree(obj);
++			
++		}
++		else{
++			zcfgFeJsonObjFree(obj);
++			continue;
++		}
++	}
++	
++	return ret;
++	
++}
++
+ zcfgRet_t zcfgFeDalStaticRouteIpfwdEdit(struct json_object *Jobj, zcfg_offset_t oid){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	//printf("%s() Enter \n ",__FUNCTION__);
+@@ -217,6 +314,9 @@
+ 	else if(!strcmp(method, "DELETE")) {
+ 		ret = zcfgFeDalStaticRouteDelete(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalStaticRouteGetAll(Jobj, replyMsg);
++	}
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-01-19 15:04:29.394734057 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-01-23 14:10:44.460101652 +0800
+@@ -2,6 +2,11 @@
+ 
+ #define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+ 
++#define dal_Add 	1 << 0
++#define dal_Edit	1 << 1
++#define dal_Delete	1 << 2
++#define dal_Get		1 << 3
++
+ typedef struct dal_param_s {
+ 	char		*paraName;
+ 	json_type 	type;
+@@ -9,23 +14,19 @@
+ 	int			max;
+ 	int			(*validate)(int);
+ 	char		*enumeration;
++	int			mandatory;
+ }dal_param_t;
+ 
+ typedef struct dal_handler_s {
+ 	char				*name;
+ 	dal_param_t			*parameter;
+ 	int					(*handler)(const char*, struct json_object *, char *);
++	int					(*showfunc)(struct json_object *);
+ 	char				*method;
+ 	char				*previlege;
+ }dal_handler_t;
+ 
+ enum { 
+-	dal_Add = 0,
+-	dal_Edit,
+-	dal_Delete
+-};
+-
+-enum { 
+ 	dalType_boolean = 0,
+ 	dalType_int,
+ 	dalType_string,
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-01-19 15:04:29.394734057 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-01-23 14:45:32.152061555 +0800
+@@ -146,77 +146,79 @@
+ extern zcfgRet_t zcfgFeDalQuickStart(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, char *replyMsg);
+ 
++extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
++
+ dal_handler_t dalHandler[] = {
+-{"WAN",				WAN_param,			zcfgFeDalWan,			"add|edit|delete",	"Broadband"},
+-{"MGMT",			MGMT_param,			zcfgFeDalMgmt,			"edit",				"TR-069_Client"},
+-{"ETHWANLAN", 		ETHWANLAN_param, 	zcfgFeDalEthWanLan,		"edit",				"Broadband"},
+-{"DNS_ENTRY",		DNS_ENTRY_param,	zcfgFeDalDnsEntry,		"add|edit|delete",	"DNS"},
+-{"D_DNS",			D_DNS_param,		zcfgFeDalDDns,			"edit",				"DNS"},
+-{"ADVANCE",			ADVANCE_param,		zcfgFeDalWanAdvance,	"edit",				"Broadband"},
+-{"WWANBACKUP", 		WWANBACKUP_param,	zcfgFeDalWwanBackup,	"edit",				"Broadband"},
+-{"STATICROUTE", 	STATICROUTE_param,	zcfgFeDalStaticRoute,	"add|edit|delete",	"Routing"},
+-{"DNSROUTE", 		DNSROUTE_param,		zcfgFeDalDnsRoute,		"add|edit|delete",	"Routing"},
+-{"POLICYROUTE", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute,	"add|edit|delete",	"Routing"},
+-{"RIP", 			RIP_param,			zcfgFeDalRip,			"edit",				"Routing"},
+-{"NAT_PORT_MAPPING",NAT_PORT_MAPPING_param,	zcfgFeDalNatPortMapping,"add|edit|delete", "NAT"},
+-{"NAT_PORT_TRIGGERING",NAT_PORT_TRIGGERING_param,zcfgFeDalNatPortTriggering,"add|edit|delete", "NAT"},
+-{"NAT_DMZ_ALG",		NAT_DMZ_ALG_param,	zcfgFeDalNatDMZALG, 	"edit",				"NAT"},
+-{"NAT_ADDR_MAPPING",NAT_ADDR_MAPPING_param,	zcfgFeDalNatAddrMapping,"add|edit|delete", "NAT"},
+-{"NAT_SESSION_CTL", NAT_SESSION_CTL_param,	zcfgFeDalNatSessionCtl,"edit",			"NAT"},
+-{"NAT_APPLICATION",NAT_Application_param,	zcfgFeDalNatApplication,"add|delete",	"NAT"},
+-{"INTF_GP",			IntfGrp_param,		zcfgFeDalIntrGrp,		"add|edit|delete",	"Interface_Grouping"},
+-{"UPNP",			UPNP_param, 		zcfgFeDalUPnP,			"edit", 			"Home_Networking"},
+-{"TFTPSERNAME",		TFTPSerName_param,	zcfgFeDalTFTPSerName,	"edit",				"Home_Networking"},
+-{"LANSETUP",		LANSETUP_param, 	zcfgFeDalLanSetup,		"edit", 			"Home_Networking"},
+-{"STB",				STB_param, 			zcfgFeDalSTBVendorID,	"edit",				"Home_Networking"},
+-{"SUBNET",			SUBNET_param,		zcfgFeDalAddnlSubnet,	"edit" ,			"Home_Networking"},
+-{"STATICDHCP",		STATIC_DHCP_param,	zcfgFeDalStaticDHCP,	"add|edit|delete",	"Home_Networking"},
+-{"VLANGRP", 		VLANGRP_param,		zcfgFeDalVlanGroup,		"add|edit|delete",	"Vlan_Group"},
+-{"IGMPMLD", 		IGMPMLD_param,		zcfgFeDalIGMPMLD,		"edit",				"IGMP_MLD"},
+-{"FIREWALL",		FIREWALL_param, 	zcfgFeDalFirewall,		"add|edit",			"Firewall"}, //why no delete?
+-{"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	"edit",				"Firewall"},
+-{"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,"add|edit|delete", "Firewall"},
+-{"ACL", 			FIREWALL_ACL_param, zcfgFeDalFirewallACL,	"add|edit|delete",	"Firewall"},
+-{"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,	"edit",				"Wireless"},
+-{"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter,		"edit",				"MAC_Filter"},
+-{"QOS_GENERAL",		QosGeneral_param,	zcfgFeDalQosGeneral,	"add|edit|delete",	"QoS"},
+-{"QOS_QUEUE",		QosQueue_param,		zcfgFeDalQosQueue,		"add|edit|delete",	"QoS"},
+-{"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass,		"add|edit|delete",	"QoS"},
+-{"QOS_SHAPER",		QosShaper_param,	zcfgFeDalQosShaper,		"add|edit|delete",	"QoS"},
+-{"QOS_POLICER",		QosPolicer_param,	zcfgFeDalQosPolicer,	"add|edit|delete",	"QoS"},
+-{"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,"edit",       	"Wireless"},
+-{"WIFI_WPS",		WIFI_WPS_param,		zcfgFeDalWifiWps,		"edit",				"Wireless"},
+-{"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm,		"edit",				"Wireless"},
+-{"WIFI_OTHERS",		WIFI_OTHERS_param,	zcfgFeDalWifiOthers,	"edit",				"Wireless"},
+-{"SYSINFO", 		SYSTEM_INFO_param,	zcfgFeDalSystemInfo,	"edit",				"System"},
+-{"SNMP",			SNMP_param, 		zcfgFeDalSNMP,			"edit",				"SNMP"},
+-{"TIME",			TIME_param, 		zcfgFeDalTime,			"edit",				"Time"},
+-{"TRUST_DOMAIN",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain,	"add|delete",		"Remote_MGMT"},
+-{"SP_TRUST_DOMAIN",	SP_TRUST_DOMAIN_param, zcfgFeDalSpTrustDomain,	"add|delete",	"SP_Domain"},
+-{"VOIPLINE",		VOIP_LINE_param,	zcfgFeDalVoipLine,		"get|add|edit|delete", "SIP"},
+-{"VOIPPROFILE",		VOIP_PROFILE_param,	zcfgFeDalVoipProfile,	"get|add|edit|delete", "SIP"},
+-{"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion, "edit",			"Phone"},
+-{"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice, "get|edit",	"Phone"},
+-{"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT,"edit",				"Phone"},
+-{"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	"edit",				"Call_Rule"},
+-{"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock,"edit",				"Call_Rule"},
+-{"EMAIL",			MAIL_NOTIFICATION_param,zcfgFeDalMailNotification, "add|delete", "Email_Notify"},
+-{"LOGSETTING",		LOG_SETTING_param,	zcfgFeDalLogSetting,	"add|edit", 		"Log"}, //why no delete?
+-{"PINGTEST",		PING_TEST_param,	zcfgFeDalPingTest,		"edit",				"Diagnostic_Result"},
+-{"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag,			"edit",				"Diagnostic_Result"},
+-{"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah,			"edit",				"Diagnostic_Result"},
+-{"OAMPING", 		OAMPING_param,		zcfgFeOamPing,			"edit",				"Diagnostic_Result"},
+-{"USB_FILESHARING", USB_FILESHARING_param,	zcfgFeDalUsbFilesharing, "add|edit|delete", "USB_Service"},
+-{"USB_MEDIASERVER", USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver, "edit",		"USB_Service"},
+-{"PAREN_CTL", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		"add|edit|delete",	"Parental_Control"},
+-{"SCHEDULE", 		SCHEDULE_param,	zcfgFeDalSchedule,			"add|edit|delete",	"Scheduler_Rule"},
+-{"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, "add|edit|delete", 	"Certificates"},
+-{"HOME_CONNECTIVYITY", HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity, "edit", "Home_Connectivity"},
+-{"MGMT_SRV", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			"edit",				"Remote_MGMT"},
+-{"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege, "edit",		"root_only"},
+-{"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	"edit",				"root_only"},
+-{"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount,	"add|edit|delete",	"root_only"}, //temporarily root_only //User_Account
+-{NULL,				NULL,				NULL, 					NULL,				 NULL}
++{"WAN",				WAN_param,			zcfgFeDalWan,			NULL,						"add|edit|delete",	"Broadband"},
++{"MGMT",			MGMT_param,			zcfgFeDalMgmt,			NULL,						"edit",				"TR-069_Client"},
++{"ETHWANLAN", 		ETHWANLAN_param, 	zcfgFeDalEthWanLan,		NULL,						"edit",				"Broadband"},
++{"DNS_ENTRY",		DNS_ENTRY_param,	zcfgFeDalDnsEntry,		NULL,						"add|edit|delete",	"DNS"},
++{"D_DNS",			D_DNS_param,		zcfgFeDalDDns,			NULL,						"edit",				"DNS"},
++{"ADVANCE",			ADVANCE_param,		zcfgFeDalWanAdvance,	NULL,						"edit",				"Broadband"},
++{"WWANBACKUP", 		WWANBACKUP_param,	zcfgFeDalWwanBackup,	NULL,						"edit",				"Broadband"},
++{"STATICROUTE", 	STATICROUTE_param,	zcfgFeDalStaticRoute,	zcfgFeDalShowStaticRoute,	"add|edit|delete|get",	"Routing"},
++{"DNSROUTE", 		DNSROUTE_param,		zcfgFeDalDnsRoute,		NULL,						"add|edit|delete",	"Routing"},
++{"POLICYROUTE", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute,	NULL,						"add|edit|delete",	"Routing"},
++{"RIP", 			RIP_param,			zcfgFeDalRip,			NULL,						"edit",				"Routing"},
++{"NAT_PORT_MAPPING",NAT_PORT_MAPPING_param,	zcfgFeDalNatPortMapping,NULL,					"add|edit|delete", "NAT"},
++{"NAT_PORT_TRIGGERING",NAT_PORT_TRIGGERING_param,zcfgFeDalNatPortTriggering,NULL,			"add|edit|delete", "NAT"},
++{"NAT_DMZ_ALG",		NAT_DMZ_ALG_param,	zcfgFeDalNatDMZALG, 	NULL,						"edit",				"NAT"},
++{"NAT_ADDR_MAPPING",NAT_ADDR_MAPPING_param,	zcfgFeDalNatAddrMapping,NULL,					"add|edit|delete", "NAT"},
++{"NAT_SESSION_CTL", NAT_SESSION_CTL_param,	zcfgFeDalNatSessionCtl,NULL,					"edit",			"NAT"},
++{"NAT_APPLICATION",NAT_Application_param,	zcfgFeDalNatApplication,NULL,					"add|delete",	"NAT"},
++{"INTF_GP",			IntfGrp_param,		zcfgFeDalIntrGrp,		NULL,						"add|edit|delete",	"Interface_Grouping"},
++{"UPNP",			UPNP_param, 		zcfgFeDalUPnP,			NULL,						"edit", 			"Home_Networking"},
++{"TFTPSERNAME",		TFTPSerName_param,	zcfgFeDalTFTPSerName,	NULL,						"edit",				"Home_Networking"},
++{"LANSETUP",		LANSETUP_param, 	zcfgFeDalLanSetup,		NULL,						"edit", 			"Home_Networking"},
++{"STB",				STB_param, 			zcfgFeDalSTBVendorID,	NULL,						"edit",				"Home_Networking"},
++{"SUBNET",			SUBNET_param,		zcfgFeDalAddnlSubnet,	NULL,						"edit" ,			"Home_Networking"},
++{"STATICDHCP",		STATIC_DHCP_param,	zcfgFeDalStaticDHCP,	NULL,						"add|edit|delete",	"Home_Networking"},
++{"VLANGRP", 		VLANGRP_param,		zcfgFeDalVlanGroup,		NULL,						"add|edit|delete",	"Vlan_Group"},
++{"IGMPMLD", 		IGMPMLD_param,		zcfgFeDalIGMPMLD,		NULL,						"edit",				"IGMP_MLD"},
++{"FIREWALL",		FIREWALL_param, 	zcfgFeDalFirewall,		NULL,						"add|edit",			"Firewall"}, //why no delete?
++{"DOS", 			FIREWALL_DOS_param, zcfgFeDalFirewallDos,	NULL,						"edit",				"Firewall"},
++{"PROTOCOL",		FIREWALL_PROTOCOL_param, zcfgFeDalFirewallProtocol,NULL,				"add|edit|delete", "Firewall"},
++{"ACL", 			FIREWALL_ACL_param, zcfgFeDalFirewallACL,	NULL,						"add|edit|delete",	"Firewall"},
++{"WIFI_GENERAL",	WIFI_GENERAL_param,	zcfgFeDalWifiGeneral,	NULL,						"edit",				"Wireless"},
++{"MACFILTER",		MAC_Filter_param,	zcfgFeDalMACFilter,		NULL,						"edit",				"MAC_Filter"},
++{"QOS_GENERAL",		QosGeneral_param,	zcfgFeDalQosGeneral,	NULL,						"add|edit|delete",	"QoS"},
++{"QOS_QUEUE",		QosQueue_param,		zcfgFeDalQosQueue,		NULL,						"add|edit|delete",	"QoS"},
++{"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass,		NULL,						"add|edit|delete",	"QoS"},
++{"QOS_SHAPER",		QosShaper_param,	zcfgFeDalQosShaper,		NULL,						"add|edit|delete",	"QoS"},
++{"QOS_POLICER",		QosPolicer_param,	zcfgFeDalQosPolicer,	NULL,						"add|edit|delete",	"QoS"},
++{"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,NULL,					"edit",       		"Wireless"},
++{"WIFI_WPS",		WIFI_WPS_param,		zcfgFeDalWifiWps,		NULL,						"edit",				"Wireless"},
++{"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm,		NULL,						"edit",				"Wireless"},
++{"WIFI_OTHERS",		WIFI_OTHERS_param,	zcfgFeDalWifiOthers,	NULL,						"edit",				"Wireless"},
++{"SYSINFO", 		SYSTEM_INFO_param,	zcfgFeDalSystemInfo,	NULL,						"edit",				"System"},
++{"SNMP",			SNMP_param, 		zcfgFeDalSNMP,			NULL,						"edit",				"SNMP"},
++{"TIME",			TIME_param, 		zcfgFeDalTime,			NULL,						"edit",				"Time"},
++{"TRUST_DOMAIN",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain,	NULL,						"add|delete",		"Remote_MGMT"},
++{"SP_TRUST_DOMAIN",	SP_TRUST_DOMAIN_param, zcfgFeDalSpTrustDomain,NULL,						"add|delete",		"SP_Domain"},
++{"VOIPLINE",		VOIP_LINE_param,	zcfgFeDalVoipLine,		NULL,						"get|add|edit|delete", "SIP"},
++{"VOIPPROFILE",		VOIP_PROFILE_param,	zcfgFeDalVoipProfile,	NULL,						"get|add|edit|delete", "SIP"},
++{"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion,NULL,						"edit",			"Phone"},
++{"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice,NULL,					"get|edit",	"Phone"},
++{"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT,NULL,						"edit",				"Phone"},
++{"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	NULL,						"edit",				"Call_Rule"},
++{"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock,NULL,						"edit",				"Call_Rule"},
++{"EMAIL",			MAIL_NOTIFICATION_param,zcfgFeDalMailNotification,NULL,					"add|delete", "Email_Notify"},
++{"LOGSETTING",		LOG_SETTING_param,	zcfgFeDalLogSetting,	NULL,						"add|edit", 		"Log"}, //why no delete?
++{"PINGTEST",		PING_TEST_param,	zcfgFeDalPingTest,		NULL,						"edit",				"Diagnostic_Result"},
++{"8021AG",			IEEE_8021AG_param,	zcfgFe8021ag,			NULL,						"edit",				"Diagnostic_Result"},
++{"8023AH",			IEEE_8023AH_param,	zcfgFe8023ah,			NULL,						"edit",				"Diagnostic_Result"},
++{"OAMPING", 		OAMPING_param,		zcfgFeOamPing,			NULL,						"edit",				"Diagnostic_Result"},
++{"USB_FILESHARING", USB_FILESHARING_param,	zcfgFeDalUsbFilesharing,NULL, 					"add|edit|delete", "USB_Service"},
++{"USB_MEDIASERVER", USB_MEDIASERVER_param,	zcfgFeDalUsbMediaserver,NULL, 					"edit",		"USB_Service"},
++{"PAREN_CTL", 		PAREN_CTL_param,	zcfgFeDalParentCtl,		NULL,						"add|edit|delete",	"Parental_Control"},
++{"SCHEDULE", 		SCHEDULE_param,	zcfgFeDalSchedule,			NULL,						"add|edit|delete",	"Scheduler_Rule"},
++{"DEV_SEC_CERT", 	DEV_SEC_CERT_param,	zcfgFeDalDevSecCert, 	NULL,						"add|edit|delete", 	"Certificates"},
++{"HOME_CONNECTIVYITY", HOME_CONNECTIVYITY_param, zcfgFeDalHomeConnectivity,NULL, 			"edit", "Home_Connectivity"},
++{"MGMT_SRV", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv,			NULL,						"edit",				"Remote_MGMT"},
++{"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",		"root_only"},
++{"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				"root_only"},
++{"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount,	NULL,						"add|edit|delete",	"root_only"}, //temporarily root_only //User_Account
++{NULL,				NULL,				NULL, 					NULL,						NULL,				 NULL}
+ };
+ 
+ bool validateIPv6(const char *ipStr){

@@ -1,0 +1,413 @@
+Index: uClibc/libc/inet/rpc/clnt_generic.c
+===================================================================
+--- uClibc.orig/libc/inet/rpc/clnt_generic.c	2011-06-09 03:35:20.000000000 +0800
++++ uClibc/libc/inet/rpc/clnt_generic.c	2015-05-19 10:34:07.530968870 +0800
+@@ -177,3 +177,136 @@
+     }
+   return client;
+ }
++
++CLIENT *
++clnt_create_timed (const char *hostname, u_long prog, u_long vers,
++	     const char *proto, struct timeval timed)
++{
++  struct hostent hostbuf, *h;
++  size_t hstbuflen;
++  char *hsttmpbuf;
++  struct protoent protobuf, *p;
++  size_t prtbuflen;
++  char *prttmpbuf;
++  struct sockaddr_in sin;
++  struct sockaddr_un sun;
++  int sock;
++  struct timeval tv;
++  CLIENT *client;
++  int herr;
++
++  if (strcmp (proto, "unix") == 0)
++    {
++      memset ((char *)&sun, 0, sizeof (sun));
++      sun.sun_family = AF_UNIX;
++      strcpy (sun.sun_path, hostname);
++      sock = RPC_ANYSOCK;
++      client = clntunix_create (&sun, prog, vers, &sock, 0, 0);
++      if (client == NULL)
++	return NULL;
++#if 0
++      /* This is not wanted.  This would disable the user from having
++	 a timeout in the clnt_call() call.  Only a call to cnlt_control()
++	 by the user should set the timeout value.  */
++      tv.tv_sec = 25;
++      tv.tv_usec = 0;
++      clnt_control (client, CLSET_TIMEOUT, (char *)&tv);
++#endif
++      return client;
++    }
++
++  hstbuflen = 1024;
++  hsttmpbuf = alloca (hstbuflen);
++  while (gethostbyname_r (hostname, &hostbuf, hsttmpbuf, hstbuflen,
++			    &h, &herr) != 0
++	 || h == NULL)
++    if (herr != NETDB_INTERNAL || errno != ERANGE)
++      {
++	get_rpc_createerr().cf_stat = RPC_UNKNOWNHOST;
++	return NULL;
++      }
++    else
++      {
++	/* Enlarge the buffer.  */
++	hstbuflen *= 2;
++	hsttmpbuf = alloca (hstbuflen);
++      }
++
++  if (h->h_addrtype != AF_INET)
++    {
++      /*
++       * Only support INET for now
++       */
++      struct rpc_createerr *ce = &get_rpc_createerr ();
++      ce->cf_stat = RPC_SYSTEMERROR;
++      ce->cf_error.re_errno = EAFNOSUPPORT;
++      return NULL;
++    }
++  sin.sin_family = h->h_addrtype;
++  sin.sin_port = 0;
++  memset (sin.sin_zero, 0, sizeof (sin.sin_zero));
++  memcpy ((char *) &sin.sin_addr, h->h_addr, h->h_length);
++
++  prtbuflen = 1024;
++  prttmpbuf = alloca (prtbuflen);
++  while (getprotobyname_r (proto, &protobuf, prttmpbuf, prtbuflen, &p) != 0
++	 || p == NULL)
++	if (errno != ERANGE)
++      {
++	struct rpc_createerr *ce = &get_rpc_createerr ();
++	ce->cf_stat = RPC_UNKNOWNPROTO;
++	ce->cf_error.re_errno = EPFNOSUPPORT;
++	return NULL;
++      }
++    else
++      {
++	/* Enlarge the buffer.  */
++	prtbuflen *= 2;
++	prttmpbuf = alloca (prtbuflen);
++      }
++
++  sock = RPC_ANYSOCK;
++  switch (p->p_proto)
++    {
++    case IPPROTO_UDP:
++      tv.tv_sec = 5;
++      tv.tv_usec = 0;
++      client = clntudp_create (&sin, prog, vers, tv, &sock);
++      if (client == NULL)
++	{
++	  return NULL;
++	}
++#if 0
++      /* This is not wanted.  This would disable the user from having
++	 a timeout in the clnt_call() call.  Only a call to cnlt_control()
++	 by the user should set the timeout value.  */
++      tv.tv_sec = 25;
++      clnt_control (client, CLSET_TIMEOUT, (char *)&tv);
++#endif
++      break;
++    case IPPROTO_TCP:
++      client = clnttcp_create_timed (&sin, prog, vers, &sock, 0, 0, timed);
++      if (client == NULL)
++	{
++	  return NULL;
++	}
++#if 0
++      /* This is not wanted.  This would disable the user from having
++	 a timeout in the clnt_call() call.  Only a call to cnlt_control()
++	 by the user should set the timeout value.  */
++      tv.tv_sec = 25;
++      tv.tv_usec = 0;
++      clnt_control (client, CLSET_TIMEOUT, (char *)&tv);
++#endif
++      break;
++    default:
++      {
++	struct rpc_createerr *ce = &get_rpc_createerr ();
++	ce->cf_stat = RPC_SYSTEMERROR;
++	ce->cf_error.re_errno = EPFNOSUPPORT;
++      }
++      return (NULL);
++    }
++  return client;
++}
++
+Index: uClibc/libc/inet/rpc/clnt_tcp.c
+===================================================================
+--- uClibc.orig/libc/inet/rpc/clnt_tcp.c	2011-06-09 03:35:20.000000000 +0800
++++ uClibc/libc/inet/rpc/clnt_tcp.c	2015-05-19 12:37:48.821192338 +0800
+@@ -60,6 +60,7 @@
+ #include <rpc/rpc.h>
+ #include <sys/poll.h>
+ #include <sys/socket.h>
++#include <fcntl.h>
+ #include <rpc/pmap_clnt.h>
+ #ifdef USE_IN_LIBIO
+ # include <wchar.h>
+@@ -236,6 +237,141 @@
+ }
+ libc_hidden_def(clnttcp_create)
+ 
++CLIENT *
++clnttcp_create_timed (struct sockaddr_in *raddr, u_long prog, u_long vers,
++		int *sockp, u_int sendsz, u_int recvsz, struct timeval timed)
++{
++  CLIENT *h;
++  struct ct_data *ct;
++  struct rpc_msg call_msg;
++  int               flags;
++  fd_set            mask;
++  fd_set            readfds;
++  fd_set            writefds;
++
++  h = (CLIENT *) mem_alloc (sizeof (*h));
++  ct = (struct ct_data *) mem_alloc (sizeof (*ct));
++  if (h == NULL || ct == NULL)
++    {
++      struct rpc_createerr *ce = &get_rpc_createerr ();
++#ifdef USE_IN_LIBIO
++      if (_IO_fwide (stderr, 0) > 0)
++	(void) fwprintf (stderr, L"%s",
++			   _("clnttcp_create: out of memory\n"));
++      else
++#endif
++	(void) fputs (_("clnttcp_create: out of memory\n"), stderr);
++      ce->cf_stat = RPC_SYSTEMERROR;
++      ce->cf_error.re_errno = ENOMEM;
++      goto fooy;
++    }
++
++  /*
++   * If no port number given ask the pmap for one
++   */
++  if (raddr->sin_port == 0)
++    {
++      u_short port;
++      if ((port = pmap_getport_timed (raddr, prog, vers, IPPROTO_TCP, timed)) == 0)
++	{
++	  mem_free ((caddr_t) ct, sizeof (struct ct_data));
++	  mem_free ((caddr_t) h, sizeof (CLIENT));
++	  return ((CLIENT *) NULL);
++	}
++      raddr->sin_port = htons (port);
++    }
++
++  /*
++   * If no socket given, open one
++   */
++  if (*sockp < 0)
++    {
++      *sockp = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
++      (void) bindresvport (*sockp, (struct sockaddr_in *) 0);
++	  if(*sockp > 0){
++		flags = fcntl(*sockp, F_GETFL, 0);
++		fcntl(*sockp, F_SETFL, flags | O_NONBLOCK);
++		FD_ZERO (&mask);
++	    FD_SET  (*sockp, &mask);
++	    readfds  = mask;
++	    writefds = mask;
++	  }
++	  
++      if ((*sockp < 0)
++	  || (connect (*sockp, (struct sockaddr *) raddr,
++			 sizeof (*raddr)) < 0 && errno != EINPROGRESS)
++	  || select((*sockp)+1, &readfds, &writefds, NULL, &timed) <= 0)
++	{
++	  struct rpc_createerr *ce = &get_rpc_createerr ();
++	  ce->cf_stat = RPC_SYSTEMERROR;
++	  ce->cf_error.re_errno = errno;
++	  if (*sockp >= 0)
++	    (void) close (*sockp);
++	  goto fooy;
++	}
++	  fcntl(*sockp, F_SETFL, flags);
++	  
++      ct->ct_closeit = TRUE;
++    }
++  else
++    {
++      ct->ct_closeit = FALSE;
++    }
++
++  /*
++   * Set up private data struct
++   */
++  ct->ct_sock = *sockp;
++  ct->ct_wait.tv_usec = 0;
++  ct->ct_waitset = FALSE;
++  ct->ct_addr = *raddr;
++
++  /*
++   * Initialize call message
++   */
++  call_msg.rm_xid = _create_xid ();
++  call_msg.rm_direction = CALL;
++  call_msg.rm_call.cb_rpcvers = RPC_MSG_VERSION;
++  call_msg.rm_call.cb_prog = prog;
++  call_msg.rm_call.cb_vers = vers;
++
++  /*
++   * pre-serialize the static part of the call msg and stash it away
++   */
++  xdrmem_create (&(ct->ct_xdrs), ct->ct_mcall, MCALL_MSG_SIZE,
++		 XDR_ENCODE);
++  if (!xdr_callhdr (&(ct->ct_xdrs), &call_msg))
++    {
++      if (ct->ct_closeit)
++	{
++	  (void) close (*sockp);
++	}
++      goto fooy;
++    }
++  ct->ct_mpos = XDR_GETPOS (&(ct->ct_xdrs));
++  XDR_DESTROY (&(ct->ct_xdrs));
++
++  /*
++   * Create a client handle which uses xdrrec for serialization
++   * and authnone for authentication.
++   */
++  xdrrec_create (&(ct->ct_xdrs), sendsz, recvsz,
++		 (caddr_t) ct, readtcp, writetcp);
++  h->cl_ops = &tcp_ops;
++  h->cl_private = (caddr_t) ct;
++  h->cl_auth = authnone_create ();
++  return h;
++
++fooy:
++  /*
++   * Something goofed, free stuff and barf
++   */
++  mem_free ((caddr_t) ct, sizeof (struct ct_data));
++  mem_free ((caddr_t) h, sizeof (CLIENT));
++  return ((CLIENT *) NULL);
++}
++libc_hidden_def(clnttcp_create_timed)
++
+ static enum clnt_stat
+ clnttcp_call (CLIENT *h, u_long proc, xdrproc_t xdr_args, caddr_t args_ptr,
+ 			  xdrproc_t xdr_results, caddr_t results_ptr,
+Index: uClibc/include/rpc/clnt.h
+===================================================================
+--- uClibc.orig/include/rpc/clnt.h	2011-06-09 03:35:20.000000000 +0800
++++ uClibc/include/rpc/clnt.h	2015-05-19 11:02:32.650154214 +0800
+@@ -299,6 +299,21 @@
+ 			    __const u_long __vers, __const char *__prot)
+      __THROW;
+ 
++/*
++ * Generic client creation routine. Supported protocols are "udp", "tcp" and
++ * "unix"
++ * CLIENT *
++ * clnt_create_timed(host, prog, vers, prot, timed)
++ *	char *host; 	-- hostname
++ *	u_long prog;	-- program number
++ *	u_ong vers;	-- version number
++ *	char *prot;	-- protocol
++ *  struct timeval timed -- timeout
++ */
++extern CLIENT *clnt_create_timed (__const char *__host, __const u_long __prog,
++			    __const u_long __vers, __const char *__prot, struct timeval timed)
++     __THROW;
++
+ 
+ /*
+  * TCP based rpc
+@@ -317,6 +332,23 @@
+ libc_hidden_proto(clnttcp_create)
+ 
+ /*
++ * TCP based rpc
++ * CLIENT *
++ * clnttcp_create_timed(raddr, prog, vers, sockp, sendsz, recvsz, timed)
++ *	struct sockaddr_in *raddr;
++ *	u_long prog;
++ *	u_long version;
++ *	register int *sockp;
++ *	u_int sendsz;
++ *	u_int recvsz;
++ *  struct timeval timed
++ */
++extern CLIENT *clnttcp_create_timed (struct sockaddr_in *__raddr, u_long __prog,
++			       u_long __version, int *__sockp, u_int __sendsz,
++			       u_int __recvsz, struct timeval timed) __THROW;
++libc_hidden_proto(clnttcp_create_timed)
++
++/*
+  * UDP based rpc.
+  * CLIENT *
+  * clntudp_create(raddr, program, version, wait, sockp)
+Index: uClibc/include/rpc/pmap_clnt.h
+===================================================================
+--- uClibc.orig/include/rpc/pmap_clnt.h	2011-06-09 03:35:20.000000000 +0800
++++ uClibc/include/rpc/pmap_clnt.h	2015-05-19 11:39:01.944629659 +0800
+@@ -96,6 +96,12 @@
+      __THROW;
+ libc_hidden_proto(pmap_getport)
+ 
++extern u_short pmap_getport_timed (struct sockaddr_in *__address,
++			     __const u_long __program,
++			     __const u_long __version, u_int __protocol, struct timeval timed)
++     __THROW;
++libc_hidden_proto(pmap_getport_timed)
++
+ __END_DECLS
+ 
+ #endif /* rpc/pmap_clnt.h */
+Index: uClibc/libc/inet/rpc/pm_getport.c
+===================================================================
+--- uClibc.orig/libc/inet/rpc/pm_getport.c	2011-06-09 03:35:20.000000000 +0800
++++ uClibc/libc/inet/rpc/pm_getport.c	2015-05-19 11:03:22.774113818 +0800
+@@ -92,3 +92,46 @@
+   return port;
+ }
+ libc_hidden_def(pmap_getport)
++
++/*
++ * Find the mapped port for program,version.
++ * Calls the pmap service remotely to do the lookup.
++ * Returns 0 if no map exists.
++ */
++u_short
++pmap_getport_timed (struct sockaddr_in *address, u_long program, u_long version,
++			  u_int protocol, struct timeval timed)
++{
++  u_short port = 0;
++  int _socket = -1;
++  CLIENT *client;
++  struct pmap parms;
++
++  address->sin_port = htons (PMAPPORT);
++  client = clntudp_bufcreate (address, PMAPPROG,
++	      PMAPVERS, timed, &_socket, RPCSMALLMSGSIZE, RPCSMALLMSGSIZE);
++  if (client != (CLIENT *) NULL)
++    {
++      struct rpc_createerr *ce = &get_rpc_createerr ();
++      parms.pm_prog = program;
++      parms.pm_vers = version;
++      parms.pm_prot = protocol;
++      parms.pm_port = 0;	/* not needed or used */
++      if (CLNT_CALL (client, PMAPPROC_GETPORT, (xdrproc_t)xdr_pmap,
++		     (caddr_t)&parms, (xdrproc_t)xdr_u_short,
++		     (caddr_t)&port, timed) != RPC_SUCCESS)
++	{
++	  ce->cf_stat = RPC_PMAPFAILURE;
++	  clnt_geterr (client, &ce->cf_error);
++	}
++      else if (port == 0)
++	{
++	  ce->cf_stat = RPC_PROGNOTREGISTERED;
++	}
++      CLNT_DESTROY (client);
++    }
++  /* (void)__close(_socket); CLNT_DESTROY already closed it */
++  address->sin_port = 0;
++  return port;
++}
++libc_hidden_def(pmap_getport_timed)

@@ -1,0 +1,130 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2017-02-02 15:39:46.461471600 +0800
+@@ -0,0 +1,92 @@
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++#define CWMP_SOAP_MSG_DEBUG (1 << 1)
++
++dal_param_t NETWORK_MAP_param[] = 
++{
++	{"HostName",		dalType_string,	0,	0,	NULL},
++	{"IPAddress",		dalType_string,	0,	0,	NULL},
++	{"IPLinkLocalAddress6",		dalType_string,	0,	0,	NULL},
++	{"PhysAddress",		dalType_string,	0,	0,	NULL},
++	{"AddressSource",		dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_ConnectionType",		dalType_string,	0,	0,	NULL},
++	{NULL,		0,	0,	0,	NULL}
++};
++
++void zcfgFeDalShowNetworkMAP(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj = NULL;
++	const char *Name = NULL;
++	const char *IPv6Address = NULL;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-20s %-20s %-30s %-20s %-20s %-20s\n",
++		    "Name", "IP Address", "IPv6 Address", "MAC Address", "Address Source", "Connection Type");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "Name")),"")){
++			Name = "Unknown";
++		}
++		else
++			Name = json_object_get_string(json_object_object_get(obj, "Name"));
++		if(!strcmp(json_object_get_string(json_object_object_get(obj, "IPv6Address")),"")){
++			IPv6Address = "N/A";
++		}
++		else 
++			IPv6Address = json_object_get_string(json_object_object_get(obj, "IPv6Address"));
++		printf("%-20s %-20s %-30s %-20s %-20s %-20s \n",
++			Name,
++			json_object_get_string(json_object_object_get(obj, "IPAddress")),
++			IPv6Address,
++			json_object_get_string(json_object_object_get(obj, "MACAddress")),
++			json_object_get_string(json_object_object_get(obj, "AddressSource")),
++			json_object_get_string(json_object_object_get(obj, "ConnectionType")));
++	}
++}
++
++zcfgRet_t zcfgFeDalNetworkMAPGet(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *NetworkMAPJobj = NULL;
++	objIndex_t NetworkMAPIid = {0};
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_HOSTS_HOST, &NetworkMAPIid, &NetworkMAPJobj) == ZCFG_SUCCESS){
++		if(strcmp(json_object_get_string(json_object_object_get(NetworkMAPJobj, "PhysAddress")),"")){
++			paramJobj = json_object_new_object();
++			json_object_object_add(paramJobj, "Name", json_object_object_get(NetworkMAPJobj, "HostName"));
++			json_object_object_add(paramJobj, "IPAddress", json_object_object_get(NetworkMAPJobj, "IPAddress"));
++			json_object_object_add(paramJobj, "IPv6Address", json_object_object_get(NetworkMAPJobj, "IPLinkLocalAddress6"));
++			json_object_object_add(paramJobj, "MACAddress", json_object_object_get(NetworkMAPJobj, "PhysAddress"));
++			json_object_object_add(paramJobj, "AddressSource", json_object_object_get(NetworkMAPJobj, "AddressSource"));
++			json_object_object_add(paramJobj, "ConnectionType", json_object_object_get(NetworkMAPJobj, "X_ZYXEL_ConnectionType"));
++			json_object_array_add(Jobj, JSON_OBJ_COPY(paramJobj));
++		}
++	}	
++	zcfgFeJsonObjFree(NetworkMAPJobj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalNetworkMAP(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "GET")){
++		ret = zcfgFeDalNetworkMAPGet(Jobj, NULL);
++	}
++
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-02-04 14:59:54.541633213 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-02-04 15:07:24.113231800 +0800
+@@ -76,6 +76,7 @@
+ extern dal_param_t LOGIN_PRIVILEGE_param[];
+ extern dal_param_t QUICK_START_param[];
+ extern dal_param_t USER_ACCOUNT_param[];
++extern dal_param_t NETWORK_MAP_param[];
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsEntry(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -145,10 +146,12 @@
+ extern zcfgRet_t zcfgFeDalLoginPrivilege(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalQuickStart(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalNetworkMAP(const char *method, struct json_object *Jobj, char *replyMsg);
+ 
+ extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowMgmtSrv(struct json_object *Jarray);
+ extern void zcfgFeDalShowPortFwd(struct json_object *Jarray);
++extern void zcfgFeDalShowNetworkMAP(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -221,6 +224,7 @@
+ {"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",		"root_only"},
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				"root_only"},
+ {"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount,	NULL,						"add|edit|delete",	"root_only"}, //temporarily root_only //User_Account
++{"NETWORK_MAP",		NETWORK_MAP_param, zcfgFeDalNetworkMAP,	zcfgFeDalShowNetworkMAP,		"add|edit|delete|get",	"root_only"}, //temporarily root_only //User_Account
+ {NULL,				NULL,				NULL, 					NULL,						NULL,				 NULL}
+ };
+ 

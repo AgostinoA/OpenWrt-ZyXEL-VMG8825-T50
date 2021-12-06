@@ -1,0 +1,589 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-08-27 22:24:03.469314420 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-08-27 22:23:17.735145100 +0800
+@@ -931,10 +931,10 @@
+ zcfgRet_t lanDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+-	objIndex_t objIid, ethIntfIid, ethLinkIid;
++	objIndex_t objIid, ethLinkIid;
+ 	char *tmp = NULL, *token = NULL;
+ 	char mappingPathName[128] = {0};
+-	char ethIntfPathName[32] = {0};
++	//char ethIntfPathName[32] = {0};
+ 	char lowerlayers[1025] = {0};
+ 	rdm_EthLink_t *ethLink = NULL;
+ 	rdm_BridgingBrPort_t *brPortObj = NULL;
+@@ -1029,9 +1029,13 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++// InternetGatewayDevice.LANDevice.
+ zcfgRet_t lanDevObjAdd(char *tr98FullPathName, int *idx)
+ {
+ 	zcfgRet_t ret;
++	objIndex_t objIid;
++	rdm_EthLink_t *ethLinkObj = NULL;
++#if 0
+ 	char ethLinkPathName[32] = {0};
+ 	char lowerLayerPathName[32] = {0};
+ 	int numOfBridge =0;
+@@ -1045,7 +1049,42 @@
+ 	}
+ 	
+ 	*idx = numOfBridge;
+-	return ZCFG_SUCCESS;
++#endif
++
++	printf("%s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_ETH_LINK, &objIid, NULL)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if((ret = zcfgFeObjStructGet(RDM_OID_ETH_LINK, &objIid, (void **)&ethLinkObj)) == ZCFG_SUCCESS){
++		ethLinkObj->Enable= true;
++		if((ret = zcfgFeObjStructSet(RDM_OID_ETH_LINK, &objIid, (void *)ethLinkObj, NULL)) != ZCFG_SUCCESS){
++			printf("Set Ethernet.Link LowerLayers Fail\n");
++		}
++		zcfgFeObjStructFree(ethLinkObj);
++	}
++	else
++		return ret;
++
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	*idx = objIid.idx[0];
++#else
++	printf("%s: return %d\n", __FUNCTION__, ret);
++
++	if((ret == ZCFG_SUCCESS) || (ret == ZCFG_DELAY_APPLY)) {
++		objIndex_t tr98ObjIid;
++
++		IID_INIT(tr98ObjIid);
++		if(zcfg98To181ObjMappingAdd(e_TR98_LAN_DEV, &tr98ObjIid, RDM_OID_ETH_LINK, &objIid) == ZCFG_SUCCESS) {
++			printf("%s: Added LANDevice %hhu\n", __FUNCTION__, tr98ObjIid.idx[0]);
++			*idx = tr98ObjIid.idx[0];
++		}
++	}
++#endif
++	
++	return ret;
+ }
+ 
+ zcfgRet_t lanDevObjDel(char *tr98FullPathName)
+@@ -1405,7 +1444,7 @@
+ 	struct json_object *dnsSrvJobj = NULL;
+ #endif
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char typeBuf[20] = {0};
++	//char typeBuf[20] = {0};
+ 	char ifName[16] = {0};
+ 	char snoopingBrIfName[128] = {0};
+ 	char *tmp_ptr = NULL, *tmp_ptr2 = NULL, *intf = NULL;
+@@ -1471,13 +1510,6 @@
+ 			continue;
+ 		}
+ 
+-		paramValue = json_object_object_get(ipIntfv4AddrJobj, paramList->name);
+-		if(paramValue != NULL) {
+-			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-			paramList++;
+-			continue;
+-		}
+-
+ 		/*special case*/
+ 		memset(paramName, 0, sizeof(paramName));
+ 		if(strstr(paramList->name, "IPAddress") != NULL){
+@@ -1604,6 +1636,27 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++static char *retrieveBridgingName(objIndex_t *brIid)
++{
++	struct json_object *brObj = NULL;
++	const char *brObjBridgeName = NULL;
++	char *bridgeName = NULL;
++
++	if(!brIid || (zcfgFeObjJsonGet(RDM_OID_BRIDGING_BR, brIid, &brObj) != ZCFG_SUCCESS))
++		return NULL;
++
++	if((brObjBridgeName = json_object_get_string(json_object_object_get(brObj, "X_ZYXEL_BridgeName")))) {
++		bridgeName = malloc(strlen(brObjBridgeName) + 1);
++		strcpy(bridgeName, brObjBridgeName);
++	}
++	json_object_put(brObj);
++
++	return bridgeName;
++}
++
++#define LAN_DEFAULT_SUBNET "192.168"
++#define LAN_DEFAULT_NETMASK "255.255.255.0"
++
+ zcfgRet_t lanIpIntfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+@@ -1616,9 +1669,10 @@
+ 	struct json_object *igmpJobj = NULL;
+ #ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
+ 	rdm_Dhcpv4SrvPool_t *dhcpServPoolObj = NULL;
++	const char *setIpAddr = NULL, *setIpNetMask= NULL;
++#endif
+ 	struct json_object *dhcpServPoolJObj = NULL;
+ 	objIndex_t dhcpServPoolIid;
+-#endif
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+@@ -1627,23 +1681,39 @@
+ 	objIndex_t dnsSrvIid;
+ 	struct json_object *dnsSrvJobj = NULL;
+ #endif
+-	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	char typeBuf[20] = {0};
++	//char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	//char typeBuf[20] = {0};
+ 	char tmpbuf[256] = {0};
+ 	char ifName[16] = {0};
+ 	char snoopingBrIfName[128] = {0};
+ 	char *tmp_ptr = NULL, *intf = NULL;
+ 	char snoopingMode[5] = {0};
+ 	bool firstMatch = true;
++	const char *ipIntfEthLink = NULL;
++	struct json_object *ethLinkJobj = NULL;
++	objIndex_t ethLinkIid;
++	const char *setIfName = NULL;
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+-		printf("98 to 181 Mapping Fail!!\n");
++		printf("%s:98 to 181 Mapping Fail!!\n", __FUNCTION__);
+ 		return ret;
+ 	}
+ 	else {
+        	/* mappingPathName will be IP.Interface.i*/
+-		printf("TR181 object %s\n", mappingPathName);
++		printf("%s: TR181 object %s\n", __FUNCTION__, mappingPathName);
++	}
++
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL
++	setIpAddr = json_object_get_string(json_object_object_get(tr98Jobj, "IPInterfaceIPAddress"));
++	setIpNetMask = json_object_get_string(json_object_object_get(tr98Jobj, "IPInterfaceSubnetMask"));
++	setIfName = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_IfName"));
++	if((setIpAddr || setIpNetMask) && setIfName) {
++		printf("%s: Not valid parameters setting\n", __FUNCTION__);
++		return ZCFG_INVALID_ARGUMENTS;
+ 	}
++#else
++	setIfName = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_IfName"));
++#endif
+ 
+ 	IID_INIT(igmpIid);
+ 	IID_INIT(ipIntfIid);
+@@ -1652,8 +1722,28 @@
+ 		return ret;
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+ 	ipIntfOid = zcfgFeObjNameToObjId(tr181Obj, &ipIntfIid);
+-	if((ret = zcfgFeObjJsonGet(ipIntfOid, &ipIntfIid, &ipIntfJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(ipIntfOid, &ipIntfIid, &ipIntfJobj)) != ZCFG_SUCCESS) {
++		json_object_put(igmpJobj);
++		return ret;
++	}
++
++	tr181ParamValue = json_object_object_get(ipIntfJobj, "LowerLayers");
++	ipIntfEthLink = json_object_get_string(tr181ParamValue);
++	IID_INIT(ethLinkIid);
++	sscanf(ipIntfEthLink, "Ethernet.Link.%hhu", &ethLinkIid.idx[0]);
++	ethLinkIid.level = 1;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ETH_LINK, &ethLinkIid, &ethLinkJobj)) != ZCFG_SUCCESS) {
++		json_object_put(igmpJobj);
++		json_object_put(ipIntfJobj);
+ 		return ret;
++	}
++
++	if((ret = zcfgFeSubInObjJsonGetNext(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfIid, &ipIntfv4AddrIid, &ipIntfv4AddrJobj)) != ZCFG_SUCCESS) {
++		json_object_put(igmpJobj);
++		json_object_put(ipIntfJobj);
++		json_object_put(ipIntfv4AddrJobj);
++		return ret;
++	}
+ 
+ 	if(multiJobj){
+ 		tmpObj = igmpJobj;
+@@ -1667,10 +1757,12 @@
+ 		ipIntfJobj = NULL;
+ 		ipIntfJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIntfIid, multiJobj, tmpObj);
+ 		json_object_put(tmpObj);
++		tmpObj = ethLinkJobj;
++		ethLinkJobj = NULL;
++		ethLinkJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ETH_LINK, &ethLinkIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
+ 	}
+ 
+-	if((ret = zcfgFeSubInObjJsonGetNext(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfIid, &ipIntfv4AddrIid, &ipIntfv4AddrJobj)) != ZCFG_SUCCESS)
+-		return ret;
+ 	if(multiJobj){
+ 		tmpObj = ipIntfv4AddrJobj;
+ 		ipIntfv4AddrJobj = NULL;
+@@ -1679,7 +1771,7 @@
+ 	}
+ 
+ #ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
+-	if( json_object_object_get(tr98Jobj, "IPInterfaceIPAddress") || json_object_object_get(tr98Jobj, "IPInterfaceSubnetMask") ){
++	if( setIpAddr || setIpNetMask || setIfName){
+ 		IID_INIT(dhcpServPoolIid);
+ 		while(zcfgFeObjStructGetNext(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, (void **)&dhcpServPoolObj) == ZCFG_SUCCESS){
+ 			if (strcmp(dhcpServPoolObj->Interface, mappingPathName) == 0){
+@@ -1700,6 +1792,26 @@
+ 				zcfgFeObjStructFree(dhcpServPoolObj);
+ 		}
+ 	}
++#else
++	if(setIfName) {
++		IID_INIT(dhcpServPoolIid);
++		while(zcfgFeObjJsonGetNext(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, &dhcpServPoolJObj) == ZCFG_SUCCESS) {
++			const char *dhcpServIface = json_object_get_string(json_object_object_get(dhcpServPoolJObj, "Interface"));
++			if(dhcpServIface && !strcmp(dhcpServIface, "mappingPathName")) {
++				if(multiJobj){
++					tmpObj = dhcpServPoolJObj;
++					dhcpServPoolJObj = NULL;
++					dhcpServPoolJObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, multiJobj, tmpObj);
++					json_object_put(tmpObj);
++				}
++
++				break;
++			}
++			else {
++				zcfgFeJsonObjFree(dhcpServPoolJObj);
++			}
++		}
++	}
+ #endif
+ #if 0
+ 	/*DNSServer*/
+@@ -1725,30 +1837,66 @@
+ 		}
+ 	}
+ #endif	
++
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL){
+-			/*Write value from Config to Device.DHCPv4.Server.Pool.i*/
+-			tr181ParamValue = json_object_object_get(ipIntfJobj, paramList->name);
+-			if(tr181ParamValue != NULL) {
+-				json_object_object_add(ipIntfJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+-				
+-				tr181ParamValue = json_object_object_get(ipIntfv4AddrJobj, paramList->name);
+-				if(tr181ParamValue != NULL) {
+-					json_object_object_add(ipIntfv4AddrJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			if(strstr(paramList->name, "X_ZYXEL_IfName") != NULL){
++				uint8_t brNum = 255;
++				char bridgingIfaceName[30] = {0}, ipIfaceIpAddr[20] = {0};
++				const char *ifName = json_object_get_string(paramValue);
++				char startIP[16] = {0}, endIP[16] = {0};
++				objIndex_t brIid;
++				char *bridgeName = NULL;
++
++				if(!ifName || !strlen(ifName) || !strstr(ifName, "br")) {
+ 					paramList++;
+ 					continue;
+ 				}
+-				
++
++				printf("%s: set X_ZYXEL_IfName %s\n", __FUNCTION__, ifName);
++				json_object_object_add(ipIntfJobj, paramList->name, json_object_new_string(ifName));
++				sscanf(ifName, "br%hhu", &brNum);
++
++				IID_INIT(brIid);
++				brIid.idx[0] = brNum+1;
++				brIid.level = 1;
++				bridgeName = retrieveBridgingName(&brIid);
++				printf("%s: Derived bridge name %s\n", __FUNCTION__, bridgeName);
++				if(bridgeName) {
++					json_object_object_add(ipIntfJobj, "X_ZYXEL_SrvName", json_object_new_string(bridgeName));
++					free(bridgeName);
++				}
++
++				if(ethLinkJobj) {
++					sprintf(bridgingIfaceName, "Bridging.Bridge.%hhu.Port.1", brNum+1);
++					printf("%s: Ethernet.Link bridge iface name %s\n", __FUNCTION__, bridgingIfaceName);
++
++					json_object_object_add(ethLinkJobj, "LowerLayers", json_object_new_string(bridgingIfaceName));
++				}
++
++				if(ipIntfv4AddrJobj) {
++					sprintf(ipIfaceIpAddr, "%s.%d.1", LAN_DEFAULT_SUBNET, brNum+1);
++					// Default lan ip address
++					json_object_object_add(ipIntfv4AddrJobj, "Enable", json_object_new_boolean(true));
++					json_object_object_add(ipIntfv4AddrJobj, "IPAddress", json_object_new_string(ipIfaceIpAddr));
++					json_object_object_add(ipIntfv4AddrJobj, "SubnetMask", json_object_new_string(LAN_DEFAULT_NETMASK));
++					json_object_object_add(ipIntfv4AddrJobj, "AddressingType", json_object_new_string("Static"));
++				}
++
+ 				paramList++;
+ 				continue;
+ 			}
+-			
+-			tr181ParamValue = json_object_object_get(ipIntfv4AddrJobj, paramList->name);
++			else if(strstr(paramList->name, "X_ZYXEL_Group_WAN_IpIface") != NULL) {
++
++			}
++
++			/*Write value from Config to Device.DHCPv4.Server.Pool.i*/
++			tr181ParamValue = json_object_object_get(ipIntfJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+-				json_object_object_add(ipIntfv4AddrJobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				json_object_object_add(ipIntfJobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				paramList++;
+ 				continue;
+ 			}
+@@ -1789,7 +1937,7 @@
+ 				paramList++;
+ 				continue;
+ 			}
+-
++#if 0
+ 			if(strstr(paramList->name, "X_ZYXEL_SnoopingMode") != NULL){
+ 				strcpy(snoopingMode, json_object_get_string(paramValue));
+ 				strcpy(ifName, json_object_get_string(json_object_object_get(ipIntfJobj, "X_ZYXEL_IfName")));
+@@ -1817,6 +1965,7 @@
+ 				paramList++;
+ 				continue;
+ 			}
++#endif
+ #ifdef IPV6INTERFACE_PROFILE		
+ 			if(!strcmp(paramList->name, "X_ZYXEL_IPv6Enable")) {
+ 				json_object_object_add(ipIntfJobj, "IPv6Enable", JSON_OBJ_COPY(paramValue));
+@@ -1852,68 +2001,96 @@
+ 	else{
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ipIntfIid, ipIntfJobj, NULL)) != ZCFG_SUCCESS ) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.IP.Interface.i Fail\n", __FUNCTION__);
+-			json_object_put(ipIntfJobj);
+-			return ret;
++			goto notmultiComplete;
+ 		}
+ 		else {
+ 			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.IP.Interface.i Success\n", __FUNCTION__);
+ 		}
+ 
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ETH_LINK, &ethLinkIid, ethLinkJobj, NULL)) != ZCFG_SUCCESS ) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Ethernet Link Fail\n", __FUNCTION__);
++			goto notmultiComplete;
++		}
++		else {
++			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Ethernet Link Success\n", __FUNCTION__);
++		}
++
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, ipIntfv4AddrJobj, NULL)) != ZCFG_SUCCESS ) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.IP.Interface.i.IPv4Address.i Fail\n", __FUNCTION__);
+-			json_object_put(ipIntfv4AddrJobj);
+-			return ret;
++			goto notmultiComplete;
+ 		}
+ 		else {
+ 			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.IP.Interface.i.IPv4Address.i Success\n", __FUNCTION__);
+ 		}
+ 
+-#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++//#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
+ 		if(dhcpServPoolJObj){
+ 			if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, dhcpServPoolJObj, NULL)) != ZCFG_SUCCESS ) {
+-                	        zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.DHCPv4.Server.Pool.i Fail\n", __FUNCTION__);
+-                        	json_object_put(dhcpServPoolJObj);
+-	                        return ret;
+-        	        }
+-                	else {
+-                        	zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.DHCPv4.Server.Pool.i Success\n", __FUNCTION__);
+-				json_object_put(dhcpServPoolJObj);
+-	                }
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.DHCPv4.Server.Pool.i Fail\n", __FUNCTION__);
++				goto notmultiComplete;
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.DHCPv4.Server.Pool.i Success\n", __FUNCTION__);
++				//json_object_put(dhcpServPoolJObj);
++			}
+ 		}
+-#endif
++//#endif
++notmultiComplete:
++		json_object_put(dhcpServPoolJObj);
++		json_object_put(igmpJobj);
++		json_object_put(ethLinkJobj);
+ 		json_object_put(ipIntfJobj);
+ 		json_object_put(ipIntfv4AddrJobj);
+ 	}
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
++// InternetGatewayDevice.LANDevice.{i}.LANHostConfigManagement.IPInterface.
+ zcfgRet_t lanIpIntfObjAdd(char *tr98FullPathName, int *idx)
+ {
+ 	zcfgRet_t ret;
+ 	char mappingPathName[128] = {0};
+-	char lowerLayerPathName[32] = {0};
+-	char ifName[8] = {0};
+-	char tmpChar[4] ={0};
++	//char lowerLayerPathName[32] = {0};
++	char ipifaceMappingName[MAX_TR181_PATHNAME] = {0};
++	//char ifName[8] = {0};
++	//char tmpChar[4] ={0};
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};  /*tr98TmpName is used to look up mapping table*/
+ 	objIndex_t objIid;
+ 	char *ptr = NULL;
+ 	rdm_IpIface_t *ipIntfObj = NULL;
+-	uint8_t numOfInstance = 0;
++	uint8_t lanDeviceInst = 0;
++	objIndex_t dhcpvSrvIid;
++	rdm_Dhcpv4SrvPool_t *dhcpvSrvObj = NULL;
+ 
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".LANHostConfigManagement");
+ 	*ptr = '\0';
+ 
++	sscanf(tr98TmpName, "InternetGatewayDevice.LANDevice.%hhu", &lanDeviceInst);
++	if(!lanDeviceInst) {
++		printf("%s: LANDevice parsing fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
+ 	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
+-		printf("98 to 181 Mapping Fail!!\n");
++		printf("%s: 98 to 181 Mapping Fail!!\n", __FUNCTION__);
+ 		return ret;
+ 	}
+ 	else{
+        	/* mappingPathName will be Ethernet.Link.i */
+-		printf("TR181 object %s\n", mappingPathName);
++		printf("%s: TR181 object %s\n", __FUNCTION__, mappingPathName);
++	}
++
++	// Query if there's IP.Interface already on bridge
++	sprintf(tr98TmpName, "%s1", tr98FullPathName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, ipifaceMappingName)) == ZCFG_SUCCESS){
++		printf("%s: LANDevice %s is existed\n", __FUNCTION__, ipifaceMappingName);
++		return ZCFG_NO_MORE_INSTANCE;
+ 	}
+ 
++#if 0
+ 	/*get the bridge number*/
+ 	zcfgFeTr181IfaceStackLowerLayerGet(mappingPathName, lowerLayerPathName);
+ 	ptr = strstr(lowerLayerPathName, ".Port.1");
+@@ -1921,11 +2098,13 @@
+ 	ptr = strrchr(lowerLayerPathName, '.');
+ 	strcpy(tmpChar, ptr+1);
+ 	numOfInstance = atoi(tmpChar);
++
+ 	sprintf(ifName, "br%d", numOfInstance-1);
++#endif
+ 
+ 	IID_INIT(objIid);
+ 	if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE, &objIid, NULL)) != ZCFG_SUCCESS){
+-		printf("Add Instance Fail!!\n");
++		printf("%s: Add Instance Fail!!\n", __FUNCTION__);
+ 		return ret;
+ 	}
+ 	
+@@ -1933,28 +2112,65 @@
+ 	if((ret = zcfgFeObjStructGet(RDM_OID_IP_IFACE, &objIid, (void **)&ipIntfObj)) == ZCFG_SUCCESS){
+ 		ipIntfObj->Enable = true;
+ 		ipIntfObj->IPv4Enable = true;
+-		strcpy(ipIntfObj->X_ZYXEL_IfName, ifName);
++		//strcpy(ipIntfObj->X_ZYXEL_IfName, ifName);
+ 		strcpy(ipIntfObj->LowerLayers, mappingPathName);
+ 		if((ret = zcfgFeObjStructSet(RDM_OID_IP_IFACE, &objIid, (void *)ipIntfObj, NULL)) != ZCFG_SUCCESS) {
+-			printf("Set IP.Interface LowerLayers Fail\n");
++			printf("%s: Set IP.Interface LowerLayers Fail\n", __FUNCTION__);
++		}
++
+ 			zcfgFeObjStructFree(ipIntfObj);
++	}
++	else {
+ 			return ret;
+ 		}
+ 
+-		zcfgFeObjStructFree(ipIntfObj);
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	*idx = objIid.idx[0];
++#else
++	printf("%s: return %d\n", __FUNCTION__, ret);
++
++	if((ret == ZCFG_SUCCESS) || (ret == ZCFG_DELAY_APPLY)) {
++		objIndex_t tr98ObjIid;
++
++		IID_INIT(tr98ObjIid);
++		tr98ObjIid.idx[0] = lanDeviceInst;
++		tr98ObjIid.level = 1;
++		if(zcfg98To181ObjMappingAdd(e_TR98_IP_INTF, &tr98ObjIid, RDM_OID_IP_IFACE, &objIid) == ZCFG_SUCCESS) {
++			printf("%s: Added LANDevice %hhu IPInterface %hhu\n", __FUNCTION__, tr98ObjIid.idx[0], tr98ObjIid.idx[1]);
++			*idx = tr98ObjIid.idx[1];
++		}
+ 	}
+ 	else {
+ 		return ret;
+ 	}
++#endif
+ 
+ 	/*add object Device.IP.Interface.i.IPv4Address.i */
+-	if((ret = zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &objIid, NULL)) != ZCFG_SUCCESS){
+-		printf("Add Instance Fail!!\n");
+-		return ret;
++	if(zcfgFeObjStructAdd(RDM_OID_IP_IFACE_V4_ADDR, &objIid, NULL) != ZCFG_SUCCESS){
++		printf("%s: Add ipIface ipv4 Fail!!\n", __FUNCTION__);
++		return ZCFG_NO_MORE_INSTANCE;
+ 	}
+ 	
+-	*idx = objIid.idx[1];
+-	return ZCFG_SUCCESS;	
++	IID_INIT(dhcpvSrvIid);
++	if(zcfgFeObjStructAdd(RDM_OID_DHCPV4_SRV_POOL, &dhcpvSrvIid, NULL) != ZCFG_SUCCESS){
++		printf("%s: Add DHCPv4 Server Fail!!\n", __FUNCTION__);
++		return ZCFG_NO_MORE_INSTANCE;
++	}
++
++	if(zcfgFeObjStructGet(RDM_OID_DHCPV4_SRV_POOL, &dhcpvSrvIid, (void **)&dhcpvSrvObj) == ZCFG_SUCCESS){
++		dhcpvSrvObj->Enable = true;
++		sprintf(dhcpvSrvObj->Interface, "IP.Interface.%hhu", objIid.idx[0]);
++		strcpy(dhcpvSrvObj->X_ZYXEL_DNS_Type, "DNS Proxy");
++		if((ret = zcfgFeObjStructSet(RDM_OID_DHCPV4_SRV_POOL, &dhcpvSrvIid, (void *)dhcpvSrvObj, NULL)) != ZCFG_SUCCESS) {
++			printf("%s: Set DHCPv4 Server Fail\n", __FUNCTION__);
++		}
++		zcfgFeObjStructFree(dhcpvSrvObj);
++	}
++	else {
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	return ret;	
+ }
+ 
+ zcfgRet_t lanIpIntfObjDel(char *tr98FullPathName)
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-08-27 22:24:03.485314420 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-08-27 22:24:03.501314421 +0800
+@@ -30,7 +30,6 @@
+ #include "zcfg_fe_tr98_handle.h"
+ #include "zcfg_tr98_common.h"
+ 
+-#define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+ #ifdef ZCFG_PARM_NAMEMAPPING
+ #define TR98MAPPING_PREFIX "Tr98_"
+ #define IS_HANDLE_ROUTINE_REQUIRED(attr) (attr & PARAMETER_ATTR_ROUTINE_REQ)
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2015-08-27 22:24:03.485314420 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2015-08-27 22:24:03.501314421 +0800
+@@ -86,6 +86,7 @@
+ }tr98NameObj_t;
+ 
+ #define TR98_MAX_OBJ_NAME_LENGTH 257
++#define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+ 
+ zcfgRet_t zcfgFeTr98AllIGDNameGet();
+ 

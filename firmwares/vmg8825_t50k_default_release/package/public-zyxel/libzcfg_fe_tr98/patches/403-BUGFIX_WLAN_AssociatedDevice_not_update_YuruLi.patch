@@ -1,0 +1,237 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2016-12-27 13:48:29.845946396 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2016-12-27 14:21:21.181565501 +0800
+@@ -26,7 +26,6 @@
+ #ifdef SOL_TR69_NO_LAN_HOST
+ #include "zcfg_net.h"
+ #define LEASEFILE DNSMASQ_DHCP_LEASE_FILE
+-#define ARPFILE "/proc/net/arp"
+ #define ASSOCCMD "wlctl -i wl0 assoclist"
+ #define ASSOCCMD_5G "wlctl -i wl1 assoclist"
+ 
+@@ -48,6 +47,7 @@
+ #define TAG_WIFI 		(1 << 2)
+ #define TAG_LOSTWIFI 	(1 << 3)
+ #endif
++#define ARPFILE "/proc/net/arp"
+ 
+ #define MODIFY_HOSTS_AND_HOST_FUN 1
+ 
+@@ -5684,101 +5684,149 @@
+ 
+ 	freeHostList(hostlist);
+ #else
+-	zcfgRet_t ret;
+-	objIndex_t objIid, hostIid;
+-	tr98Parameter_t *paramList = NULL;
+-	char tr181Name[32] = {0};
+-	char tr98TmpName[128] = {0};
+-	char higherLayerPath[32] = {0};
+-	char mappingPathName[32] = {0};
+-	char hostName[128] = {0};
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char wlanConfigPath[128] = {0};
++	char ssidRef[32] = {0};
+ 	char *ptr = NULL;
+-	char paramName[64] = {0};
+-	int idx = 0;
+-	uint32_t hostNum = 0;
+-	struct json_object *hostJobj = NULL;
++	char wifiSsid[32] = {0};
++	objIndex_t ssidIid, apIid, assocDevStatIid;
++	struct json_object *ssidJobj = NULL;
++	struct json_object *apJobj = NULL;
++	struct json_object *assocDevJobj = NULL;
++	bool found = false;
+ 	struct json_object *paramValue = NULL;
+-	rdm_HostsHost_t *stHost = NULL;
+-	
+-	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++	tr98Parameter_t *paramList = NULL;
++	char line[512]={0};
++	FILE *arpfp = NULL;
++	int type, flags;
++	char ip[32]={0};
++	char hwa[65]={0};
++	char mask[32]={0};
++	char dev[32]={0};
++	int num = 0;
++	const char *MACAddress = NULL;
++	bool foundIP = false;
+ 
+-#if 0	
+-	//Refresh Hosts device list
+-	rdm_Hosts_t *hostsObj = NULL;
+-	IID_INIT(objIid);	
+-	if(zcfgFeObjStructGet(RDM_OID_HOSTS, &objIid, (void **)&hostsObj) == ZCFG_SUCCESS){
+-		zcfgFeObjStructFree(hostsObj);
+-	}
+-#endif
+-	
+-	strcpy(tr98TmpName, tr98FullPathName);
+-	ptr = strstr(tr98TmpName, ".WLANConfiguration");
++	printf("%s : Enter\n", __FUNCTION__);
++
++	strcpy(wlanConfigPath, tr98FullPathName);
++	ptr = strstr(wlanConfigPath, ".AssociatedDevice");
+ 	*ptr = '\0';
+-	
+-	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
+-	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++	if((ret = zcfgFe98To181MappingNameGet(wlanConfigPath, wifiSsid)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-	
+-	strcpy(tr181Name, mappingPathName);
+-	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
++
++	IID_INIT(ssidIid);
++	ssidIid.level = 1;
++	sscanf(wifiSsid, "WiFi.SSID.%hhu", &ssidIid.idx[0]);
++
++	if((ret = feObjJsonGet(RDM_OID_WIFI_SSID, &ssidIid, &ssidJobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.SSID Fail\n", __FUNCTION__);
+ 		return ret;
+-	
+-	if(strstr(higherLayerPath, "IP.Interface") != NULL) {
+-		IID_INIT(objIid);
+-		IID_INIT(hostIid);
+-		objIid.level = 1;
+-		sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.WLANConfiguration.%*d.AssociatedDevice.%d", &idx);
+-		
+-		while(feObjStructGetNext(RDM_OID_HOSTS_HOST, &objIid, (void **)&stHost, updateFlag) == ZCFG_SUCCESS){
+-			if( (strcmp(stHost->Layer3Interface, higherLayerPath) == 0 ) && ( strcmp(stHost->X_ZYXEL_ConnectionType, "802.11" ) == 0 ) ) {
+-				hostNum++;
+-				if(idx == hostNum) {
+-					hostIid = objIid;
+-					zcfgFeObjStructFree(stHost);
+-					break;
+-				}
+-			}
+-			zcfgFeObjStructFree(stHost);
++	}
++	json_object_put(ssidJobj);	
++
++	IID_INIT(apIid);
++	while((ret = feObjJsonGetNext(RDM_OID_WIFI_ACCESS_POINT, &apIid, &apJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) {
++		strcpy(ssidRef, json_object_get_string(json_object_object_get(apJobj, "SSIDReference")));
++		if(!strcmp(ssidRef, wifiSsid)){
++			found = true;
++			json_object_put(apJobj);
++			break;
++		}
++		else
++			json_object_put(apJobj);
++	}
++
++	if(found){
++		IID_INIT(assocDevStatIid);
++		assocDevStatIid.level = 2;
++		assocDevStatIid.idx[0] = apIid.idx[0];
++		sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.WLANConfiguration.%*d.AssociatedDevice.%hhu.Stats", &(assocDevStatIid.idx[1]));
++		if((ret = feObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_ASSOC_DEV, &assocDevStatIid, &assocDevJobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.AssociatedDevice.i. Fail\n", __FUNCTION__);
++			return ret;
+ 		}
+ 	}
+ 	else
+-		return;
+-	
+-	if((ret = feObjJsonGet(RDM_OID_HOSTS_HOST, &hostIid, &hostJobj, updateFlag)) != ZCFG_SUCCESS)
+-		return ret;
+-	
+-	/*fill up tr98 Host object*/
++		return ZCFG_INVALID_OBJECT;
++
++	MACAddress = json_object_get_string(json_object_object_get(assocDevJobj, "MACAddress"));
++
++	//get ip from arp table
++	arpfp = fopen(ARPFILE, "r");
++	if(arpfp != NULL && MACAddress != NULL){
++		fgets(line, sizeof(line), arpfp);
++		while (fgets(line, sizeof(line), arpfp)) {
++			mask[0] = '-'; mask[1] = '\0';
++			dev[0] = '-'; dev[1] = '\0';
++			ip[0] = '\0'; hwa[0] = '\0';
++			/* All these strings can't overflow
++			 * because fgets above reads limited amount of data */
++			num = sscanf(line, "%s 0x%x 0x%x %s %s %s\n",
++						 ip, &type, &flags, hwa, mask, dev);
++			if (num < 4)
++				break;
++
++			/*incomplete, skip*/
++			if(flags == 0){
++				continue;
++			}
++
++			if(strstr(dev, "br") == NULL)
++				continue;
++
++			if(!strcmp(hwa, MACAddress)){
++				foundIP = true;
++				break;
++			}
++		}	
++	}
++	if(arpfp != NULL)
++		fclose(arpfp);
++
++	/*fill up tr98 object from related tr181 objects*/
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+-		paramValue = json_object_object_get(hostJobj, paramList->name);
+-		if(paramValue != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		
++		/*special case*/
++		if(!strcmp(paramList->name, "AssociatedDeviceMACAddress")) {
++			paramValue = json_object_object_get(assocDevJobj, "MACAddress");
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 			paramList++;
+ 			continue;
+ 		}
+-
+-		/*special case*/
+-		if(!strcmp(paramList->name, "AssociatedDeviceMACAddress")) {
+-			paramValue = json_object_object_get(hostJobj, "PhysAddress");
+-			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++		else if(!strcmp(paramList->name, "AssociatedDeviceIPAddress")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(ip));
+ 			paramList++;
+ 			continue;
+ 		}
+-		if(!strcmp(paramList->name, "AssociatedDeviceIPAddress")) {
+-			paramValue = json_object_object_get(hostJobj, "IPAddress");
++		else if(!strcmp(paramList->name, "AssociatedDeviceAuthenticationState")) {
++			paramValue = json_object_object_get(assocDevJobj, "AuthenticationState");
+ 			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 			paramList++;
+ 			continue;
+ 		}
+ 		
++		paramValue = json_object_object_get(assocDevJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++			
++
+ 		/*Not defined in tr181, give it a default value*/
+-		ztrdbg(ZTR_DL_INFO, "%s: Can't find parameter %s in TR181\n", __FUNCTION__, paramList->name);
+-		paramList++;
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
+ 	}
++
++	json_object_put(assocDevJobj);
++
++	return ZCFG_SUCCESS;
+ 	
+-	json_object_put(hostJobj);
+ #endif
+ 	
+ 	return ZCFG_SUCCESS;

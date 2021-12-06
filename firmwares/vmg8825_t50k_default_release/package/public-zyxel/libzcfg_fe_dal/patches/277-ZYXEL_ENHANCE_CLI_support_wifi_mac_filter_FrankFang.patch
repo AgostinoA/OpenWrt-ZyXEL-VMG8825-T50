@@ -1,0 +1,275 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_macflt.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_macflt.c	2017-08-01 13:22:45.684198983 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_macflt.c	2017-08-01 14:11:43.557272557 +0800
+@@ -12,49 +12,207 @@
+ 
+ dal_param_t WIFI_MACFILTER_param[] =
+ {
+-	{"FilterLists",		dalType_string,	0,	0,	NULL},
+-	{"FilterMode",		dalType_string,	0,	0,	NULL},		
++	{"Index",			dalType_int,	1,	8,	NULL,	NULL,	dal_Add|dal_Delete},
++	{"MacAddress",		dalType_string,	0,	0,	NULL,	NULL,	dal_Add|dal_Delete},
++	{"FilterLists",		dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"FilterMode",		dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{NULL,		0,	0,	0,	NULL}
+ };
+-zcfgRet_t zcfgFeDalWifiMACFilterEdit(struct json_object *Jobj, char *replyMsg)
+-{
+ 
++bool StrToJarray(char *list, char *separator, struct json_object *Jarray){
++	char *buf, *ptr, *tmp_ptr = NULL;
++	int i=0;
++	if(list == NULL || separator == NULL)
++		return false;
++
++	buf = strdup(list);
++	ptr = strtok_r(buf, separator, &tmp_ptr);
++	if(ptr==NULL) {return false;}
++	json_object_array_add(Jarray,json_object_new_string(ptr));
++	while((ptr = strtok_r(NULL, separator, &tmp_ptr)) != NULL){
++		json_object_array_add(Jarray,json_object_new_string(ptr));
++	}
++	free(buf);
++	return true;
++}
++bool JarrayToStr(struct json_object *Jarray, char *separator, char *list){
++	char *buf, *ptr, *tmp_ptr = NULL;
++	if(Jarray == NULL || separator == NULL)
++		return false;
++
++	char tmpStr[512]={0};
++	int len,i;
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		strcat(tmpStr,json_object_get_string(json_object_array_get_idx(Jarray,i)));
++		strcat(tmpStr,",");
++	}
++	tmpStr[strlen(tmpStr)-1]='\0';
++	strcpy(list,tmpStr);	 
++	return true;
++}
++
++void zcfgFeDalShowWifiMACFilter(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++	int mode;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("%s\n",json_object_get_string(json_object_object_get(obj, "ssid")));
++		printf("-----------------------------------\n");
++		mode = json_object_get_int(json_object_object_get(obj, "mode"));
++		if(mode==0)
++			printf("MAC Restrict Mode: Disabled\n");
++		if(mode==1)
++			printf("MAC Restrict Mode: Deny\n");
++		if(mode==2)
++			printf("MAC Restrict Mode: Allow\n");
++		printf("MAC address List: %s\n",json_object_get_string(json_object_object_get(obj, "list")));
++		printf("\n");
++	}
++}
++
++zcfgRet_t zcfgFeDalWifiMACFilterGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++	
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_STA_FILTER, &iid, &obj) == ZCFG_SUCCESS) {
++		struct json_object *ssidObj = NULL;
++		if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_SSID, &iid, &ssidObj)) != ZCFG_SUCCESS);
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "ssid", JSON_OBJ_COPY(json_object_object_get(ssidObj, "SSID")));
++		json_object_object_add(pramJobj, "mode", JSON_OBJ_COPY(json_object_object_get(obj, "FilterMode")));
++		json_object_object_add(pramJobj, "list", JSON_OBJ_COPY(json_object_object_get(obj, "FilterLists")));
++		json_object_array_add(Jarray, pramJobj);
++		zcfgFeJsonObjFree(obj);
++		zcfgFeJsonObjFree(ssidObj);
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalWifiMACFilterEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *paraName;
+ 	objIndex_t objIid;
+ 	struct json_object *WifiMACFilterJobj = NULL;
+-	int paramModified = 0, n = 0;
+-	struct json_object *iidArray = NULL;
+-	uint8_t iidIdx =0;
+-	paraName = (const char *)WIFI_MACFILTER_param[n++].paraName;
++	int index;
++
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	IID_INIT(objIid);
++	objIid.level = 1;
++	objIid.idx[0] = index;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_STA_FILTER, &objIid, &WifiMACFilterJobj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	if(json_object_object_get(Jobj,"FilterLists"))
++		json_object_object_add(WifiMACFilterJobj, "FilterLists",JSON_OBJ_COPY(json_object_object_get(Jobj,"FilterLists")));
++	if(json_object_object_get(Jobj,"FilterMode"))
++		json_object_object_add(WifiMACFilterJobj, "FilterMode", JSON_OBJ_COPY(json_object_object_get(Jobj,"FilterMode")));
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_STA_FILTER, &objIid, WifiMACFilterJobj, NULL)) != ZCFG_SUCCESS);
++
++	json_object_put(WifiMACFilterJobj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalWifiMACFilterAdd(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *WifiMACFilterJobj = NULL;
++
++	int index;
++	char *macAddr=NULL;
++
++	char *curlist;
++	char newlist[512]={0};
++	int len=0;
++	int j;
++	int rrr;
++	struct json_object *curObj = NULL;
++
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	macAddr = json_object_get_string(json_object_object_get(Jobj, "MacAddress"));
++
++	objIid.level = 1;
++	objIid.idx[0] = index;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_STA_FILTER, &objIid, &WifiMACFilterJobj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	curObj = json_object_new_array();
++	curlist = json_object_get_string(json_object_object_get(WifiMACFilterJobj, "FilterLists"));
++	rrr = StrToJarray(curlist,",",curObj);
+ 	
+-	//IID_INIT(objIid);
+-	iidArray = json_object_object_get(Jobj, "iid");
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		objIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(objIid.idx[iidIdx] != 0)
+-			objIid.level = iidIdx+1;
++	if(!findInList(curlist,macAddr,",")){
++		json_object_array_add(curObj,json_object_new_string(macAddr));
+ 	}
++
++	rrr = JarrayToStr(curObj,",",newlist);
++	if(newlist!=NULL)
++		json_object_object_add(WifiMACFilterJobj, "FilterLists",json_object_new_string(newlist));
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_STA_FILTER, &objIid, WifiMACFilterJobj, NULL)) != ZCFG_SUCCESS);
++
++	json_object_put(WifiMACFilterJobj);
++	json_object_put(curObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalWifiMACFilterDelete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	struct json_object *WifiMACFilterJobj = NULL;
++	int index;
++	char *macAddr=NULL;
++	char *curlist;
++	char newlist[512]={0};
++	int rrr, i, len;
++	struct json_object *curObj = NULL;
++	struct json_object *newObj = NULL;
++
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	macAddr = json_object_get_string(json_object_object_get(Jobj, "MacAddress"));
++
++	objIid.level = 1;
++	objIid.idx[0] = index;
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_STA_FILTER, &objIid, &WifiMACFilterJobj)) != ZCFG_SUCCESS) {
+ 		return ret;
+ 	}
+-	while(paraName){
+-		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
+-		if(!paramValue) {
+-			paraName = (const char *)WIFI_MACFILTER_param[n++].paraName;
+-			continue;
++
++	curObj = json_object_new_array();
++	newObj = json_object_new_array();
++	curlist = json_object_get_string(json_object_object_get(WifiMACFilterJobj, "FilterLists"));
++	rrr = StrToJarray(curlist,",",curObj);
++	
++	len = json_object_array_length(curObj);
++	for(i=0;i<len;i++){
++		if(strcmp(macAddr,json_object_get_string(json_object_array_get_idx(curObj,i)))){
++			json_object_array_add(newObj,JSON_OBJ_COPY(json_object_array_get_idx(curObj,i)));
+ 		}
+-		json_object_object_add(WifiMACFilterJobj, paraName, JSON_OBJ_COPY(paramValue));
+-		paramModified = 1;				
+-		paraName = (const char *)WIFI_MACFILTER_param[n++].paraName;
+ 	}
++	rrr = JarrayToStr(newObj,",",newlist);
++	if(newlist!=NULL)
++		json_object_object_add(WifiMACFilterJobj, "FilterLists",json_object_new_string(newlist));
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_STA_FILTER, &objIid, WifiMACFilterJobj, NULL)) != ZCFG_SUCCESS);
+ 
+-	if(paramModified) {
+-		if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_STA_FILTER, &objIid, WifiMACFilterJobj, NULL)) != ZCFG_SUCCESS);
+-	}
+ 	json_object_put(WifiMACFilterJobj);
++	json_object_put(curObj);
++	json_object_put(newObj);
+ 	return ret;
+ }
++
+ zcfgRet_t zcfgFeDalWifiMACFilter(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -65,6 +223,15 @@
+ 	if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalWifiMACFilterEdit(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalWifiMACFilterAdd(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalWifiMACFilterDelete(Jobj, NULL);
++	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalWifiMACFilterGet(Jobj, Jarray, replyMsg);
++	}
+ 	else 
+ 		printf("Unknown method:%s\n", method);
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-01 13:47:36.858416933 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-01 14:10:15.430895536 +0800
+@@ -220,6 +220,7 @@
+ extern void zcfgFeDalShowParentCtl(struct json_object *Jarray);
+ extern void zcfgFeDalShowTime(struct json_object *Jarray);
+ extern void zcfgFeDalShowSysLog(struct json_object *Jarray);
++extern void zcfgFeDalShowWifiMACFilter(struct json_object *Jarray);
+ 
+ 
+ dal_handler_t dalHandler[] = {
+@@ -257,7 +258,7 @@
+ {"QOS_CLASS",		QosClass_param,		zcfgFeDalQosClass,		NULL,						"add|edit|delete",	""},//QoS
+ {"qos_shaper",		QosShaper_param,	zcfgFeDalQosShaper,		zcfgFeDalShowQosShaper,		"get|add|edit|delete",	"Qos"},//QoS
+ {"qos_policer",		QosPolicer_param,	zcfgFeDalQosPolicer,	zcfgFeDalShowQosPolicer,	"get|add|edit|delete",	"Qos"},//QoS
+-{"WIFI_MACFILTER",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,NULL,					"edit",       		""},//Wireless
++{"wifi_macfilter",	WIFI_MACFILTER_param,	zcfgFeDalWifiMACFilter,zcfgFeDalShowWifiMACFilter,"get|add|edit|delete",	"Wireless"},//
+ {"wps",				WIFI_WPS_param,		zcfgFeDalWifiWps,		zcfgFeDalShowWifiWps,		"edit|get",			"Wireless"},
+ {"wmm",				WIFI_WMM_param,		zcfgFeDalWifiWmm,		zcfgFeDalShowWifiWmm,		"edit|get",			"Wireless"},//
+ #ifdef BUILD_SONIQ

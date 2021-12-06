@@ -1,0 +1,73 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2017-08-01 16:40:19.917069896 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2017-08-01 16:40:19.000000000 +0800
+@@ -3110,6 +3110,43 @@
+ 	}
+ }
+ 
++
++/*
++The same type of WAN interface can be added up to 7.
++* getWanLanList return Jarray:
++* Jarray.i.Type : LAN|WAN
++* Jarray.i.LinkType = ATM|PTM|ETH|PON|USB (For WAN only)
++*/
++bool checkWanInterfaceLimit(struct json_object * currObj)
++{
++    struct json_object *wanLanList = NULL;
++    struct json_object *listObj = NULL;
++    int i, wanIntfCount = 0, len = 0;
++    int MaxSameWANInterface = 7;
++
++    getWanLanList(&wanLanList);
++    len = json_object_array_length(wanLanList);
++
++    for(i=0; i<len; i++){
++        listObj = json_object_array_get_idx(wanLanList, i);
++        if(!strcmp("WAN",json_object_get_string(json_object_object_get(listObj, "Type"))))
++        {
++            if(!strcmp(json_object_get_string(json_object_object_get(currObj, "Type")),json_object_get_string(json_object_object_get(listObj, "LinkType"))))
++            {
++                wanIntfCount ++;
++            }
++        }
++    }
++    
++    if(MaxSameWANInterface < wanIntfCount)
++    {
++        dbg_printf("Type %s WAN interface count is %d, over threshold %d\n",json_object_get_string(json_object_object_get(currObj, "Type")), wanIntfCount,MaxSameWANInterface);
++        return false;
++    }
++    return true;
++}
++
++
+ zcfgRet_t zcfgFeDalWanAdd(struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -3123,6 +3160,10 @@
+ 	if(getSpecificObj(RDM_OID_IP_IFACE, "X_ZYXEL_SrvName", json_type_string, Name, NULL, NULL))
+ 		return ZCFG_REQUEST_REJECT;
+ 
++	if(checkWanInterfaceLimit(Jobj) == false){
++		return ZCFG_REQUEST_REJECT;
++	}
++
+ 	if((ret = addDefaultParam(Jobj, replyMsg)) != ZCFG_SUCCESS)//for CLI
+ 		return ret;
+ 
+@@ -3280,7 +3321,12 @@
+ 
+ 		goto dalwan_edit_fail;
+ 	}
+-	
++
++	if(checkWanInterfaceLimit(Jobj) == false){
++		ret = ZCFG_REQUEST_REJECT;
++		goto dalwan_edit_fail;
++	}
++
+ 	if ((ret = getCurrentConfig(Jobj)) != ZCFG_SUCCESS)
+ 		goto dalwan_edit_fail;
+ 

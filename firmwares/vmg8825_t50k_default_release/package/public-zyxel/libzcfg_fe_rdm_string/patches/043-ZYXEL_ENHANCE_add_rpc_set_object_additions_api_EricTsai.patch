@@ -1,0 +1,112 @@
+Index: libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.c
+===================================================================
+--- libzcfg_fe_rdm_string-1.0.orig/zcfg_fe_rdm_string.c	2018-01-05 19:42:39.164433201 +0800
++++ libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.c	2018-01-05 19:44:59.416693800 +0800
+@@ -905,6 +905,75 @@
+ }
+ 
+ 
++zcfgRet_t zcfgFeObjJsonSetWithAdditions(zcfg_offset_t oid, objIndex_t *objIid, struct json_object *setObj, char *fbkMsg, uint32_t op, struct json_object *additions)
++{
++	zcfgRet_t rst = ZCFG_SUCCESS;
++	uint32_t bits = op;
++	bool reqReleaseObj = false;
++	struct json_object *setObjAdditions = NULL;
++
++	if(!objIid)
++		return ZCFG_INTERNAL_ERROR;
++
++#ifndef ZCFG_RPC_REQUEST_ADDITIONS
++	additions = NULL;
++#endif
++
++	if(!setObj && !additions)
++		return ZCFG_INTERNAL_ERROR;
++
++	uint32_t options = op & (ZCFG_NO_WAIT_REPLY | ZCFG_BLOCK_MODE_CONFIG_APPLY | ZCFG_PARTIAL_OBJECT_SET);
++	op = (op & ~(ZCFG_NO_WAIT_REPLY | ZCFG_BLOCK_MODE_CONFIG_APPLY | ZCFG_PARTIAL_OBJECT_SET));
++	if(op != REQUEST_SET_OBJ && op != REQUEST_SET_WITHOUT_APPLY)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(additions){
++		setObjAdditions = json_object_new_object();
++		json_object_object_add(setObjAdditions, "rpcadditions", additions);
++		if(setObj)
++			json_object_object_add(setObjAdditions, "rpcsetobject", setObj);
++
++		reqReleaseObj = true;
++	}else {
++		if(!setObj)
++			return ZCFG_REQUEST_REJECT;
++		setObjAdditions = setObj;
++	}
++
++	op |= options;
++
++	const char *value = json_object_to_json_string(setObjAdditions);
++	if(additions){
++		char *replyStr[1] = {0};
++		struct json_object *rpcAdditionsReply = NULL;
++		op |= ZCFG_MSG_RPC_ADDITIONS;
++		rst = zcfgFeObjWrite(oid, objIid, value, op, (char *)replyStr);
++		json_object_object_pull(setObjAdditions, "rpcadditions");
++
++		rpcAdditionsReply = replyStr[0] ? json_tokener_parse(replyStr[0]) : NULL;
++		if(rpcAdditionsReply){
++			struct json_object *rpcApplyReply = json_object_object_pull_and_empty(rpcAdditionsReply, "rpcapplyreply");
++			const char *rpcApplyReplyStr = NULL;
++			if(fbkMsg && rpcApplyReply && (rpcApplyReplyStr = json_object_get_string(rpcApplyReply))){
++				strncpy(fbkMsg, rpcApplyReplyStr, FEEDBACK_MSG_LENGTH-1);
++			}
++			json_object_put(rpcApplyReply);
++			if(json_object_object_length(rpcAdditionsReply))
++				json_object_object_add(additions, "rpcadditionsreply", rpcAdditionsReply);
++		}
++		if(replyStr[0]) free(replyStr[0]);
++	}else{
++		rst = zcfgFeObjWrite(oid, objIid, value, op, fbkMsg);
++	}
++
++	if(reqReleaseObj){
++		json_object_object_pull(setObjAdditions, "rpcsetobject");
++		json_object_put(setObjAdditions);
++	}
++
++	return rst;
++}
++
+ zcfgRet_t zcfgFeMultiObjJsonSet(struct json_object *multiJobj, char *feedbackMsg)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.h
+===================================================================
+--- libzcfg_fe_rdm_string-1.0.orig/zcfg_fe_rdm_string.h	2018-01-05 19:42:39.148433201 +0800
++++ libzcfg_fe_rdm_string-1.0/zcfg_fe_rdm_string.h	2018-01-05 19:42:39.176433201 +0800
+@@ -18,6 +18,7 @@
+ zcfgRet_t zcfgFeSubInObjJsonGetNextWithoutUpdate(zcfg_offset_t , objIndex_t *, objIndex_t *, struct json_object **);
+ zcfgRet_t zcfgFeObjJsonSet(zcfg_offset_t, objIndex_t *, struct json_object *, char *);
+ zcfgRet_t zcfgFeObjJsonSetWithoutApply(zcfg_offset_t, objIndex_t *, struct json_object *, char *);
++zcfgRet_t zcfgFeObjJsonSetWithAdditions(zcfg_offset_t , objIndex_t *, struct json_object *, char *, uint32_t , struct json_object *);
+ zcfgRet_t zcfgFeMultiObjJsonRunValid(struct json_object *multiJobj, char *feedbackmsg);
+ zcfgRet_t zcfgFeMultiObjJsonSet(struct json_object *, char *);
+ zcfgRet_t zcfgFeObjJsonAdd(zcfg_offset_t, objIndex_t *, char *);
+Index: libzcfg_fe_rdm_string-1.0/Makefile
+===================================================================
+--- libzcfg_fe_rdm_string-1.0.orig/Makefile	2018-01-05 19:42:39.132433201 +0800
++++ libzcfg_fe_rdm_string-1.0/Makefile	2018-01-05 19:42:39.176433201 +0800
+@@ -7,11 +7,14 @@
+ CFLAGS += $(INC_PATH) -DZCFG_TR98_SUPPORT -std=gnu99
+ 
+ 
+-
+ ifeq ($(CONFIG_ZCFG_LOG_USE_DEBUGCFG),y)
+ CFLAGS += -DZCFG_LOG_USE_DEBUGCFG
+ endif
+ 
++ifeq ($(CONFIG_ZCFG_RPC_REQUEST_ADDITIONS),y)
++CFLAGS += -DZCFG_RPC_REQUEST_ADDITIONS
++endif
++
+ .PHONY : libzcfg_fe_rdm_string
+ 
+ all: clean libzcfg_fe_rdm_string

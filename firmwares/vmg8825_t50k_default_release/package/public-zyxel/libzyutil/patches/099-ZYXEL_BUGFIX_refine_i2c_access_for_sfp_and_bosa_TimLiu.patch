@@ -1,0 +1,157 @@
+Index: libzyutil-1.0/zyutil_sfp.c
+===================================================================
+--- libzyutil-1.0.orig/zyutil_sfp.c	2019-01-17 22:36:53.582118789 +0800
++++ libzyutil-1.0/zyutil_sfp.c	2019-01-17 22:39:27.318196481 +0800
+@@ -5,9 +5,11 @@
+ #include <ctype.h>
+ #include <sys/ioctl.h>
+ #include <sys/types.h>
++#include <linux/types.h>
++#include <linux/i2c.h>
+ #include <linux/i2c-dev.h>
+ #include <fcntl.h>
+-
++#include <errno.h>
+ #include <endian.h>
+ #include <byteswap.h>
+ 
+@@ -110,13 +112,16 @@
+ {
+     int status = 0;
+ 
+-    status = ioctl(fd, I2C_SLAVE, slave_address);
++    /* Use I2C_SLAVE_FORCE to replace I2C_SLAVE,
++    *  because I2C_SLAVE will return -EBUSY when the I2C device already register to driver.
++    */
++    status = ioctl(fd, I2C_SLAVE_FORCE/*I2C_SLAVE*/, slave_address);
+     if (status < 0)
+     {
+-        printf("ERROR: ioctl(fd, I2C_SLAVE, 0x%02X) failed\n", slave_address);
++        printf("ERROR: ioctl(fd, I2C_SLAVE_FORCE, 0x%02X) failed\n", slave_address);
+         return -1;
+     }
+-    DEBUG_PRINT("\nSUCCESS: ioctl(fd, I2C_SLAVE, 0x%02X) passed\n", slave_address);
++    DEBUG_PRINT("\nSUCCESS: ioctl(fd, I2C_SLAVE_FORCE, 0x%02X) passed\n", slave_address);
+     return 0;
+ }
+ 
+@@ -198,6 +203,70 @@
+     return value;
+ }
+ 
++// Reference from https://github.com/mozilla-b2g/i2c-tools/blob/master/lib/smbus.c
++__s32 i2c_smbus_access(int file, char read_write, __u8 command,
++		       int size, union i2c_smbus_data *data)
++{
++	struct i2c_smbus_ioctl_data args;
++	__s32 err;
++
++	args.read_write = read_write;
++	args.command = command;
++	args.size = size;
++	args.data = data;
++
++	err = ioctl(file, I2C_SMBUS, &args);
++	if (err == -1)
++		err = -errno;
++	return err;
++}
++
++__s32 i2c_smbus_read_byte(int file)
++{
++	union i2c_smbus_data data;
++	int err;
++
++	err = i2c_smbus_access(file, I2C_SMBUS_READ, 0, I2C_SMBUS_BYTE, &data);
++	if (err < 0)
++		return err;
++
++	return 0x0FF & data.byte;
++}
++
++// Reference from https://github.com/mozilla-b2g/i2c-tools/blob/master/tools/i2cdetect.c
++int zyUtil_bosa_exist(void)
++{
++    int status = 0;
++	int res = 0;
++    int busfd;
++
++    busfd = zyUtil_i2c_open();
++    // I2C_SLAVE will return -EBUSY when the I2C device already register to driver.
++    res = ioctl(busfd, I2C_SLAVE, DDMI1_ADDRESS);
++    DEBUG_PRINT("\nSUCCESS: ioctl(fd, I2C_SLAVE, 0x%02X) return %d(errno=%d)\n", DDMI1_ADDRESS, res, errno);
++    if( res < 0 )
++    {
++        if( errno == EBUSY )
++            status = 1;
++        goto end;
++    }
++
++    // Probe the address
++    res = i2c_smbus_read_byte(busfd);
++    if( res < 0 )
++    {
++        DEBUG_PRINT("%s : cannot read data from i2c device %d.\n", __func__, DDMI1_ADDRESS);
++        status = 0;
++    }
++    else
++        status = 1;
++
++end:
++    zyUtil_i2c_close(busfd);
++
++    return status;
++}
++
+ int _printString(unsigned char *_string, int length)
+ {
+     int i=0;
+@@ -224,13 +293,13 @@
+ int dump_DDMI_state(sfp_ddmi_state_t *ddmi_state)
+ {
+     printf("DDMI state:\n");
+-    printf("sfp presetnt      = %d\n",        ddmi_state->present);
+-    printf("sfp vendor name   = %s\n",        ddmi_state->sfp_vendor);
+-    printf("sfp part number   = %s\n",        ddmi_state->sfp_pn);
+-    printf("sfp serial number = %s\n",        ddmi_state->sfp_sn);
+-    printf("sfp rx power      = %f dbm\n",    ddmi_state->rx_power);
+-    printf("sfp tx power      = %f dbm\n",    ddmi_state->tx_power);
+-    printf("sfp temperature   = %f C\n",    ddmi_state->temperature);
++    printf("sfp/bosa present   = %d\n",        ddmi_state->present);
++    printf("DDMI vendor name   = %s\n",        ddmi_state->sfp_vendor);
++    printf("DDMI part number   = %s\n",        ddmi_state->sfp_pn);
++    printf("DDMI serial number = %s\n",        ddmi_state->sfp_sn);
++    printf("DDMI rx power      = %f dbm\n",    ddmi_state->rx_power);
++    printf("DDMI tx power      = %f dbm\n",    ddmi_state->tx_power);
++    printf("DDMI temperature   = %f C\n",    ddmi_state->temperature);
+ 
+     return 0;
+ }
+@@ -320,7 +389,7 @@
+         return -1;
+     }
+     // copy the result of sfp present.
+-    ddmi_state->present = zyUtil_is_sfp_present();
++    ddmi_state->present = (zyUtil_is_sfp_present()||zyUtil_bosa_exist())?1:0;
+     // Copy vendor name
+     memcpy(ddmi_state->sfp_vendor, ddmi1_data+DDMI1_VENDOR_NAME_OFFSET, DDMI1_VENDOR_NAME_LENGTH);
+     DEBUG_PRINT("\nVendor name: ");_printString(ddmi1_data+DDMI1_VENDOR_NAME_OFFSET, DDMI1_VENDOR_NAME_LENGTH);
+Index: libzyutil-1.0/zyutil_sfp.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil_sfp.h	2019-01-17 22:36:53.394118789 +0800
++++ libzyutil-1.0/zyutil_sfp.h	2019-01-17 22:37:50.618118789 +0800
+@@ -54,6 +54,14 @@
+ int zyUtil_is_sfp_present(void);
+ 
+ /*!
++ *  Check if the BOSA alread register the i2c device.
++ *
++ *  @return     1 means i2c device alread registered, 0 means not, -1 means access fail.
++ *
++ */
++int zyUtil_bosa_exist(void);
++
++/*!
+  *  Display DDMI state to console.
+  *
+  *  @return     0 if succeed

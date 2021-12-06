@@ -1,0 +1,228 @@
+diff -urN dropbear-2018.76.org/auth.h dropbear-2018.76/auth.h
+--- dropbear-2018.76.org/auth.h	2018-02-27 22:25:10.000000000 +0800
++++ dropbear-2018.76/auth.h	2019-04-01 16:30:16.062742535 +0800
+@@ -37,9 +37,9 @@
+ void send_msg_userauth_failure(int partial, int incrfail);
+ void send_msg_userauth_success(void);
+ void send_msg_userauth_banner(const buffer *msg);
+-void svr_auth_password(void);
+-void svr_auth_pubkey(void);
+-void svr_auth_pam(void);
++void svr_auth_password(int valid_user);
++void svr_auth_pubkey(int valid_user);
++void svr_auth_pam(int valid_user);
+ 
+ #if DROPBEAR_SVR_PUBKEY_OPTIONS_BUILT
+ int svr_pubkey_allows_agentfwd(void);
+diff -urN dropbear-2018.76.org/svr-auth.c dropbear-2018.76/svr-auth.c
+--- dropbear-2018.76.org/svr-auth.c	2019-03-20 14:25:43.510890000 +0800
++++ dropbear-2018.76/svr-auth.c	2019-04-01 16:41:50.625378421 +0800
+@@ -192,10 +192,8 @@
+ 		if (methodlen == AUTH_METHOD_PASSWORD_LEN &&
+ 				strncmp(methodname, AUTH_METHOD_PASSWORD,
+ 					AUTH_METHOD_PASSWORD_LEN) == 0) {
+-			if (valid_user) {
+-				svr_auth_password();
+-				goto out;
+-			}
++			svr_auth_password(valid_user);
++			goto out;
+ 		}
+ 	}
+ #endif
+@@ -207,10 +205,8 @@
+ 		if (methodlen == AUTH_METHOD_PASSWORD_LEN &&
+ 				strncmp(methodname, AUTH_METHOD_PASSWORD,
+ 					AUTH_METHOD_PASSWORD_LEN) == 0) {
+-			if (valid_user) {
+-				svr_auth_pam();
+-				goto out;
+-			}
++			svr_auth_pam(valid_user);
++			goto out;
+ 		}
+ 	}
+ #endif
+@@ -220,12 +216,7 @@
+ 	if (methodlen == AUTH_METHOD_PUBKEY_LEN &&
+ 			strncmp(methodname, AUTH_METHOD_PUBKEY,
+ 				AUTH_METHOD_PUBKEY_LEN) == 0) {
+-		if (valid_user) {
+-			svr_auth_pubkey();
+-		} else {
+-			/* pubkey has no failure delay */
+-			send_msg_userauth_failure(0, 0);
+-		}
++		svr_auth_pubkey(valid_user);
+ 		goto out;
+ 	}
+ #endif
+diff -urN dropbear-2018.76.org/svr-authpam.c dropbear-2018.76/svr-authpam.c
+--- dropbear-2018.76.org/svr-authpam.c	2019-03-20 14:25:43.494890000 +0800
++++ dropbear-2018.76/svr-authpam.c	2019-04-01 16:49:51.530790580 +0800
+@@ -178,13 +178,14 @@
+  * Keyboard interactive would be a lot nicer, but since PAM is synchronous, it
+  * gets very messy trying to send the interactive challenges, and read the
+  * interactive responses, over the network. */
+-void svr_auth_pam() {
++void svr_auth_pam(int valid_user) {
+ 
+ 	struct UserDataS userData = {NULL, NULL};
+ 	struct pam_conv pamConv = {
+ 		pamConvFunc,
+ 		&userData /* submitted to pamvConvFunc as appdata_ptr */ 
+ 	};
++	const char* printable_user = NULL;
+ 
+ 	pam_handle_t* pamHandlep = NULL;
+ 
+@@ -206,13 +207,24 @@
+ 	}
+ 
+ 	password = buf_getstring(ses.payload, &passwordlen);
++	
++	/* We run the PAM conversation regardless of whether the username is valid
++	in case the conversation function has an inherent delay.
++	Use ses.authstate.username rather than ses.authstate.pw_name.
++	After PAM succeeds we then check the valid_user flag too */
+ 
+ 	/* used to pass data to the PAM conversation function - don't bother with
+ 	 * strdup() etc since these are touched only by our own conversation
+ 	 * function (above) which takes care of it */
+-	userData.user = ses.authstate.pw_name;
++	userData.user = ses.authstate.username;
+ 	userData.passwd = password;
+ 
++	if (ses.authstate.pw_name) {
++		printable_user = ses.authstate.pw_name;
++	} else {
++		printable_user = "<invalid username>";
++	}
++
+ 	/* Init pam */
+ 	if ((rc = pam_start("sshd", NULL, &pamConv, &pamHandlep)) != PAM_SUCCESS) {
+ 		dropbear_log(LOG_WARNING, "pam_start() failed, rc=%d, %s", 
+@@ -246,7 +258,7 @@
+ 				rc, pam_strerror(pamHandlep, rc));
+ 		dropbear_log(LOG_WARNING,
+ 				"Bad PAM password attempt for '%s' from %s",
+-				ses.authstate.pw_name,
++				printable_user,
+ 				svr_ses.addrstring);
+ 		send_msg_userauth_failure(0, 1);
+ 		goto cleanup;
+@@ -257,12 +269,18 @@
+ 				rc, pam_strerror(pamHandlep, rc));
+ 		dropbear_log(LOG_WARNING,
+ 				"Bad PAM password attempt for '%s' from %s",
+-				ses.authstate.pw_name,
++				printable_user,
+ 				svr_ses.addrstring);
+ 		send_msg_userauth_failure(0, 1);
+ 		goto cleanup;
+ 	}
+ 
++	if (!valid_user) {
++		/* PAM auth succeeded but the username isn't allowed in for another reason
++		(checkusername() failed) */
++		send_msg_userauth_failure(0, 1);
++	}
++	
+ 	/* successful authentication */
+ 	syslog(LOG_INFO, "Account: User '%s' login from the host(%s).",username,remoteaddr);
+ 	dropbear_log(LOG_NOTICE, "PAM password auth succeeded for '%s' from %s",
+diff -urN dropbear-2018.76.org/svr-authpasswd.c dropbear-2018.76/svr-authpasswd.c
+--- dropbear-2018.76.org/svr-authpasswd.c	2019-03-20 14:25:43.522890000 +0800
++++ dropbear-2018.76/svr-authpasswd.c	2019-04-01 16:54:36.151565458 +0800
+@@ -111,11 +111,11 @@
+ 
+ /* Process a password auth request, sending success or failure messages as
+  * appropriate */
+-void svr_auth_password() {
++void svr_auth_password(int valid_user) {
+ 	
+ 	char * passwdcrypt = NULL; /* the crypt from /etc/passwd or /etc/shadow */
+ 	char * testcrypt = NULL; /* crypt generated from the user's password sent */
+-	char * password;
++	char * password = NULL;
+ 	char * remoteaddr = svr_ses.addrstring;
+ 	unsigned int passwordlen;
+ 	int retry_times = 0;
+@@ -130,8 +130,6 @@
+ //SHA512_PASSWD
+ 	int authResult = -1;
+ 	char * username = ses.authstate.username;
+-//SHA512_PASSWD
+-	passwdcrypt = ses.authstate.pw_passwd;
+ 
+ 	IID_INIT(logAccountObjIid);
+ 	while(zcfgFeObjStructGetNext(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &logAccountObjIid, (void **) &accountObj) == ZCFG_SUCCESS) {
+@@ -171,11 +169,6 @@
+ 		return;
+ 	}
+ 
+-#ifdef DEBUG_HACKCRYPT
+-	/* debugging crypt for non-root testing with shadows */
+-	passwdcrypt = DEBUG_HACKCRYPT;
+-#endif
+-
+ 	/* check if client wants to change password */
+ 	changepw = buf_getbool(ses.payload);
+ 	if (changepw) {
+@@ -185,9 +178,11 @@
+ 	}
+ 
+ 	password = buf_getstring(ses.payload, &passwordlen);
+-
+-	/* the first bytes of passwdcrypt are the salt */
+-	testcrypt = crypt(password, passwdcrypt);
++	if (valid_user) {
++		/* the first bytes of passwdcrypt are the salt */
++		passwdcrypt = ses.authstate.pw_passwd;
++		testcrypt = crypt(password, passwdcrypt);
++	}
+ //SHA512_PASSWD
+ #if 0
+ 	m_burn(password, passwordlen);
+@@ -195,6 +190,13 @@
+ #endif
+ //SHA512_PASSWD
+ 
++	/* After we have got the payload contents we can exit if the username
++	is invalid. Invalid users have already been logged. */
++	if (!valid_user) {
++		send_msg_userauth_failure(0, 1);
++		return;
++	}
++
+ 	if (testcrypt == NULL) {
+ 		/* crypt() with an invalid salt like "!!" */
+ 		dropbear_log(LOG_WARNING, "User account '%s' is locked",
+diff -urN dropbear-2018.76.org/svr-authpubkey.c dropbear-2018.76/svr-authpubkey.c
+--- dropbear-2018.76.org/svr-authpubkey.c	2019-03-20 14:25:43.522890000 +0800
++++ dropbear-2018.76/svr-authpubkey.c	2019-04-01 16:56:15.633983045 +0800
+@@ -79,7 +79,7 @@
+ 
+ /* process a pubkey auth request, sending success or failure message as
+  * appropriate */
+-void svr_auth_pubkey() {
++void svr_auth_pubkey(int valid_user) {
+ 
+ 	unsigned char testkey; /* whether we're just checking if a key is usable */
+ 	char* algo = NULL; /* pubkey algo */
+@@ -102,6 +102,15 @@
+ 	keybloblen = buf_getint(ses.payload);
+ 	keyblob = buf_getptr(ses.payload, keybloblen);
+ 
++	if (!valid_user) {
++		/* Return failure once we have read the contents of the packet
++		required to validate a public key. 
++		Avoids blind user enumeration though it isn't possible to prevent
++		testing for user existence if the public key is known */
++		send_msg_userauth_failure(0, 0);
++		goto out;
++	}
++
+ 	/* check if the key is valid */
+ 	if (checkpubkey(algo, algolen, keyblob, keybloblen) == DROPBEAR_FAILURE) {
+ 		send_msg_userauth_failure(0, 0);

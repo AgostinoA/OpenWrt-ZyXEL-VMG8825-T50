@@ -1,0 +1,109 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2016-03-25 18:01:55.835559482 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2016-03-25 18:13:25.032972558 +0800
+@@ -390,8 +390,10 @@
+ {
+ 	zcfgRet_t ret;
+ 	char tr181Obj[32] = {0};
++#if 0
+ 	char tr181ObjPath[32] = {0};
+ 	char higherLayerPath[128] = {0};
++#endif	
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char *ptr = NULL;
+ 	objIndex_t objIid;
+@@ -412,6 +414,7 @@
+ 
+ 	*tr98Jobj = json_object_new_object();
+ 
++#if 0
+ 	strcpy(tr181ObjPath, tr181Obj);
+ 	/*specical case to get parameter "EnabledForInternet"*/
+ 	while((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181ObjPath, higherLayerPath)) == ZCFG_SUCCESS) {
+@@ -455,7 +458,84 @@
+ 
+ 		strcpy(tr181ObjPath, higherLayerPath);
+ 	}
+-	
++#endif
++
++/*From DefaultGateway get interface name*/
++	rdm_RoutingRouter_t *routeObj = NULL;
++	objIndex_t routeIid;
++	IID_INIT(routeIid);
++	routeIid.level = 1;
++	routeIid.idx[0] = 1;
++	char * pch;
++	char *comma = ",";
++	char defaultGateway[128]={0};
++	char tr98ObjPath[128] = {0};
++	char interfaceName[128] = {0};
++	char tr181TmpName[1025]={0};
++
++	if((ret=zcfgFeObjStructGet(RDM_OID_ROUTING_ROUTER, &routeIid, (void **)&routeObj)) == ZCFG_SUCCESS){
++		strcpy(defaultGateway,routeObj->X_ZYXEL_ActiveDefaultGateway);
++		zcfgFeObjStructFree(routeObj);
++
++		pch = strtok(defaultGateway,comma);
++		while (pch != NULL){
++			strcpy(interfaceName,pch);
++			if(strstr(interfaceName, "IP.Interface") != NULL){
++				rdm_IpIface_t *ipIntfObj = NULL;
++				rdm_IpIfaceV4Addr_t *v4AddrObj = NULL;
++				rdm_IpIfaceV6Addr_t *v6AddrObj = NULL;
++				IID_INIT(objIid);
++				IID_INIT(ipAddrIid);
++				objIid.level = 1;
++				sscanf(interfaceName, "IP.Interface.%hhu", &objIid.idx[0]);
++				if((ret = feObjStructGet(RDM_OID_IP_IFACE, &objIid, (void **)&ipIntfObj, updateFlag)) == ZCFG_SUCCESS){
++					if(ipIntfObj->IPv4Enable){				
++						if((ret = feObjStructGetSubNext(RDM_OID_IP_IFACE_V4_ADDR, &objIid,&ipAddrIid, (void **)&v4AddrObj, updateFlag)) == ZCFG_SUCCESS){
++							if(!strcmp(v4AddrObj->Status, TR181_ENABLED)){	
++								if(strstr(ipIntfObj->LowerLayers, "PPP")){
++									strcpy(tr181TmpName, ipIntfObj->LowerLayers);
++								}
++								else{
++									sprintf(tr181TmpName, "IP.Interface.%hhu", objIid.idx[0]);
++								}
++								
++								 if((ret = zcfgFe181To98MappingNameGet(tr181TmpName, tr98ObjPath)) == ZCFG_SUCCESS) {
++									if(!strncmp(tr98ObjPath,tr98FullPathName,strlen("InternetGatewayDevice.WANDevice.i")))
++										enableForInternet = true;
++								}
++								zcfgFeObjStructFree(v4AddrObj);		
++							}
++						}					
++					}
++					else if(ipIntfObj->IPv6Enable){			
++						if((ret = feObjStructGetSubNext(RDM_OID_IP_IFACE_V6_ADDR, &objIid,&ipAddrIid, (void **)&v6AddrObj, updateFlag)) == ZCFG_SUCCESS){
++							if(strcmp(v6AddrObj->Status, TR181_ENABLED)){
++								
++								if(strstr(ipIntfObj->LowerLayers, "PPP")){
++									strcpy(tr181TmpName, ipIntfObj->LowerLayers);
++								}
++								else{
++									sprintf(tr181TmpName, "IP.Iterface.%hhu", objIid.idx[0]);
++								}
++								
++								if((ret = zcfgFe181To98MappingNameGet(tr181TmpName, tr98ObjPath)) == ZCFG_SUCCESS) {
++									if(!strncmp(tr98ObjPath,tr98FullPathName,strlen("InternetGatewayDevice.WANDevice.i")))
++										enableForInternet = true;
++								}
++								zcfgFeObjStructFree(v6AddrObj);		
++							}
++						}
++					}
++				
++					json_object_object_add(*tr98Jobj, "EnabledForInternet" ,json_object_new_boolean(enableForInternet));
++				}
++
++				zcfgFeObjStructFree(ipIntfObj);
++			}	
++			pch = strtok (NULL, comma);
++		}
++	}
++
+ 	/*Hard coding*/
+ 	json_object_object_add(*tr98Jobj, "WANAccessProvider", json_object_new_string(""));
+ 	json_object_object_add(*tr98Jobj, "MaximumActiveConnections", json_object_new_int(0));

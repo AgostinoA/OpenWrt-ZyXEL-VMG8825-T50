@@ -1,0 +1,109 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-02-21 15:23:26.396967714 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-02-21 15:26:28.646152000 +0800
+@@ -67,6 +67,9 @@
+ CFLAGS += -DCBT_CUSTOMIZATION
+ endif
+ 
++ifeq ($(CONFIG_ZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE),y)
++CFLAGS += -DZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE
++endif
+ 
+ ifeq ($(CONFIG_ZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT),y)
+ CFLAGS += -DZYXEL_SUPPORT_TR98_LOGIN_ACCOUNT
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2017-02-21 15:23:26.592967708 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2017-02-21 15:25:49.307152000 +0800
+@@ -26,6 +26,8 @@
+ #include <openssl/bio.h>
+ #include <openssl/buffer.h>
+ 
++extern bool isBondingWanProcess;
++
+ char *base64_encode(unsigned char *input, int length)
+ {
+ 	BIO *bmem, *b64;
+@@ -96,8 +98,13 @@
+ 		 *  Therefore, just return "ZCFG_NO_MORE_INSTANCE" when there is no related mapping of tr181 for
+ 		 *  this WANDevice object.
+ 		 */
++#ifdef ZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE
++		if (idx < 13)
++			return ZCFG_NO_SUCH_OBJECT;
++#else
+ 		if (idx < 5)
+ 			return ZCFG_NO_SUCH_OBJECT;
++#endif
+ 		return ret;
+ 	}
+ 
+@@ -756,6 +763,17 @@
+ 		strcpy(dslLineObj, json_object_get_string(json_object_object_get(dslChannel, "LowerLayers")));
+ 
+ 		sprintf(tr181Obj, "Device.%s", dslLineObj);
++#ifdef ZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE
++		/*
++			WANDevice.12 --> DSL.Line.2 (ADSL,VDSL) Bonding line
++			WANDevice.13 --> DSL.Line.2 (ADSL,VDSL) Bonding line
++		*/
++		if(isBondingWanProcess){
++			sprintf(tr181Obj, "Device.%s", "DSL.Line.2");
++		}
++		printf("%s(%d):  Device:%s  isBondingWanProcess:%d \n",__FUNCTION__,__LINE__,tr181Obj,isBondingWanProcess);
++#endif // ZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE
++		
+ 		IID_INIT(dslLineIid);
+ 		dslLineOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
+ 
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2017-02-21 15:23:26.432967713 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2017-02-21 15:25:59.723152000 +0800
+@@ -232,6 +232,7 @@
+ 	{ "X_ZYXEL_VDSL_DownstreamN", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "X_ZYXEL_VDSL_UpstreamN_2", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ "X_ZYXEL_VDSL_DownstreamN_2", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "X_ZYXEL_LinkTypeisATM", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	//{ "X_ZYXEL_ModulationType", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-02-21 15:23:26.468967712 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-02-21 15:26:10.936152000 +0800
+@@ -43,6 +43,8 @@
+ #endif
+ int volatile wanDeviceInstanceNum = 0;
+ bool StaticWanDevOption = false;
++bool isBondingWanProcess = false;
++
+ 
+ tr98NameObj_t tr98NameObjList[] =
+ {
+@@ -1320,6 +1322,12 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
++void zcfgFe98BondingTag(bool type)
++{
++#ifdef ZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE
++	isBondingWanProcess = type;
++#endif //ZYXEL_SUPPORT_TR098_BRCM_BONDING_LINE
++}
+ 
+ bool zcfgFe98StaticWanDevStatus(void)
+ {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-02-21 15:23:26.412967713 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-02-21 15:26:18.851152000 +0800
+@@ -174,6 +174,7 @@
+ 
+ zcfgRet_t zcfgFeTr98AllIGDNameGet();
+ 
++void zcfgFe98BondingTag(bool);
+ 
+ zcfgRet_t zcfgFeTr98ObjGet(char *, struct json_object **);
+ zcfgRet_t zcfgFe98StaticNameTableInit(void);

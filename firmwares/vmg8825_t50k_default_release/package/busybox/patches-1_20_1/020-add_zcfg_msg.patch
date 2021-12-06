@@ -1,0 +1,631 @@
+Index: busybox-1_20_1/networking/nslookup.c
+===================================================================
+--- busybox-1_20_1.orig/networking/nslookup.c	2012-05-27 17:48:55.000000000 -0700
++++ busybox-1_20_1/networking/nslookup.c	2015-02-01 22:11:42.588583246 -0800
+@@ -28,6 +28,17 @@
+ #include <resolv.h>
+ #include "libbb.h"
+ 
++/*ZyXEL zcfg*/
++#ifdef ZCFG_SUPPORT
++#include "time.h"
++
++#include "zcfg_common.h"
++#include "zcfg_msg.h"
++#include "zcfg_net.h"
++
++#include <json/json.h>
++#endif
++
+ /*
+  * I'm only implementing non-interactive mode;
+  * I totally forgot nslookup even had an interactive mode.
+@@ -63,8 +74,52 @@
+  * ns2.kernel.org  internet address = 204.152.191.4
+  * ns3.kernel.org  internet address = 204.152.191.36
+  */
++#ifdef ZCFG_SUPPORT
++void usage()
++{
++	fprintf(stderr, "\nUsage: nslookup -h [HOST] <-s [DNS server]>\n");
++	fprintf(stderr, "Queries the nameserver for the IP address of the given HOST\n");
++	fprintf(stderr, "optionally using a specified DNS server\n");
+ 
++}
++
++zcfgRet_t nslookupMsgSend(int msg_type, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_NSLOOKUP;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		printf("Receive message : %s\n", recv_str);
++	}
++
++	return ret;
++}
++#endif
++
++#ifdef ZCFG_SUPPORT
++static int print_host(const char *hostname, const char *header, char *iplist)
++#else
+ static int print_host(const char *hostname, const char *header)
++#endif
+ {
+ 	/* We can't use xhost2sockaddr() - we want to get ALL addresses,
+ 	 * not just one */
+@@ -90,7 +145,12 @@
+ 			char *dotted, *revhost;
+ 			dotted = xmalloc_sockaddr2dotted_noport(cur->ai_addr);
+ 			revhost = xmalloc_sockaddr2hostonly_noport(cur->ai_addr);
+-
++#ifdef ZCFG_SUPPORT
++			if(iplist!=NULL){
++				if(strlen(iplist)>0) strcat(iplist, ",");
++				strcat(iplist, dotted);
++			}
++#endif
+ 			printf("Address %u: %s%c", ++cnt, dotted, revhost ? ' ' : '\n');
+ 			if (revhost) {
+ 				puts(revhost);
+@@ -114,22 +174,34 @@
+ }
+ 
+ /* lookup the default nameserver and display it */
++#ifdef ZCFG_SUPPORT
++static int server_print(char *srvip)
++#else
+ static void server_print(void)
++#endif
+ {
+ 	char *server;
+ 	struct sockaddr *sa;
+-
++#ifdef ZCFG_SUPPORT
++	int ret = 0;
++#endif
+ #if ENABLE_FEATURE_IPV6
+ 	sa = (struct sockaddr*)_res._u._ext.nsaddrs[0];
+ 	if (!sa)
+ #endif
+ 		sa = (struct sockaddr*)&_res.nsaddr_list[0];
+ 	server = xmalloc_sockaddr2dotted_noport(sa);
+-
++#ifdef ZCFG_SUPPORT
++	ret = print_host(server, "Server:", srvip);
++#else
+ 	print_host(server, "Server:");
++#endif
+ 	if (ENABLE_FEATURE_CLEAN_UP)
+ 		free(server);
+ 	bb_putchar('\n');
++#ifdef ZCFG_SUPPORT
++	return ret;
++#endif
+ }
+ 
+ /* alter the global _res nameserver structure to use
+@@ -166,13 +238,66 @@
+ int nslookup_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int nslookup_main(int argc, char **argv)
+ {
++#ifdef ZCFG_SUPPORT
++	char *server = NULL, *hostname = NULL;
++	unsigned int nscount = 1, deadline = 1000;
++	char *str_I = NULL;
++	int opt;
++	int ret;
++	struct json_object *lookup_result = NULL, *lookup_stat = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0;
++	unsigned long timevals, timevale, timeintv;
++	char iplist[46] = {0}, srvip[46] = {0};
++	int c = 0, successc = 0;
++	char cStr[4] = {0};
++	char syscmd[128] = {0};
++	
++	zcfgEidInit(ZCFG_EID_NSLOOKUP, NULL);
++#endif
+ 	/* We allow 1 or 2 arguments.
+ 	 * The first is the name to be looked up and the second is an
+ 	 * optional DNS server with which to do the lookup.
+ 	 * More than 3 arguments is an error to follow the pattern of the
+ 	 * standard nslookup */
++#ifdef ZCFG_SUPPORT
++	if(argc <=2){
++		usage();
++		return;
++	}
++	
++	while((opt = getopt(argc, argv, "h:s:c:w:I:")) != -1)
++	{
++		switch(opt)
++		{
++			case 'h':
++				hostname = optarg;
++				break;
++			case 's':
++				server = optarg;
++				break;
++			case 'c':
++				nscount = atoi(optarg);
++				break;
++			case 'w':
++				deadline = atoi(optarg);
++				break;
++			case 'I': /*not yet support now*/
++				str_I= optarg;
++				break;
++			default:
++				break;
++		}
++	}
++	if(nscount<=0) nscount = 1; /*at least one time*/
++	if(!hostname){
++		usage();
++		return;
++	}
++#else
+ 	if (!argv[1] || argv[1][0] == '-' || argc > 3)
+ 		bb_show_usage();
++#endif
+ 
+ 	/* initialize DNS structure _res used in printing the default
+ 	 * name server and in the explicit name server option feature. */
+@@ -180,10 +305,86 @@
+ 	/* rfc2133 says this enables IPv6 lookups */
+ 	/* (but it also says "may be enabled in /etc/resolv.conf") */
+ 	/*_res.options |= RES_USE_INET6;*/
++#ifdef ZCFG_SUPPORT
++	lookup_stat = json_object_new_object(); 
++
++	if (server)
++		set_default_dns(server);	
++
++	ret = server_print(srvip);
++		
++	if (server){
++		/*work around, because the server option not work ?*/
++		snprintf(syscmd, sizeof(syscmd),"echo nameserver %s >> /var/fyi/sys/dns", srvip);
++		system(syscmd);
++	}
++	
++	if(ret != 0){
++		json_object_object_add(lookup_stat, "DiagnosticsState", json_object_new_string(DIAG_DNS_SERVER_NOT_RESOLVE));
++		json_object_object_add(lookup_stat, "SuccessCount", json_object_new_int(0));
++		payload = json_object_to_json_string(lookup_stat);		
++		payloadLen = strlen(payload) + 1;
++		nslookupMsgSend(ZCFG_MSG_NSLOOKUP_MSG, payloadLen, payload);
++		json_object_put(lookup_stat);
++		
++		return;
++	}
++
+ 
++	c = 0;
++	while (c<nscount){
++		memset(iplist, '\0', sizeof(iplist));
++		timevals = monotonic_ms();
++		ret = print_host(hostname, "Name:", iplist);
++		timevale = monotonic_ms();
++		if(!ret) successc++;
++
++		lookup_result = json_object_new_object(); 
++		json_object_object_add(lookup_result, "HostNameReturned", json_object_new_string(hostname));
++		json_object_object_add(lookup_result, "DNSServerIP", json_object_new_string(srvip));
++		if(!ret){
++			json_object_object_add(lookup_result, "IPAddresses", json_object_new_string(iplist));
++			json_object_object_add(lookup_result, "ResponseTime", json_object_new_int(timevale-timevals));
++		}
++		else{
++			json_object_object_add(lookup_result, "IPAddresses", json_object_new_string(""));
++			json_object_object_add(lookup_result, "ResponseTime", json_object_new_int(0));
++		}
++
++		if(!ret){
++			json_object_object_add(lookup_result, "Status", json_object_new_string(DIAG_SUCCESS));
++		}
++		else{
++			if((deadline>0) && ((timevale - timevals) >= deadline)){
++				json_object_object_add(lookup_result, "Status", json_object_new_string(DIAG_TIMEOUT));
++			}	
++			else{
++				json_object_object_add(lookup_result, "Status", json_object_new_string(DIAG_HOST_NAME_NOT_RESOLV));
++			}
++			sprintf(cStr,"%d", c);
++			json_object_object_add(lookup_stat, cStr, lookup_result);
++			break;
++		}
++		sprintf(cStr,"%d", c);
++		json_object_object_add(lookup_stat, cStr, lookup_result);
++
++		c++;
++	}
++
++	json_object_object_add(lookup_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++	json_object_object_add(lookup_stat, "SuccessCount", json_object_new_int(successc));
++
++	payload = json_object_to_json_string(lookup_stat);
++	payloadLen = strlen(payload) + 1;
++	nslookupMsgSend(ZCFG_MSG_NSLOOKUP_MSG, payloadLen, payload);
++	json_object_put(lookup_stat);
++
++	return ret;
++#else
+ 	if (argv[2])
+ 		set_default_dns(argv[2]);
+ 
+ 	server_print();
+ 	return print_host(argv[1], "Name:");
++#endif	
+ }
+Index: busybox-1_20_1/networking/ping.c
+===================================================================
+--- busybox-1_20_1.orig/networking/ping.c	2012-05-27 17:48:55.000000000 -0700
++++ busybox-1_20_1/networking/ping.c	2015-02-01 22:11:42.588583246 -0800
+@@ -29,6 +29,15 @@
+ #include <netinet/ip_icmp.h>
+ #include "libbb.h"
+ 
++/*ZyXEL zcfg*/
++#ifdef ZCFG_SUPPORT
++#include "zcfg_common.h"
++#include "zcfg_msg.h"
++#include "zcfg_net.h"
++
++#include <json/json.h>
++#endif
++
+ #ifdef __BIONIC__
+ /* should be in netinet/ip_icmp.h */
+ # define ICMP_DEST_UNREACH    3  /* Destination Unreachable  */
+@@ -383,27 +392,99 @@
+ #define TST(bit)	(A(bit) & B(bit))
+ 
+ /**************************************************************************/
++#ifdef ZCFG_SUPPORT
++zcfgRet_t pingMsgSend(int msg_type, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_PING;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
+ 
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		printf("Receive message : %s\n", recv_str);
++	}
++
++	return ret;
++}
++#endif
+ static void print_stats_and_exit(int junk) NORETURN;
+ static void print_stats_and_exit(int junk UNUSED_PARAM)
+ {
++#ifdef ZCFG_SUPPORT
++	unsigned long send_count = 0, recv_count = 0;
++	unsigned tavg = 0;
++	struct json_object *ping_stat = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0;
++#endif
+ 	signal(SIGINT, SIG_IGN);
+ 
+ 	printf("\n--- %s ping statistics ---\n", hostname);
+ 	printf("%lu packets transmitted, ", ntransmitted);
+ 	printf("%lu packets received, ", nreceived);
++
++#ifdef ZCFG_SUPPORT
++	send_count = ntransmitted;
++	recv_count = nreceived;
++#endif
++
+ 	if (nrepeats)
+ 		printf("%lu duplicates, ", nrepeats);
+ 	if (ntransmitted)
+ 		ntransmitted = (ntransmitted - nreceived) * 100 / ntransmitted;
+ 	printf("%lu%% packet loss\n", ntransmitted);
+ 	if (tmin != UINT_MAX) {
++#ifndef ZCFG_SUPPORT
+ 		unsigned tavg = tsum / (nreceived + nrepeats);
++#else
++		tavg = tsum / (nreceived + nrepeats);
++#endif
+ 		printf("round-trip min/avg/max = %u.%03u/%u.%03u/%u.%03u ms\n",
+ 			tmin / 1000, tmin % 1000,
+ 			tavg / 1000, tavg % 1000,
+ 			tmax / 1000, tmax % 1000);
+ 	}
++
++#ifdef ZCFG_SUPPORT
++	ping_stat = json_object_new_object();
++	json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++	json_object_object_add(ping_stat, "SuccessCount", json_object_new_int(recv_count));
++	json_object_object_add(ping_stat, "FailureCount", json_object_new_int(send_count - recv_count));
++	if (tmin != UINT_MAX){
++		json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
++		json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
++		json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++	}
++	else{
++		json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
++		json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
++		json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++	}
++
++	payload = json_object_to_json_string(ping_stat);
++
++	payloadLen = strlen(payload) + 1;
++	pingMsgSend(ZCFG_MSG_PING_MSG, payloadLen, payload);
++
++	json_object_put(ping_stat);
++#endif
+ 	/* if condition is true, exit with 1 -- 'failure' */
+ 	exit(nreceived == 0 || (deadline && nreceived < pingcount));
+ }
+@@ -865,6 +946,9 @@
+ int ping_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int ping_main(int argc UNUSED_PARAM, char **argv)
+ {
++#ifdef ZCFG_SUPPORT
++	zcfgEidInit(ZCFG_EID_PING, NULL);
++#endif
+ #if !ENABLE_FEATURE_FANCY_PING
+ 	return common_ping_main(AF_UNSPEC, argv);
+ #else
+Index: busybox-1_20_1/networking/traceroute.c
+===================================================================
+--- busybox-1_20_1.orig/networking/traceroute.c	2012-05-27 17:48:55.000000000 -0700
++++ busybox-1_20_1/networking/traceroute.c	2015-02-01 22:11:42.588583246 -0800
+@@ -289,6 +289,15 @@
+ # define IPPROTO_IP 0
+ #endif
+ 
++/*ZyXEL zcfg*/
++#ifdef ZCFG_SUPPORT
++#include "zcfg_common.h"
++#include "zcfg_msg.h"
++#include "zcfg_net.h"
++
++#include <json/json.h>
++#endif
++/*End ZyXEL zcfg*/
+ 
+ #define OPT_STRING "FIlnrdvxt:i:m:p:q:s:w:z:f:" \
+ 		    IF_FEATURE_TRACEROUTE_SOURCE_ROUTE("g:") \
+@@ -732,7 +739,11 @@
+  * numeric value, otherwise try for symbolic name.
+  */
+ static void
++#ifdef ZCFG_SUPPORT
++print_inetname(const struct sockaddr *from, struct json_object *result)
++#else
+ print_inetname(const struct sockaddr *from)
++#endif
+ {
+ 	char *ina = xmalloc_sockaddr2dotted_noport(from);
+ 
+@@ -748,15 +759,27 @@
+ 			n = xmalloc_sockaddr2host_noport((struct sockaddr*)from);
+ 		}
+ 		printf("  %s (%s)", (n ? n : ina), ina);
++#ifdef ZCFG_SUPPORT
++		json_object_object_add(result, "Host", json_object_new_string((n ? n : ina)));
++		json_object_object_add(result, "HostAddress", json_object_new_string(ina));
++#endif
+ 		free(n);
+ 	}
+ 	free(ina);
+ }
+ 
+ static void
++#ifdef ZCFG_SUPPORT
++print(int read_len, const struct sockaddr *from, const struct sockaddr *to, struct json_object *result)
++#else
+ print(int read_len, const struct sockaddr *from, const struct sockaddr *to)
++#endif
+ {
++#ifdef ZCFG_SUPPORT
++	print_inetname(from, result);
++#else
+ 	print_inetname(from);
++#endif
+ 
+ 	if (verbose) {
+ 		char *ina = xmalloc_sockaddr2dotted_noport(to);
+@@ -775,12 +798,62 @@
+ }
+ 
+ static void
++#ifdef ZCFG_SUPPORT
++print_delta_ms(unsigned t1p, unsigned t2p, char *rtt)
++#else
+ print_delta_ms(unsigned t1p, unsigned t2p)
++#endif
+ {
+ 	unsigned tt = t2p - t1p;
++#ifdef ZCFG_SUPPORT
++	char rttime[16] = {0};
++
++	sprintf(rttime, "%u", tt/1000);
++
++	if(!strcmp(rtt, "")) {
++		strcpy(rtt, rttime);
++	}
++	else {
++		strcat(rtt, ",");
++		strcat(rtt, rttime);
++	}
++#endif
+ 	printf("  %u.%03u ms", tt / 1000, tt % 1000);
++
+ }
+ 
++#ifdef ZCFG_SUPPORT
++zcfgRet_t tracertMsgSend(int msg_type, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_TRACERT;
++	sendMsgHdr->dstEid = ZCFG_EID_ESMD;
++
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		printf("Receive message : %s\n", recv_str);
++	}
++
++	return ret;
++}
++#endif
+ /*
+  * Usage: [-dFIlnrvx] [-g gateway] [-i iface] [-f first_ttl]
+  * [-m max_ttl] [ -p port] [-q nqueries] [-s src_addr] [-t tos]
+@@ -818,7 +891,11 @@
+ 	len_and_sockaddr *from_lsa;
+ 	struct sockaddr *lastaddr;
+ 	struct sockaddr *to;
+-
++#ifdef ZCFG_SUPPORT
++        struct json_object *tracert_msg = NULL, *rt_hops = NULL, *result = NULL;
++        const char *payload = NULL;
++        int payloadLen = 0;
++#endif
+ 	INIT_G();
+ 
+ 	/* minimum 1 arg */
+@@ -1068,12 +1145,23 @@
+ 	lastaddr = xzalloc(dest_lsa->len);
+ 	to = xzalloc(dest_lsa->len);
+ 	seq = 0;
++
++#ifdef ZCFG_SUPPORT
++	tracert_msg = json_object_new_object(); 
++	rt_hops = json_object_new_array();
++	json_object_object_add(tracert_msg, "RouteHops", rt_hops);
++#endif
+ 	for (ttl = first_ttl; ttl <= max_ttl; ++ttl) {
+ 		int probe;
+ 		int unreachable = 0; /* counter */
+ 		int gotlastaddr = 0; /* flags */
+ 		int got_there = 0;
+ 
++#ifdef ZCFG_SUPPORT
++		char rtt[272] = {0};
++		result = json_object_new_object();
++		json_object_array_add(rt_hops, result);
++#endif
+ 		printf("%2d", ttl);
+ 		for (probe = 0; probe < nprobes; ++probe) {
+ 			int read_len;
+@@ -1106,12 +1194,24 @@
+ 				if (!gotlastaddr
+ 				 || (memcmp(lastaddr, &from_lsa->u.sa, from_lsa->len) != 0)
+ 				) {
++#ifdef ZCFG_SUPPORT
++					print(read_len, &from_lsa->u.sa, to, result);
++#else
+ 					print(read_len, &from_lsa->u.sa, to);
++#endif
+ 					memcpy(lastaddr, &from_lsa->u.sa, from_lsa->len);
+ 					gotlastaddr = 1;
+ 				}
+ 
++#ifdef ZCFG_SUPPORT
++				print_delta_ms(t1, t2, rtt);
++				if (icmp_code != -1)
++					json_object_object_add(result, "ErrorCode", json_object_new_int(icmp_code));
++				else
++					json_object_object_add(result, "ErrorCode", json_object_new_int(0));
++#else
+ 				print_delta_ms(t1, t2);
++#endif
+ 				ip = (struct ip *)recv_pkt;
+ 
+ 				if (from_lsa->u.sa.sa_family == AF_INET)
+@@ -1206,7 +1306,9 @@
+ 			if (read_len == 0)
+ 				printf("  *");
+ 		} /* for (nprobes) */
+-
++#ifdef ZCFG_SUPPORT
++		json_object_object_add(result, "RTTimes", json_object_new_string(rtt));
++#endif
+ 		bb_putchar('\n');
+ 		if (got_there
+ 		 || (unreachable > 0 && unreachable >= nprobes - 1)
+@@ -1215,12 +1317,24 @@
+ 		}
+ 	}
+ 
++#ifdef ZCFG_SUPPORT
++	json_object_object_add(tracert_msg, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++
++	payload = json_object_to_json_string(tracert_msg);
++
++	payloadLen = strlen(payload) + 1;
++	tracertMsgSend(ZCFG_MSG_TRACERT_MSG, payloadLen, payload);
++	json_object_put(tracert_msg);
++#endif
+ 	return 0;
+ }
+ 
+ int traceroute_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int traceroute_main(int argc UNUSED_PARAM, char **argv)
+ {
++#ifdef ZCFG_SUPPORT
++	zcfgEidInit(ZCFG_EID_TRACERT, NULL);
++#endif
+ 	return common_traceroute_main(0, argv);
+ }
+ 

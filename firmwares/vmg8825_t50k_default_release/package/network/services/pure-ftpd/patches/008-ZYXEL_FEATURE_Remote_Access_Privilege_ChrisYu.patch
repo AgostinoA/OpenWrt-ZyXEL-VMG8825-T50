@@ -1,0 +1,119 @@
+Index: pure-ftpd-1.0.30/src/ftpd.c
+===================================================================
+--- pure-ftpd-1.0.30.orig/src/ftpd.c	2017-10-31 11:05:42.638254891 +0800
++++ pure-ftpd-1.0.30/src/ftpd.c	2017-10-31 11:07:31.850814905 +0800
+@@ -1955,6 +1955,9 @@
+ 	objIndex_t spTrustDomainObjIid;
+ 	rdm_SpTrustDomain_t *spTrustDomainObj = NULL;
+ 	IID_INIT(spTrustDomainObjIid);	
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++	char userPriviege[65] = {0}; //WAN LAN
++#endif
+ 
+ 	
+ 	/*If IP address match SP trust domain, do not Auth GP_Privilege */
+@@ -1977,6 +1980,12 @@
+ 			lock_period = accountObj->AccountLockTime;
+ 			cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
+ 			cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++			if (accountObj->RemoteAccessPrivilege){
++				strcpy(userPriviege, accountObj->RemoteAccessPrivilege);
++				logfile(LOG_WARNING, "Account privilege:  %s Priviege = %s !!!!", account, userPriviege);
++			}
++#endif			
+ 			free(accountObj);
+ 			break;
+ 		}
+@@ -2001,6 +2010,91 @@
+ 			}
+ 			free(logGpObj);
+ 		}
++
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++
++		logfile(LOG_WARNING, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN !!!!");
++		logfile(LOG_WARNING, "Account privilege: get remoAddr = %s ", hostip);
++
++		// check remote IP v4/v6
++		int addrType = 0;
++		char remoAddr_Type[32] = {0}; //WAN LAN
++		addrType = ipType(hostip);
++		
++		if (addrType == AF_INET){
++			//v4 checking
++			
++			logfile(LOG_WARNING, "Account privilege: %s remoAddr type = %d ", hostip, addrType);
++			
++			/*Remote Ip WAN/LAN Ip check */
++			
++			//Get host IP	
++			int n;
++			int remoAddrType = 0;
++			objIndex_t objIid;
++			rdm_IpIface_t *ipObj = NULL;
++			rdm_IpIfaceV4Addr_t *ipv4Obj = NULL;	
++			char lanip[32] = {0};
++			char subnetMask[32] = {0};
++			char perfix[10]={0};
++
++			/*LANIP*/
++			IID_INIT(objIid);
++			while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&ipObj) == ZCFG_SUCCESS) {
++				if(strcmp(ipObj->X_ZYXEL_IfName, "br0") ==0) {
++					free(ipObj);
++					break;
++				}
++				free(ipObj);
++			}
++			
++			objIid.idx[objIid.level] = 1;
++			objIid.level++;
++			if( zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &objIid, (void **)&ipv4Obj)== ZCFG_SUCCESS){
++				strcpy(lanip, ipv4Obj->IPAddress);
++				strcpy(subnetMask, ipv4Obj->SubnetMask);
++				free(ipv4Obj);
++			}
++
++			logfile(LOG_WARNING, "Account privilege: get lanip = %s ", lanip);
++			logfile(LOG_WARNING, "Account privilege: get subnetMask = %s ", subnetMask);
++			inet_pton(AF_INET, subnetMask, &n);
++			int i = 0;
++			
++			while (n > 0) {
++			        n = n >> 1;
++			        i++;
++			}
++			sprintf(perfix, "%d", i);
++			logfile(LOG_WARNING, "Account privilege: subnetMask suffix = %s ", perfix);
++
++			if (checkCidrBlock(lanip, perfix, hostip) == 1){
++				strcpy(remoAddr_Type, "LAN");
++			}
++			else{
++				strcpy(remoAddr_Type, "WAN");
++			}
++			logfile(LOG_WARNING, "Account privilege: %s remoAddr_Type = %s ", hostip, remoAddr_Type);
++			
++			if (strstr(userPriviege, remoAddr_Type) == NULL){
++				snprintf(logStr, sizeof(logStr), "Account:'%s' FTP permission denied.", account);
++				puts(logStr);
++				logfile(LOG_WARNING, "Account privilege:'%s' FTP permission denied.", account);
++				return;
++			}
++
++		}
++		else if (addrType == AF_INET6){
++			//not support V6 for WIND Italy
++			logfile(LOG_WARNING, "Account privilege : %s remoAddr type = %d ", hostip, addrType);
++		}
++		else{
++			//skip check unknow IP type
++			logfile(LOG_WARNING, "Account privilege : %s remoAddr type is invalid !!!! ", hostip);
++			logfile(LOG_WARNING, "Account privilege : Account:'%s' FTP permission denied.", account);
++		}
++
++#endif
+ 	}
+ 
+ 	if(chk_account_is_locked(cur_user_idx, &login_fail_cnt, last_login_time, retry_times, lock_period)){

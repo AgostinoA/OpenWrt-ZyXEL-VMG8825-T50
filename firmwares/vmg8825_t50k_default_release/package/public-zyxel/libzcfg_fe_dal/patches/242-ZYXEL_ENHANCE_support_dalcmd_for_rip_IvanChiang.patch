@@ -1,0 +1,401 @@
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_rip.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_rip.c	2017-07-04 19:24:11.099133906 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_rip.c	2017-07-04 19:31:12.322365800 +0800
+@@ -1,167 +1,226 @@
+-
++#include <ctype.h>
+ #include <json/json.h>
++#include <time.h>
+ 
+ #include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+-#include "zcfg_fe_rdm_string.h"
++#include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ 
+ dal_param_t RIP_param[] =
+ {
+-	{"Enable",								dalType_boolean,0,	0,	NULL},
+-	{"Ripitf_Enable",						dalType_string,	0,	0,	NULL},
+-	{"Version",								dalType_string,	0,	0,	NULL},
+-	{"RipOpMode",							dalType_string,	0,	0,	NULL},
+-	{"DisableDefaultGw",					dalType_string,	0,	0,	NULL},
+-	{NULL,									0,				0,	0,	NULL},
++	{"Index", 	 							dalType_int,	0,	0,		NULL,	NULL,					dal_Edit},
++	{"Enable",								dalType_boolean,0,	0,		NULL,	NULL,					NULL},
++	{"Version",								dalType_string,	0,	0,		NULL,	"1|2|Both",				NULL},
++	{"RipOpMode",							dalType_string,	0,	0,		NULL,	"Active|Passive",		NULL},
++	{"DisableDefaultGw",					dalType_boolean,0,	0,		NULL,	NULL,					NULL},
++	{"Ripitf_Enable",						dalType_boolean,0,	0,	  	NULL,	NULL,					dalcmd_Forbid},
++	{NULL,									0,				0,	0,		NULL,	NULL,					NULL},
+ };
+ 
+-struct json_object *ripObj;
+-struct json_object *ripItfObj;
+-
+-
+-objIndex_t RipIid = {0};
+-objIndex_t RipItfIid = {0};
+-
+-
+-bool Enable;
+-const char *Ripitf_Enable;
+-const char *Version;
+-const char *RipOpMode;
+-const char *DisableDefaultGw;
+-
+-void initRipGlobalObjects(){
+-	ripObj = NULL;
+-	ripItfObj = NULL;
+-	return;
+-}
+-
+-void freeAllRipObjects(){
+-	if(ripObj) json_object_put(ripObj);
+-	if(ripItfObj) json_object_put(ripItfObj);
+-	return;
+-}
+-
+-void getRipBasicInfo(struct json_object *Jobj){
+-	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-	Ripitf_Enable = json_object_get_string(json_object_object_get(Jobj, "Ripitf_Enable"));
+-	Version = json_object_get_string(json_object_object_get(Jobj, "Version"));
+-	RipOpMode = json_object_get_string(json_object_object_get(Jobj, "RipOpMode"));
+-	DisableDefaultGw = json_object_get_string(json_object_object_get(Jobj, "DisableDefaultGw"));
+-
+-	return;
+-}
+-
+-static char *strsplit_getfirst(char **nStr, char *tok){
+-	char *ret = *nStr;
+-	if((nStr == NULL) || (*nStr == NULL)){
+-		return NULL;
+-	}
+-	*nStr = strstr(ret, tok);
+-	if(*nStr != NULL){
+-		*nStr[0] = '\0';
+-		*nStr = *nStr + 1;
+-	}else{
+-		*nStr = NULL;
+-	}
+-	return ret;
+-}
+-
+-zcfgRet_t zcfgFeDalRipItfEdit(struct json_object *Jobj){
++zcfgRet_t zcfgFeDalRipGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	char *enable;
+-	char *version;
+-	char *ripOpMode;
+-	char *disableDefaultGw;
+-	//printf("%s():--- Edit RIP Itf Input --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-
+-	IID_INIT(RipItfIid);
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_RIP_INTF_SET, &RipItfIid, &ripItfObj) == ZCFG_SUCCESS) {
+-		if((enable = strsplit_getfirst(&Ripitf_Enable, ",")) != NULL){
+-			//printf("Enable:%s\n" , enable);
+-		}
+-		if((version = strsplit_getfirst(&Version, ",")) != NULL){
+-			//printf("Version:%s\n" , version);
+-		}
+-		if((ripOpMode = strsplit_getfirst(&RipOpMode, ",")) != NULL){
+-			//printf("X_ZyXEL_RipOpMode:%s\n" , ripOpMode);
+-		}
+-		if((disableDefaultGw = strsplit_getfirst(&DisableDefaultGw, ",")) != NULL){
+-			//printf("X_ZyXEL_DisableDefaultGw:%s\n" , disableDefaultGw);
+-		}
+-
+-		if(strcmp(enable,"true") == 0){
+-			json_object_object_add(ripItfObj, "Enable", json_object_new_boolean(true));
+-		}else{
+-			json_object_object_add(ripItfObj, "Enable", json_object_new_boolean(false));
++	objIndex_t iid,waniid;
++	struct json_object *obj = NULL;
++	struct json_object *wanobj = NULL;
++	struct json_object *pramJobj = NULL;
++	const char *Interface; 
++	const char *name;
++	int count = 1;
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_ROUTING_RIP_INTF_SET, &iid, &obj) == ZCFG_SUCCESS) {
++		pramJobj = json_object_new_object();
++		IID_INIT(waniid);
++		waniid.level = 1;
++		if(json_object_object_get(obj, "Interface") != NULL){
++			Interface = json_object_get_string(json_object_object_get(obj,"Interface"));
++			sscanf(Interface, "IP.Interface.%hhu", &waniid.idx[0]);
++			if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &waniid, &wanobj) == ZCFG_SUCCESS){
++				if(json_object_object_get(wanobj, "X_ZYXEL_SrvName") != NULL){
++					json_object_object_add(pramJobj, "idx", json_object_new_int(iid.idx[0]));
++					json_object_object_add(pramJobj, "Interface",JSON_OBJ_COPY(json_object_object_get(wanobj, "X_ZYXEL_SrvName")));
++					json_object_object_add(pramJobj, "Index", json_object_new_int(count));
++					json_object_object_add(pramJobj, "Version", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_Version")));
++					json_object_object_add(pramJobj, "RipOpMode", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_RipOpMode")));
++					json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
++					json_object_object_add(pramJobj, "DisableDefaultGw", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_DisableDefaultGw")));
++					json_object_array_add(Jarray, pramJobj);
++					count++;
++				}
++				zcfgFeJsonObjFree(wanobj);
++			}
+ 		}
+-
+-		json_object_object_add(ripItfObj, "X_ZYXEL_Version", json_object_new_string(version));
+-
+-		json_object_object_add(ripItfObj, "X_ZYXEL_RipOpMode", json_object_new_string(ripOpMode));
+-
+-		if(strcmp(disableDefaultGw,"true") == 0){
+-			json_object_object_add(ripItfObj, "X_ZYXEL_DisableDefaultGw", json_object_new_boolean(true));
+-		}else{
+-			json_object_object_add(ripItfObj, "X_ZYXEL_DisableDefaultGw", json_object_new_boolean(false));
+-		}
+-		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_ROUTING_RIP_INTF_SET, &RipItfIid, ripItfObj, NULL)) != ZCFG_SUCCESS){
+-			printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_RIP_INTF_SET);
+-			return ZCFG_INTERNAL_ERROR;
+-		}
+-		zcfgFeJsonObjFree(ripItfObj);
++		zcfgFeJsonObjFree(obj);
+ 	}
+-
+ 	return ret;
+ }
+ 
+-zcfgRet_t zcfgFeDalRipEdit(struct json_object *Jobj){
+-	//printf("%s(): Enter.. \n ",__FUNCTION__);
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-
+-	IID_INIT(RipIid);
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ROUTING_RIP, &RipIid, &ripObj)) != ZCFG_SUCCESS){
+-		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get rip fail oid(%d)\n ",__FUNCTION__,RDM_OID_ROUTING_ROUTER_V4_FWD);
+-		return ZCFG_INTERNAL_ERROR;
+-	}
++void zcfgFeDalShowRip(struct json_object *Jarray){
+ 
+-	if(ripObj != NULL){
+-		json_object_object_add(ripObj, "Enable", json_object_new_boolean(Enable));
++	int i, len = 0;
++	struct json_object *obj;
+ 
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
+ 	}
+ 
+-	if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_RIP, &RipIid, ripObj, NULL)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_RIP);
+-		return ZCFG_INTERNAL_ERROR;
++	printf("%-7s %-20s %-12s %-12s %-12s %-20s\n",
++		    "Index", "Interface", "Version", "RipOpMode", "Enable", "DisableDefaultGw");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		if(obj != NULL){
++			printf("%-7s %-20s %-12s %-12s %-12d %-20d\n",
++			json_object_get_string(json_object_object_get(obj, "Index")),
++			json_object_get_string(json_object_object_get(obj, "Interface")),
++			json_object_get_string(json_object_object_get(obj, "Version")),
++			json_object_get_string(json_object_object_get(obj, "RipOpMode")),
++			json_object_get_boolean(json_object_object_get(obj, "Enable")),
++			json_object_get_boolean(json_object_object_get(obj, "DisableDefaultGw")));
++		}
+ 	}
+-
+-	return ret;
+ }
+ 
+-zcfgRet_t zcfgFeDalRoutingProtocolEdit(struct json_object *Jobj, char *replyMsg){
+-	//printf("%s(): Enter.. \n ",__FUNCTION__);
++zcfgRet_t zcfgFeDalRipEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	initRipGlobalObjects();
+-	getRipBasicInfo(Jobj);
+-
+-	if((ret = zcfgFeDalRipItfEdit(Jobj)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to edit Rip inf obj \n", __FUNCTION__);
+-		goto exit;
++	struct json_object *ripItfObj = NULL;
++	struct json_object *ripObj = NULL;
++	struct json_object *reqObject = NULL;
++	struct json_object *tmpObj = NULL;
++	objIndex_t ripItfIid = {0};
++	objIndex_t ripIid = {0};
++	bool Enable = false;
++	bool Ripitf_Enable = false;
++	const char *version;
++	const char *ripOpMode;
++	bool disableDefaultGw = false;
++	int index = 0;
++	int idx = 0;
++	int len = 0;
++	
++	if(json_object_get_type(Jobj) == json_type_object){// set by dalcmd
++		tmpObj = json_object_new_array();
++		zcfgFeDalRipGet(NULL,tmpObj, NULL);
++		IID_INIT(ripItfIid);
++		index = json_object_get_int(json_object_object_get(Jobj,"Index"));
++		
++		len = json_object_array_length(tmpObj);
++		for(int i=0;i<len;i++){
++			reqObject = json_object_array_get_idx(tmpObj, i);
++			if(index == atoi(json_object_get_string(json_object_object_get(reqObject, "Index")))){
++				idx = json_object_get_string(json_object_object_get(reqObject, "idx"));
++			}				
++		}
++
++		ripItfIid.level = 1;
++		ripItfIid.idx[0] = atoi(idx);
++
++		if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ROUTING_RIP_INTF_SET, &ripItfIid, &ripItfObj) != ZCFG_SUCCESS) {
++			if(replyMsg)
++				sprintf(replyMsg, "Can't find RIP rule of index %d\n", index);
++			return ZCFG_NOT_FOUND;
++		}
++
++		if((json_object_object_get(Jobj, "Enable") == NULL) && (json_object_object_get(Jobj, "Version") == NULL) && (json_object_object_get(Jobj, "RipOpMode") == NULL) && (json_object_object_get(Jobj, "DisableDefaultGw") == NULL)){
++			strcpy(replyMsg, "Invalid parameters! Please enter correct parameters.");
++			return ZCFG_REQUEST_REJECT;
++		}
++
++		if(json_object_object_get(Jobj, "Enable") != NULL){
++			Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++			json_object_object_add(ripItfObj, "Enable", json_object_new_boolean(Enable));
++		}
++
++		if(json_object_object_get(Jobj, "Version") != NULL){
++			version = json_object_get_string(json_object_object_get(Jobj, "Version"));
++			if(!strcmp(version,"1"))
++				json_object_object_add(ripItfObj, "X_ZYXEL_Version", json_object_new_string("RIPv1"));
++			if(!strcmp(version,"2"))
++				json_object_object_add(ripItfObj, "X_ZYXEL_Version", json_object_new_string("RIPv2"));
++			if(!strcmp(version,"Both"))
++				json_object_object_add(ripItfObj, "X_ZYXEL_Version", json_object_new_string("RIPv1v2"));	
++		}
++
++		if(json_object_object_get(Jobj, "RipOpMode") != NULL){
++			ripOpMode = json_object_get_string(json_object_object_get(Jobj, "RipOpMode"));
++			json_object_object_add(ripItfObj, "X_ZYXEL_RipOpMode", json_object_new_string(ripOpMode));
++		}
++
++		if(json_object_object_get(Jobj, "DisableDefaultGw") != NULL){
++			disableDefaultGw = json_object_get_boolean(json_object_object_get(Jobj, "DisableDefaultGw"));
++			json_object_object_add(ripItfObj, "X_ZYXEL_DisableDefaultGw", json_object_new_boolean(disableDefaultGw));
++		}
++
++		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_ROUTING_RIP_INTF_SET, &ripItfIid, ripItfObj, NULL)) != ZCFG_SUCCESS){
++			if(replyMsg)
++				sprintf(replyMsg, "Set RIP rule fail!");
++			return ret;
++		}
++		zcfgFeJsonObjFree(ripItfObj);
++		return ret;
+ 	}
+-
+-	if((ret = zcfgFeDalRipEdit(Jobj)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to edit Rip obj \n", __FUNCTION__);
+-		goto exit;
++	else{	//set by GUI
++		len = json_object_array_length(Jobj);
++		for(int reqObjIdx = 0;reqObjIdx<len;reqObjIdx++){
++			reqObject = json_object_array_get_idx(Jobj, reqObjIdx);
++			index = json_object_get_int(json_object_object_get(reqObject, "Index"));
++			IID_INIT(ripItfIid);
++			ripItfIid.idx[0] = index;
++			ripItfIid.level = 1;
++			ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ROUTING_RIP_INTF_SET, &ripItfIid, &ripItfObj);
++			if(ret == ZCFG_SUCCESS){
++				if(json_object_object_get(reqObject, "Enable") != NULL){
++					Enable = json_object_get_boolean(json_object_object_get(reqObject, "Enable"));
++					json_object_object_add(ripItfObj, "Enable", json_object_new_boolean(Enable));
++				}
++
++				if(json_object_object_get(reqObject, "Version") != NULL){
++					version = json_object_get_string(json_object_object_get(reqObject, "Version"));
++					json_object_object_add(ripItfObj, "X_ZYXEL_Version", json_object_new_string(version));
++				}
++
++				if(json_object_object_get(reqObject, "RipOpMode") != NULL){
++					ripOpMode = json_object_get_string(json_object_object_get(reqObject, "RipOpMode"));
++					json_object_object_add(ripItfObj, "X_ZYXEL_RipOpMode", json_object_new_string(ripOpMode));
++				}
++
++				if(json_object_object_get(reqObject, "DisableDefaultGw") != NULL){
++					disableDefaultGw = json_object_get_boolean(json_object_object_get(reqObject, "DisableDefaultGw"));
++					json_object_object_add(ripItfObj, "X_ZYXEL_DisableDefaultGw", json_object_new_boolean(disableDefaultGw));
++				}
++
++				//enable RIP rule
++				if(json_object_object_get(reqObject, "Ripitf_Enable") != NULL){
++					IID_INIT(ripIid);
++					ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ROUTING_RIP, &ripIid, &ripObj);
++					if(ret == ZCFG_SUCCESS){
++						Ripitf_Enable = json_object_get_boolean(json_object_object_get(reqObject, "Ripitf_Enable"));
++						json_object_object_add(ripObj, "Enable", json_object_new_boolean(Ripitf_Enable));
++						if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_RIP, &ripIid, ripObj, NULL)) != ZCFG_SUCCESS){
++							printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_RIP);
++							return ZCFG_INTERNAL_ERROR;
++						}
++						zcfgFeJsonObjFree(ripObj);
++					}
++				}
++				zcfgFeObjJsonBlockedSet(RDM_OID_ROUTING_RIP_INTF_SET, &ripItfIid, ripItfObj, NULL);
++				zcfgFeJsonObjFree(ripItfObj);
++			}
++			else{
++				printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_RIP_INTF_SET);
++				return ZCFG_INTERNAL_ERROR;
++			}
++			zcfgFeJsonObjFree(reqObject);
++		}
++		return ret;
+ 	}
+-
+-exit:
+-	freeAllRipObjects();
+-	return ret;
+ }
+ 
+-
+ zcfgRet_t zcfgFeDalRip(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -169,9 +228,11 @@
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+-	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalRoutingProtocolEdit(Jobj, NULL);
+-	}
++	if(!strcmp(method, "PUT")) 
++		ret = zcfgFeDalRipEdit(Jobj, replyMsg);
++
++	if(!strcmp(method, "GET")) 
++		ret = zcfgFeDalRipGet(Jobj, Jarray, NULL);
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-07-04 19:24:11.119133906 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-07-04 19:29:30.937228300 +0800
+@@ -163,6 +163,7 @@
+ extern zcfgRet_t zcfgFeDalNetworkMAP(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ 
+ extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
++extern void zcfgFeDalShowRip(struct json_object *Jarray);
+ extern void zcfgFeDalShowMgmtSrv(struct json_object *Jarray);
+ extern void zcfgFeDalShowSPMgmtSrv(struct json_object *Jarray);
+ extern void zcfgFeDalShowPortFwd(struct json_object *Jarray);
+@@ -215,7 +216,7 @@
+ {"static_route", 	STATICROUTE_param,	zcfgFeDalStaticRoute,	zcfgFeDalShowStaticRoute,	"get|add|edit|delete",	"Routing"},
+ {"dns_route", 		DNSROUTE_param,		zcfgFeDalDnsRoute,		zcfgFeDalShowDnsRoute,		"get|add|edit|delete",	"Routing"}, //Routing
+ {"policy_route", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute,	zcfgFeDalShowPolicyRoute,	"get|add|edit|delete",	"Routing"}, //Routing
+-{"RIP", 			RIP_param,			zcfgFeDalRip,			NULL,						"edit",				""}, //Routing
++{"rip", 			RIP_param,			zcfgFeDalRip,			zcfgFeDalShowRip,			"get|edit",				"Routing"}, //Routing
+ {"nat",				NatPortFwd_param,	zcfgFeDalNatPortMapping,zcfgFeDalShowPortFwd,		"get|add|edit|delete", "NAT"},
+ {"nat_trigger",NAT_PORT_TRIGGERING_param,zcfgFeDalNatPortTriggering,zcfgFeDalShowPortTrigger,			"get|add|edit|delete", 	"NAT"}, //NAT
+ {"NAT_DMZ_ALG",		NAT_DMZ_ALG_param,	zcfgFeDalNatDMZALG, 	NULL,						"edit",				""}, //NAT

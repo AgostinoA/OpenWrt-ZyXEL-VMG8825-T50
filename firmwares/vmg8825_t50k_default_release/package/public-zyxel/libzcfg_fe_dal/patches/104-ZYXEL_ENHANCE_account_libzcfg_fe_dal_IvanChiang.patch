@@ -1,0 +1,271 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-01-10 18:18:28.168279495 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-01-10 18:15:52.863320600 +0800
+@@ -21,6 +21,7 @@
+ MAINTENANCE_DIAGNOSTIC_PATH = ./maintenance/diagnostic
+ MAINTENANCE_EMAIL_PATH = ./maintenance/mail
+ MAINTENANCE_LOG_PATH = ./maintenance/logsetting
++MAINTENANCE_USER_ACCOUNT_PATH = ./maintenance/useraccount
+ MAINTENANCE = ./maintenance
+ VOIP_SIP_PATH = ./voip/sip
+ VOIP_SIP_PHONE_PATH = ./voip/phone
+@@ -45,6 +46,7 @@
+ SOURCES += $(wildcard $(NETWORK_HOME_CONNECITIVY_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_MGMT)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_DIAGNOSTIC_PATH)/*.c)
++SOURCES += $(wildcard $(MAINTENANCE_USER_ACCOUNT_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE)/*.c)
+ SOURCES += $(wildcard $(VOIP_SIP_PATH)/*.c)
+ SOURCES += $(wildcard $(VOIP_SIP_PHONE_PATH)/*.c)
+Index: libzcfg_fe_dal-1.0/maintenance/useraccount/zcfg_fe_dal_user_account.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/maintenance/useraccount/zcfg_fe_dal_user_account.c	2017-01-10 17:30:49.623883000 +0800
+@@ -0,0 +1,218 @@
++#include <ctype.h>
++#include <json/json.h>
++#include <time.h>
++#include <sys/sysinfo.h>
++#include <unistd.h>
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++
++dal_param_t USER_ACCOUNT_param[] =  //RDM_OID_ZY_LOG_CFG_GP_ACCOUNT
++{
++	{"FirstIndex", 			dalType_int, 	 0, 	0, 	NULL},
++	{"SecondIndex", 		dalType_int, 	 0, 	0, 	NULL},
++	{"Enabled", 			dalType_boolean, 0, 	0, 	NULL},
++	{"EnableQuickStart", 	dalType_boolean, 0, 	0, 	NULL},
++	{"Username", 			dalType_string,	 0,	    0,	NULL},
++	{"Password", 		    dalType_string,	 0,	    0,	NULL},
++	{"AccountRetryTime", 	dalType_int, 	 0, 	5, 	NULL},
++	{"AccountIdleTime",     dalType_int,     1, 	3600, NULL},
++	{"AccountLockTime", 	dalType_int, 	 5, 	5400, NULL},
++	{"oldPw", 				dalType_string,	 0,	    0,	NULL},
++	{"verifyNewpassword",   dalType_string,	 0,	    0,	NULL},
++	{"groupnumber",   		dalType_int,	 0,	    0,	NULL},
++	{NULL, 					0, 				 0, 	0, 	NULL}
++};
++
++//POST function
++zcfgRet_t zcfgFeDal_User_Account_Add(struct json_object *Jobj, char *replyMsg){ 
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *accountObj = NULL;
++	objIndex_t accountIid ={0};
++	const char *username = NULL;
++	const char *password = NULL;
++	const char *oldPw = NULL;
++	const char *verifyNewpassword = NULL;
++	int accountRetryTime = 0;
++	int accountIdleTime = 0;
++	int accountLockTime = 0;
++	bool enable = false;
++	bool enableQuickStart = false;
++	int groupnumber = 0;
++	int FirstIndex = 0;
++	int SecondIndex = 0;
++	//get iid[0] of this item
++	FirstIndex = json_object_get_int(json_object_object_get(Jobj, "FirstIndex"));
++
++	IID_INIT(accountIid);
++	accountIid.level = 1;
++	accountIid.idx[0] = FirstIndex;
++	ret = zcfgFeObjJsonAdd(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, NULL);
++	
++	if(ret == ZCFG_SUCCESS){
++		ret = zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, &accountObj);
++	}
++
++	if(ret == ZCFG_SUCCESS){
++		SecondIndex = json_object_get_int(json_object_object_get(Jobj, "SecondIndex"));
++		enable = json_object_get_boolean(json_object_object_get(Jobj, "Enabled"));
++		enableQuickStart = json_object_get_boolean(json_object_object_get(Jobj, "EnableQuickStart"));
++		username = json_object_get_string(json_object_object_get(Jobj, "Username"));
++		password = json_object_get_string(json_object_object_get(Jobj, "Password"));
++		accountRetryTime = json_object_get_int(json_object_object_get(Jobj, "AccountRetryTime"));
++		accountIdleTime = json_object_get_int(json_object_object_get(Jobj, "AccountIdleTime"));
++		accountLockTime = json_object_get_int(json_object_object_get(Jobj, "AccountLockTime"));
++		verifyNewpassword = json_object_get_string(json_object_object_get(Jobj, "verifyNewpassword"));
++		groupnumber = json_object_get_int(json_object_object_get(Jobj, "groupnumber"));
++		
++		json_object_object_add(accountObj, "FirstIndex", json_object_new_int(FirstIndex));
++		json_object_object_add(accountObj, "SecondIndex", json_object_new_int(SecondIndex));
++		json_object_object_add(accountObj, "Enabled", json_object_new_boolean(enable));
++		json_object_object_add(accountObj, "EnableQuickStart", json_object_new_boolean(enableQuickStart));
++		json_object_object_add(accountObj, "Username", json_object_new_string(username));
++		json_object_object_add(accountObj, "Password", json_object_new_string(password));
++		json_object_object_add(accountObj, "AccountRetryTime", json_object_new_int(accountRetryTime));
++		json_object_object_add(accountObj, "AccountIdleTime", json_object_new_int(accountIdleTime));
++		json_object_object_add(accountObj, "AccountLockTime", json_object_new_int(accountLockTime));
++		json_object_object_add(accountObj, "verifyNewpassword", json_object_new_string(verifyNewpassword));
++		json_object_object_add(accountObj, "groupnumber", json_object_new_int(groupnumber));
++		ret = zcfgFeObjJsonSet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, accountObj, NULL);
++	}
++	zcfgFeJsonObjFree(accountObj);
++	return ret;
++}
++
++//PUT function
++zcfgRet_t zcfgFeDal_User_Account_Edit(struct json_object *Jobj, char *replyMsg){ 
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *accountObj = NULL;
++	struct json_object *reqObj = NULL;
++	int reqObjIdx = 1;
++	objIndex_t accountIid = {0};
++	const char *username = NULL;
++	const char *password = NULL;
++	const char *oldPw = NULL;
++	const char *verifyNewpassword = NULL;
++	int accountRetryTime = 0;
++	int accountIdleTime = 0;
++	int accountLockTime = 0;
++	bool enable = false;
++	int FirstIndex = 0;
++	int SecondIndex = 0;
++	enum json_type jsonType;
++	
++	jsonType = json_object_get_type(Jobj);
++	
++	//Enter object format for accoutObj
++	if(jsonType == json_type_object){
++		//get iid[0] and iid[1] of this item 
++		FirstIndex = json_object_get_int(json_object_object_get(Jobj, "FirstIndex"));
++		SecondIndex = json_object_get_int(json_object_object_get(Jobj, "SecondIndex"));
++	
++		IID_INIT(accountIid);
++		accountIid.level = 2;
++		accountIid.idx[0] = FirstIndex;
++		accountIid.idx[1] = SecondIndex;
++		
++		ret = zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, &accountObj);
++		if(ret == ZCFG_SUCCESS) {
++			enable = json_object_get_boolean(json_object_object_get(Jobj, "Enabled"));
++			password = json_object_get_string(json_object_object_get(Jobj, "Password"));
++			accountRetryTime = json_object_get_int(json_object_object_get(Jobj, "AccountRetryTime"));
++			accountIdleTime = json_object_get_int(json_object_object_get(Jobj, "AccountIdleTime"));
++			accountLockTime = json_object_get_int(json_object_object_get(Jobj, "AccountLockTime"));
++			oldPw = json_object_get_string(json_object_object_get(Jobj, "oldPw"));
++			verifyNewpassword = json_object_get_string(json_object_object_get(Jobj, "verifyNewpassword"));
++			if((strlen(password)> 0)||(strlen(oldPw)> 0)){
++				// compare if password is same, if correct, then change password into new password
++				if (strcmp(json_object_get_string(json_object_object_get(accountObj, "Password")), oldPw)){
++					return ZCFG_NOT_FOUND;
++				}
++				else{
++					json_object_object_add(accountObj, "Password", json_object_new_string(password));
++				}			
++			}
++			json_object_object_add(accountObj, "Enabled", json_object_new_boolean(enable));
++			json_object_object_add(accountObj, "AccountRetryTime", json_object_new_int(accountRetryTime));
++			json_object_object_add(accountObj, "AccountIdleTime", json_object_new_int(accountIdleTime));
++			json_object_object_add(accountObj, "AccountLockTime", json_object_new_int(accountLockTime));
++			ret = zcfgFeObjJsonSet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, accountObj, NULL);
++		}
++	}
++
++	//Enter array format for accoutObj
++	if(jsonType == json_type_array){
++		while((reqObj = json_object_array_get_idx(Jobj, reqObjIdx)) !=NULL){
++			//get iid[0] and iid[1] of this item 
++			FirstIndex = json_object_get_int(json_object_object_get(reqObj, "FirstIndex"));
++			SecondIndex = json_object_get_int(json_object_object_get(reqObj, "SecondIndex"));
++			reqObjIdx++;
++		
++			IID_INIT(accountIid);
++			accountIid.level = 2;
++			accountIid.idx[0] = FirstIndex;
++			accountIid.idx[1] = SecondIndex;
++		
++			ret = zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, &accountObj);
++			if(ret == ZCFG_SUCCESS) {
++				enable = json_object_get_boolean(json_object_object_get(reqObj, "Enabled"));
++				json_object_object_add(accountObj, "Enabled", json_object_new_boolean(enable));
++				ret = zcfgFeObjJsonSet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, accountObj, NULL);
++			}
++		}
++	}
++	zcfgFeJsonObjFree(reqObj);
++	zcfgFeJsonObjFree(accountObj);
++	return ret;
++}
++
++//DELETE function
++zcfgRet_t zcfgFeDal_User_Account_Delete(struct json_object *Jobj, char *replyMsg){ 
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *accountObj = NULL;
++	objIndex_t accountIid = {0};
++	int FirstIndex = 0;
++	int SecondIndex = 0;
++
++	//get iid[0] and iid[1] of this item 
++	FirstIndex  = json_object_get_int(json_object_object_get(Jobj, "FirstIndex"));
++	SecondIndex = json_object_get_int(json_object_object_get(Jobj, "SecondIndex"));
++	
++	IID_INIT(accountIid);
++	accountIid.level = 2;
++	accountIid.idx[0] = FirstIndex;
++	accountIid.idx[1] = SecondIndex;
++	
++	ret = zcfgFeObjJsonGet(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, &accountObj);
++	if(ret == ZCFG_SUCCESS) { 
++		ret = zcfgFeObjJsonDel(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &accountIid, NULL);
++	}
++	
++	zcfgFeJsonObjFree(accountObj);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDal_User_Account_Edit(Jobj, NULL);
++	}else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDal_User_Account_Add(Jobj, NULL);
++	}else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDal_User_Account_Delete(Jobj, NULL);
++	}else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-01-10 18:18:28.156279495 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-01-10 18:15:33.635398000 +0800
+@@ -75,6 +75,7 @@
+ extern dal_param_t MGMT_SRV_param[];
+ extern dal_param_t LOGIN_PRIVILEGE_param[];
+ extern dal_param_t QUICK_START_param[];
++extern dal_param_t USER_ACCOUNT_param[];
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsEntry(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -143,6 +144,7 @@
+ extern zcfgRet_t zcfgFeDalMgmtSrv(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalLoginPrivilege(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalQuickStart(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, char *replyMsg);
+ typedef struct dal_handler_s {
+ 	char				*name;
+ 	dal_param_t			*parameter;
+@@ -219,6 +221,7 @@
+ {"MGMT_SRV", 		MGMT_SRV_param,	zcfgFeDalMgmtSrv},
+ {"LOGIN_PRIVILEGE", 		LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege},
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart},
++{"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount},
+ {NULL,				NULL,				NULL}
+ };
+ 

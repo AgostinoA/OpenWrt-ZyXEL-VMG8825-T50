@@ -1,0 +1,131 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2015-06-18 19:11:53.250526211 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2015-06-18 19:14:16.245746700 +0800
+@@ -269,7 +269,19 @@
+ 		return ret;
+ 	}
+ 
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
+ 	*idx = objIid.idx[1];
++#else
++	{
++		objIndex_t tr98ObjIid;
++
++		IID_INIT(tr98ObjIid);
++		if(zcfg98To181ObjMappingAdd(e_TR98_FWD, &tr98ObjIid, RDM_OID_ROUTING_ROUTER_V4_FWD, &objIid) == ZCFG_SUCCESS) {
++			printf("%s: Added Layer3Forwarding.Forwarding %hhu\n", __FUNCTION__, tr98ObjIid.idx[0]);
++			*idx = tr98ObjIid.idx[0];
++		}
++	}
++#endif
+ 
+ 	return ZCFG_SUCCESS;
+ }
+@@ -300,4 +312,40 @@
+ 	}
+ 	
+ 	return ret;
+-}
+\ No newline at end of file
++}
++
++/*
++ *   TR98 Object Name : InternetGatewayDevice.Layer3Forwarding.Forwarding.i
++ *
++ *   Related object in TR181:
++ *   Device.Routing.Router.1.IPv4Forwarding.i
++ */
++zcfgRet_t l3fwdFwdTbObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgFeSetParmAttr_t *setParmAttr = NULL;
++	uint32_t seqnum = 0, oid = 0, attr = 0;
++	objIndex_t tr98ObjIid, objIid;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(!strcmp(paramName, "GatewayIPAddress")) {
++		IID_INIT(tr98ObjIid);
++		if(zcfgFe98NameToSeqnum((const char *)tr98FullPathName, &seqnum, &tr98ObjIid) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_PARAMETER;
++
++		attr = newNotify;
++		attr |= PARAMETER_ATTR_TR98;
++		setParmAttr = zcfgFeTr98ParamAttrSetByName(seqnum, &tr98ObjIid, paramName, attr);
++		json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++		if(newNotify & PARAMETER_ATTR_NOTIFY_MASK) {
++			IID_INIT(objIid);
++			zcfgFe98To181ObjMappingGet(seqnum, &tr98ObjIid, &oid, &objIid);
++			attr &= ~PARAMETER_ATTR_TR98;
++			attr |= PARAMETER_ATTR_TR181;
++			setParmAttr = zcfgFeTr98ParamAttrSetByName(oid, &objIid, paramName, attr);
++			json_object_array_add(multiAttrJobj, json_object_new_int((int)setParmAttr));
++		}
++	}
++
++	return ZCFG_SUCCESS;
++}
+Index: libzcfg_fe_tr98-1.0/l3fwd.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.h	2015-06-18 19:11:52.818526207 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.h	2015-06-18 19:14:24.260246700 +0800
+@@ -9,4 +9,5 @@
+ extern zcfgRet_t l3fwdFwdTbObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t l3fwdFwdTbObjSet(char *, int, struct json_object *, struct json_object *);
+ extern zcfgRet_t l3fwdFwdTbObjAdd(char *, int *);
+-extern zcfgRet_t l3fwdFwdTbObjDel(char *);
+\ No newline at end of file
++extern zcfgRet_t l3fwdFwdTbObjDel(char *);
++extern zcfgRet_t l3fwdFwdTbObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj);
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/l3fwd_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd_parameter.h	2014-01-03 16:07:24.000000000 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd_parameter.h	2015-06-18 19:14:30.231246700 +0800
+@@ -8,7 +8,7 @@
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+ 	{ "StaticRoute", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
+-	{ "Type", PARAMETER_ATTR_WRITE, 9, json_type_string},
++	{ "Type", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DEFAULTATTR|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 9, json_type_string}, //
+ 	{ "DestIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "DestSubnetMask", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "SourceIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
+@@ -17,7 +17,7 @@
+ 	{ "GatewayIPAddress", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
+ 	{ "ForwardingMetric", PARAMETER_ATTR_WRITE, 0, json_type_int},
+-	{ "MTU", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "MTU", PARAMETER_ATTR_WRITE|PARAMETER_ATTR_DEFAULTATTR|PARAMETER_ATTR_DENY_ACTIVENOTIFY_REQUEST|PARAMETER_ATTR_DENY_PASSIVENOTIFY_REQUEST, 0, json_type_uint32}, //
+ 	{ NULL, 0, 0, 0}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_msg.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_msg.h	2015-06-18 19:11:53.382526212 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_msg.h	2015-06-18 19:15:19.822246700 +0800
+@@ -38,6 +38,9 @@
+ 
+ #define zcfgFeParmUpdateMsgSend() zcfgFeReqSend(ZCFG_MSG_UPDATE_PARAMETER_NOTIFY, NULL)
+ 
++#define zcfgFe98To181ObjMappingGet(seqnum, tr98ObjIid, oid, objIid)  zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR98_MAPPING, seqnum, tr98ObjIid, oid, objIid)
++#define zcfgFe181To98ObjMappingGet(oid, objIid, seqnum, tr98ObjIid)  zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR181_MAPPING, oid, objIid, seqnum, tr98ObjIid)
++
+ zcfgRet_t zcfg98To181ObjMappingAdd(zcfg_name_t seqnum, objIndex_t *tr98ObjIid, zcfg_offset_t oid, objIndex_t *objIid);
+ zcfgRet_t zcfgObjMappingGet(uint32_t msgType, uint32_t num_1, objIndex_t *objIdxData_1, uint32_t *num_2, objIndex_t *objIdxData_2);
+ zcfgRet_t zcfgFeMultiParmAttrSet(zcfgFeSetParmAttrLst_t *setParmAttrLst);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-06-18 19:11:53.442526212 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-06-18 19:12:57.625246700 +0800
+@@ -261,8 +261,8 @@
+ {TR98_TIME,                     0,              para_Time,              timeObjGet,              timeObjSet,             NULL,             NULL,            NULL},
+ //{TR98_USR_INTF,                 0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_CAPT_PORTAL,              0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_L3_FWD,                   0,              para_L3Fwd,             l3fwdObjGet,             NULL,                   NULL,             NULL,            NULL},
+-{TR98_FWD,                      ATTR_INDEX_CREA,para_Fwd,               l3fwdFwdTbObjGet,        l3fwdFwdTbObjSet,       l3fwdFwdTbObjAdd, l3fwdFwdTbObjDel,NULL},
++{TR98_L3_FWD,                   0,              para_L3Fwd,             l3fwdObjGet,             NULL,                   NULL,             NULL,            NULL, NULL, NULL},
++{TR98_FWD,                      ATTR_INDEX_CREA,para_Fwd,               l3fwdFwdTbObjGet,        l3fwdFwdTbObjSet,       l3fwdFwdTbObjAdd, l3fwdFwdTbObjDel,  NULL, NULL, l3fwdFwdTbObjAttrSet},
+ {TR98_L2_BR,                    0,               para_L2Br,              l2BridingObjGet,         NULL,                   NULL,             NULL,            l2BridingObjNotify, l2BridingObjAttrGet, l2BridingObjAttrSet},
+ {TR98_BR,                       ATTR_INDEX_CREA, para_Br,                l2BrObjGet,              l2BrObjSet,             l2BrObjAdd,       l2BrObjDel,      l2BrObjNotify, l2BrObjAttrGet, l2BrObjAttrSet},
+ {TR98_PORT,                     ATTR_INDEXNODE, para_Port,              NULL,                    NULL,                   NULL,             NULL,            NULL},

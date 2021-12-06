@@ -1,0 +1,135 @@
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2014-10-01 14:34:34.766599795 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2014-10-01 14:34:57.565820307 +0800
+@@ -1712,6 +1712,104 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t l2BrVlanObjAdd(char *tr98FullPathName, int *idx)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++#ifdef SUNRISE_TR98_CUSTOMIZATION
++	char tr98ObjNameTmp[128] = {0};
++	char tmpBuf[128];
++	char *ptr = NULL;
++#endif
++
++	printf("Enter %s\n", __FUNCTION__);
++	
++	
++#ifdef SUNRISE_TR98_CUSTOMIZATION
++	printf("tr98FullPathName=%s\n", tr98FullPathName);
++
++	//Sunrise, only allow one VLAN object in each bridge object
++	//InternetGatewayDevice.Layer2Bridging.Bridge.i.VLAN.1
++	if (tr98FullPathName[strlen(tr98FullPathName)-1] == '.')
++		sprintf(tr98ObjNameTmp, "%s%d", tr98FullPathName, 1);
++	else
++		sprintf(tr98ObjNameTmp, "%s.%d", tr98FullPathName, 1);
++
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	ptr = strstr(tr98ObjNameTmp, "Bridge.") + 7;
++	if (*ptr > '0' && *ptr < '4' ){ // Bridge.1 ~ Bridge.3
++		if (getMappingVlanTermPathName(*ptr ,tr98ObjNameTmp) != ZCFG_SUCCESS)
++			return ZCFG_INTERNAL_ERROR;
++	}
++#endif
++
++	//if tr98ObjNameTmp already exist, return error.
++	if (zcfgFe98To181MappingNameGet(tr98ObjNameTmp, tmpBuf) == ZCFG_SUCCESS)
++		return ZCFG_INTERNAL_ERROR;
++#endif
++
++	/*add the object "Device.Bridging.Filter.i" */
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_ETH_VLAN_TERM, &objIid, NULL)) != ZCFG_SUCCESS){
++		printf("Add Instance Fail!!\n");
++		return ret;
++	}
++	
++#ifdef SUNRISE_TR98_CUSTOMIZATION	
++	*idx = 1;
++#else
++	*idx = objIid.idx[0];
++#endif
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t l2BrVlanObjDel(char *tr98FullPathName)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mappingPathName[32] = {0};
++	uint32_t  oid = 0;
++	objIndex_t objIid;
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	char tr98vlanPathName[128];
++	char *ptr = NULL;
++#endif
++
++	printf("Enter %s\n", __FUNCTION__);
++
++#ifdef SUNRISE_BRIDGE_INDEX_CUSTOMIZATION
++	ptr = strstr(tr98FullPathName, "Bridge.") + 7;
++	if (*ptr > 48 && *ptr < 52 ){ // Bridge.1 ~ Bridge.3
++		if (getMappingVlanTermPathName(*ptr ,tr98vlanPathName) != ZCFG_SUCCESS)
++			return ZCFG_NO_SUCH_OBJECT;
++	}
++	
++	printf("tr98vlanPathName=%s\n",tr98vlanPathName);
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98vlanPathName, mappingPathName)) != ZCFG_SUCCESS)
++		return ret;
++#else
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS)
++		return ret;
++#endif
++		
++	IID_INIT(objIid);
++	printf("mappingPathName %s\n", mappingPathName);
++	sprintf(tr181Obj, "Device.%s", mappingPathName);
++	oid = zcfgFeObjNameToObjId(tr181Obj, &objIid);
++
++	ret = zcfgFeObjJsonDel(oid, &objIid, NULL);
++	if(ret == ZCFG_SUCCESS)
++		printf("Delete Object Success\n");
++	else
++		printf("Delete Object Fail\n");
++		return ret;
++
++	return ZCFG_SUCCESS;
++}
++
++
+ zcfgRet_t l2BrVlanObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
+ {
+ 	bool found = false;
+Index: libzcfg_fe_tr98-1.0/l2bridge.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.h	2014-10-01 14:34:34.414599797 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.h	2014-10-01 14:34:34.782599795 +0800
+@@ -37,6 +37,8 @@
+ 
+ extern zcfgRet_t l2BrVlanObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t l2BrVlanObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++extern zcfgRet_t l2BrVlanObjAdd(char *tr98FullPathName, int *idx);
++extern zcfgRet_t l2BrVlanObjDel(char *tr98FullPathName);
+ extern zcfgRet_t l2BrVlanObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int l2BrVlanObjAttrGet(char *, int, char *);
+ extern zcfgRet_t l2BrVlanObjAttrSet(char *, int, char *, int , struct json_object *);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2014-10-01 14:34:34.750599795 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2014-10-01 14:34:34.786599795 +0800
+@@ -227,7 +227,7 @@
+ {TR98_L2_BR,                    0,               para_L2Br,              l2BridingObjGet,         NULL,                   NULL,             NULL,            l2BridingObjNotify, l2BridingObjAttrGet, l2BridingObjAttrSet},
+ {TR98_BR,                       ATTR_INDEX_CREA, para_Br,                l2BrObjGet,              l2BrObjSet,             l2BrObjAdd,       l2BrObjDel,      l2BrObjNotify, l2BrObjAttrGet, l2BrObjAttrSet},
+ {TR98_PORT,                     ATTR_INDEXNODE, para_Port,              NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_VLAN,                     ATTR_INDEXNODE,  para_Vlan,              l2BrVlanObjGet,          l2BrVlanObjSet,         NULL,             NULL,            l2BrVlanObjNotify, l2BrVlanObjAttrGet, l2BrVlanObjAttrSet},
++{TR98_VLAN,                     ATTR_INDEXNODE,  para_Vlan,              l2BrVlanObjGet,          l2BrVlanObjSet,        l2BrVlanObjAdd,   l2BrVlanObjDel,  l2BrVlanObjNotify, l2BrVlanObjAttrGet, l2BrVlanObjAttrSet},
+ {TR98_FILTER,                   ATTR_INDEX_CREA, para_Filter,            l2BrFilterObjGet,        l2BrFilterObjSet,       l2BrFilterObjAdd, l2BrFilterObjDel,l2BrFilterObjNotify, l2BrFilterObjAttrGet, l2BrFilterObjAttrSet},
+ {TR98_MARK,                     ATTR_INDEXNODE, para_Mark,              NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_AVAI_INTF,                ATTR_INDEXNODE,  para_AvaiIntf,          l2BrAvailableIntfObjGet, NULL,                   NULL,             NULL,            l2BrAvailableIntfObjNotify, l2BrAvailableIntfObjAttrGet, l2BrAvailableIntfObjAttrSet},

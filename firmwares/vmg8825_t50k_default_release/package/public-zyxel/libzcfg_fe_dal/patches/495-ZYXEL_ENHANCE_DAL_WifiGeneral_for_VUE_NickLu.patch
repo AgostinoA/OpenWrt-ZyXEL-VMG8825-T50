@@ -1,0 +1,162 @@
+--- a/network/wireless/zcfg_fe_dal_wifi_general.c
++++ b/network/wireless/zcfg_fe_dal_wifi_general.c
+@@ -32,12 +32,19 @@ dal_param_t WIFI_GENERAL_param[]={
+ 	{"bandwidth",			dalType_int,		0,	0,	NULL,		NULL,			0},
+ 	{"extcha",				dalType_int,		0,	0,	NULL,		NULL,			dalcmd_Forbid},
+ 	{"channel",				dalType_int,		0,	0,	NULL,		NULL,			0},
++	{"PossibleChannels",		dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},	
++	{"X_ZYXEL_UpperChannels",	dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"X_ZYXEL_LowerChannels",	dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"X_ZYXEL_AC80_Channels",	dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"X_ZYXEL_Wireless_Mode",	dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"X_ZYXEL_OBSS_coex",		dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	//WiFi Access Point
+ 	{"MaxAssociatedDevices",dalType_int,		1,	64,	NULL,		NULL,			0},
+ 	{"wlHide",				dalType_boolean, 	0,	0,	NULL,		NULL,			0},
+ 	{"wlGwMode",			dalType_string, 	0,	0,	NULL,		NULL,			0},
+ 	{"wlEnableGuest",		dalType_boolean, 	0,	0,	NULL,		NULL,			0},
+ 	//WiFi Access Point Sec
++	{"ModesSupported",		dalType_string,		0,	0,	NULL,		NULL,			dalcmd_Forbid},
+ 	{"securityLevel",		dalType_string,		0,	0,	NULL,		"NoSecurity|Basic|MoreSecure",	0},
+ 	{"secMode",				dalType_int,		0,	0,	NULL,		"43|149|255",	dalcmd_Forbid},
+ 	{"wep",					dalType_string,		0,	0,	NULL,		NULL,			0}, // 64bit|128bit if need enumeration
+@@ -184,6 +191,8 @@ const char* subnetObjAction;
+ 
+ time_t t1, t2;
+ 
++bool isChannelInList(int, char *);
++
+ //convert string to lower case
+ void stolower(char *str, char *buf, size_t size)
+ {
+@@ -227,7 +236,7 @@ zcfgRet_t zcfgFeDalWifiGeneralGet(struct
+ 
+ 	RadioMultiObj = json_object_new_object();
+ 	IID_INIT(iid);
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_RADIO, &iid, &obj) == ZCFG_SUCCESS) {
++	while(zcfgFeObjJsonGetNext(RDM_OID_WIFI_RADIO, &iid, &obj) == ZCFG_SUCCESS) {
+ 		sprintf(path, "WiFi.Radio.%u", iid.idx[0]);
+ 		json_object_object_add(RadioMultiObj, path, obj);
+ 	}
+@@ -250,8 +259,9 @@ zcfgRet_t zcfgFeDalWifiGeneralGet(struct
+ 		json_object_object_add(pramJobj, "Index", json_object_new_int(iid.idx[0]));
+ 		json_object_object_add(pramJobj, "wlEnable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
+ 		json_object_object_add(pramJobj, "SSID", JSON_OBJ_COPY(json_object_object_get(obj, "SSID")));
+-		json_object_object_add(pramJobj, "X_ZYXEL_UpstreamRate", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_UpstreamRate")));
+-		json_object_object_add(pramJobj, "X_ZYXEL_DownstreamRate", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_DownstreamRate")));
++		json_object_object_add(pramJobj, "X_ZYXEL_Multicast_Fwd", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_Multicast_Fwd")));
++		json_object_object_add(pramJobj, "upRate", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_UpstreamRate")));
++		json_object_object_add(pramJobj, "downRate", JSON_OBJ_COPY(json_object_object_get(obj, "X_ZYXEL_DownstreamRate")));
+ 		json_object_object_add(pramJobj, "BSSID", JSON_OBJ_COPY(json_object_object_get(obj, "BSSID")));
+ #ifdef ZYXEL_ONESSID
+ 		json_object_object_add(pramJobj, "oneSsidEnable", JSON_OBJ_COPY(json_object_object_get(OneSsidObj, "oneSsidEnable")));
+@@ -264,6 +274,61 @@ zcfgRet_t zcfgFeDalWifiGeneralGet(struct
+ 			json_object_object_add(pramJobj, "AutoChannelEnable", JSON_OBJ_COPY(json_object_object_get(obj2, "AutoChannelEnable")));
+ 			json_object_object_add(pramJobj, "channel", JSON_OBJ_COPY(json_object_object_get(obj2, "Channel")));
+ 			json_object_object_add(pramJobj, "bandwidth", JSON_OBJ_COPY(json_object_object_get(obj2, "OperatingChannelBandwidth")));
++			json_object_object_add(pramJobj, "PossibleChannels", JSON_OBJ_COPY(json_object_object_get(obj2, "PossibleChannels")));
++			json_object_object_add(pramJobj, "X_ZYXEL_UpperChannels", JSON_OBJ_COPY(json_object_object_get(obj2, "X_ZYXEL_UpperChannels")));
++			json_object_object_add(pramJobj, "X_ZYXEL_LowerChannels", JSON_OBJ_COPY(json_object_object_get(obj2, "X_ZYXEL_LowerChannels")));
++			json_object_object_add(pramJobj, "X_ZYXEL_AC80_Channels", JSON_OBJ_COPY(json_object_object_get(obj2, "X_ZYXEL_AC80_Channels")));
++			json_object_object_add(pramJobj, "X_ZYXEL_Wireless_Mode", JSON_OBJ_COPY(json_object_object_get(obj2, "X_ZYXEL_Wireless_Mode")));
++			json_object_object_add(pramJobj, "X_ZYXEL_OBSS_coex", JSON_OBJ_COPY(json_object_object_get(obj2, "X_ZYXEL_OBSS_coex")));
++			{
++			        char *band = json_object_get_string(json_object_object_get(obj2, "OperatingFrequencyBand"));;
++			        char *chList = json_object_get_string(json_object_object_get(obj2, "PossibleChannels"));
++			        char *chListUpper = json_object_get_string(json_object_object_get(obj2, "X_ZYXEL_UpperChannels"));;
++			        char *chListLower = json_object_get_string(json_object_object_get(obj2, "X_ZYXEL_LowerChannels"));;
++				unsigned int bw = json_object_get_int(json_object_object_get(obj2, "OperatingChannelBandwidth"));
++				unsigned int ch = 0;
++	
++		                if(json_object_get_boolean(json_object_object_get(obj2, "AutoChannelEnable")))
++		                        ch = AutoChannel;
++		                else
++                		        ch = json_object_get_int(json_object_object_get(obj2, "Channel"));
++
++
++		                if(!strcmp(band,"2.4GHz")){
++		                        if(bw==20 && isChannelInList(ch,chList)){
++						json_object_object_add(pramJobj, "extcha", json_object_new_int(0));
++                		        }
++		                        else if(bw==40 && isChannelInList(ch,chListLower)){
++						
++                                		json_object_object_add(pramJobj, "extcha", json_object_new_int(1));
++		                        }
++                		        else if(bw==40 && isChannelInList(ch,chListUpper)){
++		                                json_object_object_add(pramJobj, "extcha", json_object_new_int(2));
++                		        }
++		                        else if(bw==0 && isChannelInList(ch,chListLower)){
++                                		json_object_object_add(pramJobj, "extcha", json_object_new_int(1));
++		                        }
++                		        else if(bw==0 && isChannelInList(ch,chListUpper)){
++			                        json_object_object_add(pramJobj, "extcha", json_object_new_int(2));
++		                        }
++                		}
++		                else{ // 5G
++					char *chListAC80 = json_object_get_string(json_object_object_get(obj2, "X_ZYXEL_AC80_Channels"));
++
++		                        if(bw==20 && isChannelInList(ch,chList)){
++                                		json_object_object_add(pramJobj, "extcha", json_object_new_int(0));
++		                        }
++                		        else if(bw==40 && isChannelInList(ch,chListLower)){
++		                                json_object_object_add(pramJobj, "extcha", json_object_new_int(1));
++                		        }
++		                        else if(bw==40 && isChannelInList(ch,chListUpper)){
++                                		json_object_object_add(pramJobj, "extcha", json_object_new_int(2));
++		                        }
++                		        else if(bw==80 && isChannelInList(ch,chListAC80)){
++		                                json_object_object_add(pramJobj, "extcha", json_object_new_int(0));
++                		        }
++                		}
++			}
+ 		}
+ 
+ 		//json_object_object_add(pramJobj, "SecurityMode", json_object_new_string("None"));
+@@ -287,6 +352,7 @@ zcfgRet_t zcfgFeDalWifiGeneralGet(struct
+ 
+ 			obj2 = json_object_object_get(obj2, "Security");
+ 			if(obj2){
++				json_object_object_add(pramJobj, "ModesSupported" , JSON_OBJ_COPY(json_object_object_get(obj2, "ModesSupported")));
+ 				json_object_object_add(pramJobj, "SecurityMode", JSON_OBJ_COPY(json_object_object_get(obj2, "ModeEnabled")));
+ 				modeEn = json_object_get_string(json_object_object_get(obj2, "ModeEnabled"));
+ 				if(!strcmp("None",modeEn)){
+@@ -296,9 +362,12 @@ zcfgRet_t zcfgFeDalWifiGeneralGet(struct
+ 					if(json_object_get_boolean(json_object_object_get(obj2, "X_ZYXEL_AutoGenPSK"))){
+ 						json_object_object_add(pramJobj, "PskDisplay", JSON_OBJ_COPY(json_object_object_get(obj2, "X_ZYXEL_Auto_PSK")));
+ 					}
+-					else{
++					else if(strlen(json_object_get_string(json_object_object_get(obj2, "KeyPassphrase")) ) > 0){
+ 						json_object_object_add(pramJobj, "PskDisplay", JSON_OBJ_COPY(json_object_object_get(obj2, "KeyPassphrase")));
+ 					}
++					else{
++						json_object_object_add(pramJobj, "PskDisplay", JSON_OBJ_COPY(json_object_object_get(obj2, "PreSharedKey")));
++					}
+ 				}
+ 				else{
+ 					json_object_object_add(pramJobj, "PskDisplay", json_object_new_string("N/A"));
+--- a/network/wireless/zcfg_fe_dal_wifi_wps.c
++++ b/network/wireless/zcfg_fe_dal_wifi_wps.c
+@@ -22,6 +22,7 @@ dal_param_t WIFI_WPS_param[] =
+ 	{"X_ZYXEL_WPS_StationPin",		dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{"X_ZYXEL_WPS_Configured",		dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{"X_ZYXEL_WPS_Method",			dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"X_ZYXEL_WPS_V2",			dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{"ConfigMethodsEnabled",		dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{NULL,		0,	0,	0,	NULL,	NULL,	0}
+ };
+@@ -129,6 +130,7 @@ zcfgRet_t zcfgFeDalWifiWpsGet(struct jso
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WPS_EnableAPPin", JSON_OBJ_COPY(enableAPPin));
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WPS_DevicePin", JSON_OBJ_COPY(devicePin));
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WPS_Configured", JSON_OBJ_COPY(wpsConfigured));
++	json_object_object_add(pramJobj, "X_ZYXEL_WPS_V2", JSON_OBJ_COPY(json_object_object_get(WifiApWpsJobj, "X_ZYXEL_WPS_V2")));
+ 	json_object_object_add(pramJobj, "ModeEnabled", JSON_OBJ_COPY(wpsSecMode));
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WlMode", JSON_OBJ_COPY(wlMode));
+ 	json_object_array_add(Jarray, pramJobj);
+@@ -172,6 +174,7 @@ zcfgRet_t zcfgFeDalWifiWpsGet(struct jso
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WPS_EnableAPPin", JSON_OBJ_COPY(enableAPPin));
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WPS_DevicePin", JSON_OBJ_COPY(devicePin));
+ 	json_object_object_add(pramJobj, "X_ZYXEL_WPS_Configured", JSON_OBJ_COPY(wpsConfigured));
++	json_object_object_add(pramJobj, "X_ZYXEL_WPS_V2", JSON_OBJ_COPY(json_object_object_get(WifiApWpsJobj, "X_ZYXEL_WPS_V2")));
+ 	json_object_object_add(pramJobj, "ModeEnabled", JSON_OBJ_COPY(wpsSecMode));
+         json_object_object_add(pramJobj, "X_ZYXEL_WlMode", JSON_OBJ_COPY(wlMode));
+ 	json_object_array_add(Jarray, pramJobj);

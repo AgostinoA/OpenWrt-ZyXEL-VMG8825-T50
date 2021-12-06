@@ -1,0 +1,109 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2018-07-19 11:36:03.509655763 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2018-07-19 11:37:11.637655763 +0800
+@@ -22,7 +22,9 @@
+ 	{"oneSsidEnable",		dalType_boolean,	0,	0,	NULL,		NULL,			0},
+ #endif
+ 	//WiFi SSID
+-	{"Index",				dalType_int,		1,	8,	NULL,		NULL,			dal_Edit},
++	//{"Index",				dalType_int,		1,	8,	NULL,		NULL,		dal_Edit},
++	{"MainSSID",			dalType_boolean,	0,	0,	NULL,		NULL,		dal_Edit},
++	{"GuestSSID",			dalType_int,		0,	0,	NULL,		NULL,			0},
+ 	{"wlEnable",			dalType_boolean,	0,	0,	NULL,		NULL,			0},
+ 	{"SSID",				dalType_string,	 	0,	0,	NULL,		NULL,			0},
+ 	{"X_ZYXEL_Multicast_Fwd",dalType_boolean,	0,	0,	NULL,		NULL,			0},
+@@ -1259,31 +1261,73 @@
+ 
+ zcfgRet_t zcfgFeDalWifiGeneralEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	const char *CLIband = NULL;
++	struct json_object *tmpRadioObj = NULL;
++	objIndex_t tmpRadioIid;
++	struct json_object *tmpSSIDObj = NULL;
++	objIndex_t tmpSSIDIid;
++	const char *band = NULL;
+ 	const char *OperaBand = NULL;
+ 	bool found = false;
++	uint8_t radio = 0, tmpRadio = 0;
++	bool mainSSID = false;
++	int guestSSID = 0;
++	int tmpGuestIdx = 0;
++	const char *tmpLowerLayer = NULL;
+ 	initGlobalWlObjects();
+ 	getBasicWlInfo(Jobj);
+ 
++	/* Check CLI wlan edit input. */
+ 	if(json_object_object_get(Jobj, "Band")){
+-		CLIband = json_object_get_string(json_object_object_get(Jobj,"Band"));
+-		wifiRadioIid.level = 1;
+-		// Check device if it supports the band that input from cli.
+-		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_RADIO, &wifiRadioIid, &wifiRadioObj) == ZCFG_SUCCESS){
+-			OperaBand = json_object_get_string(json_object_object_get(wifiRadioObj, "OperatingFrequencyBand"));
+-			if(!strcmp(CLIband, OperaBand)) {
++		band = json_object_get_string(json_object_object_get(Jobj,"Band"));
++		IID_INIT(tmpRadioIid);
++		/* Check device if it supports the band that input from CLI. */
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_RADIO, &tmpRadioIid, &tmpRadioObj) == ZCFG_SUCCESS){
++			OperaBand = json_object_get_string(json_object_object_get(tmpRadioObj, "OperatingFrequencyBand"));
++			if(!strcmp(band, OperaBand)) {
+ 				found = true;
+-				json_object_put(wifiRadioObj);
++				json_object_put(tmpRadioObj);
+ 				break;
+ 			}
+-			json_object_put(wifiRadioObj);
++			json_object_put(tmpRadioObj);
+ 		}
+ 		if(found == false){
+-			printf("This device doesn't support %s.\n", CLIband);
++			printf("This device doesn't support %s.\n", band);
+ 			goto dalwlan_edit_fail;
+ 		}
++		/* Accordong Band, MainSSID or GuestSSID to add Index to Jobj. */
++		if (!strcmp(band, "2.4GHz"))
++			radio = 1;
++		else if (!strcmp(band, "5GHz"))
++			radio = 2;
++		mainSSID = json_object_get_boolean(json_object_object_get(Jobj, "MainSSID"));
++		if (mainSSID == false){
++			guestSSID = json_object_get_int(json_object_object_get(Jobj, "GuestSSID"));
++		}
++		IID_INIT(tmpSSIDIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &tmpSSIDIid, &tmpSSIDObj) == ZCFG_SUCCESS){
++			if ((mainSSID == json_object_get_boolean(json_object_object_get(tmpSSIDObj, "X_ZYXEL_MainSSID")))
++				&& (json_object_get_int(json_object_object_get(tmpSSIDObj, "X_ZYXEL_Attribute")) == 0)){
++				tmpLowerLayer = json_object_get_string(json_object_object_get(tmpSSIDObj, "LowerLayers"));
++				sscanf(tmpLowerLayer, "WiFi.Radio.%hhu", &tmpRadio);
++				if (radio == tmpRadio){
++					if (mainSSID){ //wlan edit main ssid
++						json_object_object_add(Jobj, "Index", json_object_new_int(tmpSSIDIid.idx[0]));
++						json_object_put(tmpSSIDObj);
++						break;
++					}
++					else { //wlan edit guest ssid
++						tmpGuestIdx++;
++						if (guestSSID == tmpGuestIdx){ //enter guest ssid can be found in datamodel
++							json_object_object_add(Jobj, "Index", json_object_new_int(tmpSSIDIid.idx[0]));
++							json_object_put(tmpSSIDObj);
++							break;
++						}
++					}
++				}
++			}
++			json_object_put(tmpSSIDObj);
++		}
+ 	}
+-
+ 	if((ret = getWlObj(Jobj,NULL)) != ZCFG_SUCCESS)
+ 		goto dalwlan_edit_fail;
+ 
+@@ -1342,7 +1386,7 @@
+ 	struct json_object *tmpSubnetObj = NULL;
+ 	const char *tmpIntf = NULL;
+ 	uint8_t subnetIdx;
+-	uint8_t tmpSubnetIdx;	
++	uint8_t tmpSubnetIdx;
+ 	
+ 	if(!json_object_object_get(Jobj,"Index")){
+ 		printf("Error : %s needs parameter \"Index\".\n",__FUNCTION__);

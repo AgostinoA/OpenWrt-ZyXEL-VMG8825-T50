@@ -1,0 +1,342 @@
+Index: libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_sys_log.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/logsetting/zcfg_fe_dal_sys_log.c	2017-11-14 13:58:03.498441829 +0800
++++ libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_sys_log.c	2017-11-16 22:02:38.639090290 +0800
+@@ -1,9 +1,12 @@
+ 
+ #include <json/json.h>
++#include <unistd.h>
++#include <sys/stat.h>
+ 
+ #include "zcfg_common.h"
+ #include "zcfg_fe_rdm_string.h"
+ #include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_rdm_access.h"
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+@@ -11,17 +14,117 @@
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_webgui_flag.h"
+ 
++#define FILE_ACCESS_SUCCESS 0
++#define FILE_NAME_SIZE 256
++#define FILE_PATH_SIZE 256
+ #define CMD_SIZE 256
+ #define LINE_SIZE 2048
+ #define LOG_MAX_LINES 8000
+-#define SEC_LOG_PATH "/var/log/security.log"
+-#define SYS_LOG_PATH "/var/log/syslog.log"
++#define SYSLOG_DIR "/var/log"
++#define FLASH_LOG_DIR "/data"
++#define LOG_ROTATE 2 
++
+ 
+ dal_param_t SYS_LOG_param[]={
+-	{"category",		dalType_string,	0,	0,	NULL,	"system|security",	dal_Delete},
++	{"category",		dalType_string, 0,	0,	NULL,	"syslog|securitylog",	dal_Get|dal_Delete},
+ 	{NULL,				dalType_int,	0,	0,	NULL,	NULL,	0},
+ };
+ 
++zcfgRet_t getSysLogFromFlash(struct json_object *result, int logFileSize, char *catName, char *logFileName){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	int i = LOG_ROTATE;
++	int len = 0;
++	char *filePath[FILE_PATH_SIZE] = {0};
++	char *cmd[CMD_SIZE] = {0};
++	char *line = NULL;
++	char *tmpLine = NULL;
++	FILE *tmpFp;
++
++	while (1)
++	{
++        i--;
++        sprintf(filePath, "%s/%s%d", FLASH_LOG_DIR, logFileName, i);        
++        tmpFp = fopen(filePath, "r");
++        if (tmpFp) {
++            // file exists
++            fclose(tmpFp);
++        } else {
++            // file doesn't exist
++            if(i >= 0)
++                continue;
++            else
++                break;
++        }
++		
++        if (logFileSize < LOG_MAX_LINES)
++		{
++			line = (char*)malloc(LINE_SIZE);
++            sprintf(cmd, "tail -n %d %s", LOG_MAX_LINES-logFileSize, filePath); 
++			tmpFp = popen(cmd, "r");
++			if (tmpFp)
++			{
++				while (fgets(line, LINE_SIZE, tmpFp) != NULL)
++				{
++					len = strlen(line);
++					line[len-1] = '\0';
++					tmpLine = line;
++					json_object_array_add(result, json_object_new_string(tmpLine));
++				}
++				pclose(tmpFp);
++			}
++			else
++			{
++				dbg_printf("%s:%d: Can't get log (%s), cmd=%s \n",__FUNCTION__,__LINE__,filePath,cmd);
++			}
++        }
++		
++		if(line != NULL) free(line);
++	}
++	
++	return ret;
++}
++
++zcfgRet_t getSysLogInfoByCategory(char *fileName, char *description, char *category){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	char *logFileName = NULL;
++	char *logDescr = NULL;
++	bool foundLogCat = false;
++
++	if ((fileName == NULL) || (category == NULL))
++	{
++		dbg_printf("%s:%d: fileName or category cannot be NULL\n",__FUNCTION__,__LINE__);
++		return ZCFG_INTERNAL_ERROR;	
++	}
++
++	IID_INIT(iid);
++	while ((ret = zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_LOG_CLASSIFY, &iid, &obj)) == ZCFG_SUCCESS)
++	{
++		if (!strcmp(json_object_get_string(json_object_object_get(obj, "Name")),category))
++		{
++			foundLogCat = true;
++			logFileName = json_object_get_string(json_object_object_get(obj, "File"));
++			logDescr = json_object_get_string(json_object_object_get(obj, "Describe"));
++			break;
++		}
++		zcfgFeJsonObjFree(obj);
++	}
++
++	if (!foundLogCat)
++	{
++		printf("\"%s\" does not match any log category\n",category);
++		zcfgFeJsonObjFree(obj);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	strcpy(fileName,logFileName); 
++	strcpy(description,logDescr);
++	zcfgFeJsonObjFree(obj);
++
++	return ret;
++}
++
+ void zcfgFeDalShowSysLog(struct json_object *Jarray){
+ 	int i, len = 0;
+ 	int j, logSize = 0;
+@@ -38,79 +141,173 @@
+ 	for(i=0;i<len;i++){
+ 		logObj = json_object_array_get_idx(Jarray, i);
+ 		if(logObj!=NULL){
+-			printf("%s \n",json_object_get_string(json_object_object_get(logObj,"category")));
++			printf("%s \n",json_object_get_string(json_object_object_get(logObj,"description")));
+ 			printf("-------------------------\n");
+ 			contentObj = json_object_object_get(logObj,"content");
+ 			logSize = json_object_array_length(contentObj);
+ 			for(j=0;j<logSize;j++){
+-				obj = json_object_array_get_idx(contentObj, j);
++				obj = json_object_array_get_idx(contentObj,(logSize-j-1));
+ 				if(obj!=NULL){
+-					printf("%-5d %s\n",j,json_object_get_string(obj));
++					printf("%-5d %s\n",j+1,json_object_get_string(obj));
+ 				}
+ 			}			
+ 		}
+ 	}
+ }
+ 
+-zcfgRet_t zcfgFeDalSysLogGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++zcfgRet_t zcfgFeDalSysLogGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	FILE *fd;
+ 	struct json_object *paramObj = NULL;
+ 	struct json_object *contentObj = NULL;
++
++	// regular log file
++	FILE *fd;
+ 	char cmd[CMD_SIZE]={0};
+ 	char line[LINE_SIZE]={0};
+-	char tmp_str[LINE_SIZE]={0};
++	char filePath[FILE_PATH_SIZE]={0};
++	char fileName[FILE_NAME_SIZE]={0};
++	char logDescript[FILE_NAME_SIZE]={0};
+ 	char *cat = NULL;
+-	int len = 0;
++	int len = 0; 
++	int fileLine = 0;
++
++	// rotate / flash log file
++	struct stat st_log;
++	struct stat st_rotate;
++	struct stat st_flash;
++	char rotateFilePath[32] = {0};
++	char flashFilePath[32] = {0};   
++	bool rotateExist = FALSE;
++	bool flashExist = FALSE;
++
++	// temp
++	char tmpCmd[CMD_SIZE]={0};
++	char tmp_str[LINE_SIZE]={0};
++	char tmpName[FILE_NAME_SIZE]={0};
++	FILE *tmpfp = NULL;
++	int i = 0;
+ 	
+ 	contentObj = json_object_new_array();
+ 	paramObj = json_object_new_object();
+ 
++	// get file name e.g. syslog.log / get description e.g. System Log
+ 	cat = json_object_get_string(json_object_object_get(Jobj,"category"));
+-	if(!strcmp(cat,"system"))
+-		sprintf(line, "tail -n %d %s", LOG_MAX_LINES, SYS_LOG_PATH);
++	ret = getSysLogInfoByCategory(fileName,logDescript,cat);
++	if (ret != ZCFG_SUCCESS)
++	{
++		dbg_printf("%s:%d: ret=%d\n",__FUNCTION__,__LINE__,ret);
++		json_object_put(contentObj);
++		json_object_put(paramObj);
++		return ret;
++	}
++	
++	// log file path e.g. /var/log/syslog.log
++	sprintf(filePath,"%s/%s",SYSLOG_DIR,fileName);
++
++	// get fileLine: the number of log file lines
++	if ((!stat(filePath, &st_log) && (st_log.st_mode & S_IFREG) && st_log.st_size > 0))
++	{
++		sprintf(tmpCmd, "wc -l %s", filePath);	
++		tmpfp = popen(tmpCmd, "r");
++		fscanf(tmpfp, "%d %s", &fileLine, tmpName);
++		pclose(tmpfp);
++	}
+ 	else
+-		sprintf(line, "tail -n %d %s", LOG_MAX_LINES, SEC_LOG_PATH);
++	{
++		fileLine = 0;
++	}
+ 
+-	fd = popen(line, "r");
+-	if(fd){
+-		while(fgets(line, LINE_SIZE, fd) != NULL) {
+-			len = strlen(line);
+-			line[len-1] = '\0';
+-			strcpy(tmp_str,line);
+-			json_object_array_add(contentObj, json_object_new_string(tmp_str));
++	// rotate file path e.g. /var/log/syslog.log.1
++	sprintf(rotateFilePath, "%s/%s.%d", SYSLOG_DIR, fileName, 1); 	
++	if (!stat(rotateFilePath, &st_rotate) && (st_rotate.st_mode & S_IFREG) && st_rotate.st_size > 0)
++	{
++		rotateExist = TRUE;		  
++	}  
++
++	// flash file path e.g. /data/syslog.log0
++	for (i = 0; i < LOG_ROTATE; i++)
++	{
++		sprintf(flashFilePath, "%s/%s%d", FLASH_LOG_DIR, fileName, i);     
++		if(!stat(flashFilePath, &st_flash) && (st_flash.st_mode & S_IFREG) && st_flash.st_size > 0){
++			flashExist = TRUE;
++			break;
+ 		}
++	}	
++
++	// if no rotate file, get log data from flash
++	if (!rotateExist && flashExist)
++	{
++		getSysLogFromFlash(contentObj, fileLine, NULL, fileName);
+ 	}
+-	pclose(fd);
+ 
+-	json_object_object_add(paramObj, "category", json_object_new_string(cat));
++	if(rotateExist)
++		sprintf(cmd, "tail -q -n %d %s %s", LOG_MAX_LINES, rotateFilePath, filePath);
++	else
++		sprintf(cmd, "tail -n %d %s", LOG_MAX_LINES, filePath);
++
++	// dbg_printf("%s:%d: cmd=%s \n",__FUNCTION__,__LINE__,cmd);
++
++	if (access(filePath,F_OK) == FILE_ACCESS_SUCCESS && access(filePath,R_OK) == FILE_ACCESS_SUCCESS)
++	{
++		fd = popen(cmd, "r");
++		if (!fd)
++		{
++			dbg_printf("%s:%d: popen error \n",__FUNCTION__,__LINE__);
++			printf("Can't get %s log\n");
++			return ZCFG_INTERNAL_ERROR;
++		}
++		else
++		{
++			while (fgets(line,LINE_SIZE,fd) != NULL)
++			{
++				len = strlen(line);
++				line[len-1] = '\0';
++				strcpy(tmp_str,line);
++				json_object_array_add(contentObj, json_object_new_string(tmp_str));
++			}
++			pclose(fd);
++		}
++	}
++	else // file not exist, do nothing
++	{
++		dbg_printf("%s:%d: no log content in %s\n", __FUNCTION__,__LINE__,filePath);
++	}
++
++	json_object_object_add(paramObj, "description", json_object_new_string(logDescript));
+ 	json_object_object_add(paramObj, "content", JSON_OBJ_COPY(contentObj));
+ 	json_object_array_add(Jarray,paramObj); 
+ 
+ 	json_object_put(contentObj);
+-	json_object_put(paramObj);
++	
+ 	return ret;
+ }
+ 
+-zcfgRet_t zcfgFeDalSysLogDelete(struct json_object *Jobj, char *replyMsg){
++zcfgRet_t zcfgFeDalSysLogDelete(struct json_object *Jobj, char *replyMsg)
++{
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char *cat = NULL;
+-	char filePath[256]={0};
++	char filePath[FILE_PATH_SIZE]={0};
++	char fileName[FILE_NAME_SIZE]={0};
++	char logDescript[FILE_NAME_SIZE]={0};
+ 
++	// get file name e.g. syslog.log
+ 	cat = json_object_get_string(json_object_object_get(Jobj,"category"));
+-	if(!strcmp(cat,"system"))
+-		strcpy(filePath,"/var/log/syslog.log");
+-	else
+-		strcpy(filePath,"/var/log/security.log");
++	ret = getSysLogInfoByCategory(fileName,logDescript,cat);
++	if (ret != ZCFG_SUCCESS)
++	{
++		dbg_printf("%s:%d: ret=%d\n", __FUNCTION__,__LINE__,ret);
++		return ret;
++	}
+ 
+-	if((ret = unlink(filePath)) != 0){
+-		printf("Cannot delete file (%s).  ret=%d\n", filePath, ret); 
+-		ret = ZCFG_INTERNAL_ERROR;
+-	}							  
++	ret = zcfgFeSysLogClean(fileName);
++	if (ret != ZCFG_SUCCESS)
++		dbg_printf("%s:%d: ret=%d\n", __FUNCTION__,__LINE__,ret);
+ 	
+ 	return ret;
+ }
+ 
++
+ zcfgRet_t zcfgFeDalSysLog(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 

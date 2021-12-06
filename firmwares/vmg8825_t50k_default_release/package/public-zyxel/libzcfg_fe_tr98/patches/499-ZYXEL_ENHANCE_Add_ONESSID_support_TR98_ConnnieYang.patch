@@ -1,0 +1,208 @@
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-09-15 16:06:06.796547632 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-09-15 16:06:06.860547632 +0800
+@@ -325,6 +325,9 @@
+ #ifdef BUILD_SONIQ
+ {e_TR98_Qsteer		       , &tr98Obj[e_TR98_Qsteer	     -e_TR98_START]},
+ #endif //#ifdef BUILD_SONIQ
++#ifdef ZYXEL_ONESSID
++{e_TR98_ONESSID					, &tr98Obj[e_TR98_ONESSID					-e_TR98_START]},
++#endif //#ifdef ZYXEL_ONESSID
+ #ifdef ZyXEL_IPP_PRINTSERVER
+ {e_TR98_PRINT_SERVER             , &tr98Obj[e_TR98_PRINT_SERVER             -e_TR98_START]}
+ #endif
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2017-09-15 16:06:06.796547632 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2017-09-15 16:06:06.860547632 +0800
+@@ -289,6 +289,10 @@
+ 
+ #define TR98_FEATURE_FLAG			"InternetGatewayDevice.X_ZYXEL_EXT.FeatureFlag"
+ 
++#ifdef ZYXEL_ONESSID
++#define TR98_ONESSID                  "InternetGatewayDevice.X_ZYXEL_EXT.X_ZYXEL_ONESSID"
++#endif 
++
+ #define OBSOLETED 1
+ //#define ZYXEL_EXT 1
+ 
+@@ -598,6 +602,9 @@
+ #ifdef BUILD_SONIQ
+ {TR98_Qsteer,             0,              para_Qsteer,   zyExtQsteerObjGet,          zyExtQsteerObjSet,         NULL,             NULL,            NULL, NULL, NULL},
+ #endif
++#ifdef ZYXEL_ONESSID
++{TR98_ONESSID,					0,				para_OneSsid,			zyExtOneSsidObjGet,				zyExtOneSsidObjSet,			NULL,			NULL,		NULL,	NULL,	NULL},
++#endif
+ {NULL,                          0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL}
+ };
+ 
+Index: libzcfg_fe_tr98-1.0/zyExt.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.c	2017-09-15 16:06:06.508547631 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.c	2017-09-15 16:06:06.864547632 +0800
+@@ -7613,4 +7613,100 @@
+ 
+ 	return ZCFG_SUCCESS;
+ }
+-#endif //#ifdef BUILD_SONIQ
+\ No newline at end of file
++#endif //#ifdef BUILD_SONIQ
++
++#ifdef ZYXEL_ONESSID
++/* InternetGatewayDevice.X_ZYXEL_EXT.X_ZYXEL_ONESSID */
++zcfgRet_t zyExtOneSsidObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *OneSsidObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_WIFI_ONE_SSID, &objIid, &OneSsidObj, updateFlag)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write parameter value from tr181 objects to tr98 object*/
++		paramValue = json_object_object_get(OneSsidObj, paramList->name);
++		if(paramValue != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++
++	json_object_put(OneSsidObj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyExtOneSsidObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *OneSsidObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_ONE_SSID, &objIid, &OneSsidObj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	if(multiJobj){
++		tmpObj = OneSsidObj;
++		OneSsidObj = NULL;
++		OneSsidObj = zcfgFeJsonMultiObjAppend(RDM_OID_WIFI_ONE_SSID, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL){
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			tr181ParamValue = json_object_object_get(OneSsidObj, paramList->name);
++			if(tr181ParamValue != NULL){
++				json_object_object_add(OneSsidObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_ONE_SSID, &objIid, OneSsidObj, NULL)) != ZCFG_SUCCESS ){
++			json_object_put(OneSsidObj);
++			return ret;
++		}
++		json_object_put(OneSsidObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++#endif //#ifdef ZYXEL_ONESSID
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/zyExt.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt.h	2017-09-15 16:06:06.484547631 +0800
++++ libzcfg_fe_tr98-1.0/zyExt.h	2017-09-15 16:06:06.864547632 +0800
+@@ -63,6 +63,10 @@
+ extern tr98Parameter_t para_Qsteer[];
+ #endif
+ 
++#ifdef ZYXEL_ONESSID
++extern tr98Parameter_t para_OneSsid[];
++#endif
++
+ /*Handler Function*/
+ 
+ /*InternetGatewayDevice.X_ZYXEL_EXT.DNSRouteEntry.i*/
+@@ -324,4 +328,9 @@
+ #ifdef BUILD_SONIQ
+ extern zcfgRet_t zyExtQsteerObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t zyExtQsteerObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
++#endif
++
++#ifdef ZYXEL_ONESSID
++extern zcfgRet_t zyExtOneSsidObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t zyExtOneSsidObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ #endif
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/zyExt_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zyExt_parameter.h	2017-09-15 16:06:06.836547632 +0800
++++ libzcfg_fe_tr98-1.0/zyExt_parameter.h	2017-09-15 16:06:06.864547632 +0800
+@@ -409,4 +409,11 @@
+ 	{ "WPS_Mode", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+ };
+-#endif //#ifdef BUILD_SONIQ
+\ No newline at end of file
++#endif //#ifdef BUILD_SONIQ
++
++#ifdef ZYXEL_ONESSID
++tr98Parameter_t para_OneSsid[] = {
++	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ NULL, 0, 0, 0}
++};
++#endif //#ifdef ZYXEL_ONESSID
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-09-15 16:06:06.824547632 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-09-15 16:06:06.864547632 +0800
+@@ -162,6 +162,11 @@
+     CFLAGS += -DBUILD_SONIQ
+ endif
+ 
++#ONESSID
++ifeq ($(CONFIG_ZYXEL_ONESSID),y)
++    CFLAGS += -DZYXEL_ONESSID
++endif
++
+ #VMG1312-T20A for BRAZIL
+ ifeq ($(CONFIG_BRAZIL_CUSTOMIZATION),y)
+ CFLAGS += -DBRAZIL_CUSTOMIZATION=1

@@ -1,0 +1,959 @@
+Index: libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2017-02-14 09:16:17.149709443 +0800
++++ libzcfg_fe_dal-1.0/network/interfaceGrouping/zcfg_fe_dal_intfGrp.c	2017-02-14 09:17:34.517896300 +0800
+@@ -71,12 +71,27 @@
+ time_t t1, t2;
+ 
+ dal_param_t IntfGrp_param[] = {
+-	{"X_ZYXEL_BridgeName",	dalType_string, 1, 32, NULL},
+-	{"wanIntf",				dalType_string, 0, 0, NULL},
+-	{"lanIntf",				dalType_string, 0, 0, NULL},
+-	{"critInfoLen",			dalType_int, 0, 0, NULL},
+-	{"__modify", 			dalType_string, 0, 0, NULL},
+-	{"critInfoDelLen",		dalType_int, 0, 0, NULL}
++	{"X_ZYXEL_BridgeName",	dalType_string, 1, 32, NULL,NULL,	dal_Add},
++	//{"wanIntf",				dalType_WanList, 0, 0, NULL,	NULL,	dal_Add},
++	//{"lanIntf",				dalType_LanPortList, 0, 0, NULL,	NULL,	0},
++	{"wanIntf",				dalType_string, 0, 0, NULL,	NULL,	dal_Add},
++	{"lanIntf",				dalType_string, 0, 0, NULL,	NULL,	0},	
++	{"critInfoLen",			dalType_int, 	0, 0, NULL,	NULL,	dal_Add},
++	{"type",				dalType_string, 1, 32, NULL,"mac|op60|op61|op125|vlangroup",	0},
++	{"mac_value",			dalType_string, 0, 0, NULL,NULL,	0},
++	{"op60_value",			dalType_string, 0, 0, NULL,NULL,	0},
++	{"op61_value",			dalType_string, 0, 0, NULL,NULL,	0},
++	{"op125_value",			dalType_string, 0, 0, NULL,NULL,	0},
++	{"vlangroup",			dalType_string, 0, 0, NULL,NULL,	0},
++	{"wildcardEnable",		dalType_boolean,0, 0, NULL,NULL,	0},
++	//{"org_type",			dalType_string, 0, 0, NULL,NULL,	0},
++	//{"critInfo",			dalType_string, 0, 0, NULL,	NULL,	0},
++	//{"__modify", 			dalType_string, 0, 0, NULL,	NULL,	0},
++	//{"org", 				dalType_string, 0, 0, NULL,	NULL,	0},
++	//{"critInfoDelLen",		dalType_int, 	0, 0, NULL,	NULL,	0},
++	//{"critInfoDel",			dalType_string, 0, 0, NULL,	NULL,	0},
++	{"Index",				dalType_int, 	0, 0, NULL,	NULL,	dal_Delete},
++	{NULL,		0,	0,	0,	NULL}
+ };
+ 
+ extern uint32_t CharToIntConv(char chr);
+@@ -115,6 +130,11 @@
+ 
+ void getIntefGrpDelKey(struct json_object *Jobj, s_JsonArrayType *IntfGrpDel_Info) {
+ 	int i = 0;
++	int idx = 0;
++	struct json_object *iidx = json_object_new_array();
++	enum json_type jsonType;
++	struct json_object *iid1= NULL;
++	struct json_object *iid2= NULL;
+ 
+ 	printf("getIntefGrpDelKey\n");
+ 	if(Jobj) {
+@@ -152,10 +172,26 @@
+ 	json_object *IidArrayObj = NULL;
+ 	json_object *org_obj = NULL;
+ 	json_object *critInfoDel = NULL;
++	int idx = 0;
+ 
+ 	printf("getIntfGrpBasicInfo\n");
+ 
+ 	IidArrayObj = json_object_object_get(Jobj, "Iid");
++	idx = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	if(idx){
++		json_object *jarray = json_object_new_array();
++		json_object *jstring1 = json_object_new_int(idx);
++	  	json_object *jstring2 = json_object_new_int(0);
++		json_object_array_add(jarray,jstring1);
++	    json_object_array_add(jarray,jstring2);
++	    json_object_array_add(jarray,jstring2);
++	    json_object_array_add(jarray,jstring2);
++	    json_object_array_add(jarray,jstring2);
++	    json_object_array_add(jarray,jstring2);
++		json_object_object_add(Jobj, "Iid", JSON_OBJ_COPY(jarray));
++			
++	}
++	
+ 	memset(&(IntfGrp_info->Iid), 0, sizeof(s_JsonArrayType));
+ 	if(IidArrayObj) {
+ 		IntfGrp_info->Iid.length = json_object_array_length(IidArrayObj);
+@@ -268,6 +304,7 @@
+ 		printf("%d ", IntfGrp_info->Iid.array[i]);
+ 	}
+ 	printf("\n");
++	
+ 	printf("modify %d\n", IntfGrp_info->modify);
+ 	printf("org->X_ZYXEL_BridgeName %s\n", IntfGrp_info->org->X_ZYXEL_BridgeName);
+ 	printf("org->wanIntf %s\n", IntfGrp_info->org->wanIntf);
+@@ -1205,21 +1242,851 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalIntrGrpGet(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *bridgeJobj = NULL;
++	struct json_object *ipifaceObj = NULL;
++	struct json_object *bridgeportObj = NULL;
++	struct json_object *vlanObj = NULL;
++	struct json_object *bridgefilterObj = NULL;
++	objIndex_t bridgeIid = {0};
++	objIndex_t ipifaceIid = {0};
++	objIndex_t bridgeportIid = {0};
++	objIndex_t vlanIid = {0};
++	objIndex_t bridgefilterIid = {0};
++	const char *Group_Name = NULL;
++	const char *Server_Name = NULL;
++	const char *WAN_IpIface = NULL;
++	const char *LAN_IpIface = NULL;
++	char tmp[128] = {0};
++	char criinfo[128] = {0};
++	int str_length = 0;
++	int vlanID = 0;
++	char LAN[128] = {0};
++	char *op125tmp1 = NULL;
++	char *str_ptr = NULL;
++	const char *VlanName = NULL;
++	const char *bridge = NULL;
++	const char *SourceMACFromVSIFilter = NULL;
++	const char *SourceMACFromClientIDFilter = NULL;
++	const char *SourceMACFromVendorClassIDFilter = NULL;
++	bool enable_criteria = false;
++	int count = 0;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_BR, &bridgeIid, &bridgeJobj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		Group_Name = json_object_get_string(json_object_object_get(bridgeJobj, "X_ZYXEL_BridgeName"));
++		json_object_object_add(paramJobj, "Index", json_object_new_int(bridgeIid.idx[0]));	
++		json_object_object_add(paramJobj, "Group_Name", json_object_new_string(Group_Name));
++		IID_INIT(ipifaceIid);
++		if(!strcmp(Group_Name,"Default"))
++			json_object_object_add(paramJobj, "WAN_IpIface", json_object_new_string("Any MAN"));
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipifaceIid, &ipifaceObj) == ZCFG_SUCCESS){
++			Server_Name = json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_SrvName"));
++			if(!strcmp(Group_Name, Server_Name)){
++				WAN_IpIface = json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_Group_WAN_IpIface"));
++				json_object_object_add(paramJobj, "WAN_IpIface", json_object_new_string(WAN_IpIface));
++			}
++		}
++		IID_INIT(bridgeportIid);
++		bridgeportIid.idx[0] = bridgeIid.idx[0];
++		bridgeportIid.level = 3;
++		char tmp[128] = {0};
++		char LAN[128] = {0};
++		char criinfo[128] = {0};
++		str_length = 0;
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_BR_PORT, &bridgeportIid, &bridgeportObj) == ZCFG_SUCCESS){
++			if(bridgeportIid.idx[1] != 1 && bridgeportIid.idx[0] == bridgeIid.idx[0]){
++				LAN_IpIface = json_object_get_string(json_object_object_get(bridgeportObj, "LowerLayers"));
++				strcat(tmp, LAN_IpIface);
++				strcat(tmp, ",");
++				str_length = strlen(tmp);
++				strncpy(LAN, tmp, str_length-1);
++			}
++		}
++		if(!strcmp(LAN,"")){
++			IID_INIT(vlanIid);
++			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &vlanIid, &vlanObj) == ZCFG_SUCCESS){
++				vlanID = json_object_get_int(json_object_object_get(vlanObj, "BrRefKey"));
++				if(bridgeIid.idx[0] == vlanID){
++					VlanName = json_object_get_string(json_object_object_get(vlanObj, "GroupName"));
++					sprintf(criinfo,"VLAN<%s>",VlanName);
++				}
++			}
++			if(!strcmp(criinfo,"")){
++				IID_INIT(bridgefilterIid);
++				while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &bridgefilterIid, &bridgefilterObj) == ZCFG_SUCCESS){
++					enable_criteria = json_object_get_boolean(json_object_object_get(bridgefilterObj, "X_ZYXEL_Enable_Criteria"));
++					if(enable_criteria){
++						bridge = json_object_get_string(json_object_object_get(bridgefilterObj, "Bridge"));
++						sprintf(tmp, "Bridging.Bridge.%d",bridgeIid.idx[0]);
++						if(!strcmp(tmp, bridge)){
++							char op125tmp[128] = {0};
++							SourceMACFromVSIFilter = json_object_get_string(json_object_object_get(bridgefilterObj, "X_ZYXEL_SourceMACFromVSIFilter"));
++							if(strcmp(SourceMACFromVSIFilter,"")){
++								char *OUI = NULL;
++								char *SN = NULL;
++								char *CLASS = NULL;
++								char buf[64] = {0};
++								char oui[64] = {0};
++								char sn[64] = {0};
++								char class[64] = {0};
++								char oui1[64] = {0};
++								char sn1[64] = {0};
++								char class1[64] = {0};
++								char sourcemac[128] = {0};
++								
++								char *p, *p1, *p2, *p3;			
++								if(SourceMACFromVSIFilter != NULL){
++									strcpy(sourcemac,SourceMACFromVSIFilter);
++									p = strstr(sourcemac, "\%\%");
++									if(p != NULL) 
++										*p = '\0';
++								}
++								printf("adsadcascassdawdqwdq\n");
++								OUI = strstr(SourceMACFromVSIFilter, "\%\%1=");
++								if(OUI)
++									OUI = OUI+4;								
++								SN = strstr(SourceMACFromVSIFilter, "\%\%2=");
++								if(SN)
++									SN = SN+4;
++								CLASS = strstr(SourceMACFromVSIFilter, "\%\%3=");
++								if(CLASS)
++									CLASS = CLASS+4;
++								if(OUI){
++									if(strcmp(OUI,"")){
++										strcpy(oui,OUI);
++										p1 = strstr(oui, "\%\%");
++										if(p1 != NULL) 
++											*p1 = '\0';
++										strcat(oui1, oui);
++									}
++								}
++								if(SN){
++									if(strcmp(SN,"")){
++										strcpy(sn,SN);
++										p2 = strstr(sn, "\%\%");
++										if(p2 != NULL) 
++											*p2 = '\0';
++										strcat(sn1, sn);
++									}
++								}
++								if(CLASS){
++									if(strcmp(CLASS,"")){
++										strcpy(class,CLASS);
++										p3 = strstr(class, "\%\%");
++										if(p3 != NULL) 
++											*p3 = '\0';
++										strcat(class1, class);
++									}
++								}
++								strcat(op125tmp,sourcemac);
++								
++								if(OUI){
++									if(strcmp(OUI,"")){
++										sprintf(oui,",OUI=%s",oui1);
++										strcat(op125tmp, oui);
++									}
++								}
++								if(SN){
++									if(strcmp(SN,"")){
++										sprintf(sn,",SN=%s",sn1);	
++										strcat(op125tmp, sn);
++									}
++								}
++								if(CLASS){
++									if(strcmp(CLASS,"")){
++										sprintf(class,",CLASS=%s",class1);
++										strcat(op125tmp, class);
++									}
++								}
++							}							
++							SourceMACFromClientIDFilter = json_object_get_string(json_object_object_get(bridgefilterObj, "SourceMACFromClientIDFilter"));
++							SourceMACFromVendorClassIDFilter = json_object_get_string(json_object_object_get(bridgefilterObj, "SourceMACFromVendorClassIDFilter"));
++							if(strcmp(SourceMACFromVSIFilter,"")){
++								sprintf(criinfo,"OP125<%s>",op125tmp);
++								break;
++							}else if(strcmp(SourceMACFromClientIDFilter,"")){
++								sprintf(criinfo,"OP61<%s>",SourceMACFromClientIDFilter);
++								break;
++							}else if(strcmp(SourceMACFromVendorClassIDFilter,"")){
++								sprintf(criinfo,"OP60<%s>",SourceMACFromVendorClassIDFilter);
++								break;
++							}
++							
++						}
++					}
++				}
++			}
++		}
++		json_object_object_add(paramJobj, "LAN_IpIface", json_object_new_string(LAN));
++		json_object_object_add(paramJobj, "Criteria", json_object_new_string(criinfo));
++		json_object_array_add(Jobj, JSON_OBJ_COPY(paramJobj));
++		zcfgFeJsonObjFree(paramJobj);
++	}
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipifaceIid, &ipifaceObj) == ZCFG_SUCCESS){
++		
++	}
++	zcfgFeJsonObjFree(bridgeJobj);
++	return ret;
++}
+ 
+-zcfgRet_t zcfgFeDalIntrGrp(const char *method, struct json_object *Jobj, char *replyMsg) {
++zcfgRet_t dalcmdIntrGrpAdd(struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	s_VlanCritInfo vlanCrit;
++	s_IntfGrp IntfGrp_info;
++	int IP_idx;
++	char IPAddress_str1[60] = {0};
++	char IPAddress_str2[30] = {0};
++	char tmp[10] = {0};
++	char SubnetMask_str[30] = {0};
++	char newbrPathName[60] = {0};
++	short i, idx = 0;
++	char *vlan_grpName;
++	bool found = false;
++	char BrIdx = 0;
++	const char *bridgename = NULL;
++	const char *wanintf = NULL;
++	const char *lanintf = NULL;
++	int critinfolen = 0;
++	char *type = NULL;
++	const char *macvalue = NULL;
++	const char *op60value = NULL;
++	const char *op61value = NULL;
++	const char *op125value = NULL;
++	const char *vlanvalue = NULL;
++	const char *wildcardenable = NULL;
++	const char *optionstr = NULL;
++	const char *orgtype = NULL;
++	char *op125tmp[128] = {0};
++	
++	json_object *v4AddrObj = NULL;
++	json_object *newBrObj = NULL;
++	json_object *newEthLinkObj = NULL;
++	json_object *newIpObj = NULL;
++	json_object *newBrFilterObj = NULL;
++	json_object *vlanGroupObj = NULL;
++	json_object *dhcpV4SrvObj = NULL;
++	json_object *newBrPortObj = NULL;
++	json_object *igmpObj = NULL;
++	json_object *mldObj = NULL;
++	objIndex_t v4AddrIid = {0};
++	objIndex_t newBrIid = {0};
++	objIndex_t newEthLinkIid = {0};
++	objIndex_t newIpIid = {0};
++	objIndex_t newBrFilterIid = {0};
++	objIndex_t vlanGroupIid = {0};
++	objIndex_t dhcpV4SrvIid = {0};
++	objIndex_t newBrPortIid = {0};
++	objIndex_t igmpIid = {0};
++	objIndex_t mldIid = {0};
++
++	IID_INIT(v4AddrIid);
++	IID_INIT(newBrIid);
++	IID_INIT(newEthLinkIid);
++	IID_INIT(newIpIid);
++	IID_INIT(newBrFilterIid);
++	IID_INIT(vlanGroupIid);
++	IID_INIT(dhcpV4SrvIid);
++	IID_INIT(igmpIid);
++	IID_INIT(mldIid);
++
++	printf("zcfgFeDalIntrGrpAdd\n");
++
++	memset(&IntfGrp_info, 0, sizeof(s_IntfGrp));
++
++	// Get parameter
++	bridgename = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_BridgeName"));
++	wanintf = json_object_get_string(json_object_object_get(Jobj, "wanIntf"));
++	if(json_object_get_string(json_object_object_get(Jobj, "lanIntf")))
++		lanintf = json_object_get_string(json_object_object_get(Jobj, "lanIntf"));
++	else
++		lanintf = "";
++	critinfolen = json_object_get_int(json_object_object_get(Jobj, "critInfoLen"));
++	if(json_object_get_string(json_object_object_get(Jobj, "type")))
++		type = json_object_get_string(json_object_object_get(Jobj, "type"));
++	else
++		type = "";
++	if(json_object_get_string(json_object_object_get(Jobj, "mac_value")))
++		macvalue = json_object_get_string(json_object_object_get(Jobj, "mac_value"));
++	else
++		macvalue = "";
++	if(json_object_get_string(json_object_object_get(Jobj, "op60_value")))
++		op60value = json_object_get_string(json_object_object_get(Jobj, "op60_value"));
++	else
++		op60value = "";
++	if(json_object_get_string(json_object_object_get(Jobj, "op61_value")))
++		op61value = json_object_get_string(json_object_object_get(Jobj, "op61_value"));
++	else
++		op61value = "";
++	if(json_object_get_string(json_object_object_get(Jobj, "op125_value")))
++		op125value = json_object_get_string(json_object_object_get(Jobj, "op125_value"));
++	else
++		op125value = "";
++	if(json_object_get_string(json_object_object_get(Jobj, "vlangroup")))
++		vlanvalue = json_object_get_string(json_object_object_get(Jobj, "vlangroup"));
++	else
++		vlanvalue = "";
++	wildcardenable = json_object_get_string(json_object_object_get(Jobj, "wildcardEnable"));
++	if(json_object_get_string(json_object_object_get(Jobj, "optionStr")))
++		optionstr = json_object_get_string(json_object_object_get(Jobj, "optionStr"));
++	else
++		optionstr = "";
++	if(!strcmp(type,"op125")){
++		
++	}
++
++	if(strcmp(op125value,"")){
++		char *OUI = NULL;
++		char *SN = NULL;
++		char *CLASS = NULL;
++		char buf[64] = {0};
++		char oui[64] = {0};
++		char sn[64] = {0};
++		char class[64] = {0};
++		char oui1[64] = {0};
++		char sn1[64] = {0};
++		char class1[64] = {0};
++		char sourcemac[128] = {0};
++								
++		char *p, *p1, *p2, *p3;			
++		if(op125value != NULL){
++			strcpy(sourcemac,op125value);
++			p = strstr(sourcemac, ",");
++			if(p != NULL) 
++				*p = '\0';
++		}
++		printf("adsadcascassdawdqwdq\n");
++		OUI = strstr(op125value, ",OUI=");
++		if(OUI)
++			OUI = OUI+5;		
++		SN = strstr(op125value, ",SN=");
++		if(SN)
++			SN = SN+4;
++								
++		CLASS = strstr(op125value, ",Class=");
++		if(CLASS)
++			CLASS = CLASS+7;
++		if(OUI){
++			if(strcmp(OUI,"")){
++				strcpy(oui,OUI);
++				p1 = strstr(oui, ",");
++				if(p1 != NULL) 
++					*p1 = '\0';
++				strcat(oui1, oui);
++			}
++		}
++		if(SN){
++			if(strcmp(SN,"")){
++				strcpy(sn,SN);
++				p2 = strstr(sn, ",");
++				if(p2 != NULL) 
++					*p2 = '\0';
++				strcat(sn1, sn);
++			}
++		}
++		if(CLASS){
++			if(strcmp(CLASS,"")){
++				strcpy(class,CLASS);
++				p3 = strstr(class, ",");
++				if(p3 != NULL) 
++					*p3 = '\0';
++				strcat(class1, class);
++			}
++		}
++		strcat(op125tmp,sourcemac);		
++		if(OUI){
++			if(strcmp(OUI,"")){
++				sprintf(oui,"\%\%\%\%1=%s",oui1);
++				strcat(op125tmp, oui);
++			}
++		}
++		if(SN){
++			if(strcmp(SN,"")){
++				sprintf(sn,"\%\%\%\%2=%s",sn1);	
++				strcat(op125tmp, sn);
++			}
++		}
++		if(CLASS){
++			if(strcmp(CLASS,"")){
++				sprintf(class,"\%\%\%\%3=%s",class1);
++				strcat(op125tmp, class);
++			}
++		}
++		printf("cccccc=%s\n",op125tmp);
++	}
++
++	//GET RDM_OID_IP_IFACE_V4_ADDR
++	/*======================================================================*/
++
++	//printf("1. POST RDM_OID_BRIDGING_BR\n");
++	// POST RDM_OID_BRIDGING_BR
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_BRIDGING_BR, &newBrIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_BR, &newBrIid, &newBrObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	json_object_object_add(newBrObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(newBrObj, "X_ZYXEL_BridgeName", json_object_new_string(bridgename));
++
++	zcfgFeObjJsonSetWithoutApply(RDM_OID_BRIDGING_BR, &newBrIid, newBrObj, NULL);
++	/*===============================================================================*/
++
++
++	//printf("2. POST RDM_OID_ETH_LINK\n");
++
++	// POST RDM_OID_ETH_LINK
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_ETH_LINK, &newEthLinkIid, NULL)) != ZCFG_SUCCESS) {
++		printf("2. POST RDM_OID_ETH_LINK zcfgFeObjJsonAdd ERROR!!\n");
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_LINK, &newEthLinkIid, &newEthLinkObj)) != ZCFG_SUCCESS) {
++		printf("2. POST RDM_OID_ETH_LINK zcfgFeObjJsonGetWithoutUpdate ERROR!!\n");
++		return ret;
++	}
++	/*===============================================================================*/
++
++	//printf("3. POST RDM_OID_IP_IFACE\n");
++	// POST RDM_OID_IP_IFACE
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE, &newIpIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_IP_IFACE, &newIpIid, &newIpObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	/*===============================================================================*/
++
++
++	//printf("4. POST RDM_OID_BRIDGING_BR_PORT\n");
++	// POST RDM_OID_BRIDGING_BR_PORT
++	memcpy(&newBrPortIid, &newBrIid, sizeof(objIndex_t));
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_BRIDGING_BR_PORT, &newBrPortIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_BR_PORT, &newBrPortIid, &newBrPortObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	json_object_object_add(newBrPortObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(newBrPortObj, "ManagementPort", json_object_new_boolean(true));
++
++	zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_BR_PORT, &newBrPortIid, newBrPortObj, NULL);
++	/*===============================================================================*/
++
++	char Br_str[64] = {0};
++	sprintf(Br_str,"Bridging.Bridge.%d.Port.1",newBrIid.idx[0]);
++
++	json_object_object_add(newEthLinkObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(newEthLinkObj, "LowerLayers", json_object_new_string(Br_str));
++
++	zcfgFeObjJsonBlockedSet(RDM_OID_ETH_LINK, &newEthLinkIid, newEthLinkObj, NULL);
++	/*==============================================================================*/
++
++	char Eth_str[60] = {0};
++	sprintf(Eth_str,"Ethernet.Link.%d",newEthLinkIid.idx[0]);
++
++	json_object_object_add(newIpObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(newIpObj, "IPv4Enable", json_object_new_boolean(true));
++	json_object_object_add(newIpObj, "LowerLayers", json_object_new_string(Eth_str));
++	json_object_object_add(newIpObj, "X_ZYXEL_Group_WAN_IpIface", json_object_new_string(wanintf)); //binding wan interface
++	json_object_object_add(newIpObj, "X_ZYXEL_ConnectionType", json_object_new_string("IP_Routed"));  //inherit connection type of wan interface
++	json_object_object_add(newIpObj, "X_ZYXEL_SrvName", json_object_new_string(bridgename));  //inherit connection type of wan interface
++
++	zcfgFeObjJsonBlockedSet(RDM_OID_IP_IFACE, &newIpIid, newIpObj, NULL);
++    /*==============================================================================*/
++
++	if((ret = FindIPidx(&IP_idx, newBrIid)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	
++	memcpy(&v4AddrIid, &newIpIid, sizeof(objIndex_t));
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, &v4AddrObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	sprintf(IPAddress_str1,"192.168.%d.1",IP_idx);
++	strcat(SubnetMask_str, "255.255.255.0");
++	json_object_object_add(v4AddrObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(v4AddrObj, "IPAddress", json_object_new_string(IPAddress_str1));
++	json_object_object_add(v4AddrObj, "SubnetMask", json_object_new_string(SubnetMask_str));
++
++	zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V4_ADDR, &v4AddrIid, v4AddrObj, NULL);
++	/*===============================================================================*/
++
++
++	//printf("8. POST RDM_OID_BRIDGING_FILTER and PUT RDM_OID_VLAN_GROUP\n");
++	//POST RDM_OID_BRIDGING_FILTER and PUT RDM_OID_VLAN_GROUP
++	strcat(newbrPathName, "Bridging.Bridge.");
++	memset(tmp, 0, sizeof(tmp));
++	sprintf(tmp, "%d", newBrIid.idx[0]);
++	strcat(newbrPathName, tmp);
++	if(critinfolen == 1) {
++		vlanCrit.length = 0;
++		for(i=0; i<critinfolen; i++) {
++			if(!strcmp(type, "vlangroup")) {
++				vlanCrit.length ++;
++			}
++		}
++		idx = 0;
++		//vlanCrit.critInfo = (s_CritInfo*)malloc(vlanCrit.length * sizeof(s_CritInfo));
++		for(i=0; i< critinfolen; i++) {
++			if(!strcmp(type, "vlangroup")) {
++				//memcpy(&(vlanCrit.critInfo[idx]), &(IntfGrp_info.critInfo[i]), sizeof(s_CritInfo));
++				idx ++;
++				continue;
++			}
++
++			IID_INIT(newBrFilterIid);
++			if((ret = zcfgFeObjJsonAdd(RDM_OID_BRIDGING_FILTER, &newBrFilterIid, NULL)) != ZCFG_SUCCESS) {
++				return ret;
++			}
++			if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_FILTER, &newBrFilterIid, &newBrFilterObj)) != ZCFG_SUCCESS) {
++				return ret;
++			}
++			dalcmdcirteriaToObject(newBrFilterObj, newbrPathName, type, macvalue, op60value, op61value, op125tmp, wildcardenable);
++			zcfgFeObjJsonSetWithoutApply(RDM_OID_BRIDGING_FILTER, &newBrFilterIid, newBrFilterObj, NULL);
++			zcfgFeJsonObjFree(newBrFilterObj);
++		}
++
++		//printf("9. GET and PUT RDM_OID_VLAN_GROUP\n");
++		//GET and PUT RDM_OID_VLAN_GROUP
++		for(i=0; i<vlanCrit.length; i++) {
++			IID_INIT(vlanGroupIid);
++			found = false;
++			while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &vlanGroupIid, &vlanGroupObj) == ZCFG_SUCCESS) {
++				vlan_grpName = (char*)json_object_get_string(json_object_object_get(vlanGroupObj, "GroupName"));
++				if(!strcmp(vlan_grpName, vlanvalue)) {
++					printf("VLAN BrRefKey %d\n", newBrIid.idx[0]);
++					json_object_object_add(vlanGroupObj, "BrRefKey", json_object_new_int(newBrIid.idx[0]));
++					found = true;
++					if(vlanGroupObj) {
++						zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &vlanGroupIid, vlanGroupObj, NULL);
++					}
++				}
++				zcfgFeJsonObjFree(vlanGroupObj);
++				if(found == true) {
++					break;
++				}
++			}
++		}
++		free(vlanCrit.critInfo);
++	}
++	/*============================================================================================*/
++
++	//printf("10. POST RDM_OID_DHCPV4_SRV_POOL\n");
++	/* POST RDM_OID_DHCPV4_SRV_POOL */
++	if((ret = zcfgFeObjJsonAdd(RDM_OID_DHCPV4_SRV_POOL, &dhcpV4SrvIid, NULL)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_DHCPV4_SRV_POOL, &dhcpV4SrvIid, &dhcpV4SrvObj)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++	char DhcpAddrMin[30] = {0};
++	char DhcpAddrMax[30] = {0};
++	char IpIntf_str[30] = "IP.Interface.";
++
++	sprintf(DhcpAddrMin,"192.168.%d.2",IP_idx);
++	sprintf(DhcpAddrMax,"192.168.%d.254",IP_idx);
++	sprintf(IpIntf_str,"IP.Interface.%d",newIpIid.idx[0]);
++
++	json_object_object_add(dhcpV4SrvObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(dhcpV4SrvObj, "MinAddress", json_object_new_string(DhcpAddrMin));
++	json_object_object_add(dhcpV4SrvObj, "MaxAddress", json_object_new_string(DhcpAddrMax));
++	json_object_object_add(dhcpV4SrvObj, "X_ZYXEL_DNS_Type", json_object_new_string("DNS Proxy"));
++	json_object_object_add(dhcpV4SrvObj, "Interface", json_object_new_string(IpIntf_str));
++
++	zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL, &dhcpV4SrvIid, dhcpV4SrvObj, NULL);
++	/*============================================================================================*/
++
++	//printf("11. PUT RDM_OID_BRIDGING_FILTER\n");
++	/* PUT RDM_OID_BRIDGING_FILTER according to lanIntf*/
++	char *single_lanIntf = NULL;
++	char *BrFilter_interface = NULL;
++	char *lanIntf_tmp = NULL;
++	char *rest_str = NULL;
++	zcfgRet_t ret_debug = ZCFG_SUCCESS;
++
++	if(lanintf != NULL) {
++		lanIntf_tmp = (char*)malloc(strlen(lanintf)+1);
++		memcpy(lanIntf_tmp, lanintf, strlen(lanintf)+1);
++		single_lanIntf =  strtok_r(lanIntf_tmp, ",", &rest_str);
++		while(single_lanIntf!=NULL) {
++			IID_INIT(newBrFilterIid);
++			while((ret_debug = zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_BRIDGING_FILTER, &newBrFilterIid, &newBrFilterObj)) == ZCFG_SUCCESS) {
++				BrFilter_interface = (char*)json_object_get_string(json_object_object_get(newBrFilterObj, "Interface"));
++				if((BrFilter_interface!=NULL) && (!strcmp(single_lanIntf, BrFilter_interface))) {
++					json_object_object_add(newBrFilterObj, "Bridge", json_object_new_string(newbrPathName));
++					zcfgFeObjJsonBlockedSet(RDM_OID_BRIDGING_FILTER, &newBrFilterIid, newBrFilterObj, NULL);
++					zcfgFeJsonObjFree(newBrFilterObj);
++					break;
++				}
++				zcfgFeJsonObjFree(newBrFilterObj);
++			}
++			single_lanIntf = strtok_r(rest_str, ",", &rest_str);
++		}
++		free(lanIntf_tmp);
++	}
++
++	//printf("11. PUT RDM_OID_ZY_IGMP and RDM_OID_ZY_MLD\n");
++	char BrStr[30] = {0};
++	BrIdx = newBrIid.idx[0]-1;
++	memset(tmp, 0, sizeof(tmp));
++	sprintf(tmp, "%d", BrIdx);
++	strcat(BrStr, ",br");
++	strcat(BrStr, tmp);
++	strcat(BrStr,"|2");
++	char snpBr_str[60] = {0};
++	char *snpBrName = NULL;
++	// PUT RDM_OID_ZY_IGMP
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_IGMP, &igmpIid, &igmpObj);
++	if(ret == ZCFG_SUCCESS){
++		snpBrName = (char*)json_object_get_string(json_object_object_get(igmpObj, "SnoopingBridgeIfName"));
++		memcpy(snpBr_str, snpBrName, strlen(snpBrName)+1);
++		strcat(snpBr_str, BrStr);
++		json_object_object_add(igmpObj, "SnoopingBridgeIfName", json_object_new_string(snpBr_str));
++		zcfgFeObjJsonSet(RDM_OID_ZY_IGMP, &igmpIid, igmpObj, NULL);
++	}
++	// PUT RDM_OID_ZY_MLD
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_MLD, &mldIid, &mldObj);
++	if(ret == ZCFG_SUCCESS){
++		snpBrName = (char*)json_object_get_string(json_object_object_get(mldObj, "SnoopingBridgeIfName"));
++		memcpy(snpBr_str, snpBrName, strlen(snpBrName)+1);
++		strcat(snpBr_str, BrStr);
++		json_object_object_add(mldObj, "SnoopingBridgeIfName", json_object_new_string(snpBr_str));
++		zcfgFeObjJsonSet(RDM_OID_ZY_MLD, &mldIid, mldObj, NULL);
++	}
++	/*============================================================================================*/
++
++	freeIntfGrpBasicInfo(&IntfGrp_info);
++	
++	if(v4AddrObj) zcfgFeJsonObjFree(v4AddrObj);
++	if(newBrObj) zcfgFeJsonObjFree(newBrObj);
++	if(newEthLinkObj) zcfgFeJsonObjFree(newEthLinkObj);
++	if(newIpObj) zcfgFeJsonObjFree(newIpObj);
++	if(newBrFilterObj) zcfgFeJsonObjFree(newBrFilterObj);
++	if(vlanGroupObj) zcfgFeJsonObjFree(vlanGroupObj);
++	if(dhcpV4SrvObj) zcfgFeJsonObjFree(dhcpV4SrvObj);
++
++	
++	return ret;
++}
++
++void dalcmdcirteriaToObject(json_object *BrFilterObj, char *brPathName, char *type, char *macvalue, char *op60value, char *op61value, char *op125tmp, bool wildcardEnable) {
++	char *new_macList;
++	int new_macList_Len = 0;
++
++	json_object_object_add(BrFilterObj, "Enable", json_object_new_boolean(true));
++	json_object_object_add(BrFilterObj, "Bridge", json_object_new_string(brPathName));
++	json_object_object_add(BrFilterObj, "X_ZYXEL_Enable_Criteria", json_object_new_boolean(true));
++	json_object_object_add(BrFilterObj, "SourceMACAddressFilterList", json_object_new_string(""));
++	json_object_object_add(BrFilterObj, "SourceMACAddressFilterExclude", json_object_new_boolean(false));
++	json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDFilter", json_object_new_string(""));
++	json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDFilterExclude", json_object_new_boolean(false));
++	json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDMode", json_object_new_string("Exact"));
++	json_object_object_add(BrFilterObj, "SourceMACFromClientIDFilter", json_object_new_string(""));
++	json_object_object_add(BrFilterObj, "SourceMACFromClientIDFilterExclude", json_object_new_boolean(false));
++	json_object_object_add(BrFilterObj, "X_ZYXEL_SourceMACFromVSIFilter", json_object_new_string(""));	
++	if(!strcmp(type, "mac")) {
++		new_macList_Len = 10+((strlen(new_macList))<<1);
++		new_macList = (char*)malloc(new_macList_Len); //for the "*" case
++		memset(new_macList, 0, new_macList_Len);
++		macAddrListToObjFormat((char*)(macvalue), new_macList);
++		json_object_object_add(BrFilterObj, "SourceMACAddressFilterList", json_object_new_string(new_macList));
++		json_object_object_add(BrFilterObj, "SourceMACAddressFilterExclude", json_object_new_boolean(false));
++		free(new_macList);
++	}
++	else if(!strcmp(type, "op60")) {
++		json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDFilter", json_object_new_string(op60value));
++		json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDFilterExclude", json_object_new_boolean(false));
++		if(wildcardEnable == true) {
++			json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDMode", json_object_new_string("Substring"));
++		}
++		else {
++			json_object_object_add(BrFilterObj, "SourceMACFromVendorClassIDMode", json_object_new_string("Exact"));
++		}
++	}
++	else if(!strcmp(type, "op61")) {
++		json_object_object_add(BrFilterObj, "SourceMACFromClientIDFilter", json_object_new_string(op61value));
++		json_object_object_add(BrFilterObj, "SourceMACFromClientIDFilterExclude", json_object_new_boolean(false));
++	}
++	else if(!strcmp(type, "op125")) {
++		json_object_object_add(BrFilterObj, "X_ZYXEL_SourceMACFromVSIFilter", json_object_new_string(op125tmp));
++	}
++
++	return;
++}
++
++
++
++bool dalcmdFindObjIid(zcfg_offset_t RDM_OID, int index, objIndex_t* Iid, json_object** Obj) {
++	int k = 0;
++	bool find;
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID, Iid, Obj) == ZCFG_SUCCESS) {
++		find = true;
++		if(Iid->idx[0] != index) {
++			find = false;
++		}
++		if(find == true) {
++			break;
++		}						
++	}
++	if(find == false) {
++		printf("Can't find the target Iid in RDM %d\n", RDM_OID);
++	}
++	
++	printf("FindObjIid: find = %d, idx[0] = %d\n", find, Iid->idx[0]);	
++	return find;
++}
++
++zcfgRet_t dalcmdIntrGrpDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	int BrRefKey;
++	bool find;
++	int i = 0;
++	int BrIdx = 0;
++	char tmp[10] = {0};
++	char BrStr[30] = {0};
++	char snoopingList[100] = {0};
++	const char *snoopingStr = NULL;
++	const char *single_snpStr = NULL;
++	const char *rest_str = NULL;
++
++	json_object *vlanGroupObj = NULL;
++	json_object *BrObj = NULL;
++	json_object *igmpObj;
++	json_object *mldObj;
++	objIndex_t vlanGroupIid = {0};
++	objIndex_t BrIid = {0};
++	objIndex_t igmpIid = {0};
++	objIndex_t mldIid = {0};
++	IID_INIT(vlanGroupIid);
++	IID_INIT(BrIid);
++	IID_INIT(igmpIid);
++	IID_INIT(mldIid);
++	int index = 0;
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &vlanGroupIid, &vlanGroupObj) == ZCFG_SUCCESS) {
++		BrRefKey = (int)json_object_get_int(json_object_object_get(vlanGroupObj, "BrRefKey"));
++		if(BrRefKey == index) {
++			json_object_object_add(vlanGroupObj, "BrRefKey", json_object_new_string(""));
++			zcfgFeObjJsonSet(RDM_OID_VLAN_GROUP, &vlanGroupIid, vlanGroupObj, NULL);
++			zcfgFeJsonObjFree(vlanGroupObj);
++			break;
++		}
++		zcfgFeJsonObjFree(vlanGroupObj);
++	}
++	find = dalcmdFindObjIid(RDM_OID_BRIDGING_BR, index, &BrIid, &BrObj);
++	if(find == true) {
++		zcfgFeObjJsonDel(RDM_OID_BRIDGING_BR, &BrIid, NULL);
++		zcfgFeJsonObjFree(BrObj);
++	}
++	
++	BrIdx = index-1;
++	memset(tmp, 0, sizeof(tmp));
++	sprintf(tmp, "%d", BrIdx);
++	memset(BrStr, 0, sizeof(BrStr));
++	strcat(BrStr, "br");
++	strcat(BrStr, tmp);
++	memset(snoopingList, 0 ,sizeof(snoopingList));
++	strcat(snoopingList, "br0|1");
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_IGMP, &igmpIid, &igmpObj);
++	if(ret == ZCFG_SUCCESS){
++		snoopingStr = json_object_get_string(json_object_object_get(igmpObj, "SnoopingBridgeIfName"));
++		single_snpStr = strtok_r(snoopingStr, ",", &rest_str);
++		while(strcmp(rest_str,"")) {
++			if(!strstr(rest_str, BrStr)) {
++				sprintf(snoopingList,"%s%s",",",single_snpStr);
++			}
++			single_snpStr = strtok_r(rest_str, ",", &rest_str);
++		}
++		json_object_object_add(igmpObj, "SnoopingBridgeIfName", json_object_new_string(snoopingList));
++		zcfgFeObjJsonSet(RDM_OID_ZY_IGMP, &igmpIid, igmpObj, NULL);
++	}
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_MLD, &mldIid, &mldObj);
++	if(ret == ZCFG_SUCCESS){
++		json_object_object_add(mldObj, "SnoopingBridgeIfName", json_object_new_string(snoopingList));
++		zcfgFeObjJsonSet(RDM_OID_ZY_MLD, &mldIid, mldObj, NULL);
++	}
++
++	return ret;
++}
++
++
++void zcfgFeDalShowIntrGrp(struct json_object *Jarray){
++
++	int i, len = 0;
++	struct json_object *obj;
++	const char *ipver = NULL;
++
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-6s %-12s %-35s %-55s %-35s \n",
++		    "Index","Group Name", "WAN Interface", "LAN Interfaces", "Criteria");
++	
++	
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		const char *criteria = NULL;
++		const char *LanInterface = NULL;
++		criteria = json_object_get_string(json_object_object_get(obj, "Criteria"));
++		LanInterface = json_object_get_string(json_object_object_get(obj, "LAN_IpIface"));
++		if(!strcmp(LanInterface,"")){
++			LanInterface = "N/A";
++		}else
++			LanInterface = LanInterface;
++		if(!strcmp(criteria,"")){
++			criteria = "N/A";
++		}else
++			criteria = criteria;
++		
++		ipver = json_object_get_string(json_object_object_get(obj, "ipver"));
++			printf("%-6s %-12s %-35s %-55s %-35s \n",
++					json_object_get_string(json_object_object_get(obj, "Index")),
++				    json_object_get_string(json_object_object_get(obj, "Group_Name")),
++				    json_object_get_string(json_object_object_get(obj, "WAN_IpIface")),
++				    LanInterface,
++				    criteria);
++	
++		
++	}
++	
++}
++
++
++
+ 
++zcfgRet_t zcfgFeDalIntrGrp(const char *method, struct json_object *Jobj, char *replyMsg) {
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char *type = NULL;
++	type = json_object_get_string(json_object_object_get(Jobj, "type"));
+ 	t1 = time(NULL);
+ 	
+ 	if(!strcmp(method, "POST")) {
++		if(type)
++			ret = dalcmdIntrGrpAdd(Jobj, NULL);
++		else
+ 		ret = zcfgFeDalIntrGrpAdd(Jobj, NULL);
+ 	}
+ 	else if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDalIntrGrpEdit(Jobj, NULL);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
++		if(json_object_object_get(Jobj, "Index") != NULL){
++			ret = dalcmdIntrGrpDelete(Jobj, NULL);
++		}else
+ 		ret = zcfgFeDalIntrGrpDelete(Jobj, NULL);
+ 	}
++	else if(!strcmp(method, "GET")) {
++		ret = zcfgFeDalIntrGrpGet(Jobj, NULL);
++	}
+ 	else {
+ 		printf("Unknown method:%s\n", method);
+ 	}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-02-14 09:16:17.549709445 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-02-14 09:17:26.119452600 +0800
+@@ -160,6 +160,7 @@
+ extern void zcfgFeDalShowWifiGeneral(struct json_object *Jarray);
+ extern void zcfgFeDalShowWan(struct json_object *Jarray);
+ extern void zcfgFeDalShowDDns(struct json_object *Jarray);
++extern void zcfgFeDalShowIntrGrp(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -179,7 +180,7 @@
+ {"NAT_ADDR_MAPPING",NAT_ADDR_MAPPING_param,	zcfgFeDalNatAddrMapping,NULL,					"add|edit|delete",	 ""}, //NAT
+ {"NAT_SESSION_CTL", NAT_SESSION_CTL_param,	zcfgFeDalNatSessionCtl,NULL,					"edit",				""}, //NAT
+ {"NAT_APPLICATION",NAT_Application_param,	zcfgFeDalNatApplication,NULL,					"add|delete",		""}, //NAT
+-{"INTF_GP",			IntfGrp_param,		zcfgFeDalIntrGrp,		NULL,						"add|edit|delete",	"Interface_Grouping"},//
++{"INTF_GP",			IntfGrp_param,		zcfgFeDalIntrGrp,		zcfgFeDalShowIntrGrp,		"add|delete|get",	"Interface_Grouping"},//
+ {"UPNP",			UPNP_param, 		zcfgFeDalUPnP,			NULL,						"edit", 			""},//Home_Networking
+ {"TFTPSERNAME",		TFTPSerName_param,	zcfgFeDalTFTPSerName,	NULL,						"edit",				""},//Home_Networking
+ {"LANSETUP",		LANSETUP_param, 	zcfgFeDalLanSetup,		NULL,						"edit", 			""},//Home_Networking

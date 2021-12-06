@@ -1,0 +1,229 @@
+Index: wide-dhcpv6-20080615/dhcp6s.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6s.c	2017-10-24 10:19:30.533838319 +0800
++++ wide-dhcpv6-20080615/dhcp6s.c	2017-10-24 11:01:21.085980443 +0800
+@@ -81,6 +81,8 @@
+ #define DHCP6S_CONF LOCALDBDIR "/dhcp6s.conf"
+ #define DEFAULT_KEYFILE SYSCONFDIR "/dhcp6sctlkey"
+ #define DHCP6S_PIDFILE "/var/run/dhcp6s.pid"
++#define DHCP6S_LEASES "/var/dhcp6s.leases"
++#define DHCP6S_LEASES_TMP "/var/dhcp6s_tmp.leases"
+ 
+ #define CTLSKEW 300
+ 
+@@ -148,6 +150,8 @@
+ static struct keyinfo *ctlkey = NULL;
+ static int ctldigestlen;
+ static char *pid_file = DHCP6S_PIDFILE;
++static char *leases6_file = DHCP6S_LEASES;
++static char *leases6_tmpfile = DHCP6S_LEASES_TMP;
+ 
+ static inline int get_val32 __P((char **, int *, u_int32_t *));
+ static inline int get_val __P((char **, int *, void *, size_t));
+@@ -220,6 +224,9 @@
+ static int process_auth __P((struct dhcp6 *, ssize_t, struct host_conf *,
+     struct dhcp6_optinfo *, struct dhcp6_optinfo *));
+ static inline char *clientstr __P((struct host_conf *, struct duid *));
++static void release_dhcp6sinfo __P((struct dhcp6_listval *));
++static void setleases_dhcp6sinfo __P((struct dhcp6_listval *, struct dhcp6_binding *));
++static void resetleases_dhcp6sinfo __P((struct dhcp6_binding *));
+ 
+ int daemon_init(void) {
+ 
+@@ -2635,6 +2642,9 @@
+ 						    "has been released",
+ 						    in6addr2str(&lvia->val_prefix6.addr,
+ 						    0));
++
++						release_dhcp6sinfo(lvia);
++
+ 						break;
+ 				}
+ 
+@@ -3264,6 +3274,10 @@
+ 					TAILQ_REMOVE(ia_list, lv, link);
+ 					dhcp6_clear_listval(lv);
+ 				}
++				else
++				{
++					setleases_dhcp6sinfo(lv, binding);
++				}
+ 			}
+ 			if (TAILQ_EMPTY(ia_list)) {
+ 				dprintf(LOG_NOTICE, FNAME, "cannot lease any address");
+@@ -3279,6 +3293,7 @@
+ 	/* calculate duration and start timer accordingly */
+ 	binding->updatetime = time(NULL);
+ 	update_binding_duration(binding);
++	resetleases_dhcp6sinfo(binding);
+ 	if (binding->duration != DHCP6_DURATION_INFINITE) {
+ 		struct timeval timo;
+ 
+@@ -3440,6 +3455,9 @@
+ 				    bindingstr(binding));
+ 				if (binding->iatype == DHCP6_LISTVAL_IANA) 
+ 					release_address(&iav->val_prefix6.addr);
++
++				release_dhcp6sinfo(iav);
++
+ 				TAILQ_REMOVE(ia_list, iav, link);
+ 				dhcp6_clear_listval(iav);
+ 			}
+@@ -3723,3 +3741,157 @@
+ 
+ 	return (duidstr(duid));
+ }
++
++static void
++release_dhcp6sinfo(lvia)
++	struct dhcp6_listval *lvia;
++{
++	// TODO:Janice, delete the dhcp6s lease
++
++	FILE *lease_v6fp = NULL;
++	FILE *leasetmp_v6fp = NULL;
++	char line[512]={0};
++	char ClinetId[48] = {0};
++	char IPv6addr[48] = {0};
++	char hwaddr[65] = {0};
++	char validTime[10] = {0};
++	char updatetime[10] = {0};
++	int num = 0;
++	char NumStr[512] = {0};
++
++	lease_v6fp = fopen(leases6_file, "r");
++	if(lease_v6fp != NULL){
++		while (fgets(line, sizeof(line), lease_v6fp)) {
++			num = sscanf(line, "%s %s %*s %*s %*s", ClinetId, IPv6addr, hwaddr, validTime, updatetime);
++			if(num == 2){
++				if(strcmp(IPv6addr, in6addr2str(&lvia->val_prefix6.addr, 0)) != 0)
++				{
++					if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL) {
++						#if 0
++						sprintf(NumStr, "%s ", "1");
++						strcat(NumStr, line);
++						fprintf(leasetmp_v6fp, "%s\n", NumStr);
++						fclose(leasetmp_v6fp);
++						#else
++						fprintf(leasetmp_v6fp, "%s", line);
++						fclose(leasetmp_v6fp);
++						#endif
++					}
++
++				}
++				else
++				{
++					//printf("IPv6addr = %s, address ipv6 = %s, %s(%d)\n", IPv6addr, in6addr2str(&lvia->val_prefix6.addr, 0), __FUNCTION__, __LINE__);
++				}
++			}
++		}
++		fclose(lease_v6fp);
++		remove(leases6_file);
++		rename(leases6_tmpfile, leases6_file);
++	}
++
++}
++
++static void
++setleases_dhcp6sinfo(lv, binding)
++	struct dhcp6_listval *lv;
++	struct dhcp6_binding *binding;
++{
++	FILE *lease6fp;
++	char hwaddr[65] = {0};
++	char IPv6addr[48] = {0};
++	char ClinetId[48] = {0};
++	char validTime[12] = {0};
++	char lease6Info[512] = {0};
++	char *delim = ":";
++	char *pch;
++	int count = 0, i = 0;
++	char *addrtemp[6];
++
++	sprintf(ClinetId, "%s", duidstr(&binding->clientid));
++	pch = strtok(ClinetId, delim);
++	while(pch != NULL)
++	{
++		count++;
++		if(count >= 9)
++		{
++			addrtemp[i] = pch;
++			i++;
++		}
++
++		pch = strtok(NULL, delim);
++	}
++
++	for(i = 0; i < 6; i++)
++	{
++		if(i == 0)
++			sprintf(hwaddr, "%s", addrtemp[i]);
++		else
++			strcat(hwaddr, addrtemp[i]);
++
++		if(i < 5)
++			strcat(hwaddr, ":");
++	}
++
++	sprintf(lease6Info, "%s ", duidstr(&binding->clientid));
++	sprintf(IPv6addr, "%s ", in6addr2str(&lv->val_statefuladdr6.addr, 0));
++	sprintf(validTime, "%lu", lv->val_prefix6.vltime);
++	strcat(lease6Info, IPv6addr);
++	strcat(lease6Info, hwaddr);
++	strcat(lease6Info, " ");
++	strcat(lease6Info, validTime);
++
++	if ((lease6fp = fopen(leases6_file, "a+")) != NULL) {
++		fprintf(lease6fp, "%s\n", lease6Info);
++		fclose(lease6fp);
++	}
++}
++
++static void
++resetleases_dhcp6sinfo(binding)
++	struct dhcp6_binding *binding;
++{
++	FILE *lease_v6fp = NULL;
++	FILE *leasetmp_v6fp = NULL;
++	char line[512]={0};
++	char updatetime[12] = {0};
++
++	lease_v6fp = fopen(leases6_file, "r");
++	if(lease_v6fp != NULL){
++		while (fgets(line, sizeof(line), lease_v6fp)) {
++
++			if(strlen(line) == 79)
++			{
++				if(line[strlen(line) - 1] == '\n')
++					line[strlen(line) - 1] = '\0';
++
++				sprintf(updatetime, "%d", binding->updatetime);
++				strcat(line, " ");
++				strcat(line, updatetime);
++
++				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
++				{
++					//printf("line = %s, strlen(line) = %d, %s(%d)\n", line, strlen(line),__FUNCTION__, __LINE__);
++					fprintf(leasetmp_v6fp, "%s\n", line);
++					fclose(leasetmp_v6fp);
++				}
++			}
++			else
++			{
++				if ((leasetmp_v6fp = fopen(leases6_tmpfile, "a+")) != NULL)
++				{
++					//printf("line = %s, strlen(line) = %d, %s(%d)\n", line, strlen(line),__FUNCTION__, __LINE__);
++					fprintf(leasetmp_v6fp, "%s", line);
++					fclose(leasetmp_v6fp);
++				}
++			}
++
++		}
++
++		fclose(lease_v6fp);
++		remove(leases6_file);
++		rename(leases6_tmpfile, leases6_file);
++	}
++
++}
++

@@ -1,0 +1,730 @@
+Index: linux-3.18.21/Makefile
+===================================================================
+--- linux-3.18.21.orig/Makefile	2018-04-27 16:51:05.750694919 +0800
++++ linux-3.18.21/Makefile	2018-04-27 16:54:44.006409652 +0800
+@@ -763,6 +763,10 @@
+ KBUILD_CFLAGS += $(TC_CFLAGS)
+ endif
+ 
++ifneq ($(TC_TRX_INCLUDE_PATH),)
++LINUXINCLUDE += -I$(TC_TRX_INCLUDE_PATH)
++endif
++
+ # disallow errors like 'EXPORT_GPL(foo);' with missing header
+ KBUILD_CFLAGS   += $(call cc-option,-Werror=implicit-int)
+ 
+Index: linux-3.18.21/drivers/mtd/maps/tc3162-flash.c
+===================================================================
+--- linux-3.18.21.orig/drivers/mtd/maps/tc3162-flash.c	2018-04-27 16:51:08.246706507 +0800
++++ linux-3.18.21/drivers/mtd/maps/tc3162-flash.c	2018-04-27 19:00:58.260354140 +0800
+@@ -21,6 +21,9 @@
+ #include "flash_layout/tc_partition.h"
+ #endif
+ 
++#include "trx.h"
++char *trx_addr;        //using for reading the content of trx
++
+ #ifdef TCSUPPORT_MTD_PARTITIONS_CMDLINE
+ #include <linux/slab.h>
+ 
+@@ -63,10 +66,12 @@
+ #define WINDOW_SIZE 0x400000
+ #define BUSWIDTH 	2
+ 
+-#define TRX_LEN	256
++#define TRX_LEN	sizeof(struct trx_header)
++
+ #define KERNEL_PARTITION(a)	(a + TRX_LEN)  //Include trx header
+-#define ROOTFS_PARTITION(a)	((a + 0x10000) & ~(0x10000-1))
+-//#define ROOTFS_PARTITION(a)	(a)
++//#define ROOTFS_PARTITION(a)  ((a + 0x10000) & ~(0x10000-1))  //rootfs force to block alignment
++#define ROOTFS_PARTITION(a)    (a)
++
+ 
+ #ifdef CONFIG_DUAL_IMAGE
+ #ifdef TCSUPPORT_FREE_BOOTBASE
+@@ -166,6 +171,47 @@
+ #endif
+ #endif
+ 
++/* ZyXEL romd partition */
++#if defined(ZYXEL_SUPPORT_ROMD)
++       #ifdef TCSUPPORT_NAND_FLASH
++       #define SIZE_KB_FOR_ROMD        0x100000
++       #else
++       #define SIZE_KB_FOR_ROMD        0x10000//0x100000
++       #endif
++#else
++#define SIZE_KB_FOR_ROMD       0x10000
++#endif
++/* ZyXEL data partition */
++#if defined(ZYXEL_SUPPORT_DATA)
++       #ifdef TCSUPPORT_NAND_FLASH
++       #define SIZE_KB_FOR_DATA        0x400000
++       #else
++       #define SIZE_KB_FOR_DATA        0x80000//0x400000
++       #endif
++#else
++#define SIZE_KB_FOR_DATA       0
++#endif
++/* ZyXEL romfile2 partition */
++#if defined(ZYXEL_SUPPORT_ROMFILE2)
++       #ifdef TCSUPPORT_NAND_FLASH
++       #define SIZE_KB_FOR_ROMFILE2    0x40000
++       #else
++       #define SIZE_KB_FOR_ROMFILE2    0x10000
++       #endif
++#else
++#define SIZE_KB_FOR_ROMFILE2   0
++#endif
++/* ZyXEL wwanpkg partition */
++#if defined(ZYXEL_SUPPORT_WWANPKG)
++       #ifdef TCSUPPORT_NAND_FLASH
++       #define SIZE_KB_FOR_WWANPKG     0x100000
++       #else
++       #define SIZE_KB_FOR_WWANPKG     0x10000//0x100000
++       #endif
++#else
++#define SIZE_KB_FOR_WWANPKG    0
++#endif
++
+ static struct mtd_info *tc3162_mtd_info;
+ 
+ static struct map_info tc3162_map = {
+@@ -214,6 +260,13 @@
+ 		  size	     : MTDPART_SIZ_FULL, 	/* Occupy rest of flash */
+ 		  offset     : MTDPART_OFS_APPEND 	/* Append after kernel section */
+ 	},
++#if defined(ZYXEL_SUPPORT_DEFCFG)
++       {                                                                               /* Fifth partition */
++                 name       : "defcfg",                        /* Default config section */
++                 size       : MTDPART_SIZ_FULL,        /* Occupy rest of flash */
++                 offset     : MTDPART_OFS_APPEND       /* Append after rootfs section */
++       },
++#endif
+ 	{
+ 		  name       : "tclinux",            /* tclinux partition */	
+ 		  size       : MTDPART_SIZ_FULL,    /* Occupy rest of flash */
+@@ -235,12 +288,43 @@
+ 		  size       : MTDPART_SIZ_FULL,    /* Occupy rest of flash */
+ 		  offset     : MTDPART_OFS_APPEND   
+ 	},
++#if defined(ZYXEL_SUPPORT_DEFCFG)
++       {
++                 name       : "defcfg_slave",          /* Slave default config section */
++                 size       : MTDPART_SIZ_FULL,        /* Occupy rest of flash */
++                 offset     : MTDPART_OFS_APPEND
++       },
++#endif
+ 	{
+ 		  name       : "tclinux_slave",            /* tclinux slave partition */	
+ 		  size       : MTDPART_SIZ_FULL,    /* Occupy rest of flash */
+-		  offset 	 : SLAVE_IMAGE_OFFSET	
++		  offset 	 : SLAVE_IMAGE_OFFSET
+ 	}
+-#endif 
++#endif
++#ifdef ZYXEL_SUPPORT_WWANPKG
++       ,
++       {
++                 name       : "wwan",                          /*ZyXEL WWAN partition */
++                 size       : 0x00010000,                      /* occupy one block*/
++                 offset     : MTDPART_OFS_APPEND
++       }
++#endif
++#ifdef ZYXEL_SUPPORT_DATA
++       ,
++       {
++                 name       : "data",                          /*ZyXEL DATA partition */
++                 size       : 0x00010000,                      /* occupy one block*/
++                 offset     : MTDPART_OFS_APPEND
++       }
++#elif defined(ZYXEL_SUPPORT_ROMFILE2)
++       ,
++        {
++                 name       : "second_romfile",        /*ZyXEL second romfile partition */
++                 size       : 0x00010000,                      /* occupy one block*/
++                 offset     : MTDPART_OFS_APPEND
++       }
++#endif
++
+ #ifdef TCSUPPORT_INIC_HOST
+ 	,		
+ 	{
+@@ -257,19 +341,19 @@
+ 		 offset 	: JFFS2_OFFSET   
+ 	}
+ #endif
+- #ifdef TCSUPPORT_MTD_ENCHANCEMENT
++#if (defined(TCSUPPORT_MULTI_BOOT) && !defined(TCSUPPORT_C1_ZY_SFU)) || defined(ZYXEL_SUPPORT_ROMD)
+  	,
+-	 {
+-		  name       : "reservearea",            /*test partition */	
+-		  size       : 0x00040000,   /* occupy the last 4 blocks */
++	{
++		  name       : "romd",            /*test partition */
++		  size       : 0x00010000,   /* occupy one block*/
+ 		  offset     : MTDPART_OFS_APPEND   
+ 	}
+ #endif
+-#if defined(TCSUPPORT_MULTI_BOOT) && !defined(TCSUPPORT_C1_ZY_SFU)
++#ifdef TCSUPPORT_MTD_ENCHANCEMENT
+  	,
+ 	 {
+-		  name       : "romd",            /*test partition */	
+-		  size       : 0x00010000,   /* occupy one block*/
++		  name       : "reservearea",          /*test partition */
++		  size       : 0x00040000,   /* occupy the last 4 blocks */
+ 		  offset     : MTDPART_OFS_APPEND   
+ 	}
+ #endif
+@@ -370,6 +454,7 @@
+ }
+ 
+ #if defined(TCSUPPORT_CT_DUAL_IMAGE) || defined(TCSUPPORT_CUC_DUAL_IMAGE) || defined(TCSUPPORT_NAND_BMT)
++#if 0  //first define at trx.h, prevent to redefine.
+ struct trx_header {
+ 	unsigned long int magic;			/* "HDR0" */
+ 	unsigned long int kernel_len;	/* Length of kernel image */
+@@ -379,7 +464,7 @@
+ };
+ #define TRX_MAGIC2	0x32524448	/* "for tclinux" */
+ #endif
+-
++#endif
+ /******************************************************************************
+  Function:		tc3162_map_init
+  Description:	It's used to init tc3162_map
+@@ -503,8 +588,26 @@
+ 
+ #ifndef TCSUPPORT_MTD_PARTITIONS_CMDLINE
+ int tc3162_add_partitions(void){
++        #if 1//defined(ZYXEL)
++        struct trx_header *header;
++        #elsed
+ 	unsigned int *header;
++	#endif
+ 	unsigned int addr;
++
++	#if 1 //defined(ZYXEL)
++       	unsigned int zyxelUsedKB = 0;
++       	#if defined(ZYXEL_SUPPORT_ROMFILE2)
++       		zyxelUsedKB += SIZE_KB_FOR_ROMFILE2;
++       	#endif
++       	#if defined(ZYXEL_SUPPORT_WWANPKG)
++               	zyxelUsedKB += SIZE_KB_FOR_WWANPKG;
++       	#endif
++       	#if defined(ZYXEL_SUPPORT_DATA)
++               	zyxelUsedKB += SIZE_KB_FOR_DATA;
++       	#endif
++       	#endif  //defined(ZYXEL)
++
+ 	#if defined(TCSUPPORT_BOOTROM_LARGE_SIZE)
+ 		u_int32_t tclinux_flash_offset = 0x30000;
+ 	#else
+@@ -517,7 +620,7 @@
+ 		u_int32_t nand_yaffs_size = 0;
+ 	#endif
+ 	
+-	#if defined(CONFIG_DUAL_IMAGE) || defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT) || defined(TCSUPPORT_NAND_BADBLOCK_CHECK)
++	#if defined(CONFIG_DUAL_IMAGE) || defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT) || defined(ZYXEL_SUPPORT_ROMD) || defined(TCSUPPORT_NAND_BADBLOCK_CHECK)
+ 		int i = 0;
+ 	#endif
+ 	#ifdef CONFIG_DUAL_IMAGE
+@@ -534,25 +637,43 @@
+ #endif
+ 		u_int32_t tclinux_slave_size = 0;
+ #endif
+-#if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT)
++#if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT) || defined(ZYXEL_SUPPORT_ROMD)
+ 		u_int32_t tclinux_size = 0;
+ #endif
+ #if defined(TCSUPPORT_CT_DUAL_IMAGE) || defined(TCSUPPORT_CUC_DUAL_IMAGE) || defined(TCSUPPORT_NAND_BMT)
++		#if 0
+ 		struct trx_header *trx = NULL;
+ 		char *trx_addr;
++		#endif
+ 		unsigned int magic;
+ #endif
+ 	
+   #ifdef TCSUPPORT_NAND_RT63368
++               	#if 1
++               	header = (struct trx_header *)(flash_base + 0x40000);
++               	#else
+ 		header = (unsigned int *)(flash_base + 0x40000);
+-  #elif defined(TCSUPPORT_NAND_BADBLOCK_CHECK)	
++ 		#endif
++ #elif defined(TCSUPPORT_NAND_BADBLOCK_CHECK)
++		#if 1
++               	header = (struct trx_header *)(flash_base + 0x280000);
++	        #else
+ 		header = (unsigned int *)(flash_base + 0x280000);
++		#endif
+   #else
+ 		/* frankliao added 20101223 */
+   #ifdef TCSUPPORT_INIC_CLIENT
++		#if 1
++	        header = (struct trx_header *)(flash_base + INIC_CLIENT_BOOTLOADER_SIZE + INIC_CLIENT_ROMFILE_SIZE);
++		#else
+ 		header = (unsigned int *)(flash_base + INIC_CLIENT_BOOTLOADER_SIZE + INIC_CLIENT_ROMFILE_SIZE);
++		#endif
+   #else
++		#if 1
++		header = (struct trx_header *)(flash_base + tclinux_flash_offset);
++		#else
+ 		header = (unsigned int *)(flash_base + tclinux_flash_offset);
++		#endif
+   #endif
+   #endif
+ 
+@@ -570,7 +691,11 @@
+ 			tclinux_slave_offset = MAIN_IMAGE_SIZE+tclinux_flash_offset;	
+ #endif
+ #endif
++			#if 1
++                       	header = (struct trx_header *)(flash_base + tclinux_flash_offset);
++                       	#else
+ 			header = (unsigned int *)(flash_base + tclinux_flash_offset);
++			#endif
+ 		}
+ 	}
+ 	#endif
+@@ -601,22 +726,52 @@
+ 	{
+ 		if(!strcmp(tc3162_parts[i].name,"kernel"))
+ 		{
++			#if 1 //defined(ZYXEL)
++                               trx_addr = &(header->kernel_len);
++                               addr = READ_FLASH_DWORD(trx_addr);
++                               //addr = header->kernel_len;
++                               tc3162_parts[i].size = KERNEL_PARTITION( addr );
++                               trx_addr = &(header->rootfs_len);
++                               addr = READ_FLASH_DWORD(trx_addr);
++                               //addr = header->rootfs_len;
++                               tc3162_parts[i+1].size = ROOTFS_PARTITION( addr );
++                               #if defined(ZYXEL_SUPPORT_DEFCFG)
++                               trx_addr = &(header->defcfg_len);
++                               addr = READ_FLASH_DWORD(trx_addr);
++                               //addr = header->defcfg_len;
++                               tc3162_parts[i+2].size = DEFCFG_PARTITION( addr );
++                               #endif
++                       	#else
+ 			addr = READ_FLASH_DWORD((unsigned long long)((unsigned int)header + 20 * sizeof(unsigned int)));  
+ 			tc3162_parts[i].size = KERNEL_PARTITION( addr );
+ //			tc3162_parts[i].size = KERNEL_PARTITION(header[20]);
+ 			addr = READ_FLASH_DWORD((unsigned long long)((unsigned int)header + 21 * sizeof(unsigned int)));   
+ 			tc3162_parts[i+1].size = ROOTFS_PARTITION( addr );
+ //			tc3162_parts[i+1].size = ROOTFS_PARTITION(header[21]);
+-			#if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT)
++			#endif
++
++                        #if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT) || defined(ZYXEL_SUPPORT_ROMD)
++                        #if defined(ZYXEL_SUPPORT_DEFCFG)
++                        tclinux_size = tc3162_parts[i].size+tc3162_parts[i+1].size+tc3162_parts[i+2].size;
++                        #else
+ 			tclinux_size = tc3162_parts[i].size+tc3162_parts[i+1].size;
+ 			#endif
++			#endif
+ 
+ 			#ifdef TCSUPPORT_NAND_BADBLOCK_CHECK
+-            tc3162_parts[i].offset = 0x280000;
+-            tc3162_parts[i+2].offset = tc3162_parts[i].offset;
+-            #elif defined(TCSUPPORT_NAND_RT63368)
+-            tc3162_parts[i].offset = 0x40000;
+-            tc3162_parts[i+2].offset = tc3162_parts[i].offset;
++            		tc3162_parts[i].offset = 0x280000;
++			#if defined(ZYXEL_SUPPORT_DEFCFG)
++                       	tc3162_parts[i+3].offset = tc3162_parts[i].offset;
++                       	#else
++            		tc3162_parts[i+2].offset = tc3162_parts[i].offset;
++			#endif
++            		#elif defined(TCSUPPORT_NAND_RT63368)
++            		tc3162_parts[i].offset = 0x40000;
++            		#if defined(ZYXEL_SUPPORT_DEFCFG)
++                       	tc3162_parts[i+3].offset = tc3162_parts[i].offset;
++                       	#else
++			tc3162_parts[i+2].offset = tc3162_parts[i].offset;
++			#endif
+ 			#endif
+ 		}
+ 		if(!strcmp(tc3162_parts[i].name,"kernel_slave"))
+@@ -627,17 +782,53 @@
+ 			tc3162_parts[i+2].offset = offset + tclinux_flash_offset;
+ 
+ #elif defined(TCSUPPORT_NAND_BADBLOCK_CHECK)
+-            unsigned int *header_slave = (unsigned int *)(flash_base + 0x2280000);
+-            tc3162_parts[i].offset = 0x2280000;
+-            tc3162_parts[i+2].offset = tc3162_parts[i].offset;
++                       	#if 1 //defined(ZYXEL)
++                               struct trx_header *header_slave = (struct trx_header *)(flash_base + tclinux_flash_offset + offset);
++                               tc3162_parts[i].offset = offset + tclinux_flash_offset;
++                               #if defined(ZYXEL_SUPPORT_DEFCFG)
++                               tc3162_parts[i+3].offset = offset + tclinux_flash_offset;
++                               #else
++                               tc3162_parts[i+2].offset = offset + tclinux_flash_offset;
++                               #endif
++                       	#else
++            		unsigned int *header_slave = (unsigned int *)(flash_base + 0x2280000);
++            		tc3162_parts[i].offset = 0x2280000;
++            		tc3162_parts[i+2].offset = tc3162_parts[i].offset;
++			#endif
+ #else
++			#if 1 //defined(ZYXEL)
++                               struct trx_header *header_slave = (struct trx_header *)(flash_base + tclinux_flash_offset + MAIN_IMAGE_SIZE);
++                               tc3162_parts[i].offset = MAIN_IMAGE_SIZE + tclinux_flash_offset;
++                               #if defined(ZYXEL_SUPPORT_DEFCFG)
++                               tc3162_parts[i+3].offset = MAIN_IMAGE_SIZE + tclinux_flash_offset;
++                               #else
++                               tc3162_parts[i+2].offset = MAIN_IMAGE_SIZE + tclinux_flash_offset;
++                               #endif
++                       	#else
+ 			unsigned int *header_slave = (unsigned int *)(flash_base + tclinux_flash_offset + MAIN_IMAGE_SIZE);
+ //			unsigned int *header_slave = (unsigned int *)(0xb0020000+0x500000);
+ 			tc3162_parts[i].offset = MAIN_IMAGE_SIZE + tclinux_flash_offset;
+ 			tc3162_parts[i+2].offset = MAIN_IMAGE_SIZE + tclinux_flash_offset;
++			#endif
+ #endif
+ //			tc3162_parts[i].size = KERNEL_PARTITION(header_slave[20]);
+ //			tc3162_parts[i+1].size = ROOTFS_PARTITION(header_slave[21]);
++			#if 1 //defined(ZYXEL)
++                               trx_addr = &(header_slave->kernel_len);
++                               addr = READ_FLASH_DWORD(trx_addr);
++                               //addr = header_slave->kernel_len;
++                               tc3162_parts[i].size = KERNEL_PARTITION( addr );
++                               trx_addr = &(header_slave->rootfs_len);
++                               addr = READ_FLASH_DWORD(trx_addr);
++                               //addr = header_slave->rootfs_len;
++                               tc3162_parts[i+1].size = ROOTFS_PARTITION( addr );
++                               #if defined(ZYXEL_SUPPORT_DEFCFG)
++                               trx_addr = &(header_slave->defcfg_len);
++                               addr = READ_FLASH_DWORD(trx_addr);
++                               //addr = header_slave->defcfg_len;
++                               tc3162_parts[i+2].size = DEFCFG_PARTITION( addr );
++                               #endif
++                      	#else
+ 			addr = READ_FLASH_DWORD((unsigned long long)((unsigned int)header_slave + 20 * sizeof(unsigned int)));
+ //			tc3162_parts[i].size = KERNEL_PARTITION(header_slave[20]);
+ 			tc3162_parts[i].size = KERNEL_PARTITION( addr );
+@@ -645,15 +836,23 @@
+ 			addr = READ_FLASH_DWORD((unsigned long long)((unsigned int)header_slave + 21 * sizeof(unsigned int)));		
+ 			tc3162_parts[i+1].size = ROOTFS_PARTITION( addr );
+ //			tc3162_parts[i+1].size = ROOTFS_PARTITION(header_slave[21]);
+-
+-		 #if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT)
++			#endif
++		#if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT) || defined(ZYXEL_SUPPORT_ROMD)
+ 			tclinux_slave_offset = tc3162_parts[i].offset;
++			#if defined(ZYXEL_SUPPORT_DEFCFG)
++                       	tclinux_slave_size = tc3162_parts[i].size + tc3162_parts[i+1].size + tc3162_parts[i+2].size;
++                       	#else
+ 		 	tclinux_slave_size = tc3162_parts[i].size + tc3162_parts[i+1].size;
+-		 #endif
++			#endif
++		#endif
+ 
+ #if defined(TCSUPPORT_CT_DUAL_IMAGE) || defined(TCSUPPORT_CUC_DUAL_IMAGE) || defined(TCSUPPORT_NAND_BMT)
++		#if 0
+ 		trx = (struct trx_header *)header_slave;
+ 		trx_addr = &(trx->magic);
++		#else
++               	trx_addr = &(header_slave->magic);
++               	#endif
+ 		magic = READ_FLASH_DWORD(trx_addr);
+ 		if(magic !=TRX_MAGIC2){
+ 			tclinux_slave_offset = SLAVE_IMAGE_OFFSET;
+@@ -672,7 +871,7 @@
+ 				#ifdef TCSUPPORT_NAND_BADBLOCK_CHECK
+                     tc3162_parts[i].size = 0x2000000;
+ 				#else
+-					tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - 6*tc3162_mtd_info->erasesize - tclinux_slave_offset;
++					tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - SIZE_KB_FOR_ROMD - zyxelUsedKB - BLOCK_NUM_FOR_RESERVEAREA*(tc3162_mtd_info->erasesize) - tclinux_slave_offset;
+ 				#endif
+ 				} else {
+ 					tc3162_parts[i].size = tc3162_mtd_info->size - tclinux_slave_offset;
+@@ -692,37 +891,71 @@
+ 			}	
+ 		}		
+ 	}
+-	#else 
++	#else //no CONFIG_DUAL_IMAGE below
+ //	tc3162_parts[2].size = KERNEL_PARTITION(header[20]);
+ //	tc3162_parts[2].size = KERNEL_PARTITION(header[21]);
++	#if 1 //defined(ZYXEL)
++               trx_addr = &(header->kernel_len);
++               addr = READ_FLASH_DWORD(trx_addr);
++               //addr = header->kernel_len;
++               tc3162_parts[2].size = KERNEL_PARTITION( addr );
++               trx_addr = &(header->rootfs_len);
++               addr = READ_FLASH_DWORD(trx_addr);
++               //addr = header->rootfs_len;
++               tc3162_parts[3].size = ROOTFS_PARTITION( addr );
++               #if defined(ZYXEL_SUPPORT_DEFCFG)
++               trx_addr = &(header->defcfg_len);
++               addr = READ_FLASH_DWORD(trx_addr);
++               //addr = header->defcfg_len;
++               tc3162_parts[4].size = DEFCFG_PARTITION( addr );
++               #endif
++       	#else
+ 	addr = READ_FLASH_DWORD((unsigned long long)((unsigned int)header + 20 * sizeof(unsigned int)));
+ 	tc3162_parts[2].size = KERNEL_PARTITION( addr );
+ 	addr = READ_FLASH_DWORD((unsigned long long)((unsigned int)header + 21 * sizeof(unsigned int)));
+ 	tc3162_parts[3].size = ROOTFS_PARTITION( addr );
++	#endif
+ 
+ 	#if defined(TCSUPPORT_NAND_BADBLOCK_CHECK) || defined(TCSUPPORT_NAND_RT63368)
+-	#ifdef TCSUPPORT_NAND_BADBLOCK_CHECK
+-        tc3162_parts[2].offset = 0x280000;
+-        #else
+-        tc3162_parts[2].offset = 0x40000;
+-        #endif
+-        tc3162_parts[4].offset = tc3162_parts[2].offset;
++        	#ifdef TCSUPPORT_NAND_BADBLOCK_CHECK
++			tc3162_parts[2].offset = 0x280000;
++        	#else
++        		tc3162_parts[2].offset = 0x40000;
++        	#endif
++
++		#if defined(ZYXEL_SUPPORT_DEFCFG)
++        		tc3162_parts[5].offset = tc3162_parts[2].offset;
++        	#else
++        		tc3162_parts[4].offset = tc3162_parts[2].offset;
++		#endif
+ 	#endif
+ 
+ 	if (IS_NANDFLASH) {
+ 		/* frankliao added 20110112, for 128K block size NAND Flash */
+ 		if (tc3162_mtd_info->erasesize >= 0x20000) {
+ 		#ifdef TCSUPPORT_NAND_BADBLOCK_CHECK
+-		    tc3162_parts[4].size = 0x2000000;
++			#if defined(ZYXEL_SUPPORT_DEFCFG)
++                		tc3162_parts[5].size = 0x2000000;
++                	#else
++		    		tc3162_parts[4].size = 0x2000000;
++			#endif
+ 		#else
+ 			/* the last block store nand flash romfile */
+-			tc3162_parts[4].size = tc3162_mtd_info->size - nand_yaffs_size - 6*tc3162_mtd_info->erasesize - tclinux_flash_offset;
++			#if 1 //defined(ZYXEL) add defcfg partition
++                       tc3162_parts[5].size = tc3162_mtd_info->size - nand_yaffs_size - SIZE_KB_FOR_ROMD - zyxelUsedKB - BLOCK_NUM_FOR_RESERVEAREA*(tc3162_mtd_info->erasesize) - tclinux_flash_offset;
++                       #else
++                       tc3162_parts[4].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*(tc3162_mtd_info->erasesize) - tclinux_flash_offset;
++                       #endif
+ 		#endif
+ 		}
+ 	}
+ 
+-	#if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT)
+-	tclinux_size = tc3162_parts[2].size + tc3162_parts[3].size;
++	#if defined(TCSUPPORT_MTD_ENCHANCEMENT) || defined(TCSUPPORT_MULTI_BOOT) || defined(ZYXEL_SUPPORT_ROMD)
++       		#if defined(ZYXEL_SUPPORT_DEFCFG)
++       		tclinux_size = tc3162_parts[2].size + tc3162_parts[3].size + tc3162_parts[4].size;
++       		#else
++		tclinux_size = tc3162_parts[2].size + tc3162_parts[3].size;
++		#endif
+ 	#endif
+ 	#endif 
+ 
+@@ -775,6 +1008,19 @@
+ 			 * frankliao modify 201100112 
+ 			 * 64K block size SPI Flash & 128K block size NAND Flash
+ 			 */
++			#if 1 //defined(ZYXEL)
++                               if (tc3162_mtd_info->erasesize == 0x10000) {
++                                       //subtract the ZyXEL proprietary partitions.
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_flash_offset;
++                               }
++                               else if (tc3162_mtd_info->erasesize >= 0x20000) {
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_flash_offset;
++                               /* 16K block size NAND Flash */
++                               } else {
++                                       //subtract the ZyXEL proprietary partitions.
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - BLOCK_NUM_FOR_RESERVEAREA*(0x10000) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_flash_offset;
++                               }
++                       	#else
+ 			if (tc3162_mtd_info->erasesize == 0x10000) {
+ 				tc3162_parts[i].size = tc3162_mtd_info->size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - tclinux_flash_offset; //reserve the last 4 blocks
+ 			} 
+@@ -785,6 +1031,7 @@
+ 				tc3162_parts[i].size = tc3162_mtd_info->size - BLOCK_NUM_FOR_RESERVEAREA*(0x10000) - tclinux_flash_offset;
+ 			}
+ 			#endif
++			#endif
+ 			if(tclinux_size > tc3162_parts[i].size)
+ 			{
+ 				printk("\r\ntclinux size is beyond the limit!!");
+@@ -799,20 +1046,41 @@
+ 			 * frankliao modify 201100112 
+ 			 * 64K block size SPI Flash & 128K block size NAND Flash
+ 			 */
++			#if 1 //defined(ZYXEL)
++                               if (tc3162_mtd_info->erasesize == 0x10000) {
++                                       //subtract the ZyXEL proprietary partitions.
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                               } else if (tc3162_mtd_info->erasesize >= 0x20000) {
++                               #ifdef TCSUPPORT_NAND_FLASH
++                               #if !defined(TCSUPPORT_CT_PON)
++                                       //subtract the ZyXEL proprietary partitions.
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                               #endif
++                               #else
++                                       //subtract the ZyXEL proprietary partitions.
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                               #endif
++                               /* 16K block size NAND Flash */
++                               } else {
++                                       //subtract the ZyXEL proprietary partitions.
++                                       tc3162_parts[i].size = tc3162_mtd_info->size - BLOCK_NUM_FOR_RESERVEAREA*(0x10000) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                               }
++                       	#else
+ 			if (tc3162_mtd_info->erasesize == 0x10000) {
+-				tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) -tclinux_slave_offset; //reserve the last 4 blocks
++				tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - tclinux_slave_offset; //reserve the last 4 blocks
+ 			} else if (tc3162_mtd_info->erasesize >= 0x20000) {
+ 			#ifdef TCSUPPORT_NAND_FLASH
+ #if !defined(TCSUPPORT_CT_PON) 
+ 				tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) -tclinux_slave_offset; 
+ #endif
+ 			#else
+-				tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - 6*( tc3162_mtd_info->erasesize) -tclinux_slave_offset; 
++				tc3162_parts[i].size = tc3162_mtd_info->size - nand_yaffs_size - BLOCK_NUM_FOR_RESERVEAREA*( tc3162_mtd_info->erasesize) - tclinux_slave_offset;
+ 			#endif
+ 			/* 16K block size NAND Flash */
+ 			} else {
+-				tc3162_parts[i].size = tc3162_mtd_info->size -BLOCK_NUM_FOR_RESERVEAREA*(0x10000) - tclinux_slave_offset;
++				tc3162_parts[i].size = tc3162_mtd_info->size - BLOCK_NUM_FOR_RESERVEAREA*(0x10000) - tclinux_slave_offset;
+ 			}
++			#endif
+ 		#ifdef TCSUPPORT_JFFS2_BLOCK
+ 			#ifndef TCSUPPORT_NAND_FLASH)
+ #if !defined(TCSUPPORT_CT_PON)
+@@ -845,18 +1113,18 @@
+  	} 	
+  #endif
+ 
+-	#if defined(TCSUPPORT_MULTI_BOOT)
++	#if defined(TCSUPPORT_MULTI_BOOT) || defined(ZYXEL_SUPPORT_ROMD)
+  	for(i= 0; i < tc3162_parts_size; i++)
+ 	{
+ 		#if !defined(TCSUPPORT_C1_ZY_SFU)
+-		if(!strcmp(tc3162_parts[i].name,"romd"))
++		if(!strcmp(tc3162_parts[i].name,"rom-d"))
+ 		{
+ 			if (tc3162_mtd_info->erasesize >= 0x10000) {
+-				tc3162_parts[i].offset = tc3162_mtd_info->size -5*( tc3162_mtd_info->erasesize);
+-				tc3162_parts[i].size = (tc3162_mtd_info->erasesize);
++				tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD;
++                               	tc3162_parts[i].size = SIZE_KB_FOR_ROMD;
+ 			} else {
+-				tc3162_parts[i].offset = tc3162_mtd_info->size -5*(0x10000);
+-				tc3162_parts[i].size = 0x10000;
++				tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(0x10000) - SIZE_KB_FOR_ROMD;
++                               	tc3162_parts[i].size = SIZE_KB_FOR_ROMD;
+ 			}
+ 		}
+ 		#endif
+@@ -872,7 +1140,16 @@
+ 			{
+ 				#ifdef CONFIG_DUAL_IMAGE
+ 				tc3162_parts[i].size = tclinux_slave_offset -tclinux_flash_offset ; 
+-				#else				
++				#else
++                               	#if 1 //defined(ZYXEL)
++                                       if (tc3162_mtd_info->erasesize >= 0x20000) {
++                                               tc3162_parts[i].size = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_flash_offset;
++                                       } else if (tc3162_mtd_info->erasesize == 0x10000) {
++                                               tc3162_parts[i].size = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_flash_offset;
++                                       } else {
++                                               tc3162_parts[i].size = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(0x10000) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_flash_offset;
++                                       }
++                               	#else
+ 				if (tc3162_mtd_info->erasesize >= 0x20000) {
+ 					tc3162_parts[i].size = tc3162_mtd_info->size -6*( tc3162_mtd_info->erasesize) -tclinux_flash_offset; 
+ 				} else if (tc3162_mtd_info->erasesize == 0x10000) {
+@@ -881,7 +1158,7 @@
+ 					tc3162_parts[i].size = tc3162_mtd_info->size -5*(0x10000) -tclinux_flash_offset; 
+ 				}
+ 				#endif
+-		
++				#endif
+ 				if(tclinux_size > tc3162_parts[i].size)
+ 				{
+ 					printk("tclinux size is beyond the limit!!\r\n");					
+@@ -896,6 +1173,15 @@
+ 		{
+ 			if(!strcmp(tc3162_parts[i].name,"tclinux_slave"))
+ 			{
++				#if 1 //defined(ZYXEL)
++                                       if (tc3162_mtd_info->erasesize >= 0x20000) {
++                                               tc3162_parts[i].size = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*tc3162_mtd_info->erasesize - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                                       } else if (tc3162_mtd_info->erasesize == 0x10000) {
++                                               tc3162_parts[i].size = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                                       } else {
++                                               tc3162_parts[i].size = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(0x10000) - SIZE_KB_FOR_ROMD - zyxelUsedKB - tclinux_slave_offset;
++                                       }
++                               	#else
+ 				if (tc3162_mtd_info->erasesize >= 0x20000) {
+ 					tc3162_parts[i].size = tc3162_mtd_info->size -6*tc3162_mtd_info->erasesize -tclinux_slave_offset;
+ 				} else if (tc3162_mtd_info->erasesize == 0x10000) {
+@@ -903,6 +1189,7 @@
+ 				} else {
+ 					tc3162_parts[i].size = tc3162_mtd_info->size -5*(0x10000) -tclinux_slave_offset;
+ 				}
++				#endif
+ 				if(tclinux_slave_size > tc3162_parts[i].size)
+ 				{
+ 					printk("tclinux_slave size is beyond the limit!!\r\n");
+@@ -916,11 +1203,54 @@
+  	} 	
+ #endif
+ 
++#if defined(ZYXEL_SUPPORT_ROMFILE2) || defined(ZYXEL_SUPPORT_WWANPKG) || defined(ZYXEL_SUPPORT_DATA)
++       for(i= 0; i < tc3162_parts_size; i++)
++       {
++               if(!strcmp(tc3162_parts[i].name,"wwan"))
++               {
++                       if (tc3162_mtd_info->erasesize >= 0x10000) {
++                               tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - zyxelUsedKB;
++                               tc3162_parts[i].size = SIZE_KB_FOR_WWANPKG;
++                       } else {
++                               tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(0x10000) - SIZE_KB_FOR_ROMD - zyxelUsedKB;
++                               tc3162_parts[i].size = SIZE_KB_FOR_WWANPKG;
++                       }
++               }
++#if defined(ZYXEL_SUPPORT_DATA)
++               if(!strcmp(tc3162_parts[i].name,"data"))
++               {
++                       if (tc3162_mtd_info->erasesize >= 0x10000) {
++                               tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - SIZE_KB_FOR_DATA;
++                               tc3162_parts[i].size = SIZE_KB_FOR_DATA;
++                       } else {
++                               tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(0x10000) - SIZE_KB_FOR_ROMD - SIZE_KB_FOR_DATA;
++                               tc3162_parts[i].size = SIZE_KB_FOR_DATA;
++                       }
++               }
++#elif defined(ZYXEL_SUPPORT_WWANPKG)
++               if(!strcmp(tc3162_parts[i].name,"second_romfile"))
++               {
++                       if (tc3162_mtd_info->erasesize >= 0x10000) {
++                               tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*( tc3162_mtd_info->erasesize) - SIZE_KB_FOR_ROMD - SIZE_KB_FOR_ROMFILE2;
++                               tc3162_parts[i].size = SIZE_KB_FOR_ROMFILE2;
++                       } else {
++                               tc3162_parts[i].offset = tc3162_mtd_info->size - (BLOCK_NUM_FOR_RESERVEAREA)*(0x10000) - SIZE_KB_FOR_ROMD - SIZE_KB_FOR_ROMFILE2;
++                               tc3162_parts[i].size = SIZE_KB_FOR_ROMFILE2;
++                       }
++               }
++#endif
++       }
++#endif
++
+ #if !defined(TCSUPPORT_NAND_BADBLOCK_CHECK) && !defined(TCSUPPORT_NAND_RT63368)
+ 	/*Reset the kernel partition offset*/
+ 	tc3162_parts[2].offset = tclinux_flash_offset;
+ 	/*Reset the tclinux partition offset*/
++       	#if defined(ZYXEL_SUPPORT_DEFCFG)
++       	tc3162_parts[5].offset = tclinux_flash_offset;
++       	#else
+ 	tc3162_parts[4].offset = tclinux_flash_offset;
++	#endif
+ 
+ 	/* frank added 20110111 for 128K block size NAND Flash*/
+ 	if (tc3162_mtd_info->erasesize >= 0x20000) {

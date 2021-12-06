@@ -1,0 +1,205 @@
+Index: libzcfg_fe_dal-1.0/network/dns/zcfg_fe_dal_dns_entry.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/dns/zcfg_fe_dal_dns_entry.c	2017-06-09 17:11:18.185527138 +0800
++++ libzcfg_fe_dal-1.0/network/dns/zcfg_fe_dal_dns_entry.c	2017-06-09 17:14:42.853954500 +0800
+@@ -43,10 +43,17 @@
+ 	objIndex_t dnsEntryIid = {0};
+ 	const char *hostname = NULL;
+ 	const char *IPv4Address = NULL;
++	zcfg_offset_t oid;
++	oid = RDM_OID_DNS_ENTRY;
++
++	hostname = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++	ret = dalcmdParamCheck(NULL, hostname, oid, "HostName", "HostName",  replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 
+ 	if(zcfgFeObjJsonAdd(RDM_OID_DNS_ENTRY, &dnsEntryIid, NULL) == ZCFG_SUCCESS){
+ 		if(zcfgFeObjJsonGet(RDM_OID_DNS_ENTRY, &dnsEntryIid, &dnsEntryObj) == ZCFG_SUCCESS){
+-			hostname = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++			
+ 			IPv4Address = json_object_get_string(json_object_object_get(Jobj, "IPv4Address"));
+ 			json_object_object_add(dnsEntryObj, "HostName", json_object_new_string(hostname));
+ 			json_object_object_add(dnsEntryObj, "IPv4Address", json_object_new_string(IPv4Address));
+@@ -63,18 +70,28 @@
+ 	objIndex_t dnsEntryIid = {0};
+ 	const char *hostname = NULL;
+ 	const char *IPv4Address = NULL;
+-	dnsEntryIid.level = 1;
+-	dnsEntryIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	int index = 0;
++	zcfg_offset_t oid;
++	oid = RDM_OID_DNS_ENTRY;
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	hostname = json_object_get_string(json_object_object_get(Jobj, "HostName"));
+ 
+-	if(zcfgFeObjJsonGet(RDM_OID_DNS_ENTRY, &dnsEntryIid, &dnsEntryObj) == ZCFG_SUCCESS){
+-		hostname = json_object_get_string(json_object_object_get(Jobj, "HostName"));
++	ret = convertIndextoIid(index, &dnsEntryIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
++	if(json_object_object_get(Jobj, "HostName")){
++		ret = dalcmdParamCheck(&dnsEntryIid, hostname, oid, "HostName", "HostName", replyMsg);
++		if(ret != ZCFG_SUCCESS)
++			return ret;
++	}
++	if(zcfgFeObjJsonGet(oid, &dnsEntryIid, &dnsEntryObj) == ZCFG_SUCCESS){
+ 		IPv4Address = json_object_get_string(json_object_object_get(Jobj, "IPv4Address"));
+ 		if(hostname)
+ 			json_object_object_add(dnsEntryObj, "HostName", json_object_new_string(hostname));
+ 		if(IPv4Address)
+ 			json_object_object_add(dnsEntryObj, "IPv4Address", json_object_new_string(IPv4Address));
+ 
+-		ret = zcfgFeObjJsonSet(RDM_OID_DNS_ENTRY, &dnsEntryIid, dnsEntryObj, NULL);
++		ret = zcfgFeObjJsonSet(oid, &dnsEntryIid, dnsEntryObj, NULL);
+ 		zcfgFeJsonObjFree(dnsEntryObj);
+ 	}
+ 		return ret;
+@@ -82,9 +99,14 @@
+ zcfgRet_t zcfgFeDalDnsEntryDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t dnsEntryIid = {0};
+-	
+-	dnsEntryIid.level = 1;
+-	dnsEntryIid.idx[0] = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	int index = 0;
++	zcfg_offset_t oid;
++	oid = RDM_OID_DNS_ENTRY;
++
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));	
++	ret = convertIndextoIid(index, &dnsEntryIid, oid, NULL, NULL, replyMsg);
++	if(ret != ZCFG_SUCCESS)
++		return ret;
+ 	zcfgFeObjJsonDel(RDM_OID_DNS_ENTRY, &dnsEntryIid, NULL);
+ 		
+ 	return ret;
+@@ -94,13 +116,15 @@
+ 	struct json_object *dnsEntryObj = NULL;
+ 	struct json_object *paramJobj = NULL;
+ 	objIndex_t dnsEntryIid = {0};
++	int count = 1;
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_DNS_ENTRY, &dnsEntryIid, &dnsEntryObj) == ZCFG_SUCCESS){
+ 		paramJobj = json_object_new_object();
+ 		json_object_object_add(paramJobj, "HostName", JSON_OBJ_COPY(json_object_object_get(dnsEntryObj, "HostName")));
+ 		json_object_object_add(paramJobj, "IPv4Address", JSON_OBJ_COPY(json_object_object_get(dnsEntryObj, "IPv4Address")));
+-		json_object_object_add(paramJobj, "Index", json_object_new_int(dnsEntryIid.idx[0]));
++		json_object_object_add(paramJobj, "Index", json_object_new_int(count));
+ 		json_object_array_add(Jarray, paramJobj);
+ 		zcfgFeJsonObjFree(dnsEntryObj);
++		count++;
+ 	}
+ 	return ret;
+ }
+@@ -113,13 +137,13 @@
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+ 	if(!strcmp(method, "PUT")) {
+-		ret = zcfgFeDalDnsEntryEdit(Jobj, NULL);
++		ret = zcfgFeDalDnsEntryEdit(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "POST")) {
+-		ret = zcfgFeDalDnsEntryAdd(Jobj, NULL);
++		ret = zcfgFeDalDnsEntryAdd(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method, "DELETE")) {
+-		ret = zcfgFeDalDnsEntryDelete(Jobj, NULL);
++		ret = zcfgFeDalDnsEntryDelete(Jobj, replyMsg);
+ 	}
+ 	else if(!strcmp(method,"GET")){
+ 		ret = zcfgFeDalDnsEntryGet(Jobj, NULL);
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_static_route.c	2017-06-09 17:11:18.589527131 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c	2017-06-09 17:14:08.131954500 +0800
+@@ -134,6 +134,7 @@
+ 	objIndex_t StaticRouteIid = {0};
+ 	zcfg_offset_t oid;
+ 	const char *iptype = NULL;
++	const char *origiptype = NULL;
+ 	const char *Name = NULL;
+ 	const char *GatewayIPAddress = NULL;
+ 	const char *NextHop = NULL;
+@@ -166,24 +167,29 @@
+ 		objtmp = json_object_array_get_idx(obj, i);
+ 		if(index == atoi(json_object_get_string(json_object_object_get(objtmp, "Index")))){
+ 			idx = json_object_get_string(json_object_object_get(objtmp, "idx"));
++			origiptype = json_object_get_string(json_object_object_get(objtmp, "ipver"));
++			if(json_object_object_get(Jobj, "ipver")){
+ 			if(strcmp(iptype,json_object_get_string(json_object_object_get(objtmp, "ipver")))){
+ 				if(replyMsg != NULL)
+ 					strcat(replyMsg, "The iptype of rule cannot change.");	
+ 				return ZCFG_INVALID_PARAM_VALUE;
+ 			}				
+ 		}
++		}
+ 		else{
++			if(json_object_object_get(Jobj, "Name")){
+ 			if(!strcmp(Name,json_object_get_string(json_object_object_get(objtmp, "Name")))){
+ 				if(replyMsg != NULL)
+ 					strcat(replyMsg, "Name is duplicate.");			
+ 				return ZCFG_INVALID_PARAM_VALUE;
+-
++				}
+ }
+ 	}
+ 	}
+ 	StaticRouteIid.level = 2;
+ 	StaticRouteIid.idx[0] = 1;
+ 	StaticRouteIid.idx[1] = atoi(idx);
++	if(json_object_object_get(Jobj, "ipver")){
+ 	if(!strcmp(iptype,"IPv4")){
+ 		oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+ 		if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
+@@ -232,6 +238,31 @@
+ 				json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
+ 	}
+ 	}
++	}
++	else{
++		if(!strcmp(origiptype, "IPv4")){
++			oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++			if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
++				if(json_object_object_get(Jobj, "Enable"))
++					json_object_object_add(StaticRouteObj, "Enable", json_object_new_boolean(Enable));
++				if(json_object_object_get(Jobj, "Name"))
++					json_object_object_add(StaticRouteObj, "Alias", json_object_new_string(Name));
++				if(json_object_object_get(Jobj, "Interface"))
++					json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
++			}			
++		}
++		else if(!strcmp(origiptype, "IPv6")){
++			oid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++			if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
++				if(json_object_object_get(Jobj, "Enable"))
++					json_object_object_add(StaticRouteObj, "Enable", json_object_new_boolean(Enable));
++				if(json_object_object_get(Jobj, "Name"))
++					json_object_object_add(StaticRouteObj, "Alias", json_object_new_string(Name));
++				if(json_object_object_get(Jobj, "Interface"))
++					json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
++			}
++		}
++	}
+ 	ret = zcfgFeObjJsonSet(oid, &StaticRouteIid, StaticRouteObj, NULL);
+ 	zcfgFeJsonObjFree(StaticRouteObj);
+ 	return ret;
+@@ -280,6 +311,20 @@
+ 			strcat(replyMsg, "Name is duplicate.");			
+ 			return ZCFG_INVALID_PARAM_VALUE;		
+ 		}	
++		if(!strcmp(iptype, "IPv4")){
++			if(!strcmp(DestIPAddress,json_object_get_string(json_object_object_get(objtmp, "DestIPAddress"))) && !strcmp(DestSubnetMask,json_object_get_string(json_object_object_get(objtmp, "DestSubnetMask")))){
++				if(replyMsg != NULL)
++					strcat(replyMsg, "The rule existed, please enter another destination ip address or subnet mask.");			
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
++		else if(!strcmp(iptype, "IPv6")){
++			if(!strcmp(DestIPPrefix,json_object_get_string(json_object_object_get(objtmp, "DestIPPrefix"))) && !strcmp(NextHop,json_object_get_string(json_object_object_get(objtmp, "NextHop")))){
++				if(replyMsg != NULL)
++					strcat(replyMsg, "The rule existed, please enter another destination ip address or prefix length.");			
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++		}
+ 	}
+ 	if(!strcmp(iptype,"IPv4")){
+ 		oid = RDM_OID_ROUTING_ROUTER_V4_FWD;

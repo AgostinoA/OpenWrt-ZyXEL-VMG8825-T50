@@ -1,0 +1,93 @@
+Index: iptables-1.4.10/extensions/libipt_DNAT.c
+===================================================================
+--- iptables-1.4.10.orig/extensions/libipt_DNAT.c	2010-10-29 22:37:22.000000000 +0800
++++ iptables-1.4.10/extensions/libipt_DNAT.c	2016-10-04 11:28:14.935709512 +0800
+@@ -58,12 +58,25 @@
+ }
+ 
+ /* Ranges expected in network order. */
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++static struct xt_entry_target *
++parse_to(char *arg, int portok, struct ipt_natinfo *info, char **matchRule)
++#else
+ static struct xt_entry_target *
+ parse_to(char *arg, int portok, struct ipt_natinfo *info)
++#endif
+ {
+ 	struct nf_nat_range range;
+ 	char *colon, *dash, *error;
+ 	const struct in_addr *ip;
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++	int matchMinPort = 0;
++	int matchMaxPort = 0;
++	char *matchColon = NULL;
++	char *search = NULL;
++	char *tmp = NULL;
++	int i = 0;
++#endif
+ 
+ 	memset(&range, 0, sizeof(range));
+ 	colon = strchr(arg, ':');
+@@ -105,6 +118,29 @@
+ 					   "Port range `%s' funky\n", colon+1);
+ 			range.min.tcp.port = htons(port);
+ 			range.max.tcp.port = htons(maxport);
++
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++			/* Find out the external port range in match rule. */
++			tmp = *matchRule;
++			range.mappingFlag = 0;
++			for (i = 1; tmp != NULL; i++) {
++				tmp = *(matchRule + i);
++				if ((search = strstr(tmp, "dport")) != NULL) {
++					search = *(matchRule + i + 1);
++					matchMinPort = atoi(search);
++					matchColon = strchr(search, ':');
++					matchMaxPort = atoi(matchColon + 1);
++
++					/* If the port range of match rule is same as forward port range, nothing to do here. */
++					if ((matchMinPort != port) && (matchMaxPort != maxport)) {
++						range.mappingMin.tcp.port = htons(matchMinPort);
++						range.mappingMax.tcp.port = htons(matchMaxPort);
++						range.mappingFlag = 1;
++					}
++					break;
++				}
++			}
++#endif
+ 		}
+ 		/* Starts with a colon? No IP info...*/
+ 		if (colon == arg)
+@@ -166,7 +202,13 @@
+ 				xtables_error(PARAMETER_PROBLEM,
+ 					   "Multiple --to-destination not supported");
+ 		}
++
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120308. */
++		*target = parse_to(optarg, portok, info, argv);
++#else
+ 		*target = parse_to(optarg, portok, info);
++#endif
++
+ 		/* WTF do we need this for?? */
+ 		if (*flags & IPT_DNAT_OPT_RANDOM)
+ 			info->mr.range[0].flags |= IP_NAT_RANGE_PROTO_RANDOM;
+Index: iptables-1.4.10/include/net/netfilter/nf_nat.h
+===================================================================
+--- iptables-1.4.10.orig/include/net/netfilter/nf_nat.h	2010-10-29 22:37:22.000000000 +0800
++++ iptables-1.4.10/include/net/netfilter/nf_nat.h	2016-10-04 11:07:49.539709512 +0800
+@@ -40,6 +40,14 @@
+ 
+ 	/* Inclusive: network order */
+ 	union nf_conntrack_man_proto min, max;
++
++#if 1 /* Support one-to-one port mapping. __TELEFONICA__, ZyXEL Stan Su, 20120307. */
++	/* mappingFlag is 1, if it needs to do one-to-one port mapping. */
++	unsigned int mappingFlag;
++
++	/* Record external port information. */
++	union nf_conntrack_man_proto mappingMin, mappingMax;
++#endif
+ };
+ 
+ /* For backwards compat: don't use in modern code. */

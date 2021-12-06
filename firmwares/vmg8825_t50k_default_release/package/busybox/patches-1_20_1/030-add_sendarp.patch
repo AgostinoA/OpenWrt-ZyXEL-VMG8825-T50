@@ -1,0 +1,237 @@
+Index: busybox-1_20_1/include/applets.src.h
+===================================================================
+--- busybox-1_20_1.orig/include/applets.src.h	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/include/applets.src.h	2014-01-07 19:34:43.525927134 +0800
+@@ -76,6 +76,7 @@
+ IF_AR(APPLET(ar, BB_DIR_USR_BIN, BB_SUID_DROP))
+ IF_ARP(APPLET(arp, BB_DIR_SBIN, BB_SUID_DROP))
+ IF_ARPING(APPLET(arping, BB_DIR_USR_BIN, BB_SUID_DROP))
++IF_SENDARP(APPLET(sendarp, BB_DIR_USR_BIN, BB_SUID_DROP))
+ IF_AWK(APPLET_NOEXEC(awk, awk, BB_DIR_USR_BIN, BB_SUID_DROP, awk))
+ IF_BASENAME(APPLET_NOFORK(basename, basename, BB_DIR_USR_BIN, BB_SUID_DROP, basename))
+ IF_BBCONFIG(APPLET(bbconfig, BB_DIR_BIN, BB_SUID_DROP))
+Index: busybox-1_20_1/include/usage.src.h
+===================================================================
+--- busybox-1_20_1.orig/include/usage.src.h	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/include/usage.src.h	2014-01-07 19:34:34.038112063 +0800
+@@ -19,4 +19,19 @@
+ #define busybox_notes_usage \
+        "Hello world!\n"
+ 
++#define sendarp_trivial_usage \
++       "-s <src device name> -d <dst device name>"
++#define sendarp_full_usage "\n\n" \
++       "Send ARP packet with src device's IP and Hardware address to dst device.\n" \
++     "\nOptions:" \
++     "\n        -s DEVNAME      src device name." \
++     "\n        -d DEVNAME      dst device name." \
++
++#define sysinfo_trivial_usage \
++        "System status report"
++#define sysinfo_full_usage \
++        "System status report\n\n"
++#define sysinfo_example_usage \
++        "$ sysinfo\n"
++
+ #endif
+Index: busybox-1_20_1/networking/Config.src
+===================================================================
+--- busybox-1_20_1.orig/networking/Config.src	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/networking/Config.src	2014-01-07 19:34:21.841414999 +0800
+@@ -62,6 +62,12 @@
+ 	help
+ 	  Ping hosts by ARP packets.
+ 
++config SENDARP
++	bool "sendarp"
++	default y
++	help
++	  Ping hosts by ARP packets.
++
+ config BRCTL
+ 	bool "brctl"
+ 	default y
+Index: busybox-1_20_1/networking/Kbuild.src
+===================================================================
+--- busybox-1_20_1.orig/networking/Kbuild.src	2012-05-28 08:48:55.000000000 +0800
++++ busybox-1_20_1/networking/Kbuild.src	2014-01-07 19:34:08.814842070 +0800
+@@ -9,6 +9,7 @@
+ INSERT
+ lib-$(CONFIG_ARP)          += arp.o interface.o
+ lib-$(CONFIG_ARPING)       += arping.o
++lib-$(CONFIG_SENDARP)      += sendarp.o
+ lib-$(CONFIG_BRCTL)        += brctl.o
+ lib-$(CONFIG_DNSD)         += dnsd.o
+ lib-$(CONFIG_ETHER_WAKE)   += ether-wake.o
+Index: busybox-1_20_1/networking/sendarp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ busybox-1_20_1/networking/sendarp.c	2014-01-07 19:33:49.964243462 +0800
+@@ -0,0 +1,166 @@
++#include <stdlib.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <linux/if_packet.h>
++#include <net/if.h>
++#include <sys/ioctl.h>
++#include <netinet/if_ether.h>
++#include "busybox.h"
++
++#define MAC_BCAST_ADDR	"\xff\xff\xff\xff\xff\xff"
++
++#define IFIPADDR        1
++#define IFHWADDR        2
++
++struct arpMsg {
++	struct ethhdr ethhdr;	 		/* Ethernet header */
++	u_short htype;				/* hardware type (must be ARPHRD_ETHER) */
++	u_short ptype;				/* protocol type (must be ETH_P_IP) */
++	u_char  hlen;				/* hardware address length (must be 6) */
++	u_char  plen;				/* protocol address length (must be 4) */
++	u_short operation;			/* ARP opcode */
++	u_char  sHaddr[6];			/* sender's hardware address */
++	u_char  sInaddr[4];			/* sender's IP address */
++	u_char  tHaddr[6];			/* target's hardware address */
++	u_char  tInaddr[4];			/* target's IP address */
++	u_char  pad[18];			/* pad for min. Ethernet payload (60 bytes) */
++};
++
++/* local prototypes */
++static void sendArp(char *srcDev, char *destDev);
++static void mkArpMsg(int opcode, u_long tInaddr, u_char *tHaddr, u_long sInaddr, u_char *sHaddr, struct arpMsg *msg);
++static int getDevInfo (char *devname, int infotype, char *data);
++
++int sendarp_main(int argc, char **argv)
++{
++	char *srcdev = NULL;
++	char *dstdev = NULL;
++	int opt;
++
++	while ((opt = getopt(argc, argv, "s:d:")) != -1) {
++		switch (opt) {
++		case 's': 
++			srcdev = xstrdup(optarg);
++			break;
++		case 'd':
++			dstdev = xstrdup(optarg);
++			break;
++		}
++	}
++
++    if ((srcdev == NULL) || (dstdev == NULL)) {
++        bb_show_usage();
++        return 0;
++    }
++
++    /* send gratutious ARP packet with srcdev's IP and hardware address to dstdev */
++    sendArp(srcdev, dstdev);
++
++	return EXIT_SUCCESS;
++}
++
++static void mkArpMsg(int opcode, u_long tInaddr, u_char *tHaddr,
++		 u_long sInaddr, u_char *sHaddr, struct arpMsg *msg) {
++	bzero(msg, sizeof(*msg));
++	bcopy(MAC_BCAST_ADDR, msg->ethhdr.h_dest, 6); /* MAC DA */
++	bcopy(sHaddr, msg->ethhdr.h_source, 6);	/* MAC SA */
++	msg->ethhdr.h_proto = htons(ETH_P_ARP);	/* protocol type (Ethernet) */
++	msg->htype = htons(ARPHRD_ETHER);		/* hardware type */
++	msg->ptype = htons(ETH_P_IP);			/* protocol type (ARP message) */
++	msg->hlen = 6;							/* hardware address length */
++	msg->plen = 4;							/* protocol address length */
++	msg->operation = htons(opcode);			/* ARP op code */
++	*((u_int *)msg->sInaddr) = sInaddr;		/* source IP address */
++	bcopy(sHaddr, msg->sHaddr, 6);			/* source hardware address */
++	*((u_int *)msg->tInaddr) = tInaddr;		/* target IP address */
++	if ( opcode == ARPOP_REPLY )
++		bcopy(tHaddr, msg->tHaddr, 6);		/* target hardware address */
++}
++
++static int getDevInfo (char *devname, int infotype, char *data) {
++    int    sock;
++    struct ifreq ifr;
++    int rc = 0;
++
++    /* create device level socket */
++    if ((sock = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0)
++    {
++		perror("cannot open socket ");
++        return -1;
++    }
++
++    memset(&ifr, 0, sizeof(struct ifreq));
++    strcpy(ifr.ifr_name, devname);
++    switch(infotype) {
++        case IFIPADDR:
++            /* get IP address */
++            if (ioctl(sock, SIOCGIFADDR, &ifr) == -1) {
++                rc = -1;
++            } else {
++                memcpy(data, &((struct sockaddr_in *)&(ifr.ifr_addr))->sin_addr, sizeof(struct in_addr));
++            }
++            break;
++        case IFHWADDR:
++            /* get hardware address */
++            if (ioctl(sock, SIOCGIFHWADDR, &ifr) == -1) {
++                rc = -1;
++            } else {
++                memcpy(data, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
++            }
++            break;
++        default:
++            rc = -1;
++            break;
++    }
++	close (sock);
++	return rc;
++}
++
++static void sendArp(char *srcDev, char *destDev) {
++    int sock;
++    struct arpMsg arp;
++    unsigned char br_macaddr[ETH_ALEN];
++    unsigned char eth_macaddr[ETH_ALEN];
++    unsigned int br_ipAddr;
++    struct sockaddr_ll sll; 
++    struct ifreq ifr;
++    int flag;
++
++    if ((getDevInfo(srcDev, IFIPADDR, (char *)&br_ipAddr) == 0) &&
++       (getDevInfo(srcDev, IFHWADDR, (char *)br_macaddr) == 0) &&
++       (getDevInfo(destDev, IFHWADDR, (char *)eth_macaddr) == 0)) {
++            /* create device level socket */
++            if ((sock = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0) {
++		        perror("cannot open socket ");
++                return;
++            }
++
++            memset(&sll, 0, sizeof(sll));
++            sll.sll_family = AF_PACKET;
++            sll.sll_protocol = htons(ETH_P_ALL);
++
++            /* get interface index number */
++            memset(&ifr, 0, sizeof(struct ifreq));
++            strcpy(ifr.ifr_name, destDev);
++            if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
++ 		        perror("SIOCGIFINDEX(): ");
++                close(sock);
++                return;
++            }
++            sll.sll_ifindex = ifr.ifr_ifindex;
++            /* bind the socket to the interface */
++            if (bind(sock, (struct sockaddr *)&sll,	sizeof(sll)) == -1) {
++ 		        perror("bind(): ");
++                close(sock);
++                return;
++            }
++            /* set socket to non-blocking operation */
++            if ((flag = fcntl(sock, F_GETFL, 0)) >= 0) {
++                fcntl(sock, F_SETFL, flag | O_NONBLOCK);
++            }
++            mkArpMsg(ARPOP_REQUEST, br_ipAddr, NULL, br_ipAddr, br_macaddr, &arp);
++            sendto(sock, &arp, sizeof(arp), 0, (struct sockaddr *)&sll, sizeof(sll));
++            close(sock);
++    }
++}
+\ No newline at end of file

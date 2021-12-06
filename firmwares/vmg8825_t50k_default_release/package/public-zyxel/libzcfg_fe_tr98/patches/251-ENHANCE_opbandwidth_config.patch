@@ -1,0 +1,149 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-11-13 14:36:57.044497868 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-11-13 14:36:43.546305600 +0800
+@@ -80,7 +80,7 @@
+ #else
+ 
+ #define TR98_PARM_LAN_DEV_WLAN_CFG "{\	
+-		\"BeaconType\": { \"Basic\": { }, \"WPA\": { }, \"11i\": { }, \"WPAand11i\": { }, \"Emp\": { } },\
++		\"BeaconType\": { \"Basic\": { }, \"WPA\": { }, \"11i\": { }, \"WPAand11i\": { } },\
+ 		\"DeviceOperationMode\": { \"InfrastructureAccessPoint\": { }, \"Emp\": { } },\
+ 		\"BasicEncryptionModes\": { \"None\": { }, \"WEPEncryption\": { } },\
+ 		\"BasicAuthenticationMode\": { \"None\": { }, \"SharedAuthentication\": { } },\
+@@ -4254,42 +4254,60 @@
+ #define BANDWIDTH24_40Mhz { 1, 9};
+ 
+ #define BANDWIDTH5_20Mhz { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0};
+-#define BANDWIDTH5_40Mhz { 36, 44, 52, 60, 100, 108, 116, 124, 136, 0};
++#define BANDWIDTH5_40Mhz { 36, 44, 52, 60, 100, 108, 116, 124, 132, 0};
+ #define BANDWIDTH5_80Mhz { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 0};
+ #define BANDWIDTH5_160Mhz { 0};
+ 
+ zcfgRet_t lanDevWlanConfirmRadio(objIndex_t *apIid, struct json_object *tr98Jobj, struct json_object *radioJobj)
+ {
+-	const char *opBand = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingFrequencyBand"));
+-	const char *opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
++	const char *beaconType = json_object_get_string(json_object_object_get(tr98Jobj, "BeaconType"));
+ 
+ 	int tr181Channel = json_object_get_int(json_object_object_get(radioJobj, "Channel"));
+ 	bool tr98AutoChannel = json_object_get_boolean(json_object_object_get(tr98Jobj, "AutoChannelEnable"));
+ 	int tr98SetChannel = json_object_get_int(json_object_object_get(tr98Jobj, "Channel"));
+ 
+-	if(tr98AutoChannel)
+-		return ZCFG_SUCCESS;
++	const char *tr181OpBandwidth = json_object_get_string(json_object_object_get(radioJobj, "OperatingChannelBandwidth"));
++	const char *opBand = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingFrequencyBand"));
++	const char *opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
+ 
+-	if(tr181Channel != tr98SetChannel) {
+-		if(apIid->idx[0] > WIFI24_FIRST_AP && apIid->idx[0] <= WIFI24_LAST_AP) {
++	if(!strcmp(beaconType, "Basic")) {
++		const char *basicAuthMode = json_object_get_string(json_object_object_get(tr98Jobj, "BasicAuthenticationMode"));
++		const char *basicEncryptModes = json_object_get_string(json_object_object_get(tr98Jobj, "BasicEncryptionModes"));
++
++		if(( (basicAuthMode && strcmp(basicAuthMode, "None")) || (basicEncryptModes && strcmp(basicEncryptModes, "None")) ) 
++				&& (apIid->idx[0] == WIFI24_FIRST_AP))
++			json_object_object_add(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth", json_object_new_string("20MHz"));
++		else if(( (basicAuthMode && strcmp(basicAuthMode, "None")) || (basicEncryptModes && strcmp(basicEncryptModes, "None")) ) 
++				&& (apIid->idx[0] == WIFI5_FIRST_AP))
++			json_object_object_add(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth", json_object_new_string("20MHz"));
++		else if(strcmp(opBandwidth, tr181OpBandwidth) && (apIid->idx[0] != WIFI24_FIRST_AP) && (apIid->idx[0] != WIFI5_FIRST_AP))
+ 			return ZCFG_INVALID_PARAM_VALUE;
++	}
++	else if(strcmp(opBandwidth, tr181OpBandwidth) && (apIid->idx[0] != WIFI24_FIRST_AP) && (apIid->idx[0] != WIFI5_FIRST_AP))
++		return ZCFG_INVALID_PARAM_VALUE;
++
++	opBandwidth = json_object_get_string(json_object_object_get(tr98Jobj, "X_ZYXEL_OperatingChannelBandwidth"));
++
++
++	if(!strcmp(opBand, "2.4GHz")) {
++		int bandwidth20Mhz[] = BANDWIDTH24_20Mhz
++		int bandwidth40Mhz[] = BANDWIDTH24_40Mhz
++		int *bandwidthChannelNum = NULL;
++
++		if(!strcmp(opBandwidth, "20MHz")) {
++			bandwidthChannelNum = bandwidth20Mhz;
+ 		}
+-		else if(apIid->idx[0] > WIFI5_FIRST_AP && apIid->idx[0] <= WIFI5_LAST_AP) {
+-			return ZCFG_INVALID_PARAM_VALUE;
++		else if(!strcmp(opBandwidth, "40MHz")) {
++			bandwidthChannelNum = bandwidth40Mhz;
+ 		}
++		else
++			return ZCFG_INVALID_PARAM_VALUE;
+ 
+-		if(!strcmp(opBand, "2.4GHz")) {
+-			int bandwidth20Mhz[] = BANDWIDTH24_20Mhz
+-			int bandwidth40Mhz[] = BANDWIDTH24_40Mhz
+-			int *bandwidthChannelNum = NULL;
++		if(tr98AutoChannel)
++			return ZCFG_SUCCESS;
+ 
+-			if(!strcmp(opBandwidth, "20MHz")) {
+-				bandwidthChannelNum = bandwidth20Mhz;
+-			}
+-			else if(!strcmp(opBandwidth, "40MHz")) {
+-				bandwidthChannelNum = bandwidth40Mhz;
+-			}
+-			else
++		if(tr181Channel != tr98SetChannel) {
++			if(apIid->idx[0] > WIFI24_FIRST_AP && apIid->idx[0] <= WIFI24_LAST_AP)
+ 				return ZCFG_INVALID_PARAM_VALUE;
+ 
+ 			if((tr98SetChannel >= bandwidthChannelNum[0]) && (tr98SetChannel <= bandwidthChannelNum[1]))
+@@ -4297,26 +4315,34 @@
+ 			else
+ 				return ZCFG_INVALID_PARAM_VALUE;
+ 		}
+-		else if(!strcmp(opBand, "5GHz")) {
+-			int bandwidth20Mhz[] = BANDWIDTH5_20Mhz
+-			int bandwidth40Mhz[] = BANDWIDTH5_40Mhz
+-			int bandwidth80Mhz[] = BANDWIDTH5_80Mhz
+-			int bandwidth160Mhz[] = BANDWIDTH5_160Mhz
+-			int *bandwidthChannelNum = NULL;
+-
+-			if(!strcmp(opBandwidth, "20MHz")) {
+-				bandwidthChannelNum = bandwidth20Mhz;
+-			}
+-			else if(!strcmp(opBandwidth, "40MHz")) {
+-				bandwidthChannelNum = bandwidth40Mhz;
+-			}
+-			else if(!strcmp(opBandwidth, "80MHz")) {
+-				bandwidthChannelNum = bandwidth80Mhz;
+-			}
+-			else if(!strcmp(opBandwidth, "160MHz")) {
+-				bandwidthChannelNum = bandwidth160Mhz;
+-			}
+-			else
++	}
++	else if(!strcmp(opBand, "5GHz")) {
++		int bandwidth20Mhz[] = BANDWIDTH5_20Mhz
++		int bandwidth40Mhz[] = BANDWIDTH5_40Mhz
++		int bandwidth80Mhz[] = BANDWIDTH5_80Mhz
++		int bandwidth160Mhz[] = BANDWIDTH5_160Mhz
++		int *bandwidthChannelNum = NULL;
++
++		if(!strcmp(opBandwidth, "20MHz")) {
++			bandwidthChannelNum = bandwidth20Mhz;
++		}
++		else if(!strcmp(opBandwidth, "40MHz")) {
++			bandwidthChannelNum = bandwidth40Mhz;
++		}
++		else if(!strcmp(opBandwidth, "80MHz")) {
++			bandwidthChannelNum = bandwidth80Mhz;
++		}
++		else if(!strcmp(opBandwidth, "160MHz")) {
++			bandwidthChannelNum = bandwidth160Mhz;
++		}
++		else
++			return ZCFG_INVALID_PARAM_VALUE;
++
++		if(tr98AutoChannel)
++			return ZCFG_SUCCESS;
++
++		if(tr181Channel != tr98SetChannel) {
++			if(apIid->idx[0] > WIFI5_FIRST_AP && apIid->idx[0] <= WIFI5_LAST_AP)
+ 				return ZCFG_INVALID_PARAM_VALUE;
+ 
+ 			int n = 0;

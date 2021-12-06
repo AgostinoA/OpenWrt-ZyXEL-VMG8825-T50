@@ -1,0 +1,150 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_others.c	2016-10-20 14:46:28.152906389 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c	2016-10-20 14:46:28.168906389 +0800
+@@ -40,6 +40,8 @@
+ 	{"wlPmf",		dalType_string, 0,	0,	NULL},
+ 	//WiFi AP WPS
+ 	{"wps_v2",		dalType_boolean, 0,	0,	NULL},
++	{"atf",			dalType_boolean, 0,	0,	NULL},
++	{"InActiveChan",	dalType_string, 0,	0,	NULL},
+ 	{NULL,		0,	0,	0,	NULL},
+ };
+ 
+@@ -75,6 +77,8 @@
+ const char* wlPmf;
+ //WiFi AP WPS
+ bool wps_v2;
++bool atf;
++const char* InActiveChan = NULL;
+ 
+ time_t t1, t2;
+ 
+@@ -139,6 +143,8 @@
+ 	wlPmf = json_object_get_string(json_object_object_get(Jobj, "wlPmf"));
+ 	//WiFi AP WPS
+ 	wps_v2 = json_object_get_boolean(json_object_object_get(Jobj, "wps_v2"));
++	atf = json_object_get_boolean(json_object_object_get(Jobj, "atf"));
++	InActiveChan = json_object_get_string(json_object_object_get(Jobj, "InActiveChan"));
+ 	
+ 	return;
+ }
+@@ -198,6 +204,13 @@
+ 		json_object_object_add(wifiRadioOthersObj, "X_ZYXEL_DfsPostIsm", json_object_new_int(wlDfsPostIsm));
+ 		json_object_object_add(wifiRadioOthersObj, "X_ZYXEL_TpcDb", json_object_new_int(wlTpcDb));
+ 	}
++	json_object_object_add(wifiRadioOthersObj, "X_ZYXEL_AirtimeFairness", json_object_new_boolean(atf));
++	if(InActiveChan) {
++		json_object_object_add(wifiRadioOthersObj, "X_ZYXEL_InActiveChannels", json_object_new_string(InActiveChan));
++	}
++	else {
++		json_object_object_add(wifiRadioOthersObj, "X_ZYXEL_InActiveChannels", json_object_new_string(""));
++	}
+ 	
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2016-10-20 14:46:28.152906389 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2016-10-20 14:46:28.168906389 +0800
+@@ -47,8 +47,7 @@
+ 	{"wepid",		dalType_string,	0,	0,	NULL},
+ 	{"wpaMode",		dalType_string,	0,	0,	NULL},
+ 	{"X_ZYXEL_AutoGenPSK",		dalType_boolean,	0,	0,	NULL},
+-	{"PreSharedKey",		dalType_string, 0,	0,	NULL},
+-	{"KeyPassphrase",		dalType_string, 0,	0,	NULL},
++	{"psk_value",			dalType_string, 0,	0,	NULL},
+ 	{"RekeyingInterval",		dalType_int,	0,	0,	NULL},
+ 	{"RadiusServerIPAddr",		dalType_string, 0,	0,	NULL},
+ 	{"RadiusServerPort",		dalType_int,	0,	0,	NULL},
+@@ -121,8 +120,7 @@
+ const char* wepid;
+ const char* wpaMode;
+ bool X_ZYXEL_AutoGenPSK;
+-const char* PreSharedKey;
+-const char* KeyPassphrase;
++const char* psk_value;
+ unsigned int RekeyingInterval;
+ const char* RadiusServerIPAddr;
+ unsigned int RadiusServerPort;
+@@ -143,6 +141,21 @@
+ 
+ time_t t1, t2;
+ 
++//convert string to lower case
++void stolower(char *str, char *buf, size_t size)
++{
++
++	int n;
++
++	for(n = 0; n < size && str[n] != '\0'; n++) {
++		buf[n] = tolower(str[n]);
++	}
++	buf[n] = '\0';
++
++	return;
++
++}
++
+ zcfgRet_t setAllWlObjects(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+@@ -241,8 +254,7 @@
+ 	wepid = json_object_get_string(json_object_object_get(Jobj, "wepid"));
+ 	wpaMode = json_object_get_string(json_object_object_get(Jobj, "wpaMode"));
+ 	X_ZYXEL_AutoGenPSK = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_AutoGenPSK"));
+-	PreSharedKey = json_object_get_string(json_object_object_get(Jobj, "PreSharedKey"));
+-	KeyPassphrase = json_object_get_string(json_object_object_get(Jobj, "KeyPassphrase"));
++	psk_value = json_object_get_string(json_object_object_get(Jobj, "psk_value"));
+ 	RekeyingInterval = json_object_get_int(json_object_object_get(Jobj, "RekeyingInterval"));
+ 	RadiusServerIPAddr = json_object_get_string(json_object_object_get(Jobj, "RadiusServerIPAddr"));
+ 	RadiusServerPort = json_object_get_int(json_object_object_get(Jobj, "RadiusServerPort"));
+@@ -417,6 +429,7 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *iidArray = NULL;
+ 	uint8_t iidIdx =0;
++	char *psk_lowercase = NULL;
+ 
+ 	iidArray = json_object_object_get(Jobj, "wlSecIid");
+ 	for(iidIdx=0;iidIdx<6;iidIdx++){
+@@ -509,10 +522,21 @@
+ 			if(X_ZYXEL_AutoGenPSK)
+ 			{
+ 				X_ZYXEL_Auto_PSK = json_object_get_string(json_object_object_get(wifiSecObj, "X_ZYXEL_Auto_PSK"));
+-				json_object_object_add(wifiSecObj, "PreSharedKey", json_object_new_string(X_ZYXEL_Auto_PSK));
++				json_object_object_add(wifiSecObj, "KeyPassphrase", json_object_new_string(X_ZYXEL_Auto_PSK));
++				json_object_object_add(wifiSecObj, "PreSharedKey", json_object_new_string(""));
++			}
++			else {
++				if(strlen(psk_value) == 64) {
++					psk_lowercase = (char*)malloc(strlen(psk_value)+1);
++					memset(psk_lowercase, 0, strlen(psk_value)+1);
++					stolower(psk_value, psk_lowercase, strlen(psk_value));
++					json_object_object_add(wifiSecObj, "KeyPassphrase", json_object_new_string(""));
++					json_object_object_add(wifiSecObj, "PreSharedKey", json_object_new_string(psk_lowercase));
++				}
++				else {
++					json_object_object_add(wifiSecObj, "KeyPassphrase", json_object_new_string(psk_value));
++				}
+ 			}
+-			else
+-				json_object_object_add(wifiSecObj, "PreSharedKey", json_object_new_string(PreSharedKey));
+ 		}
+ 		else if(!strcmp(wpaMode,"wpa2") || !strcmp(wpaMode,"wpa") || !strcmp(wpaMode,"wpawpa"))
+ 		{
+@@ -547,15 +571,6 @@
+ 				
+ 	}
+ 	
+-	json_object_object_add(wifiSecObj, "KeyPassphrase", json_object_new_string(KeyPassphrase));
+-	json_object_object_add(wifiSecObj, "X_ZYXEL_PassphraseType", json_object_new_int(X_ZYXEL_PassphraseType));	
+-	
+-	if( X_ZYXEL_PassphraseType > 0 && X_ZYXEL_PassphraseType == "")
+-	{
+-		json_object_object_add(wifiSecObj, "X_ZYXEL_PassphraseType", json_object_new_int(0));
+-		json_object_object_add(wifiSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(false));
+-		json_object_object_add(wifiSecObj, "X_ZYXEL_AutoGenWepKey", json_object_new_boolean(false));	
+-	}
+ 	return ret;
+ }
+ 

@@ -1,0 +1,151 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-08-23 15:38:30.657520446 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-08-23 15:42:07.738214400 +0800
+@@ -5,6 +5,8 @@
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_fe_dal.h"
++#include <sys/types.h>
++#include <pwd.h>
+ 
+ #define isdigit(c) ((c >= 0x30) && (c < 0x3A))
+ 
+@@ -1202,6 +1204,111 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++const char *getLoginUserName(char *userName)
++{
++	uid_t uid = geteuid();
++	struct passwd *pw = getpwuid(uid);
++	if (pw)
++	{
++		strcpy(userName, pw->pw_name);
++		return pw->pw_name;
++	}
++	else{
++		strcpy(userName, "");
++		return NULL;
++	}
++}
++
++bool findInList(char *list, char *target, char *separator){
++	char *buf, *ptr, *tmp_ptr = NULL;
++
++	if(list == NULL || target == NULL || separator == NULL)
++		return false;
++
++	buf = strdup(list);
++	ptr = strtok_r(buf, separator, &tmp_ptr);
++	while(ptr != NULL){
++		if(!strcmp(ptr, target)){
++			free(buf);
++			return true;
++		}
++		ptr = strtok_r(NULL, separator, &tmp_ptr);
++	}
++	free(buf);
++	return false;
++}
++
++
++/*
++ * only used for dalcmd, cant be used by httpd, since the httpd user is root.
++*/
++zcfgRet_t getPrivilegeData(char *loginUserName, char *level, char *list){
++	const char *userName = NULL, *userLevel = NULL, *page = NULL;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	bool found = false;
++		
++	if(getLoginUserName(loginUserName) == NULL)
++		return ZCFG_INTERNAL_ERROR;
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &iid, &obj) == ZCFG_SUCCESS) {
++		userName = json_object_get_string(json_object_object_get(obj, "Username"));
++		if(!strcmp(userName, loginUserName)){
++			found = true;
++			json_object_put(obj);
++			break;
++		}
++		json_object_put(obj);
++	}
++
++	if(!found)
++		return ZCFG_INTERNAL_ERROR;
++
++	iid.level--;
++	iid.idx[iid.level] = 0;
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP, &iid, &obj) == ZCFG_SUCCESS){
++		userLevel = json_object_get_string(json_object_object_get(obj, "Level"));
++		page = json_object_get_string(json_object_object_get(obj, "Page"));
++		strcpy(level, userLevel);
++		strcpy(list, page);
++		json_object_put(obj);
++		return ZCFG_SUCCESS;
++	}
++	else
++		return ZCFG_INTERNAL_ERROR;	
++	
++}
++
++zcfgRet_t zyshPrivilege(char *zyshlist, char *allList){
++	char userName[17] = {0}, level[16] = {0}, privilegeList[2049] = {0};
++	int i, len = 0, len1 = 0;
++	
++	if(getPrivilegeData(userName, level, privilegeList) != ZCFG_SUCCESS)
++		return ZCFG_INTERNAL_ERROR;
++
++	for(i=0; dalHandler[i].name != NULL; i++){
++		if(dalHandler[i].previlege != NULL && strcmp(dalHandler[i].previlege, "") && (!strcmp(level, "high") || findInList(privilegeList, dalHandler[i].previlege, ","))){
++			strcat(zyshlist, dalHandler[i].name);
++			strcat(zyshlist, ",");
++		}
++		strcat(allList, dalHandler[i].name);
++		strcat(allList, ",");
++	}
++	len = strlen(zyshlist);
++	if(len>0)
++		if(zyshlist[len-1] == ',')
++	zyshlist[len-1] = '\0';
++	len1 = strlen(allList);
++	if(len1>0)
++		if(allList[len1-1] == ',')
++	allList[len1-1] = '\0';
++
++	return ZCFG_SUCCESS;
++}
++
++
++
+ 
+ int isDigitString(char *getString)
+ {
+@@ -1227,25 +1334,6 @@
+ 	return 0;
+ }
+ 
+-bool findInList(char *list, char *target, char *separator){
+-	char *buf, *ptr, *tmp_ptr = NULL;
+-
+-	if(list == NULL || target == NULL || separator == NULL)
+-		return false;
+-
+-	buf = strdup(list);
+-	ptr = strtok_r(buf, separator, &tmp_ptr);
+-	while(ptr != NULL){
+-		if(!strcmp(ptr, target)){
+-			free(buf);
+-			return true;
+-		}
+-		ptr = strtok_r(NULL, separator, &tmp_ptr);
+-	}
+-	free(buf);
+-	return false;
+-}
+-
+ zcfgRet_t getObjParamStr(zcfg_offset_t oid, objIndex_t *objIid, char *key, char *value){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t iid;

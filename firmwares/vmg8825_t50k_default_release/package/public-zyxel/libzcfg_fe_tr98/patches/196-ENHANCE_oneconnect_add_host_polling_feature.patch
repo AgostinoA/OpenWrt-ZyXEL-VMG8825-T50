@@ -1,0 +1,156 @@
+diff -Naur libzcfg_fe_tr98-1.0.orig/Makefile libzcfg_fe_tr98-1.0/Makefile
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2015-08-18 03:36:52.145691400 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2015-08-18 10:01:58.508987300 +0800
+@@ -112,6 +112,9 @@
+ ifeq ($(CONFIG_ZYXEL_ZY1905),y)
+ CFLAGS += -DZY1905
+ endif
++ifeq ($(CONFIG_ZYXEL_HOSTPOLLING),y)
++CFLAGS += -DHOSTPOLLING
++endif
+ 
+ ifeq ($(strip $(ZYXEL)),y)
+ CFLAGS += -DZYXEL_EXT=1
+diff -Naur libzcfg_fe_tr98-1.0.orig/oneConnect.c libzcfg_fe_tr98-1.0/oneConnect.c
+--- libzcfg_fe_tr98-1.0.orig/oneConnect.c	2015-08-18 03:36:52.237691400 +0800
++++ libzcfg_fe_tr98-1.0/oneConnect.c	2015-08-18 09:59:53.236650400 +0800
+@@ -152,37 +152,29 @@
+ zcfgRet_t oneConnectExtObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t objIid, hostIid;
++	objIndex_t objIid;
+ 	tr98Parameter_t *paramList = NULL;
+-	char tr181Name[32] = {0};
+-	char tr98TmpName[128] = {0};
+-	char higherLayerPath[32] = {0};
+-	char mappingPathName[32] = {0};
+-	char *ptr = NULL;
+ 	int idx = 0;
+-	uint32_t hostNum = 0;
+ 	struct json_object *paramValue = NULL;
+ 	rdm_HostsHost_t *stHost = NULL;
+ 	char macAddress[65] = {0}, alMac[65] = {0}, cmd[256] = {0}, fwUrl[256] = {0}, media[9] = {0}, media_temp[9] = {0};
+-	bool wlPwrOn = false, changePwr = false;
++	bool changePwr = false;
+ 	unsigned int actOption = 0;
+ 	int urlOption = 0, pwrStatus = 0, index = 0;
++#if 1 // modify, 20150810
++#else
++	objIndex_t hostIid;
++	char tr181Name[32] = {0};
++	char tr98TmpName[128] = {0};
++	char higherLayerPath[32] = {0};
++	char mappingPathName[32] = {0};
++	char *ptr = NULL;
++	uint32_t hostNum = 0;
++#endif
+ 	
+ 	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
+ 	
+-	strcpy(tr98TmpName, tr98FullPathName);
+-	ptr = strstr(tr98TmpName, ".Hosts");
+-	*ptr = '\0';
+-
+-	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
+-	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
+-		return ret;
+-	}
+-
+-	strcpy(tr181Name, mappingPathName);
+-	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
+-		return ret;
+-#if 1
++#if 1 // modify, 20150810
+ 	/*Get related tr181 objects*/
+ 	IID_INIT(objIid);
+ 	objIid.level = 1;
+@@ -197,6 +189,19 @@
+ 		zcfgFeObjStructFree(stHost);
+ 	}
+ #else
++	strcpy(tr98TmpName, tr98FullPathName);
++	ptr = strstr(tr98TmpName, ".Hosts");
++	*ptr = '\0';
++
++	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, mappingPathName)) != ZCFG_SUCCESS){
++		return ret;
++	}
++
++	strcpy(tr181Name, mappingPathName);
++	if((ret = zcfgFeTr181IfaceStackHigherLayerGet(tr181Name, higherLayerPath)) != ZCFG_SUCCESS)
++		return ret;
++
+ 	if(strstr(higherLayerPath, "IP.Interface") != NULL) {
+ 		IID_INIT(objIid);
+ 		IID_INIT(hostIid);
+@@ -250,6 +255,10 @@
+ 						sprintf(cmd, "/usr/sbin/zy1905App 2 %s", alMac);
+ 						ret = oneConnectCommand(cmd, alMac);
+ 						printf("%d:zy1905 cmd = %s\n", __LINE__, cmd);
++#ifdef HOSTPOLLING
++						sprintf(cmd, "/sbin/hostpolling %s reboot &", macAddress);
++						system(cmd);
++#endif
+ 					}
+ 					else{
+ 						printf("%d: Wrong ALMac %s\n", __LINE__, alMac);
+@@ -268,6 +277,10 @@
+ 						sprintf(cmd, "/usr/sbin/zy1905App 10 %s", alMac);
+ 						ret = oneConnectCommand(cmd, alMac);
+ 						printf("%d:zy1905 cmd = %s\n", __LINE__, cmd);
++#ifdef HOSTPOLLING
++						sprintf(cmd, "/sbin/hostpolling %s reset &", macAddress);
++						system(cmd);
++#endif
+ 					}
+ 					else{
+ 						printf("%d: Wrong ALMac %s\n", __LINE__, alMac);
+@@ -372,6 +385,12 @@
+ 			sprintf(cmd, "/usr/sbin/zy1905App 9 %s %d %d %s", alMac, actOption, urlOption, fwUrl);
+ 			ret = oneConnectCommand(cmd, alMac);
+ 			printf("%d:zy1905 cmd = %s\n", __LINE__, cmd);
++#ifdef HOSTPOLLING
++			if(actOption & FW_UPGRADE != 0){
++				sprintf(cmd, "/sbin/hostpolling %s FWupgrade &", macAddress);
++				system(cmd);
++			}
++#endif
+ 		}
+ 		else{
+ 			printf("%d: Wrong ALMac %s\n", __LINE__, alMac);
+@@ -409,11 +428,21 @@
+ 			paramList++;
+ 			continue;
+ 		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_RebootResult")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Unknown"));
++			paramList++;
++			continue;
++		}
+ 		else if(!strcmp(paramList->name, "L2DevCtrl_Reset")) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
+ 			paramList++;
+ 			continue;
+ 		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_ResetResult")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Unknown"));
++			paramList++;
++			continue;
++		}
+ 		else if(!strcmp(paramList->name, "L2DevCtrl_FWCheck")) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
+ 			paramList++;
+@@ -434,6 +463,11 @@
+ 			paramList++;
+ 			continue;
+ 		}
++		else if(!strcmp(paramList->name, "L2DevCtrl_FWUpgradeResult")) {
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string("Unknown"));
++			paramList++;
++			continue;
++		}
+ 		else if(!strcmp(paramList->name, "L2DevCtrl_WiFiPwr")) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(FALSE));
+ 			paramList++;

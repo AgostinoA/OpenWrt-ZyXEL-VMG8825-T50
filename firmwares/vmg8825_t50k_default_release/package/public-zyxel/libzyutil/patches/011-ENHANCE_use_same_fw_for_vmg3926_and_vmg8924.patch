@@ -1,0 +1,96 @@
+Index: libzyutil-1.0/Makefile
+===================================================================
+--- libzyutil-1.0.orig/Makefile	2015-04-21 10:32:53.371903510 +0800
++++ libzyutil-1.0/Makefile	2015-04-21 10:36:06.548389197 +0800
+@@ -52,6 +52,7 @@
+ include $(BUILD_DIR)/make.common
+ 
+ CFLAGS+= $(ZCFLAGS) $(EXTRA_CFLAGS)
++CFLAGS +=  -DZYXEL_PRODUCT_NAME='"$(PRODUCT_NAME)"'
+ 
+ ifeq ($(strip $(CONFIG_SUNRISE_RELEASE_DHCP_PPP_BEFORE_IFDOWN)),y)
+ 	CFLAGS += -DSUNRISE_RELEASE_DHCP_PPP_BEFORE_IFDOWN
+Index: libzyutil-1.0/common.c
+===================================================================
+--- libzyutil-1.0.orig/common.c	2015-04-21 10:32:53.359903510 +0800
++++ libzyutil-1.0/common.c	2015-04-21 10:38:44.558110560 +0800
+@@ -161,6 +161,34 @@
+ 	system(sysCmd);
+ }
+ 
++int boardIoctl(int board_ioctl, BOARD_IOCTL_ACTION action, char *string, int strLen, int offset, char *buf)
++{
++    BOARD_IOCTL_PARMS IoctlParms;
++    int boardFd = 0;
++
++    boardFd = open(BOARD_DEVICE_NAME, O_RDWR);
++    if ( boardFd != -1 ) {
++        IoctlParms.string = string;
++        IoctlParms.strLen = strLen;	// using this to identify the gpio number.
++        IoctlParms.offset = offset;
++        IoctlParms.action = action;
++        IoctlParms.buf    = buf;
++        ioctl(boardFd, board_ioctl, &IoctlParms);
++        close(boardFd);
++        boardFd = IoctlParms.result;
++    } else
++        printf("Unable to open device /dev/brcmboard.\n");
++
++    return boardFd;
++}
++
++int zyUtilGetGPIO(int gpioNum)
++{
++	int ret = 0;
++	ret = boardIoctl(BOARD_IOCTL_GET_GPIO, 0, "", gpioNum, 0, "");
++	return ret;
++}
++
+ zcfgRet_t zyUtilGetDomainNameFromUrl(char *url, char *domainName, int domainNameLength)
+ {
+ 	char *domainNameStartPtr = NULL;
+@@ -470,14 +498,25 @@
+ 
+ zcfgRet_t zyUtilIGetProductName(char *pdname)
+ {
+-	NVRAM_DATA nvramData;
+-
+-	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++	if(strstr(ZYXEL_PRODUCT_NAME, "VMG3926") != NULL || strstr(ZYXEL_PRODUCT_NAME, "VMG8924") != NULL){
++		int ret = 0, gpioNum = 11;
++		ret = zyUtilGetGPIO(gpioNum);
++		if(ret){//VMG3926
++			strcpy(pdname, "VMG3926-B10A");
++		}
++		else{//VMG8924
++			strcpy(pdname, "VMG8924-B10B");
++		}
++	}
++	else{
++		NVRAM_DATA nvramData;
++		memset(&nvramData, 0, sizeof(NVRAM_DATA));
+ 
+-	if(nvramDataGet(&nvramData) < 0)
+-		return ZCFG_INTERNAL_ERROR;
++		if(nvramDataGet(&nvramData) < 0)
++			return ZCFG_INTERNAL_ERROR;
+ 
+-	strcpy(pdname, nvramData.ProductName);
++		strcpy(pdname, nvramData.ProductName);
++	}
+ 	return ZCFG_SUCCESS;
+ }
+ 
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2015-04-21 10:32:53.371903510 +0800
++++ libzyutil-1.0/zyutil.h	2015-04-21 10:35:53.176692865 +0800
+@@ -13,7 +13,7 @@
+ 
+ zcfgRet_t zyUtilMacStrToNum(const char *, uint8_t *);
+ zcfgRet_t zyUtilMacNumToStr(const uint8_t *, char *);
+-
++int zyUtilGetGPIO(int gpioNum);
+ /*DNS*/
+ zcfgRet_t zyUtilGetDomainNameFromUrl(char *, char *, int);
+ 

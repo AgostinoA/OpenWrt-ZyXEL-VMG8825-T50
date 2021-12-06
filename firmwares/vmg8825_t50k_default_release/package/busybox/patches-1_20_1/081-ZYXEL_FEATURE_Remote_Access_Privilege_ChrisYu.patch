@@ -1,0 +1,122 @@
+Index: busybox-1_20_1/loginutils/login.c
+===================================================================
+--- busybox-1_20_1.orig/loginutils/login.c	2017-10-31 11:01:12.198253584 +0800
++++ busybox-1_20_1/loginutils/login.c	2017-10-31 11:02:25.041389391 +0800
+@@ -688,7 +688,9 @@
+ 		objIndex_t spTrustDomainObjIid;
+ 		rdm_SpTrustDomain_t *spTrustDomainObj = NULL;
+ 		IID_INIT(spTrustDomainObjIid);
+-	
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++		char userPriviege[65] = {0}; //WAN LAN
++#endif	
+ 		if (strcmp(addr,"--")){  
+ 			/*If IP address match SP trust domain, do not Auth GP_Privilege */
+ 			while(zcfgFeObjStructGetNext(RDM_OID_SP_TRUST_DOMAIN, &spTrustDomainObjIid, (void **) &spTrustDomainObj) == ZCFG_SUCCESS) {
+@@ -710,6 +712,12 @@
+ 					lock_period = accountObj->AccountLockTime;
+ 					cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
+ 					cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++					if (accountObj->RemoteAccessPrivilege){
++						strcpy(userPriviege, accountObj->RemoteAccessPrivilege);
++						syslog(LOG_INFO, "Account privilege:  %s Priviege = %s !!!!", username, userPriviege);
++					}
++#endif
+ 					free(accountObj);
+ 					break;
+ 				}
+@@ -732,6 +740,93 @@
+ 				}
+ 				free(logGpObj);
+ 			}
++
++#ifdef ZYXEL_REMOTE_ACCESS_PRIVILEGE
++			
++			syslog(LOG_INFO, "Account privilege: ZYXEL_REMOTE_ACCESS_PRIVILEGE IN !!!!");
++			syslog(LOG_INFO, "Account privilege: get remoAddr = %s ", addr);
++
++			// check remote IP v4/v6
++			int addrType = 0;
++			char remoAddr_Type[32] = {0}; //WAN LAN
++			addrType = ipType(addr);
++			
++			if (addrType == AF_INET){
++				//v4 checking
++				
++				syslog(LOG_INFO, "Account privilege: %s remoAddr type = %d ", addr, addrType);
++				
++				/*Remote Ip WAN/LAN Ip check */
++				
++				//Get host IP	
++				int n;
++				int remoAddrType = 0;
++				objIndex_t objIid;
++				rdm_IpIface_t *ipObj = NULL;
++				rdm_IpIfaceV4Addr_t *ipv4Obj = NULL;	
++				char lanip[32] = {0};
++				char subnetMask[32] = {0};
++				char perfix[10]={0};
++
++				/*LANIP*/
++				IID_INIT(objIid);
++				while( zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &objIid, (void **)&ipObj) == ZCFG_SUCCESS) {
++					if(strcmp(ipObj->X_ZYXEL_IfName, "br0") ==0) {
++						free(ipObj);
++						break;
++					}
++					free(ipObj);
++				}
++				
++				objIid.idx[objIid.level] = 1;
++				objIid.level++;
++				if( zcfgFeObjStructGet(RDM_OID_IP_IFACE_V4_ADDR, &objIid, (void **)&ipv4Obj)== ZCFG_SUCCESS){
++					strcpy(lanip, ipv4Obj->IPAddress);
++					strcpy(subnetMask, ipv4Obj->SubnetMask);
++					free(ipv4Obj);
++				}
++
++				syslog(LOG_INFO, "Account privilege: get lanip = %s ", lanip);
++				syslog(LOG_INFO, "Account privilege: get subnetMask = %s ", subnetMask);
++				inet_pton(AF_INET, subnetMask, &n);
++				int i = 0;
++				
++				while (n > 0) {
++				        n = n >> 1;
++				        i++;
++				}
++				sprintf(perfix, "%d", i);
++				syslog(LOG_INFO, "Account privilege: subnetMask suffix = %s ", perfix);
++				#if 1 //Chris Test
++				if (checkCidrBlock(lanip, perfix, addr) == 1){
++					strcpy(remoAddr_Type, "LAN");
++				}
++				else{
++					strcpy(remoAddr_Type, "WAN");
++				}
++				syslog(LOG_INFO, "Account privilege: %s remoAddr_Type = %s ", addr, remoAddr_Type);
++				
++				if (strstr(userPriviege, remoAddr_Type) == NULL){
++					snprintf(logStr, sizeof(logStr), "Account privilege: '%s' TELNET permission denied.", username);
++					puts(logStr);
++					syslog(LOG_INFO, "Account privilege:'%s' TELNET permission denied.", username);
++					return EXIT_FAILURE;
++				}
++				#endif
++				
++			}
++			else if (addrType == AF_INET6){
++				//not support V6 for WIND Italy
++				syslog(LOG_INFO, "Account privilege: %s remoAddr type = %d ", addr, addrType);
++			}
++		    else{
++				//skip check unknow IP type
++				syslog(LOG_INFO, "Account privilege: %s remoAddr type is invalid !!!! ", addr);
++				syslog(LOG_INFO, "Account privilege: Account:'%s' TELNET permission denied.", username);
++		    }
++
++#endif
++
+ 		}
+ 
+ 

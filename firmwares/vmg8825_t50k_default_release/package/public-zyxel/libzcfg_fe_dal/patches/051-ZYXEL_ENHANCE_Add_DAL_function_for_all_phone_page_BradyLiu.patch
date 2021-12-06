@@ -1,0 +1,715 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-10-31 18:49:20.919377835 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-10-31 18:53:23.652924100 +0800
+@@ -18,6 +18,7 @@
+ MAINTENANCE_MGMT = ./maintenance/mgmt
+ MAINTENANCE = ./maintenance
+ VOIP_SIP_PATH = ./voip/sip
++VOIP_SIP_PHONE_PATH = ./voip/phone
+ VOIP_SIP_CALLRULE_PATH = ./voip/callRule
+ SOURCES += $(wildcard $(FE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_BR_PATH)/*.c)
+@@ -32,6 +33,7 @@
+ SOURCES += $(wildcard $(MAINTENANCE_MGMT)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE)/*.c)
+ SOURCES += $(wildcard $(VOIP_SIP_PATH)/*.c)
++SOURCES += $(wildcard $(VOIP_SIP_PHONE_PATH)/*.c)
+ SOURCES += $(wildcard $(VOIP_SIP_CALLRULE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_WIRELESS_PATH)/*.c)
+ OBJS = $(patsubst %.c, %.o, $(SOURCES))
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_dect.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_dect.c	2016-11-01 14:38:55.917896864 +0800
+@@ -0,0 +1,234 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++#define DECT_H_S_EDIT	0
++#define DECT_B_S_EDIT	1
++
++dal_param_t VOIP_PHONEDECT_param[]={
++	{"Name",									dalType_string,	0,	0,	NULL},
++	{"FunctionEnable",							dalType_boolean,0,	0,	NULL},
++	{"ECOModeEnable",							dalType_boolean,0,	0,	NULL},
++	{"RFStrength",								dalType_int,	0,	0,	NULL},
++	{"NEMoEnable",								dalType_boolean,0,	0,	NULL},
++	{"EncryptionEnable",						dalType_boolean,0,	0,	NULL},
++	{"PINcode",									dalType_string,	0,	0,	NULL},
++	{"DoDeregisterHS",							dalType_int,	0,	0,	NULL},
++	{"DoPagingHSOnOff",							dalType_int,	0,	0,	NULL},
++	{"DoRegistrationModeOnOff",					dalType_int,	0,	0,	NULL},
++	{"DoFirmwareUpgrade",						dalType_boolean,0,	0,	NULL},
++	{NULL,										dalType_boolean,0,	0,	NULL},
++};
++
++unsigned int flag1;
++bool dectEditType;
++int dectHSNum;
++
++struct json_object *multiJobj;
++struct json_object *dectHSJobj;
++struct json_object *dectBSJobj;
++
++objIndex_t dectHSIid = {0};
++objIndex_t dectBSIid = {0};
++
++const char* Name;
++bool ECOModeEnable;
++bool FunctionEnable;
++unsigned int RFStrength;
++bool NEMoEnable;
++bool EncryptionEnable;
++const char* PINcode;
++unsigned int DoPagingHSOnOff;
++unsigned int DoRegistrationModeOnOff;
++unsigned int DoDeregisterHS;
++bool DoFirmwareUpgrade;
++
++void freeAllDECTObjects(){
++	if(multiJobj) json_object_put(multiJobj);
++	if(dectHSJobj) json_object_put(dectHSJobj);
++	if(dectBSJobj) json_object_put(dectBSJobj);
++
++	return;
++}
++
++void initDECTGlobalObjects(){
++	multiJobj = NULL;
++	dectHSJobj = NULL;
++	dectBSJobj = NULL;
++
++	return;
++}
++
++
++void getDECTBasicInfo(struct json_object *Jobj){
++	Name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++	FunctionEnable = json_object_get_boolean(json_object_object_get(Jobj, "FunctionEnable"));
++	ECOModeEnable = json_object_get_boolean(json_object_object_get(Jobj, "ECOModeEnable"));
++	RFStrength = json_object_get_int(json_object_object_get(Jobj, "RFStrength"));
++	NEMoEnable = json_object_get_boolean(json_object_object_get(Jobj, "NEMoEnable"));
++	EncryptionEnable = json_object_get_boolean(json_object_object_get(Jobj, "EncryptionEnable"));
++	PINcode = json_object_get_string(json_object_object_get(Jobj, "PINcode"));
++	DoDeregisterHS = json_object_get_int(json_object_object_get(Jobj, "DoDeregisterHS"));
++	DoPagingHSOnOff = json_object_get_int(json_object_object_get(Jobj, "DoPagingHSOnOff"));
++	DoRegistrationModeOnOff = json_object_get_int(json_object_object_get(Jobj, "DoRegistrationModeOnOff"));
++	DoFirmwareUpgrade = json_object_get_boolean(json_object_object_get(Jobj, "DoFirmwareUpgrade"));
++}
++
++void zcfgFeDalDECTHSObjEditIidGet(struct json_object *Jobj){
++	const char* path = NULL;
++	IID_INIT(dectHSIid);
++
++	path = json_object_get_string(json_object_object_get(Jobj, "HandsetPath"));
++	if(path == NULL){
++		return;
++	}
++
++	dectEditType = DECT_H_S_EDIT;
++
++	sscanf(path,"Device.Services.VoiceService.1.X_ZYXEL_DECT.Handset.%d",&dectHSNum);
++	//printf(" dectHSNum: %d \n ",dectHSNum);
++
++	dectHSIid.level = 2;
++	dectHSIid.idx[0] = 1;
++	dectHSIid.idx[1] = dectHSNum;
++
++	return;
++}
++
++void zcfgFeDalDECTBSObjEditIidGet(struct json_object *Jobj){
++	const char* path = NULL;
++	//printf("%s() Enter \n ",__FUNCTION__);
++	IID_INIT(dectBSIid);
++
++	path = json_object_get_string(json_object_object_get(Jobj, "BaseStationPath"));
++	if(path == NULL){
++		return;
++	}
++
++	dectEditType = DECT_B_S_EDIT;
++	dectBSIid.level = 1;
++	dectBSIid.idx[0] = 1;
++
++	return;
++}
++
++zcfgRet_t zcfgFeDalVoipDECTBaseStationEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_DECT_B_S, &dectBSIid, &dectBSJobj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Dect BS obj fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(dectBSJobj != NULL){
++		if(json_object_object_get(Jobj, "DoPagingHSOnOff") != NULL){
++			json_object_object_add(dectBSJobj, "DoPagingHSOnOff", json_object_new_int(DoPagingHSOnOff));
++		}else if(json_object_object_get(Jobj, "DoRegistrationModeOnOff") != NULL){
++			json_object_object_add(dectBSJobj, "DoRegistrationModeOnOff", json_object_new_int(DoRegistrationModeOnOff));
++		}else if(json_object_object_get(Jobj, "DoDeregisterHS") != NULL){
++			json_object_object_add(dectBSJobj, "DoDeregisterHS", json_object_new_int(DoDeregisterHS));
++		}else if(json_object_object_get(Jobj, "DoFirmwareUpgrade") != NULL){
++			json_object_object_add(dectBSJobj, "DoFirmwareUpgrade", json_object_new_boolean(DoFirmwareUpgrade));
++		}else{
++			json_object_object_add(dectBSJobj, "FunctionEnable", json_object_new_boolean(FunctionEnable));
++			json_object_object_add(dectBSJobj, "ECOModeEnable", json_object_new_boolean(ECOModeEnable));
++			json_object_object_add(dectBSJobj, "RFStrength", json_object_new_int(RFStrength));
++			json_object_object_add(dectBSJobj, "NEMoEnable", json_object_new_boolean(NEMoEnable));
++			json_object_object_add(dectBSJobj, "EncryptionEnable", json_object_new_boolean(EncryptionEnable));
++			json_object_object_add(dectBSJobj, "PINcode", json_object_new_string(PINcode));
++		}
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_DECT_B_S, &dectBSIid, multiJobj, dectBSJobj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_DECT_B_S);
++			zcfgFeJsonObjFree(dectBSJobj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	//printf("%s(): Append DECT_B_S obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipDECTHandSetEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_DECT_H_S, &dectHSIid, &dectHSJobj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Dect handset obj fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(dectHSJobj != NULL){
++		json_object_object_add(dectHSJobj, "Name", json_object_new_string(Name));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_DECT_H_S, &dectHSIid, multiJobj, dectHSJobj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_DECT_H_S);
++			zcfgFeJsonObjFree(dectHSJobj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	//printf("%s(): Append DECT_H_S obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipDECTEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++
++	initDECTGlobalObjects();
++	getDECTBasicInfo(Jobj);
++	zcfgFeDalDECTHSObjEditIidGet(Jobj);
++	zcfgFeDalDECTBSObjEditIidGet(Jobj);
++	multiJobj = zcfgFeJsonObjNew();
++
++	if(dectEditType == DECT_H_S_EDIT){
++		if((ret = zcfgFeDalVoipDECTHandSetEdit(Jobj)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to edit Dect HS obj \n", __FUNCTION__);
++			goto exit;
++		}
++	}else if(dectEditType == DECT_B_S_EDIT){
++		if((ret = zcfgFeDalVoipDECTBaseStationEdit(Jobj)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to edit Dect BS obj \n", __FUNCTION__);
++			goto exit;
++		}
++	}
++
++	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set dect object \n", __FUNCTION__);
++		goto exit;
++	}
++
++exit:
++	freeAllDECTObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipPhoneDECT(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalVoipDECTEdit(Jobj, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_phone_device.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_phone_device.c	2016-11-01 17:57:26.368337947 +0800
+@@ -0,0 +1,301 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++#define ISFXSBINDING	0
++#define ISDECTBINDING	1
++
++dal_param_t VOIP_PHONEDEVICE_param[]={
++	{"X_ZYXEL_LineSelect",						dalType_string,	0,	0,	NULL},
++	{"DectLineSelect",							dalType_string,	0,	0,	NULL},
++	{"phoneBoundingList",						dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_Pound",							dalType_boolean,0,	0,	NULL},
++	{NULL,										0,				0,	0,	NULL},
++};
++
++unsigned int flag1;
++bool phonePortBinding;
++int phyIntfNum;
++int dectntfNum;
++
++const char* X_ZYXEL_LineSelect;
++unsigned int lineSelectBitMap;
++bool X_ZYXEL_Pound;
++unsigned int X_ZYXEL_PhyReferenceFXSList;
++const char* LineSelect;
++char* phoneBoundingList;
++
++
++struct json_object *phyIntfObj;
++struct json_object *multiJobj;
++struct json_object *guiCustObj;
++struct json_object *accountObj;
++struct json_object *dectObj;
++
++objIndex_t phyIid = {0};
++objIndex_t dectIid = {0};
++
++void initPhyInterfaceGlobalObjects(){
++	phyIntfObj = NULL;
++	multiJobj = NULL;
++	guiCustObj = NULL;
++	accountObj = NULL;
++	dectObj = NULL;
++
++	return;
++}
++
++void freeAllPhyIftObjects(){
++	if(phyIntfObj) json_object_put(phyIntfObj);
++	if(multiJobj) json_object_put(multiJobj);
++	if(guiCustObj) json_object_put(guiCustObj);
++	if(accountObj) json_object_put(accountObj);
++	if(dectObj) json_object_put(dectObj);
++
++	return;
++}
++
++void getPhyIntfBasicInfo(struct json_object *Jobj){
++		if(!(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST & flag1)){
++			X_ZYXEL_LineSelect = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_LineSelect"));
++			phoneBoundingList = json_object_get_string(json_object_object_get(Jobj, "phoneBoundingList"));
++			X_ZYXEL_Pound = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_Pound"));
++		}
++		if(!(HIDE_DECT & flag1)){
++			LineSelect = json_object_get_string(json_object_object_get(Jobj, "DectLineSelect"));
++		}
++
++		return;
++}
++
++void zcfgFeDalPhyCustomizationflagGet(){
++	objIndex_t phyIid = {0};
++
++	IID_INIT(phyIid);
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_GUI_CUSTOMIZATION, &phyIid, &guiCustObj) == ZCFG_SUCCESS){
++		flag1 = json_object_get_int(json_object_object_get(guiCustObj, "Flag1"));
++		zcfgFeJsonObjFree(guiCustObj);
++		return;
++	}
++
++	return;
++}
++
++void zcfgFeDalPhyIntfObjEditIidGet(struct json_object *Jobj){
++	const char* path = NULL;
++	IID_INIT(phyIid);
++
++	path = json_object_get_string(json_object_object_get(Jobj, "PhyItfpath"));
++	if(path == NULL){
++		return;
++	}
++	//printf("%s(): Edit Phyitf path : %s \n ",__FUNCTION__,path);
++
++	phonePortBinding = ISFXSBINDING;
++
++	sscanf(path,"Device.Services.VoiceService.1.PhyInterface.%d",&phyIntfNum);
++	//printf(" phyIntfNum: %d \n ",phyIntfNum);
++
++	phyIid.level = 2;
++	phyIid.idx[0] = 1;
++	phyIid.idx[1] = phyIntfNum;
++
++	return;
++}
++
++void zcfgFeDalDectObjEditIidGet(struct json_object *Jobj){
++	const char* path = NULL;
++	IID_INIT(dectIid);
++
++	path = json_object_get_string(json_object_object_get(Jobj, "DectItfpath"));
++	if(path == NULL){
++		return;
++	}
++	//printf("%s(): Edit Dect path : %s \n ",__FUNCTION__,path);
++
++	phonePortBinding = ISDECTBINDING;
++
++	sscanf(path,"Device.Services.VoiceService.1.X_ZYXEL_DECT.Handset.%d",&dectntfNum);
++	//printf(" dectntfNum: %d \n ",dectntfNum);
++
++	dectIid.level = 2;
++	dectIid.idx[0] = 1;
++	dectIid.idx[1] = dectntfNum;
++
++	return;
++}
++
++zcfgRet_t zcfgFeDalPhyInterfaceObjEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_PHY_INTF, &phyIid, &phyIntfObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get phyitf obj fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(phyIntfObj != NULL){
++		json_object_object_add(phyIntfObj, "X_ZYXEL_LineSelect", json_object_new_string(X_ZYXEL_LineSelect));
++		json_object_object_add(phyIntfObj, "X_ZYXEL_Pound", json_object_new_boolean(X_ZYXEL_Pound));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_PHY_INTF, &phyIid, multiJobj, phyIntfObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_PHY_INTF);
++			zcfgFeJsonObjFree(phyIntfObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++	}
++
++	//printf("%s(): Append phyitf obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalDectObjEdit(struct json_object *Jobj){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_VOICE_DECT_H_S, &dectIid, &dectObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get dect_H_S Obj fail~ \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(dectObj != NULL){
++		json_object_object_add(dectObj, "LineSelect", json_object_new_string(LineSelect));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_DECT_H_S, &dectIid, multiJobj, dectObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_DECT_H_S);
++			zcfgFeJsonObjFree(dectObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++	}
++
++	//printf("%s(): Append dect_H_S obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPortBindingEdit(struct json_object *Jobj, bool BindingType){
++	struct json_object *setJson = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++	objIndex_t lineIid;
++	int index = 0;
++	bool isBindingPhone;
++	char *linePath = NULL;
++	char boundList[256] = {0};
++	int profileNum, lineNum;
++	int phoneBindingBase;
++
++	if(BindingType == ISFXSBINDING){
++		phoneBindingBase = 0;
++	}else if(BindingType == ISDECTBINDING){
++		phoneBindingBase = 16;
++	}
++
++	IID_INIT(lineIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_LINE, &lineIid, &accountObj) == ZCFG_SUCCESS) {
++		X_ZYXEL_PhyReferenceFXSList = json_object_get_int(json_object_object_get(accountObj, "X_ZYXEL_PhyReferenceFXSList"));
++		X_ZYXEL_PhyReferenceFXSList &= ~(1 << (phyIntfNum+phoneBindingBase-1));
++		if(phoneBoundingList != NULL){
++			strcpy(boundList, phoneBoundingList);
++			linePath = strtok(boundList,",");
++			while (linePath != NULL){
++				sscanf(linePath,"Device.Services.VoiceService.1.VoiceProfile.%d.Line.%d", &profileNum, &lineNum);
++
++				if((profileNum == lineIid.idx[1])&&(lineNum == lineIid.idx[2])){
++					X_ZYXEL_PhyReferenceFXSList |= 1 << (phyIntfNum+phoneBindingBase-1);
++					break;
++				}
++
++				linePath = strtok (NULL, ",");
++			}
++		}
++		json_object_object_add(accountObj, "X_ZYXEL_PhyReferenceFXSList", json_object_new_int(X_ZYXEL_PhyReferenceFXSList));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE, &lineIid, multiJobj, accountObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_LINE);
++			zcfgFeJsonObjFree(accountObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++		zcfgFeJsonObjFree(accountObj);
++	}
++
++	//printf("%s(): Append line obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipPhoneDeviceEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++
++	initPhyInterfaceGlobalObjects();
++	getPhyIntfBasicInfo(Jobj);
++	zcfgFeDalPhyIntfObjEditIidGet(Jobj);
++	zcfgFeDalDectObjEditIidGet(Jobj);
++	multiJobj = zcfgFeJsonObjNew();
++
++	if(phonePortBinding == ISFXSBINDING){
++		//printf("phonePortBinding == ISFXSBINDING\n");
++		if((ret = zcfgFeDalPhyInterfaceObjEdit(Jobj)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to edit phyinf obj \n", __FUNCTION__);
++			goto exit;
++		}
++
++		if((ret = zcfgFeDalPortBindingEdit(Jobj, phonePortBinding)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to edit port binding \n", __FUNCTION__);
++			goto exit;
++		}
++	}
++
++	if((phonePortBinding == ISDECTBINDING) && !(HIDE_DECT & flag1)){
++		printf("phonePortBinding == ISDECTBINDING\n");
++		if((ret = zcfgFeDalDectObjEdit(Jobj)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to edit line obj \n", __FUNCTION__);
++			goto exit;
++		}
++		if((ret = zcfgFeDalPortBindingEdit(Jobj, phonePortBinding)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to edit port binding \n", __FUNCTION__);
++			goto exit;
++		}
++	}
++
++	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_VOICE_PROF);
++		goto exit;
++	}
++
++exit:
++	freeAllPhyIftObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipPhoneDevice(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		if(!(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST & flag1)){
++			ret = zcfgFeDalVoipPhoneDeviceEdit(Jobj, NULL);
++		}
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_region.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_region.c	2016-11-01 10:25:28.376611371 +0800
+@@ -0,0 +1,111 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++#include "zcfg_webgui_flag.h"
++
++dal_param_t VOIP_REGION_param[]={
++	{"X_ZYXEL_FlashUsageStyle",					dalType_string,	0,	0,	NULL},
++	{"Region",									dalType_string,	0,	0,	NULL},
++	{NULL,										0,				0,	0,	NULL},
++};
++
++unsigned int flag1;
++
++const char* X_ZYXEL_FlashUsageStyle;
++const char* Region;
++
++struct json_object *profObj;
++struct json_object *multiJobj;
++
++objIndex_t Iid = {0};
++
++void initRegionGlobalObjects(){
++	multiJobj = NULL;
++	profObj = NULL;
++
++	return;
++}
++
++void getRegionBasicInfo(struct json_object *Jobj){
++	X_ZYXEL_FlashUsageStyle = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_FlashUsageStyle"));
++	Region = json_object_get_string(json_object_object_get(Jobj, "Region"));
++
++	return;
++}
++
++void freeAllRegionObjects(){
++	if(multiJobj) json_object_put(multiJobj);
++	if(profObj) json_object_put(profObj);
++
++	return;
++}
++
++
++zcfgRet_t zcfgFeDalVoipFlashAndCountryEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *setJson = NULL;
++
++	IID_INIT(Iid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_PROF, &Iid, &profObj) == ZCFG_SUCCESS){
++		json_object_object_add(profObj, "X_ZYXEL_FlashUsageStyle", json_object_new_string(X_ZYXEL_FlashUsageStyle));
++		json_object_object_add(profObj, "Region", json_object_new_string(Region));
++
++		if((setJson = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_PROF, &Iid, multiJobj, profObj)) == NULL){
++			printf("%s:(ERROR) fail to append object oid(%d)\n", __FUNCTION__, RDM_OID_VOICE_PROF);
++			zcfgFeJsonObjFree(profObj);
++			return ZCFG_INTERNAL_ERROR;
++		}
++
++		zcfgFeJsonObjFree(profObj);
++	}
++
++	//printf("%s(): Append Pro obj to multiJobj (%s) \n ",__FUNCTION__,json_object_to_json_string(multiJobj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipRegionEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s(): input --- %s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++
++	initRegionGlobalObjects();
++	getRegionBasicInfo(Jobj);
++	multiJobj = zcfgFeJsonObjNew();
++
++	if((ret = zcfgFeDalVoipFlashAndCountryEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s: Edit prof  obj fail \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeMultiObjJsonSet(multiJobj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_VOICE_PROF);
++		goto exit;
++	}
++
++exit:
++	freeAllRegionObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalVoipPhoneRegion(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalVoipRegionEdit(Jobj, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-10-31 18:49:20.919377835 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-10-31 18:55:11.869424100 +0800
+@@ -41,6 +41,9 @@
+ extern dal_param_t TIME_param[];
+ extern dal_param_t TRUST_DOMAIN_param[];
+ extern dal_param_t VOIP_LINE_param[];
++extern dal_param_t VOIP_REGION_param[];
++extern dal_param_t VOIP_PHONEDEVICE_param[];
++extern dal_param_t VOIP_PHONEDECT_param[];
+ extern dal_param_t VOIP_CALLRULE_param[];
+ extern dal_param_t VOIP_CALLBLOCK_param[];
+ extern dal_param_t USB_FILESHARING_param[];
+@@ -79,6 +82,9 @@
+ extern zcfgRet_t zcfgFeDalTime(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalTrustDomain(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoipLine(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalVoipPhoneRegion(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalVoipPhoneDevice(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalVoipPhoneDECT(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoipCallRule(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoipCallBlock(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalUsbFilesharing(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -126,6 +132,9 @@
+ {"TIME",			TIME_param, 		zcfgFeDalTime},
+ {"TRUST_DOMAIN",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain},
+ {"VOIPLINE",		VOIP_LINE_param,	zcfgFeDalVoipLine},
++{"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion},
++{"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice},
++{"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT},
+ {"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule},
+ {"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock},
+ {"USB_FILESHARING", 		USB_FILESHARING_param,	zcfgFeDalUsbFilesharing},

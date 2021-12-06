@@ -1,0 +1,415 @@
+Index: busybox-1_20_1/networking/ping.c
+===================================================================
+--- busybox-1_20_1.orig/networking/ping.c	2017-07-27 20:19:58.268553087 +0800
++++ busybox-1_20_1/networking/ping.c	2017-07-27 20:15:11.464426000 +0800
+@@ -351,6 +351,14 @@
+ #endif
+ 	} pingaddr;
+ 	char rcvd_tbl[MAX_DUP_CHK / 8];
++#ifdef ZCFG_SUPPORT
++	int pingsvrs, pings;
++	int nhost;
++	unsigned timeoutstart;
++	unsigned svrstmin, svrstmax, svrstavg;
++	char pingsdiagstat[100];
++	char svrhostname[257];
++#endif
+ } FIX_ALIASING;
+ #define G (*(struct globals*)&bb_common_bufsiz1)
+ #define pingsock     (G.pingsock    )
+@@ -374,6 +382,19 @@
+ #define dotted       (G.dotted      )
+ #define pingaddr     (G.pingaddr    )
+ #define rcvd_tbl     (G.rcvd_tbl    )
++#ifdef ZCFG_SUPPORT
++#define timeoutstart (G.timeoutstart)
++#define pings        (G.pings       )
++#define pingsdiagstat (G.pingsdiagstat)
++#define nhost        (G.nhost       )
++
++#define svrstmin     (G.svrstmin    )
++#define svrstmax     (G.svrstmax    )
++#define svrstavg     (G.svrstavg    )
++#define pingsvrs     (G.pingsvrs    )
++#define svrhostname  (G.svrhostname )
++#endif
++
+ void BUG_ping_globals_too_big(void);
+ #define INIT_G() do { \
+ 	if (sizeof(G) > COMMON_BUFSIZE) \
+@@ -402,8 +423,9 @@
+ 	char *recv_str = NULL;
+ 	int buf_size = 0;
+ 
+-	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	buf_size = sizeof(zcfgMsg_t)+payloadLen+1;
+ 	sendBuf = malloc(buf_size);
++	memset(sendBuf, 0, buf_size);
+ 	sendMsgHdr = (zcfgMsg_t*)sendBuf;
+ 
+ 	sendMsgHdr->type = msg_type;
+@@ -419,6 +441,8 @@
+ 	if(ret == ZCFG_SUCCESS) {
+ 		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
+ 		printf("Receive message : %s\n", recv_str);
++
++		free(recvBuf);
+ 	}
+ 
+ 	return ret;
+@@ -463,25 +487,66 @@
+ 	}
+ 
+ #ifdef ZCFG_SUPPORT
++
++
+ 	ping_stat = json_object_new_object();
+-	json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
+-	json_object_object_add(ping_stat, "SuccessCount", json_object_new_int(recv_count));
+-	json_object_object_add(ping_stat, "FailureCount", json_object_new_int(send_count - recv_count));
+-	if (tmin != UINT_MAX){
+-		json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
+-		json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
+-		json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++	if(pings){
++		printf("pings: min/avg/max %u/%u/%u\n\n", tmin, tavg, tmax);
++		json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string(pingsdiagstat));
++		json_object_object_add(ping_stat, "FastestHost", json_object_new_string(hostname));
++		if(tmin != UINT_MAX){
++			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
++			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
++			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++		}else{
++			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
++			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
++			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++		}
++	}
++	else if(pingsvrs){
++		//printf("pingsvrs: min/avg/max %u/%u/%u\n", svrstmin, svrstavg, svrstmax);
++		json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string(pingsdiagstat));
++		json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++#if 0
++		if(svrstavg != UINT_MAX){
++			json_object_object_add(ping_stat, "FastestHost", json_object_new_string(svrhostname));
++			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(svrstmin));
++			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(svrstavg));
++			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(svrstmax));
++		}else{
++			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
++			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
++			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++		}
++#endif
+ 	}
+ 	else{
+-		json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
+-		json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
+-		json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++		json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++		json_object_object_add(ping_stat, "SuccessCount", json_object_new_int(recv_count));
++		json_object_object_add(ping_stat, "FailureCount", json_object_new_int(send_count - recv_count));
++		if (tmin != UINT_MAX){
++			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
++			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
++			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++		}
++		else{
++			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
++			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
++			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++		}
+ 	}
+ 
+ 	payload = json_object_to_json_string(ping_stat);
+ 
+-	payloadLen = strlen(payload) + 1;
+-	pingMsgSend(ZCFG_MSG_PING_MSG, payloadLen, payload);
++	payloadLen = strlen(payload);
++
++	if(pings){
++		pingMsgSend(ZCFG_MSG_PINGSVRS_RST, payloadLen, payload);
++	}else if(pingsvrs && !strcmp(pingsdiagstat, "pings_complete")){
++		pingMsgSend(ZCFG_MSG_PINGSVRS_RST, payloadLen, payload);
++	}else
++		pingMsgSend(ZCFG_MSG_PING_MSG, payloadLen, payload);
+ 
+ 	json_object_put(ping_stat);
+ #endif
+@@ -673,6 +738,8 @@
+ 	struct iphdr *iphdr;
+ 	int hlen;
+ 
++	//printf("recv and unpack\n");
++
+ 	/* discard if too short */
+ 	if (sz < (datalen + ICMP_MINLEN))
+ 		return;
+@@ -767,7 +834,7 @@
+ 	sendping4(0);
+ 
+ 	/* listen for replies */
+-	while (1) {
++	while (true) {
+ 		struct sockaddr_in from;
+ 		socklen_t fromlen = (socklen_t) sizeof(from);
+ 		int c;
+@@ -910,29 +977,17 @@
+ 	}
+ }
+ 
+-static int common_ping_main(int opt, char **argv)
++static int common_ping(int opt)
+ {
+ 	len_and_sockaddr *lsa;
+-	char *str_s;
+ 
+-	INIT_G();
+-
+-	/* exactly one argument needed; -v and -q don't mix; -c NUM, -t NUM, -w NUM, -W NUM */
+-	opt_complementary = "=1:q--v:v--q:c+:t+:w+:W+";
+-	opt |= getopt32(argv, OPT_STRING, &pingcount, &str_s, &opt_ttl, &deadline, &timeout, &str_I);
+-	if (opt & OPT_s)
+-		datalen = xatou16(str_s); // -s
+-	if (opt & OPT_I) { // -I
+-		if_index = if_nametoindex(str_I);
+-		if (!if_index) {
+-			/* TODO: I'm not sure it takes IPv6 unless in [XX:XX..] format */
+-			source_lsa = xdotted2sockaddr(str_I, 0);
+-			str_I = NULL; /* don't try to bind to device later */
+-		}
+-	}
+-	myid = (uint16_t) getpid();
+-	hostname = argv[optind];
++	printf("%s: hostname %s\n", __FUNCTION__, hostname);
+ #if ENABLE_PING6
++#ifdef ZCFG_SUPPORT
++	if(pings){
++		lsa = xhost_and_af2sockaddr(hostname, 0, AF_UNSPEC);
++	}else
++#endif
+ 	{
+ 		sa_family_t af = AF_UNSPEC;
+ 		if (opt & OPT_IPV4)
+@@ -951,7 +1006,116 @@
+ 
+ 	dotted = xmalloc_sockaddr2dotted_noport(&lsa->u.sa);
+ 	ping(lsa);
+-	print_stats_and_exit(EXIT_SUCCESS);
++	free(lsa);
++	//print_stats_and_exit(DIAG_COMPLETE);
++}
++
++static void enable_pings(int opt)
++{
++	char pingscmd[300] = {0};
++	char param[260];
++
++	if(strlen(hostname) > 256) return;
++	sprintf(pingscmd, "pings");
++	if(pingcount > 0){
++		sprintf(param, " -c %u", pingcount);
++		strcat(pingscmd, param);
++	}
++	if(str_I && strlen(str_I)){
++		sprintf(param, " -I %s", str_I);
++		strcat(pingscmd, param);
++	}
++	if(OPT_W){
++		sprintf(param, " -W %u", timeout);
++		strcat(pingscmd, param);
++	}
++
++	if(nhost == 1)
++		sprintf(param, " zyxel_pings_start_%s", hostname);
++	else
++		sprintf(param, " %s", hostname);
++	strcat(pingscmd, param);
++
++	//printf("%s: pingscmd %s\n", __FUNCTION__, pingscmd);
++	system(pingscmd);
++}
++
++static int common_ping_main(int opt, char **argv)
++{
++	char *str_s;
++	char *hostlist;
++
++	INIT_G();
++
++	/* exactly one argument needed; -v and -q don't mix; -c NUM, -t NUM, -w NUM, -W NUM */
++	opt_complementary = "=1:q--v:v--q:c+:t+:w+:W+";
++	opt |= getopt32(argv, OPT_STRING, &pingcount, &str_s, &opt_ttl, &deadline, &timeout, &str_I);
++	if (opt & OPT_s)
++		datalen = xatou16(str_s); // -s
++	if (opt & OPT_I) { // -I
++		if_index = if_nametoindex(str_I);
++		if (!if_index) {
++			/* TODO: I'm not sure it takes IPv6 unless in [XX:XX..] format */
++			source_lsa = xdotted2sockaddr(str_I, 0);
++			str_I = NULL; /* don't try to bind to device later */
++		}
++	}
++	if(timeout == 0){
++		timeout = 1;
++	}
++
++	myid = (uint16_t) getpid();
++
++#ifdef ZCFG_SUPPORT
++	if(pingsvrs){
++		char *paramPtr, *paramPos;
++		char pinghostname[257];
++
++		//a.b.c.d,a:b::c,host.name
++		hostlist = argv[optind];
++		svrstmin = 0;
++		svrstavg = UINT_MAX;
++		svrstmax = 0;
++		memset(svrhostname, 0, sizeof(svrhostname));
++
++		paramPtr = hostlist;
++		paramPos = strchr(hostlist, ',');
++		while(paramPos){
++			*paramPos = '\0';
++			memset(pinghostname, 0, sizeof(pinghostname));
++			strncpy(pinghostname, paramPtr, 256);
++			hostname = pinghostname;
++			++nhost;
++			enable_pings(opt);
++			paramPtr = paramPos + 1;
++			paramPos = strchr(paramPtr, ',');
++		}
++		if(paramPtr && strlen(paramPtr)){
++			memset(pinghostname, 0, sizeof(pinghostname));
++			strncpy(pinghostname, paramPtr, 256);
++			hostname = pinghostname;
++			++nhost;
++			enable_pings(opt);
++		}
++
++		printf("pingsvrs complete\n");
++		strcpy(pingsdiagstat, "pings_complete");
++		print_stats_and_exit(EXIT_SUCCESS);
++
++		exit(0);
++	}else
++#endif
++	{
++		hostname = argv[optind];
++		if(strstr(hostname, "zyxel_pings_start_")){
++			hostname += strlen("zyxel_pings_start_");
++			strcpy(pingsdiagstat, "pings_start");
++		}else{
++			strcpy(pingsdiagstat, "pings_host");
++		}
++		common_ping(opt);
++		print_stats_and_exit(EXIT_SUCCESS);
++	}
+ 	/*return EXIT_SUCCESS;*/
+ }
+ #endif /* FEATURE_FANCY_PING */
+@@ -974,6 +1138,9 @@
+ int ping6_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int ping6_main(int argc UNUSED_PARAM, char **argv)
+ {
++#ifdef ZCFG_SUPPORT
++	zcfgEidInit(ZCFG_EID_PING, NULL);
++#endif
+ # if !ENABLE_FEATURE_FANCY_PING
+ 	return common_ping_main(AF_INET6, argv);
+ # else
+@@ -982,6 +1149,37 @@
+ }
+ #endif
+ 
++//#ifdef ZCFG_PINGSVRS
++int pings_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
++int pings_main(int argc UNUSED_PARAM, char **argv)
++{
++#ifdef ZCFG_SUPPORT
++	zcfgEidInit(ZCFG_EID_PING, NULL);
++
++	printf("pings\n");
++	pings = 1;
++
++	return common_ping_main(0, argv);
++#endif
++	return 0;
++}
++
++int pingsvrs_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
++int pingsvrs_main(int argc UNUSED_PARAM, char **argv)
++{
++#ifdef ZCFG_SUPPORT
++	zcfgEidInit(ZCFG_EID_PING, NULL);
++
++	printf("pingsvrs\n");
++	pingsvrs = 1;
++
++	return common_ping_main(0, argv);
++#endif
++	return 0;
++}
++//#endif
++
++
+ /* from ping6.c:
+  * Copyright (c) 1989 The Regents of the University of California.
+  * All rights reserved.
+Index: busybox-1_20_1/include/applets.src.h
+===================================================================
+--- busybox-1_20_1.orig/include/applets.src.h	2017-07-27 20:19:58.228553087 +0800
++++ busybox-1_20_1/include/applets.src.h	2017-07-27 20:19:58.416553088 +0800
+@@ -278,6 +278,8 @@
+ IF_PGREP(APPLET(pgrep, BB_DIR_USR_BIN, BB_SUID_DROP))
+ IF_PIDOF(APPLET(pidof, BB_DIR_BIN, BB_SUID_DROP))
+ IF_PIPE_PROGRESS(APPLET(pipe_progress, BB_DIR_BIN, BB_SUID_DROP))
++IF_PINGSVRS(APPLET(pingsvrs, BB_DIR_BIN, BB_SUID_DROP))
++IF_PINGSVRS(APPLET(pings, BB_DIR_BIN, BB_SUID_DROP))
+ IF_PIVOT_ROOT(APPLET(pivot_root, BB_DIR_SBIN, BB_SUID_DROP))
+ IF_PKILL(APPLET_ODDNAME(pkill, pgrep, BB_DIR_USR_BIN, BB_SUID_DROP, pkill))
+ IF_POPMAILDIR(APPLET(popmaildir, BB_DIR_USR_SBIN, BB_SUID_DROP))
+Index: busybox-1_20_1/networking/Config.src
+===================================================================
+--- busybox-1_20_1.orig/networking/Config.src	2017-07-27 20:19:58.228553087 +0800
++++ busybox-1_20_1/networking/Config.src	2017-07-27 20:19:58.416553088 +0800
+@@ -670,6 +670,20 @@
+ 	  Make ntpd usable as a NTP server. If you disable this option
+ 	  ntpd will be usable only as a NTP client.
+ 
++config PINGSVRS
++	bool "pingsvrs"
++	default y
++	depends on PING || PING6
++	help
++	  a command to issue multiple hosts running ping.
++
++config PINGS
++	bool "pings"
++	default y
++	depends on PING || PING6
++	help
++	  a command to issue pingsvrs host
++
+ config PSCAN
+ 	bool "pscan"
+ 	default y
+Index: busybox-1_20_1/include/usage.src.h
+===================================================================
+--- busybox-1_20_1.orig/include/usage.src.h	2017-07-27 20:19:58.228553087 +0800
++++ busybox-1_20_1/include/usage.src.h	2017-07-27 20:19:58.416553088 +0800
+@@ -33,5 +33,13 @@
+         "System status report\n\n"
+ #define sysinfo_example_usage \
+         "$ sysinfo\n"
++#define pingsvrs_trivial_usage \
++        "same as ping/ping6 but hostname=host,host,..."
++#define pingsvrs_full_usage \
++        "same as ping/ping6 but hostname=host,host,...\n"
++#define pings_trivial_usage \
++        "same as ping/ping6 but run by pingsvrs"
++#define pings_full_usage \
++        "same as ping/ping6 but run by pingsvrs\n"
+ 
+ #endif

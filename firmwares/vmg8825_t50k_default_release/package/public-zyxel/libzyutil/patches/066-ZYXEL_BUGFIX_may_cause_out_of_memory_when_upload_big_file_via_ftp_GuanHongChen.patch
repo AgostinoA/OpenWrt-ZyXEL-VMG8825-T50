@@ -1,0 +1,321 @@
+Index: libzyutil-1.0/BROADCOM/libzyutil_brcm_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/BROADCOM/libzyutil_brcm_wrapper.h	2017-10-27 15:24:52.530617023 +0800
++++ libzyutil-1.0/BROADCOM/libzyutil_brcm_wrapper.h	2017-10-27 15:24:52.754617027 +0800
+@@ -11,6 +11,9 @@
+ 
+ #include "bcm_hwdefs.h"
+ #include "board.h"
++
++#define MagicNubmer 1985
++
+ int boardIoctl(int board_ioctl, BOARD_IOCTL_ACTION action, char *string, int strLen, int offset, char *buf);
+ int nvramDataWrite(NVRAM_DATA *nvramData);
+ int nvramDataGet(NVRAM_DATA *nvramData);
+Index: libzyutil-1.0/BROADCOM/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/BROADCOM/libzyutil_wrapper.c	2017-10-27 15:24:52.718617026 +0800
++++ libzyutil-1.0/BROADCOM/libzyutil_wrapper.c	2017-10-27 15:25:58.154866176 +0800
+@@ -439,4 +439,91 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*!
++ *  get size of rootfs
++ *
++ *  @return     size of rootfs (byte)
++ *
++ *  @note  If get rootfs fail, popen fail, or fgets fail, return 0.
++ */
++int ras_size()
++{
++	int size=0;
++	FILE *fp = NULL;
++	char buffer[64];
++
++	fp = popen("cat /proc/mtd  | grep rootfs | awk '{print $2}'", "r");
++
++	if (fp == NULL)
++	{
++		zyutil_dbg_printf("ERROR : popen fail\n");
++		return 0;
++	}
++
++	if (fgets(buffer, 64, fp) == NULL)
++	{
++		zyutil_dbg_printf("ERROR : fgets fail\n");
++		pclose(fp);
++		return 0;
++	}
++
++	sscanf(buffer, "%X", &size);
++	pclose(fp);
++
++	return size;
++
++}
++
++/*!
++ *  check upload file (FW) magic number
++ *
++ *  @param[in]  uploadfilename	the name of upload file
++ *
++ *  @return     0 - non-match
++ *              1 - match
++ *
++ *  @note  If uploadfilename is NULL, popen fail, or fgets fail, return 0.
++ */
++int magic_number_check(char *uploadfilename)
++{
++	int magic_number=-1;
++	FILE *fp = NULL;
++	char buffer[64];
++	char cmd[256];
++
++	if (uploadfilename == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : uploadfilename == NULL\n");
++		return 0;
++	}
++
++	sprintf(cmd, "hexdump -n 2 /var/fw/%s", uploadfilename);
++	fp = popen(cmd, "r");
++	if (fp == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : popen hexdump -n 2 /var/fw/%s fail\n", uploadfilename);
++		return 0;
++	}
++
++	if (fgets(buffer, 64, fp) == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : fgets fail\n");
++	    pclose(fp);
++		return 0;
++	}
++
++	sscanf(buffer, "0000000 %d ", &magic_number);
++	pclose(fp);
++
++	if (magic_number == MagicNubmer)
++	{
++		return 1;
++	}
++	else
++	{
++		return 0;
++	}
++
++}
++
+ #endif
+Index: libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_econet_wrapper.h	2017-10-27 15:24:52.454617022 +0800
++++ libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h	2017-10-27 15:24:52.754617027 +0800
+@@ -23,9 +23,13 @@
+ #define BOOTIMG_HEADER_FILE           "/tmp/BootImg_info"
+ #define ROMD_PARTITON_NAME				"rom-d"
+ #define DATA_PARTITON_NAME				"data"
++#define HeaderNubmer1 3252
++#define HeaderNubmer2 4448
++
+ #endif
+ 
+ zcfgRet_t zyUtilGetMrdInfo(PMRD_DATA mrd);
+ zcfgRet_t zyUtilSetMrdInfo(PMRD_DATA mrd);
++int endian_check();
+ 
+ #endif
+Index: libzyutil-1.0/ECONET/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_wrapper.c	2017-10-27 15:24:52.678617025 +0800
++++ libzyutil-1.0/ECONET/libzyutil_wrapper.c	2017-10-27 15:26:19.450415726 +0800
+@@ -599,4 +599,165 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*!
++ *  get size of tclinux_slave
++ *
++ *  @return     size of tclinux_slave (byte)
++ *
++ *  @note If get tclinux_slave fail, popen fail, or fgets fail, return 0.
++ */
++int ras_size()
++{
++	int size=0;
++	FILE *fp = NULL;
++	char buffer[64];
++
++	fp = popen("cat /proc/mtd  | grep tclinux_slave | awk '{print $2}'", "r");
++
++	if (fp == NULL)
++	{
++		zyutil_dbg_printf("ERROR : popen fail\n");
++		return 0;
++	}
++
++	if (fgets(buffer, 64, fp) == NULL)
++	{
++		zyutil_dbg_printf("ERROR : fgets fail\n");
++		pclose(fp);
++		return 0;
++	}
++
++	sscanf(buffer, "%X", &size);
++	pclose(fp);
++
++	return size;
++
++}
++
++/*!
++ *  check endian
++ *
++ *  @return     0 - invalid cpu type
++ *              1 - mips : big endian
++ *              2 - arm : little endian
++ *
++ *  @note If the invalid cpu type, popen fail, or fgets fail, return 0.
++ */
++int endian_check()
++{
++	FILE *fp = NULL;
++	char buffer[64];
++	char cpu[64];
++
++	fp = popen("uname -m", "r");
++	if (fp == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : popen uname -m fail\n");
++		return 0;
++	}
++
++	if (fgets(buffer, 64, fp) == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : fgets fail\n");
++	    pclose(fp);
++		return 0;
++	}
++
++	sscanf(buffer, "%s", cpu);
++	pclose(fp);
++
++	if (strstr(cpu, "mips") != NULL)//big endian
++	{
++		return 1;
++	}
++	else if (strstr(cpu, "arm") != NULL)//little endian
++	{
++		return 2;
++	}
++	else
++	{
++		zyutil_dbg_printf("ERROR : invalid cpu type : %s\n", cpu);
++		return 0;
++	}
++}
++
++/*!
++ *  check upload file (FW) magic number check
++ *
++ *  @param[in]  uploadfilename	the name of upload file
++ *
++ *  @return     0 - non-match
++ *              1 - match
++ *
++ *  @note If uploadfilename is NULL, popen fail, fgets fail, or invalid cpu_type return 0.
++ */
++int magic_number_check(char *uploadfilename)
++{
++	int header_number1=-1;
++	int header_number2=-1;
++	int cpu_type=-1;
++	FILE *fp = NULL;
++	char buffer[64];
++	char cmd[256];
++
++	if (uploadfilename == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : uploadfilename == NULL\n");
++		return 0;
++	}
++
++	sprintf(cmd, "hexdump -n 4 /var/fw/%s", uploadfilename);
++	fp = popen(cmd, "r");
++	if (fp == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : popen hexdump -n 4 /var/fw/%s fail\n", uploadfilename);
++		return 0;
++	}
++
++	if (fgets(buffer, 64, fp) == NULL)
++	{
++	    zyutil_dbg_printf("ERROR : fgets fail\n");
++	    pclose(fp);
++		return 0;
++	}
++
++	sscanf(buffer, "0000000 %d %d", &header_number1, &header_number2);
++	pclose(fp);
++
++	cpu_type = endian_check();
++
++	switch(cpu_type)
++	{
++		case 1 : //mips : big endian
++		{
++			if (header_number1 == HeaderNubmer1 && header_number2 == HeaderNubmer2)
++			{
++				return 1;
++			}
++			else
++			{
++				return 0;
++			}
++		}
++
++		case 2: //arm : little endian
++		{
++			if (header_number1 == HeaderNubmer2 && header_number2 == HeaderNubmer1)
++			{
++				return 1;
++			}
++			else
++			{
++				return 0;
++			}
++		}
++
++		default:
++		{
++			zyutil_dbg_printf("ERROR : invalid cpu_type : %d\n", cpu_type);
++			return 0;
++		}
++	}
++}
++
+ #endif
+Index: libzyutil-1.0/libzyutil_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/libzyutil_wrapper.h	2017-10-27 15:24:52.682617026 +0800
++++ libzyutil-1.0/libzyutil_wrapper.h	2017-10-27 15:24:52.754617027 +0800
+@@ -1,7 +1,11 @@
+ #include <ctype.h>
+ #include <unistd.h>
++#include <sys/syscall.h>
+ #include "zcfg_common.h"
+ 
++#define zyutil_dbg_printf(_fmt_, ...) \
++    fprintf(stderr, "[PID %ld] %s line %d, %s(), " _fmt_, syscall(__NR_gettid), __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__)
++
+ #ifdef SUPPORT_LANVLAN
+ zcfgRet_t zyUtilISetIfState(char *ifName, bool up);
+ #endif
+@@ -27,3 +31,6 @@
+ int zyUtilGetGPIO(int gpioNum);
+ float transferOpticalTemperature(int input_value);
+ float transferOpticalPower(float input_value);
++int ras_size();
++int magic_number_check(char *uploadfilename);
++

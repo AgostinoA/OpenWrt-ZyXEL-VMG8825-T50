@@ -1,0 +1,62 @@
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lansetup.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_lansetup.c	2018-09-21 11:38:01.080349671 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lansetup.c	2018-09-21 11:39:29.105985113 +0800
+@@ -1244,6 +1244,8 @@
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *paramJobj = NULL;
+ 	struct json_object *ipifaceObj = NULL;
++    struct json_object *ethLinkObj = NULL;
++    struct json_object *bridgeBrObj = NULL;
+ 	struct json_object *ipv4addrObj= NULL;
+ 	struct json_object *ipv6addrObj= NULL;
+ 	struct json_object *dhcpv4fwdObj = NULL;
+@@ -1254,6 +1256,8 @@
+ 	struct json_object *igmpSnoopingObj = NULL;
+ 	struct json_object *mldSnoopingObj = NULL;
+ 	objIndex_t ipifaceIid = {0};
++    objIndex_t ethLinkIid = {0};
++    objIndex_t bridgeBrIid = {0};
+ 	objIndex_t ipv4addrIid = {0};
+ 	objIndex_t ipv6addrIid = {0};
+ 	objIndex_t dhcpv4fwdIid = {0};
+@@ -1270,7 +1274,7 @@
+ 	const char *igmpSnooping = NULL, *sub_igmpSnooping = NULL, *mldSnooping = NULL, *sub_mldSnooping = NULL,*ifName = NULL;
+ 	char currintf[32] = {0}, buff[32] = {0}, v6DNSServerTmp[256] = {0}, v6DNSListTmp[256] = {0}, brName[8]={0}, igmpType[8] = {0}, mldType[8] = {0};
+ 	char *dns1 = NULL, *dns2 = NULL, *v6dnstype1 = NULL, *v6dnstype2 = NULL, *v6dnstype3 = NULL, *v6dnsServer1 = NULL, *v6dnsServer2 = NULL, *v6dnsServer3 = NULL, *v6DNSservertmp = NULL, *v6dnstypetmp = NULL, *ptr = NULL, *brPtr = NULL;
+-	const char *ip6Origin = NULL, *v6IPAddress = NULL;
++	const char *ip6Origin = NULL, *v6IPAddress = NULL, *LowerLayers = NULL;
+ 
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE, &ipifaceIid, &ipifaceObj) == ZCFG_SUCCESS){
+ 		if(showdetail)
+@@ -1279,10 +1283,29 @@
+ 			Jadds(ipifaceObj, "X_ZYXEL_SrvName", "Default");
+ 	
+ 		if(!strncmp(json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_IfName")), "br", 2)){
+-			dchprelay = false;
++            dchprelay = false;
+ 			paramJobj = json_object_new_object();
+ 			curName = json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_SrvName"));
+ 			ifName = json_object_get_string(json_object_object_get(ipifaceObj, "X_ZYXEL_IfName"));
++            
++            //For Bridge interface, curName should be Device.Bridging.Bridge.i.X_ZYXEL_BridgeName
++            LowerLayers = Jgets(ipifaceObj, "LowerLayers");
++            sscanf(LowerLayers, "Ethernet.Link.%hhu", &ethLinkIid.idx[0]);
++            ethLinkIid.level = 1;
++            if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_LINK, &ethLinkIid, &ethLinkObj) == ZCFG_SUCCESS)
++            {
++                LowerLayers = Jgets(ethLinkObj, "LowerLayers");
++                sscanf(LowerLayers, "Bridging.Bridge.%hhu.Port.", &bridgeBrIid.idx[0]);
++                bridgeBrIid.level = 1;
++                zcfgFeJsonObjFree(ethLinkObj);
++                if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_BR, &bridgeBrIid, &bridgeBrObj) == ZCFG_SUCCESS)
++                {
++                    curName = Jgets(bridgeBrObj, "X_ZYXEL_BridgeName");
++                    Jadds(ipifaceObj, "X_ZYXEL_SrvName", curName);
++                    zcfgFeJsonObjFree(bridgeBrObj);
++                }
++            }
++			
+ 			if(json_object_object_get(Jobj, "Name")){
+ 				Name = json_object_get_string(json_object_object_get(Jobj, "Name"));
+ 				if(!strcmp(Name,curName))

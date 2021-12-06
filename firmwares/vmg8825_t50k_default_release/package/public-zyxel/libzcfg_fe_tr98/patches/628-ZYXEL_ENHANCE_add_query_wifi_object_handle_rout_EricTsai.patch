@@ -1,0 +1,1680 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2019-06-27 20:53:12.341355891 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2019-06-27 20:53:12.369355890 +0800
+@@ -36,6 +36,7 @@
+ #ifeq ($(CONFIG_ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT),y)
+ CFLAGS += -DZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
+ #endif
++#CFLAGS += -DCETIN
+ 
+ #Generic
+ ifneq ($(strip $(CONFIG_PACKAGE_ZyIMS)),)
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2019-06-27 20:53:12.345355891 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2019-06-27 20:59:20.158625700 +0800
+@@ -420,17 +420,50 @@
+ static struct json_object *tr181SpvHandleRoutObj = NULL;
+ 
+ //-------------------------------------------------------------------------------------------------------------------
++static struct json_object *zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(void *);
++
+ static zcfgRet_t queryDhcpv4SrvOptRout(uint32_t , objIndex_t *, struct json_object *, void *);
+ 
++static zcfgRet_t queryUPnPRout(uint32_t , objIndex_t *, struct json_object *, void *);
++
++static zcfgRet_t queryFeatureFlagRout(uint32_t , objIndex_t *, struct json_object *, void *);
++static zcfgRet_t queryGuiCustomRout(uint32_t , objIndex_t *, struct json_object *, void *);
++static zcfgRet_t queryOiWzardRout(uint32_t , objIndex_t *, struct json_object *, void *);
++static zcfgRet_t queryExtRout(uint32_t , objIndex_t *, struct json_object *, void *);
++
++
+ static tr181QueryHandleRout_t queryHandleRoutList[] = {
+ {RDM_OID_DHCPV4_SRV_POOL_OPT, queryDhcpv4SrvOptRout},
++#ifdef CETIN
++{RDM_OID_UPNP_DEV, queryUPnPRout},
++{RDM_OID_UPNP_DEV_CAPB, queryUPnPRout},
++{RDM_OID_FEATURE_FLAG, queryFeatureFlagRout},
++{RDM_OID_GUI_CUSTOMIZATION, queryGuiCustomRout},
++{RDM_OID_OI_WIZARD, queryOiWzardRout},
++{RDM_OID_ZY_EXT, queryExtRout},
++#endif
+ {0, NULL}
+ };
+ 
+ 
++
++
++#define tr98objhead "InternetGatewayDevice"
++#define tr181objhead "Device"
++
++enum{
++	DATA_MODEL_NOTDEFINED,
++	DATA_MODEL_TR98,
++	DATA_MODEL_TR181
++};
++
+ static bool enableRootQuryBlackObjPath = 0;
+ static objPathIdx_t *rootQuryBlackObjPathIdx = NULL;
++static objPathIdx_t *quryBlackObjPathIdx = NULL;
+ static int tr98QryRootPath;
++static int runningDataModel = DATA_MODEL_TR98;
++
++static bool zcfgQueryObjectPathIdxNotRepliedPathName(const char *objectPathName, objPathIdx_t *objectPathIdx);
+ 
+ static struct json_object *tr181QueryHandleRoutObj = NULL;
+ 
+@@ -1028,6 +1061,13 @@
+ #endif
+ }
+ 
++void zcfgSetRunningDataModelSpec(const char *dataModelSpec)
++{
++	runningDataModel = dataModelSpec ? ( !strcmp(dataModelSpec, "TR-098") ? DATA_MODEL_TR98 :
++			(!strcmp(dataModelSpec, "TR-181") ? DATA_MODEL_TR181 : DATA_MODEL_NOTDEFINED) )
++			: DATA_MODEL_NOTDEFINED;
++}
++
+ static zcfgRet_t zcfgFeTr98ClassNameGet(char *objName, char *className)
+ {
+ 	char *token = NULL;
+@@ -1600,7 +1640,11 @@
+ {
+ 	struct json_object *tr98SpvObj = NULL;
+ 
+-	if(zcfgFeTr98QryRootPath() && zcfgObjectPathListPickObjPath(tr98ObjName))
++
++	//if(zcfgFeTr98QryRootPath() && zcfgObjectPathListPickObjPath(tr98ObjName))
++	if((zcfgFeTr98QryRootPath() && enableRootQuryBlackObjPath &&
++			zcfgQueryObjectPathIdxNotRepliedPathName(tr98ObjName, rootQuryBlackObjPathIdx)) ||
++			zcfgQueryObjectPathIdxNotRepliedPathName(tr98ObjName, quryBlackObjPathIdx))
+ 		return ZCFG_NO_MORE_INSTANCE;
+ 
+ 	tr98SpvObj = zcfgFeSessionTr98SpvObjRetrieve();
+@@ -2091,7 +2135,7 @@
+ 	running = queryHandleRoutList[n].rout ? true : false;
+ 
+ 	while(running){
+-		oid = spvHandleRoutList[n].oid;
++		oid = queryHandleRoutList[n].oid;
+ 		sprintf(oidStr, "%u", oid);
+ 
+ 		json_object_object_add(tr181QueryHandleRoutObj, oidStr, json_object_new_int((int)(queryHandleRoutList[n].rout)));
+@@ -2101,12 +2145,24 @@
+ 
+ }
+ 
++// data: {
++//  "datatype":
++//  "dataobject":
++// }
++//
++// "datatype" == "objparaminfo": dataobject contains object params, involving param attr and type
++
++
++// modify object param value, strip/add param
+ zcfgRet_t zcfgFeTr181QueryHandleRout(uint32_t oid, objIndex_t *objIid, struct json_object *qryObj, void *data)
+ {
+ 	zcfgRet_t rst = ZCFG_SUCCESS;
+ 	qryHandleRout handleRout;
+ 	char oidStr[30] = {0};
+ 
++	if(zcfgQueryObjectNotReplied(oid, objIid) == ZCFG_NO_SUCH_OBJECT)
++		return ZCFG_REQUEST_REJECT;
++
+ 	sprintf(oidStr, "%u", oid);
+ 	struct json_object *qryHdlRoutObj = json_object_object_get(tr181QueryHandleRoutObj, oidStr);
+ 
+@@ -2124,9 +2180,12 @@
+ 	struct json_object *paramObj = NULL;
+ 	const char *paramValueStr;
+ 
+-
+ 	//printf("%s\n", __FUNCTION__);
+ 
++	if(!queryObj){
++		return ZCFG_SUCCESS;
++	}
++
+ 	paramObj = json_object_object_get(queryObj, "Value");
+ 	if(paramObj && (paramValueStr = json_object_get_string(paramObj))){
+ 		char hexStr[256*2+1] = {0};
+@@ -2144,6 +2203,110 @@
+ 	return rst;
+ }
+ 
++#ifdef CETIN
++
++
++static zcfgRet_t queryUPnPRout(uint32_t oid, objIndex_t *objIid, struct json_object *queryObj, void *data)
++{
++	printf("%s\n", __FUNCTION__);
++
++	if(queryObj){
++		json_object_object_del(queryObj, "UPnPWLANAccessPoint");
++	}
++
++	if(data){
++		struct json_object *dataObject = zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(data);
++		if(dataObject)
++			json_object_object_del(dataObject, "UPnPWLANAccessPoint");
++	}
++
++
++	return ZCFG_SUCCESS;
++}
++
++
++static zcfgRet_t queryFeatureFlagRout(uint32_t oid, objIndex_t *objIid, struct json_object *queryObj, void *data)
++{
++	printf("%s\n", __FUNCTION__);
++
++	if(queryObj){
++		json_object_object_del(queryObj, "DisableWifiHWButton");
++	}
++
++	if(data){
++		struct json_object *dataObject = zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(data);
++		if(dataObject)
++			json_object_object_del(dataObject, "DisableWifiHWButton");
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++
++static zcfgRet_t queryGuiCustomRout(uint32_t oid, objIndex_t *objIid, struct json_object *queryObj, void *data)
++{
++	printf("%s\n", __FUNCTION__);
++
++	if(queryObj){
++		json_object_object_del(queryObj, "CbtGuestWifi");
++	}
++
++	if(data){
++		struct json_object *dataObject = zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(data);
++		if(dataObject)
++			json_object_object_del(dataObject, "CbtGuestWifi");
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++
++static zcfgRet_t queryOiWzardRout(uint32_t oid, objIndex_t *objIid, struct json_object *queryObj, void *data)
++{
++	printf("%s\n", __FUNCTION__);
++
++	if(queryObj){
++		json_object_object_del(queryObj, "OiWifiEnable");
++		json_object_object_del(queryObj, "OiWifiVLANID");
++	}
++
++	if(data){
++		struct json_object *dataObject = zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(data);
++		if(dataObject){
++			json_object_object_del(dataObject, "OiWifiEnable");
++			json_object_object_del(dataObject, "OiWifiVLANID");
++		}
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++
++static zcfgRet_t queryExtRout(uint32_t oid, objIndex_t *objIid, struct json_object *queryObj, void *data)
++{
++
++	printf("%s\n", __FUNCTION__);
++
++	if(queryObj){
++		json_object_object_del(queryObj, "WPSRunning");
++		json_object_object_del(queryObj, "WPSApIndex");
++		json_object_object_del(queryObj, "WPSRunningStatus");
++	}
++
++	if(data){
++		struct json_object *dataObject = zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(data);
++		if(dataObject){
++			json_object_object_del(dataObject, "WPSRunning");
++			json_object_object_del(dataObject, "WPSApIndex");
++			json_object_object_del(dataObject, "WPSRunningStatus");
++		}
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++#endif
++
+ #endif
+ 
+ #ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+@@ -3471,15 +3634,27 @@
+ {
+ 	char *tmp = NULL;
+ 	char *token = NULL;
+-	int n = 0, len;
+-	char objectPath[256+1] = {0};
++	int n = 0, len = 0;
++	char *objectPath = NULL;
+ 
+-	if(!objectPathName || !(len = strlen(objectPathName)))
++	if(!objectPathName || !(len = strlen(objectPathName)) || len > 256)
+ 		return 0;
+ 
+ 	if(objectPathName[len-1] == '.')
+ 		objectPathName[len-1] = '\0';
+ 
++
++	int dataModelType = !strncmp(objectPathName, tr98objhead, strlen(tr98objhead)) ? DATA_MODEL_TR98 :
++			(!strncmp(objectPathName, tr181objhead, strlen(tr181objhead)) ? DATA_MODEL_TR181 : DATA_MODEL_NOTDEFINED);
++	if(dataModelType == DATA_MODEL_NOTDEFINED || dataModelType != runningDataModel)
++		return 0;
++
++	//printf("%s: %s\n", __func__, objectPathName);
++
++	objPathIdx->objnum = 0;
++	objectPath = malloc(len+3);
++	memset(objectPath, 0, len+3);
++
+ 	token = strtok_r(objectPathName, ".", &tmp);
+ 	while(token) {
+ 
+@@ -3497,13 +3672,40 @@
+ 		if(token) strcat(objectPath, ".");
+ 	}
+ 
+-	printf("%s: objectPath: %s\n", __FUNCTION__, objectPath);
+-	tr98NameObj_t *entry = json_object_object_get(tr98StaticNameTable, (const char *)objectPath);
++	//printf("%s: objectPath: %s\n", __FUNCTION__, objectPath);
++	int objectPathLen = strlen(objectPath);
++	if(runningDataModel == DATA_MODEL_TR98){
++		tr98NameObj_t *entry = json_object_object_get(tr98StaticNameTable, (const char *)objectPath);
++		if(!entry && *(objectPath+objectPathLen-1) != 'i'){
++			*(objectPath+objectPathLen) = '.';
++			*(objectPath+objectPathLen+1) = 'i';
++			objPathIdx->idx[n++] = -1;
++			entry = json_object_object_get(tr98StaticNameTable, (const char *)objectPath);
++		}
++		objPathIdx->objnum = (entry && IS_SEQNUM_RIGHT((int)entry->nameSeqNum)) ? (int)entry->nameSeqNum : 0;
++	}else{
++		objIndex_t objIid;
++		IID_INIT(objIid);
++		int objnum = 0;
++		if((objnum = zcfgFeObjNameToObjId(objectPath, &objIid)) < 0 && *(objectPath+objectPathLen-1) != 'i'){
++			*(objectPath+objectPathLen) = '.';
++			*(objectPath+objectPathLen+1) = 'i';
++			objPathIdx->idx[n++] = -1;
++			IID_INIT(objIid);
++			objnum = zcfgFeObjNameToObjId(objectPath, &objIid);
++		}
++		objPathIdx->objnum = (objnum >= 0) ? objnum : 0;
++	}
+ 
+-	objPathIdx->objnum = (entry && IS_SEQNUM_RIGHT((int)entry->nameSeqNum)) ? (int)entry->nameSeqNum : 0;
+-	printf("%s: objPathIdx: %u, idx:%d,%d,%d,%d,%d,%d\n", __FUNCTION__, objPathIdx->objnum, objPathIdx->idx[0],
+-			objPathIdx->idx[1], objPathIdx->idx[2], objPathIdx->idx[3], objPathIdx->idx[4], objPathIdx->idx[5]);
+-	return IS_SEQNUM_RIGHT(objPathIdx->objnum);
++	if(objPathIdx->objnum){
++		strcpy(objPathIdx->objpath, objectPath);
++	}
++	free(objectPath);
++
++	//printf("%s: objPathIdx: %u, idx:%d,%d,%d,%d,%d,%d\n", __FUNCTION__, objPathIdx->objnum, objPathIdx->idx[0],
++	//		objPathIdx->idx[1], objPathIdx->idx[2], objPathIdx->idx[3], objPathIdx->idx[4], objPathIdx->idx[5]);
++
++	return objPathIdx->objnum ? 1 : 0;
+ }
+ 
+ void zcfgEnableRootQuryBlackObjPath(int enable)
+@@ -3518,7 +3720,7 @@
+ //   objpath1=obj1.i.obj2.i.obj3
+ //   objpath2=obj1.n.obj2.i.obj3
+ //   objpath3=obj4.obj5.n.obj6.i
+-bool zcfgObjectPathListToStruct(const char *objectPathList, int save)
++static bool zcfgObjectPathListToStruct(const char *objectPathList, int save, objPathIdx_t **objectPathIdxStructs)
+ {
+ 	char *objectPathName, *tmp;
+ 	char *objectPathListSave;
+@@ -3527,8 +3729,9 @@
+ 
+ 	if(!objectPathList || !(objPathListLen = strlen(objectPathList))){
+ 		printf("%s: clear objectPathList\n", __FUNCTION__);
+-		if(rootQuryBlackObjPathIdx){
+-			ZOS_FREE(rootQuryBlackObjPathIdx);
++		if(*objectPathIdxStructs){
++
++			ZOS_FREE(*objectPathIdxStructs);
+ 		}
+ 		return 0;
+ 	}
+@@ -3563,9 +3766,12 @@
+ 		ZOS_FREE(objectPathListSave);
+ 		return objPathIdxOk;
+ 	}else{
+-		if(rootQuryBlackObjPathIdx)
+-			ZOS_FREE(rootQuryBlackObjPathIdx);
+-		rootQuryBlackObjPathIdx = objPathIdxNew;
++
++		if(*objectPathIdxStructs)
++		{
++			ZOS_FREE(*objectPathIdxStructs);
++		}
++		*objectPathIdxStructs = objPathIdxNew;
+ 
+ 		ZOS_FREE(objectPathListSave);
+ 	}
+@@ -3577,6 +3783,8 @@
+ {
+ 	int n = 0;
+ 
++	printf("%s: objnum %u %u\n", __func__, objPathIdx->objnum, objnum);
++
+ 	if(objPathIdx->objnum != objnum)
+ 		return 0;
+ 
+@@ -3592,6 +3800,147 @@
+ 	return 1;
+ }
+ 
++static bool objectPathIdxMatch(objPathIdx_t *objPathIdx_1, objPathIdx_t *objPathIdx_2)
++{
++	//!objPathIdx_1 || !objPathIdx_2
++
++	//printf("%s: %s %s, objnum %u %u\n", __func__, objPathIdx_1->objpath, objPathIdx_2->objpath, objPathIdx_1->objnum, objPathIdx_2->objnum);
++
++	if(objPathIdx_1->objnum != objPathIdx_2->objnum){
++		int l = 0;
++		char *objPath_1, *objPath_2;
++		char *tmp1, *tmp2;
++		char *token1, *token2;
++		int len, running, match = 0;
++
++		len = strlen(objPathIdx_1->objpath);
++		objPath_1 = ZOS_MALLOC(len+1);
++		strcpy(objPath_1, objPathIdx_1->objpath);
++		len = strlen(objPathIdx_2->objpath);
++		objPath_2 = ZOS_MALLOC(len+1);
++		strcpy(objPath_2, objPathIdx_2->objpath);
++		token1 = strtok_r(objPath_1, ".", &tmp1);
++		token2 = strtok_r(objPath_2, ".", &tmp2);
++		running = (token1 && token2) ? 1 : 0;
++
++		while(running) {
++			if((!strcmp(token1, "i") || strdigit(token1)) &&
++					(!strcmp(token2, "i") || strdigit(token2))){
++				l++;
++				match = ((objPathIdx_1->idx[l-1] == -1 && objPathIdx_2->idx[l-1]) ||
++							(objPathIdx_1->idx[l-1] == objPathIdx_2->idx[l-1])) ? 1 : 0;
++			}else{
++				match = strcmp(token1, token2) ? 0 : 1;
++			}
++
++			if(match){
++				token1 = strtok_r(NULL, ".", &tmp1);
++				token2 = strtok_r(NULL, ".", &tmp2);
++				running = (token1 && token2) ? 1 : 0;
++				match = running ? match : ((token1 && !token2) ? 0 : match);
++			}else{
++				running = 0;
++			}
++		}
++
++		ZOS_FREE(objPath_1);
++		ZOS_FREE(objPath_2);
++
++		return match;
++	}else{
++		int n = 0;
++
++		while(n != SUPPORTED_INDEX_LEVEL){
++			if((objPathIdx_1->idx[n] == 0 && !objPathIdx_2->idx[n]) ||
++				(objPathIdx_1->idx[n] == -1 && objPathIdx_2->idx[n]) ||
++				(objPathIdx_1->idx[n] == objPathIdx_2->idx[n]))
++				n++;
++			else
++				return 0;
++		}
++
++		return 1;
++	}
++}
++
++bool zcfgSetRootQueryNotReplyObjects(const char *objectPathList, int save)
++{
++	return zcfgObjectPathListToStruct(objectPathList, save, &rootQuryBlackObjPathIdx);
++}
++
++bool zcfgSetQueryNotReplyObjects(const char *objectPathList, int save)
++{
++	return zcfgObjectPathListToStruct(objectPathList, save, &quryBlackObjPathIdx);
++}
++
++// creat a data object containning 'objParamInfo'
++struct json_object *zcfgFeTr181QueryHandleRoutAddDataObjParamInfo(struct json_object *objParamInfo)
++{
++	struct json_object *dataObject;
++
++	dataObject = json_object_new_object();
++	json_object_object_add(dataObject, "datatype", json_object_new_string("objparaminfo"));
++	json_object_object_add(dataObject, "dataobject", objParamInfo);
++
++	return dataObject;
++}
++
++struct json_object *zcfgFeTr181QueryHandleRoutPullDataObjParamInfo(struct json_object *dataObject)
++{
++	return json_object_object_pull(dataObject, "dataobject");
++}
++
++static struct json_object *zcfgFeTr181QueryHandleRoutRetrieveDataObjParamInfo(void *data)
++{
++	struct json_object *dataObject = NULL;
++
++	const char *datatype = json_object_get_string(json_object_object_get((struct json_object *)data, "datatype"));
++	if(datatype && !strcmp(datatype, "objparaminfo"))
++		dataObject = json_object_object_get(data, "dataobject");
++
++	return dataObject;
++}
++
++static bool zcfgQueryObjectPathIdxNotRepliedPathName(const char *objectPathName, objPathIdx_t *objectPathIdx)
++{
++	objIndex_t objIid;
++	zcfg_name_t oid;
++	objPathIdx_t *objPathIdx = NULL;
++	int n = 0, objectPathNameLen = 0;
++	objPathIdx_t objPathIdxSt = {0};
++	char *objectPathNameDup = NULL;
++
++	if(!objectPathName || !(objectPathNameLen = strlen(objectPathName)) || !objectPathIdx)
++		return 0;
++
++	int dataModelType = !strncmp(objectPathName, tr98objhead, strlen(tr98objhead)) ? DATA_MODEL_TR98 :
++			(!strncmp(objectPathName, tr181objhead, strlen(tr181objhead)) ? DATA_MODEL_TR181 : DATA_MODEL_NOTDEFINED);
++	if(dataModelType == DATA_MODEL_NOTDEFINED || dataModelType != runningDataModel)
++		return 0;
++
++	objectPathNameDup = malloc(objectPathNameLen+1);
++	memset(objectPathNameDup, 0, objectPathNameLen+1);
++	strcpy(objectPathNameDup, objectPathName);
++
++	bool rst = objectPathToObjPathIdx(objectPathNameDup, &objPathIdxSt);
++	free(objectPathNameDup);
++	if(!rst) return rst;
++
++	n = 0;
++	objPathIdx = (objectPathIdx) ? &objectPathIdx[n++] : NULL;
++
++	while(objPathIdx && objPathIdx->objnum){
++		//if(objPathIdxMatch(objPathIdx, oid, &objIid))
++		if(objectPathIdxMatch(objPathIdx, &objPathIdxSt))
++			return 1;
++		else
++			objPathIdx = &objectPathIdx[n++];
++	}
++
++	return 0;
++}
++
++#if 0
+ bool zcfgObjectPathListPickObjPath(const char *objectPathName)
+ {
+ 	objIndex_t tr98ObjIid;
+@@ -3620,6 +3969,63 @@
+ 
+ 	return 0;
+ }
++#endif
++
++// 1: obj's set as not replied on query
++static bool zcfgQueryObjectPathIdxNotReplied(zcfg_offset_t oid, objIndex_t *objIid, objPathIdx_t *objectPathIdx)
++{
++	objPathIdx_t *objPathIdx = NULL;
++	int n = 0, rst = 0;
++
++	if(!objectPathIdx)
++		return 0;
++
++	//printf("%s: object: %u, idx:%hhu,%hhu,%hhu,%hhu,%hhu,%hhu\n", __FUNCTION__, seqnum, tr98ObjIid.idx[0],
++	//		tr98ObjIid.idx[1], tr98ObjIid.idx[2], tr98ObjIid.idx[3], tr98ObjIid.idx[4], tr98ObjIid.idx[5]);
++
++	objPathIdx = objectPathIdx ? &objectPathIdx[n++] : NULL;
++
++	while(objPathIdx->objnum){
++		if(objPathIdxMatch(objPathIdx, oid, objIid))
++			return 1;
++		else
++			objPathIdx = &objectPathIdx[n++];
++	}
++
++	return 0;
++}
++
++zcfgRet_t zcfgQueryPathNameNotReplied(const char *objectPathName)
++{
++	bool rst;
++
++	rst = zcfgQueryObjectPathIdxNotRepliedPathName(objectPathName, quryBlackObjPathIdx);
++	if(rst)
++		return ZCFG_NO_SUCH_OBJECT;
++	//if(enableRootQuryBlackObjPath && rootQuryBlackObjPathIdx){
++	//	rst = zcfgQueryObjectPathIdxNotRepliedPathName(objectPathName, rootQuryBlackObjPathIdx);
++	//	if(rst)
++	//		return ZCFG_NO_SUCH_OBJECT;
++	//}
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgQueryObjectNotReplied(zcfg_offset_t oid, objIndex_t *objIid)
++{
++	bool rst;
++
++	rst = zcfgQueryObjectPathIdxNotReplied(oid, objIid, quryBlackObjPathIdx);
++	if(rst)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	if(enableRootQuryBlackObjPath && rootQuryBlackObjPathIdx){
++		rst = zcfgQueryObjectPathIdxNotReplied(oid, objIid, rootQuryBlackObjPathIdx);
++		if(rst)
++			return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	return ZCFG_SUCCESS;
++}
+ 
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *tr98ObjName, struct json_object **value)
+ {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2019-06-27 20:53:12.229355894 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2019-06-27 20:53:12.373355890 +0800
+@@ -1,462 +1,473 @@
+-#ifndef _ZCFG_FE_TR98_H
+-#define _ZCFG_FE_TR98_H
+-
+-#include <json/json.h>
+-
+-#include <json/json_object.h>
+-#include "zcfg_common.h"
+-#include "zcfg_fe_rdm_access.h"
+-#include "zcmd_schema.h"
+-#include "zcfg_msg.h"
+-#include "zcfg_debug.h"
+-#include "zcfg_fe_schema.h"
+-#include "zcfg_tr98_common.h"
+-#include "zcfg_fe_msg.h"
+-
+-#ifdef ZCFG_PARM_NAMEMAPPING
+-#define TR98_MAPPING_DEBUG 0
+-#endif
+-
+-#define TR98_GET_UPDATE 0
+-#define TR98_GET_WITHOUT_UPDATE 1
+-#define NAME_SIZE 256
+-
+-#define MAX_IP4STR_SIZE 16
+-
+-#ifndef TR069ERR_E
+-#define TR069ERR_E
+-// need to sync to libzcfg_fe_tr98/zcfg_fe_tr98.h
+-typedef enum
+-{
+-	TR069_SOCK_CLOSE = -1,    
+-	TR069_OK = 0,    
+-	TR069_NOK = 1,    			/* common errors */
+-	TR069_SERVICE_TIME_OUT,
+-	TR069_BUFFER_OVERFLOW,
+-	TR069_DNS_ERR,
+-	TR069_INIT_FAILED,    	/* errors occurs in initialization */
+-	TR069_SET_NON_APPLY,	/*All Parameter changes have been validated and committed, but some or all are not yet applied*/
+-	/* RPC Fault Code*/
+-	TR069_METHOD_NOT_SUPPORTED = 9000,
+-	TR069_REQUEST_DENIED = 9001,
+-	TR069_INTERNAL_ERROR = 9002,
+-	TR069_INVALID_ARGUMENTS = 9003,
+-	TR069_RESOURCES_EXCEEDED = 9004,
+-	TR069_INVALID_PARAMETER_NAME = 9005,
+-	TR069_INVALID_PARAMETER_TYPE = 9006,
+-	TR069_INVALID_PARAMETER_VALUE = 9007,
+-	TR069_ATTEMPT_TO_SET_NONWRITABLE_PARAMETER = 9008,
+-	TR069_NOTIFICATION_REQUEST_REJECTED = 9009,
+-	TR069_DOWNLOAD_FAILURE = 9010,
+-	TR069_UPLOAD_FAILURE = 9011,
+-	TR069_FILE_TRANSFER_SERVER_AUTHENTICATION_FAILURE = 9012,
+-	TR069_UNSUPPORTED_PROTOCOL_FOR_FILE_TRANSFER = 9013,
+-	TR069_FILE_TRANSFER_FAILURE = 9014,
+-	TR069_FILE_TRANSFER_FAILURE_CONTACT_SERVER = 9015,
+-	TR069_FILE_TRANSFER_FAILURE_ACCESS_FILE = 9016,
+-	TR069_FILE_TRANSFER_FAILURE_COMPLETE = 9017,
+-	TR069_FILE_TRANSFER_FAILURE_CORRUPTED = 9018,
+-	TR069_FILE_TRANSFER_FAILURE_AUTHENTICATION = 9019,
+-	TR069_FILE_TRANSFER_FAILURE_TIMEOUT = 9020
+-	/* 9800 - 9899: Vendor defined fault codes */
+-	/* RPC Fault Code*/
+-}tr069ERR_e;
+-#endif
+-
+-
+-// config zcfg tr98 debug level
+-//#define ZTR_DEBUG_LEVEL ZCFG_LOG_DEBUG
+-#define ZTR_DEBUG_LEVEL ZCFG_LOG_WARNING
+-
+-#ifdef ZCFG_MAPPING_DEBUG_SYSLOG
+-#define ZCFGTR98_SYSLOG (1 << 8) 
+-#else
+-#define ZCFGTR98_SYSLOG 0
+-#endif
+-#ifdef ZCFG_MAPPING_DEBUG_STDLOG
+-#define ZCFGTR98_STDLOG (1 << 9)
+-#else
+-#define ZCFGTR98_STDLOG 0
+-#endif
+-
+-#define LOGLEVEL_MASK ((1 << 3)-1)
+-
+-#ifndef ZCFG_LOG_USE_DEBUGCFG
+-enum {
+-        ZTR_SL_EMERG =  ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG,
+-        ZTR_SL_ALERT =  ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG,
+-        ZTR_SL_CRIT =   ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG,
+-        ZTR_SL_ERR  =   ZCFG_LOG_ERR | ZCFGTR98_SYSLOG,
+-        ZTR_SL_WARNING = ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG,
+-        ZTR_SL_NOTICE = ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG,
+-        ZTR_SL_INFO  =  ZCFG_LOG_INFO | ZCFGTR98_SYSLOG,
+-        ZTR_SL_DEBUG =  ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG,
+-        ZTR_DL_EMERG =  ZCFG_LOG_EMERG | ZCFGTR98_STDLOG,
+-        ZTR_DL_ALERT =  ZCFG_LOG_ALERT | ZCFGTR98_STDLOG,
+-        ZTR_DL_CRIT =   ZCFG_LOG_CRIT | ZCFGTR98_STDLOG,
+-        ZTR_DL_ERR  =   ZCFG_LOG_ERR | ZCFGTR98_STDLOG,
+-        ZTR_DL_WARNING = ZCFG_LOG_WARNING | ZCFGTR98_STDLOG,
+-        ZTR_DL_NOTICE = ZCFG_LOG_NOTICE | ZCFGTR98_STDLOG,
+-        ZTR_DL_INFO  =  ZCFG_LOG_INFO | ZCFGTR98_STDLOG,
+-        ZTR_DL_DEBUG =  ZCFG_LOG_DEBUG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_EMERG =  ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_ALERT =  ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_CRIT =   ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_ERR  =   ZCFG_LOG_ERR | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_WARNING = ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_NOTICE = ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_INFO  =  ZCFG_LOG_INFO | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_DEBUG =  ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG
+-};
+-
+-// zcfg tr98 debug message
+-#ifdef ZCFG_MAPPING_DEBUG_SYSLOG
+-#define zsyslog(logLev, format, ...) \
+-               { if((ZCFGTR98_SYSLOG & logLev) && (ZTR_DEBUG_LEVEL >= (logLev & LOGLEVEL_MASK))) \
+-                    syslog((logLev & LOGLEVEL_MASK), format, ##__VA_ARGS__); }
+-#else
+-#define zsyslog(logLev, format, ...)  do {}while(0)
+-#endif
+-
+-#ifdef ZCFG_MAPPING_DEBUG_STDLOG
+-#define zstdlog(logLev, format, ...) \
+-               { if((ZCFGTR98_STDLOG & logLev) && (ZTR_DEBUG_LEVEL >= (logLev & LOGLEVEL_MASK))) \
+-                    printf(format, ##__VA_ARGS__); }
+-#else
+-#define zstdlog(logLev, format, ...)  do {}while(0)
+-#endif
+-
+-#define ztrdbg(logLev, format, ...) do{\
+-		zsyslog(logLev, format, ##__VA_ARGS__); \
+-		zstdlog(logLev, format, ##__VA_ARGS__); \
+-	} while(0)
+-#else
+-enum {
+-        ZTR_SL_EMERG = ZCFG_SL_EMERG, // ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG,
+-        ZTR_SL_ALERT = ZCFG_SL_ALERT, // ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG,
+-        ZTR_SL_CRIT =  ZCFG_SL_CRIT, // ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG,
+-        ZTR_SL_ERR  =  ZCFG_SL_ERR, // ZCFG_LOG_ERR | ZCFGTR98_SYSLOG,
+-        ZTR_SL_WARNING = ZCFG_SL_WARNING, // ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG,
+-        ZTR_SL_NOTICE = ZCFG_SL_NOTICE, // ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG,
+-        ZTR_SL_INFO  = ZCFG_SL_INFO, // ZCFG_LOG_INFO | ZCFGTR98_SYSLOG,
+-        ZTR_SL_DEBUG = ZCFG_SL_DEBUG, // ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG,
+-        ZTR_DL_EMERG = ZCFG_DL_EMERG, // ZCFG_LOG_EMERG | ZCFGTR98_STDLOG,
+-        ZTR_DL_ALERT = ZCFG_DL_ALERT, // ZCFG_LOG_ALERT | ZCFGTR98_STDLOG,
+-        ZTR_DL_CRIT = ZCFG_DL_CRIT, // ZCFG_LOG_CRIT | ZCFGTR98_STDLOG,
+-        ZTR_DL_ERR  = ZCFG_DL_ERR, // ZCFG_LOG_ERR | ZCFGTR98_STDLOG,
+-        ZTR_DL_WARNING = ZCFG_DL_WARNING, // ZCFG_LOG_WARNING | ZCFGTR98_STDLOG,
+-        ZTR_DL_NOTICE = ZCFG_DL_NOTICE, // ZCFG_LOG_NOTICE | ZCFGTR98_STDLOG,
+-        ZTR_DL_INFO  = ZCFG_DL_INFO, // ZCFG_LOG_INFO | ZCFGTR98_STDLOG,
+-        ZTR_DL_DEBUG = ZCFG_DL_DEBUG, // ZCFG_LOG_DEBUG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_EMERG = ZCFG_SDL_EMERG, // ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_ALERT = ZCFG_SDL_ALERT, // ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_CRIT = ZCFG_SDL_CRIT, // ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_ERR  = ZCFG_SDL_ERR, // ZCFG_LOG_ERR | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_WARNING = ZCFG_SDL_WARNING, // ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_NOTICE = ZCFG_SDL_NOTICE, // ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_INFO  = ZCFG_SDL_INFO, // ZCFG_LOG_INFO | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
+-        ZTR_SDL_DEBUG = ZCFG_SDL_DEBUG // ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG
+-};
+-
+-#define ztrdbg(logLev, format, ...) zcfgLog(logLev, format, ##__VA_ARGS__)
+-#endif
+-
+-#define MSG_EMPTY(msg) ((msg != NULL && msg[0] != '\0') ? msg : "(empty)")
+-
+-
+-#define TRANS_WANIPIFACE_98TO181   1
+-#define TRANS_WANIPIFACE_181TO98   2
+-
+-
+-extern int myEid; /*use source Eid to know who use this library*/
+-typedef struct tr98Parameter_s {
+-	char 			*name;			/*parameter name*/
+-	int 			attr;			/*parameter attribute*/
+-	int			len;			/*parameter length*/
+-	json_type		type;			/*parameter type*/
+-}tr98Parameter_t;
+-
+-typedef struct tr98Object_s {
+-	char			*name;			   /*object full path name*/
+-	int 			attr;			   /*object attribute*/
+-	struct tr98Parameter_s 	*parameter;		   /*next level parameters*/
+-	int (*getObj)(char *, int, struct json_object **, bool);
+-	int (*setObj)(char *, int, struct json_object *, struct json_object *, char *);
+-	int (*addObj)(char *, int *);
+-	int (*delObj)(char *);
+-	int (*notify)(char *, char *, struct json_object *, int, struct json_object **);
+-	int (*getAttr)(char *, int , char *);
+-	int (*setAttr)(char *, int , char *, int , struct json_object *);
+-}tr98Object_t;
+-
+-typedef struct tr98NameObj_s {
+-	zcfg98sn_t nameSeqNum;
+-	tr98Object_t *tr98Obj;
+-}tr98NameObj_t;
+-
+-typedef zcfgRet_t (*parmGurdRout)(const char *objpath, const char *parmname, struct json_object *spvobj, struct json_object *parmGurdObj, char **faultString);
+-typedef zcfgRet_t (*rpcSubRout)(const char *, objIndex_t *, struct json_object *, struct json_object *);
+-
+-#define ZCFG_TR98_PARMGURD "/etc/zcfg_tr98_parmgurd.json"
+-typedef struct tr98ParmRout_s {
+-	zcfg98sn_t nameSeqNum;
+-	parmGurdRout rout;
+-}tr98ParmRout_t;
+-
+-typedef struct tr98RpcSubRout_s {
+-	zcfg98sn_t nameSeqNum;
+-	rpcSubRout rout;
+-}tr98RpcSubRout_t;
+-
+-
+-typedef zcfgRet_t (*tr98QryHandleRout)(const char *, int, objIndex_t *, struct json_object **, void *data);
+-typedef struct tr98QueryHandleRout_s {
+-	zcfg98sn_t nameSeqNum;
+-	tr98QryHandleRout rout;
+-}tr98QueryHandleRout_t;
+-
+-#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
+-typedef zcfgRet_t (*spvHandleRout)(uint32_t , objIndex_t *, struct json_object *, struct json_object *, char *);
+-
+-typedef struct tr181SpvHandleRout_s {
+-	uint32_t oid;
+-	spvHandleRout rout;
+-}tr181SpvHandleRout_t;
+-
+-typedef zcfgRet_t (*qryHandleRout)(uint32_t , objIndex_t *, struct json_object *, void *data);
+-typedef struct tr181QueryHandleRout_s {
+-	uint32_t oid;
+-	qryHandleRout rout;
+-}tr181QueryHandleRout_t;
+-
+-#endif
+-
+-
+-typedef struct objPathIdx_s {
+-	uint32_t objnum;
+-	int16_t idx[SUPPORTED_INDEX_LEVEL];
+-}objPathIdx_t;
+-
+-void zcfgEnableRootQuryBlackObjPath(int);
+-bool zcfgObjectPathListToStruct(const char *objectPathList, int);
+-bool zcfgObjectPathListPickObjPath(const char *objectPathName);
+-int zcfgFeTr98QryRootPath();
+-void zcfgFeTr98SetQryRootPath(int );
+-
+-#define TR98_MAX_OBJ_NAME_LENGTH 257
+-#define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+-
+-zcfgRet_t zcfgFeTr98AllIGDNameGet();
+-
+-void zcfgFe98BondingTag(bool);
+-
+-zcfgRet_t zcfgFeTr98ObjGet(char *, struct json_object **);
+-zcfgRet_t zcfgFe98StaticNameTableInit(void);
+-zcfgRet_t zcfgFe98InfoDataSetInit(void);
+-zcfgRet_t ReplaceStaticWANDeviceIndex(const char *tr98ObjName, char *pathname);
+-#ifdef ZCFG_RUNNING_WANDEV_INDEX_CUSTOMIZATION
+-zcfgRet_t zcfgFeTr98StaticWANDevSync(void *);
+-bool zcfgFe98StaticWanDevStatus(void);
+-#else
+-#define zcfgFeTr98StaticWANDevSync(param) do{}while(0)
+-#endif
+-zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid);
+-zcfgRet_t zcfgFe98To181ObjMappingNameGet(const char *tr98PathName, char *tr181PathName);
+-zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName);
+-zcfgRet_t zcfgFe98NameToSeqnum(const char *tr98PathName, zcfg_name_t *seqnum, objIndex_t *tr98ObjIid);
+-zcfgRet_t zcfgFe98SeqnumToName(zcfg_name_t seqnum, objIndex_t *objIid, char *tr98PathName);
+-char *zcfgFeTr98ObjQueryInstanceArray(const char *tr98PathName);
+-zcfgRet_t zcfgFe98ParmMappingToName(const char *notifyName, char *tr98NotifyName);
+-zcfgRet_t zcfgTr98MapAddObjName();
+-zcfgRet_t zcfgTr181MapAddObjName();
+-#ifdef TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
+-void zcfgMappingConvertDataOutput(int enable);
+-struct json_object *zcfgTr98CreatePvsNewMapping();
+-struct json_object *zcfgTr181CreatePvsNewMapping();
+-zcfgRet_t zcfgTr98MappingConvert(struct json_object *, struct json_object *);
+-zcfgRet_t zcfgTr181MappingConvert(struct json_object *, struct json_object *);
+-#endif
+-
+-int charHex2Int(char );
+-int hexStr2AscStr(const char *, char *);
+-int ascStr2HexStr(const char *, char *);
+-bool base64Char(char );
+-char *base64StrParticularCharHandle(const char *);
+-
+-zcfgRet_t zcfgFeTr98QueryObjParamNames(const char *, struct json_object **, struct json_object *);
+-void zcfgFeTr98GpnQueryHandleRoutInit();
+-
+-#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
+-void zcfgFeTr181SpvHandleRoutInit();
+-zcfgRet_t zcfgFeMultiObjJsonSpvHandleRout(struct json_object *multiJobj, char *faultString);
+-void zcfgFeTr181QueryHandleRoutInit();
+-zcfgRet_t zcfgFeTr181QueryHandleRout(uint32_t oid, objIndex_t *objIid, struct json_object *qryObj, void *data);
+-#else
+-#define zcfgFeTr181SpvHandleRoutInit() { }
+-#define zcfgFeMultiObjJsonSpvHandleRout(multiJobj, faultString) ZCFG_SUCCESS
+-#define zcfgFeTr181QueryHandleRoutInit() { }
+-#define zcfgFeTr181QueryHandleRout(oid, objIid, qryObj, data) ZCFG_SUCCESS
+-#endif
+-char *csvStringStripTerm(const char *csv, const char *term);
+-zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );
+-zcfgRet_t zcfgFeTr98ObjNameObjGet(char *, struct json_object **);
+-zcfgRet_t zcfgFeTr98ObjParamSet(char *, uint32_t , struct json_object *, char *);
+-zcfgRet_t zcfgFeTr98ObjSet(char *, struct json_object *, char *paramfault);
+-zcfgRet_t zcfgFeTr98MultiObjSet(char *, struct json_object *, struct json_object *, char *paramfault);
+-zcfgRet_t zcfgFeTr98ObjAdd(char *, int *);
+-zcfgRet_t zcfgFeTr98ObjDel(char *);
+-zcfgRet_t zcfgFeTr98DefaultValueSet(struct json_object *, char *, int);
+-int zcfgFeTr98ObjAttrGet(char *);
+-zcfgRet_t zcfgFeTr98Notify(struct json_object *, struct json_object **);
+-zcfgRet_t zcfgFeTr98ParamList(char *);
+-
+-int zcfgFeTr98ParamAttrChk(int , int);
+-#ifdef ZCFG_QUERY_TR98_PARM_ATTR_LIST
+-zcfgRet_t zcfgFeTr98QueryAttrObjExist(const char *, struct json_object **);
+-zcfgRet_t zcfgFeTr98QueryAttrObjName(const char *, struct json_object **);
+-
+-void zcfgTr98AttrListEnable();
+-void *zcfgTr98AttrListSync(struct json_object *);
+-void zcfgTr98AttrListClear();
+-bool zcfgTr98AttrListUtilized();
+-zcfgRet_t zcfgTr98AttrListMultiParmAttrSetSync(zcfgFeSetParmAttrLst_t *);
+-
+-zcfgRet_t zcfgSetParmAttrLstAddTr98ObjParmAttr(zcfgFeSetParmAttrLst_t *, const char *, const char *, int );
+-
+-#else
+-#define zcfgFeTr98QueryAttrObjExist(name, parm) zcfgFeTr98ObjNameGet(name, parm)
+-#define zcfgFeTr98QueryAttrObjName(name, parm) zcfgFeTr98ObjNameGet(name, parm)
+-
+-#define zcfgTr98AttrListEnable() { }
+-#define zcfgTr98AttrListSync(obj) obj
+-#define zcfgTr98AttrListClear() { }
+-#define zcfgTr98AttrListUtilized() 0
+-#define zcfgTr98AttrListMultiParmAttrSetSync(obj) { }
+-
+-#define zcfgSetParmAttrLstAddTr98ObjParmAttr(obj, parm1, parm2, parm3) { }
+-
+-#endif
+-int zcfgFeTr98ParamAttrGetByName(char *, char *);
+-zcfgRet_t zcfgFeTr98AllParamAttrGetByObjName(const char *, struct json_object *);
+-int zcfgFeTr98ObjParamAttrGetByName(const char *tr98ObjName, const char *name);
+-#ifdef ZCFG_PARM_NAMEMAPPING
+-zcfgFeSetParmAttr_t *zcfgFeTr98ParamAttrSetByName(uint32_t objnum, objIndex_t *objIid, const char *parmName, uint32_t setAttrObjNum, objIndex_t *setAttrObjIid, const char *setAttrParmName, uint32_t attr);
+-int zcfgFeTr98ParamAttrMultiSetByName(char *tr98ObjName, char *name, int notify, zcfgFeSetParmAttrLst_t *setParmAttrLst);
+-#else
+-int zcfgFeTr98ParamAttrMultiSetByName(char *, char *, int , struct json_object *);
+-#endif
+-zcfgRet_t zcfgFeTr98QueryParamListUnit(const char *, const char *, tr98Parameter_t *);
+-int zcfgFeTr98ParamTypeGetByName(char *, char *);
+-int zcfgFeTr98ParamAttrContentGetByName(char *, char *);
+-zcfgRet_t zcfgFeTr98ParamChk(char *, char *, char *);
+-zcfgSubObjNameList_t* zcfgFeTr98SubObjNameListGet(char *);
+-
+-#ifdef ZCFG_TR98_PARAM_GUARD
+-zcfgRet_t zcfgTr98ParmGurdInit(void);
+-zcfgRet_t zcfgTr98ParmGurdScan(const char *, const char *, struct json_object *, struct json_object *, char **);
+-struct json_object *zcfgTr98RetrieveParmGurdObj(const char *);
+-#else
+-#define zcfgTr98ParmGurdInit() {}
+-#define zcfgTr98ParmGurdScan(p, a, r, m, t) ZCFG_SUCCESS
+-#define zcfgTr98RetrieveParmGurdObj(n) NULL
+-#endif
+-
+-#ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+-bool zcfgAddSpvSubsequent(struct json_object *tr98SpvObj);
+-#else
+-
+-#define zcfgAddSpvSubsequent(obj) (0)
+-
+-#endif
+-
+-zcfgRet_t zcfgFeTr98ObjSpvGet(const char *, struct json_object **, int);
+-zcfgRet_t zcfgFeTr98ObjSpvDelete(const char *);
+-struct json_object *zcfgFeSessionTr98SpvObjRetrieve();
+-void zcfgFeSessionTr98SpvObjSet(struct json_object *);
+-zcfgRet_t zcfgFeSessionTr98SpvObjectClear();
+-
+-struct json_object *zcfgFeNewTr98SpvObject();
+-bool zcfgTr98StatusRunSpvValid(struct json_object *);
+-bool zcfgFeTr98SpvAndApplyOnSessionComplete(struct json_object *multiobj);
+-zcfgRet_t zcfgFeAddTr98SpvObject(struct json_object *, const char *, struct json_object *, struct json_object *);
+-zcfgRet_t zcfgFeDeleteTr98SpvObject(struct json_object *, const char *);
+-struct json_object *zcfgFeRetrieveTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath, struct json_object **);
+-zcfgRet_t zcfgFeTr98SpvObjectAppendReplace(struct json_object *, struct json_object *);
+-
+-struct json_object *zcfgFe98ParamGuardInit(const char *, void *);
+-zcfgRet_t zcfgFe98ParamGuard(struct json_object *, const char *, struct json_object *);
+-void zcfgFe98ParamGuardRelease(struct json_object *);
+-
+-char *translateWanIpIface(int dataTransType, const char *wanIpIfaces);
+-zcfgRet_t zcfgFe98To181IpIface(const char *tr98IfaceName, char *ipIface);
+-zcfgRet_t zcfgFeTr181IpIfaceRunning(const char *iface, char *paramfault);
+-zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied);
+-
+-zcfgRet_t zcfgFeTr181IfaceStackLowerLayerGet(char *higherLayer, char *result);
+-zcfgRet_t zcfgFeTr181IfaceStackHigherLayerGet(char *lowerLayer, char *result);
+-
+-#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+-
+-#define JSON_OBJ_EMPTY(obj) (!obj || (obj && (json_object_get_object(obj)->count == 0)))
+-
+-zcfgRet_t feObjStructGet(zcfg_offset_t , objIndex_t *, void **, bool);
+-zcfgRet_t feObjStructGetNext(zcfg_offset_t , objIndex_t *, void **, bool);
+-zcfgRet_t feObjStructGetSubNext(zcfg_offset_t ,objIndex_t * ,objIndex_t * , void ** ,bool );
+-zcfgRet_t feObjJsonGet(zcfg_offset_t , objIndex_t *, struct json_object **, bool);
+-zcfgRet_t feObjJsonGetNext(zcfg_offset_t , objIndex_t *, struct json_object **, bool);
+-zcfgRet_t feObjJsonSubNext(zcfg_offset_t ,objIndex_t * ,objIndex_t * , struct json_object ** ,bool );
+-
+-#define zcfgFeRetrieveSpv(objpath) zcfgFeHandRoutRetrieveTr98Spv(objpath, tr98Jobj, multiJobj)
+-
+-#ifdef ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
+-void zcfgFeSessMultiObjSet();
+-void zcfgFeSessMultiObjSetClear();
+-struct json_object *zcfgFeSessMultiObjSetRetrieve();
+-void zcfgFeSessMultiObjSetSave(struct json_object *multiobj);
+-struct json_object *zcfgFeSessMultiObjSetUtilize(struct json_object *multiobj);
+-void zcfgFeJsonMultiObjSetParamk(const char *);
+-struct json_object *zcfgFeJsonMultiObjParamkRetrieve();
+-#else
+-#define zcfgFeSessMultiObjSet() { }
+-#define zcfgFeSessMultiObjSetClear() { }
+-#define zcfgFeSessMultiObjSetRetrieve() NULL
+-#define zcfgFeSessMultiObjSetSave(obj) { }
+-#define zcfgFeSessMultiObjSetUtilize(obj) obj
+-#define zcfgFeJsonMultiObjSetParamk(paramk) { }
+-#define zcfgFeJsonMultiObjParamkRetrieve() NULL
+-#endif
+-
+-#ifdef ZCFG_RPC_REQUEST_ADDITIONS
+-struct json_object *zcfgFeRpcRequestAdditionNew();
+-#else
+-#define zcfgFeRpcRequestAdditionNew() NULL
+-#endif
+-
+-void zcfgRpcTr98GpnSpeedObjsEnable();
+-void zcfgRpcTr98GpnSpeedObjsClear();
+-bool zcfgRpcTr98GpnSpeedObjsUtilized();
+-
+-void zcfgRpcTr98GpvSpeedObjsEnable();
+-void zcfgRpcTr98GpvSpeedObjsClear();
+-bool zcfgRpcTr98GpvSpeedObjsUtilized();
+-
+-void zcfgFeTr98GuiCustomizationSet(char *, void *);
+-
+-// utilize GpnSpeedObjs to sync the same objects/params
+-#define zcfgRpcTr98GpaSpeedEnable() zcfgRpcTr98GpnSpeedObjsEnable()
+-#define zcfgRpcTr98GpaSpeedClear() zcfgRpcTr98GpnSpeedObjsClear()
+-#define zcfgRpcTr98GpaSpeedUtilized() zcfgRpcTr98GpnSpeedObjsUtilized()
+-
+-#define zcfgFeRpcRequestAddRpcDelayApply(_rpcObjAddition, _value) zcfgFeRpcRequestAddRpcApplyAttr(_rpcObjAddition, "delayapply", json_object_new_boolean(_value))
+-#define zcfgFeRpcRequestAdditionRelease json_object_put
+-
+-zcfgRet_t zcfgFeRpcRequestAddAttr(struct json_object *, const char *, struct json_object *, bool );
+-zcfgRet_t zcfgFeRpcRequestAddReplyAttr(struct json_object *, const char *, struct json_object *);
+-zcfgRet_t zcfgFeRpcRequestAddRpcApplyAttr(struct json_object *, const char *, struct json_object *);
+-zcfgRet_t zcfgFeRpcRequestAddMethod(struct json_object *, const char *, bool);
+-zcfgRet_t zcfgFeRpcRequestSpecifyMethodParam(struct json_object *, const char *, const char *, struct json_object *);
+-
+-zcfgRet_t zcfgFeRpcObjectRetrieveMethodReply(struct json_object *, const char *, struct json_object **);
+-struct json_object *zcfgFeRpcRequestRetrieveMethodReplyParam(struct json_object *, const char *);
+-
++#ifndef _ZCFG_FE_TR98_H
++#define _ZCFG_FE_TR98_H
++
++#include <json/json.h>
++
++#include <json/json_object.h>
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcmd_schema.h"
++#include "zcfg_msg.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_schema.h"
++#include "zcfg_tr98_common.h"
++#include "zcfg_fe_msg.h"
++
++#ifdef ZCFG_PARM_NAMEMAPPING
++#define TR98_MAPPING_DEBUG 0
++#endif
++
++#define TR98_GET_UPDATE 0
++#define TR98_GET_WITHOUT_UPDATE 1
++#define NAME_SIZE 256
++
++#define MAX_IP4STR_SIZE 16
++
++#ifndef TR069ERR_E
++#define TR069ERR_E
++// need to sync to libzcfg_fe_tr98/zcfg_fe_tr98.h
++typedef enum
++{
++	TR069_SOCK_CLOSE = -1,
++	TR069_OK = 0,
++	TR069_NOK = 1,    			/* common errors */
++	TR069_SERVICE_TIME_OUT,
++	TR069_BUFFER_OVERFLOW,
++	TR069_DNS_ERR,
++	TR069_INIT_FAILED,    	/* errors occurs in initialization */
++	TR069_SET_NON_APPLY,	/*All Parameter changes have been validated and committed, but some or all are not yet applied*/
++	/* RPC Fault Code*/
++	TR069_METHOD_NOT_SUPPORTED = 9000,
++	TR069_REQUEST_DENIED = 9001,
++	TR069_INTERNAL_ERROR = 9002,
++	TR069_INVALID_ARGUMENTS = 9003,
++	TR069_RESOURCES_EXCEEDED = 9004,
++	TR069_INVALID_PARAMETER_NAME = 9005,
++	TR069_INVALID_PARAMETER_TYPE = 9006,
++	TR069_INVALID_PARAMETER_VALUE = 9007,
++	TR069_ATTEMPT_TO_SET_NONWRITABLE_PARAMETER = 9008,
++	TR069_NOTIFICATION_REQUEST_REJECTED = 9009,
++	TR069_DOWNLOAD_FAILURE = 9010,
++	TR069_UPLOAD_FAILURE = 9011,
++	TR069_FILE_TRANSFER_SERVER_AUTHENTICATION_FAILURE = 9012,
++	TR069_UNSUPPORTED_PROTOCOL_FOR_FILE_TRANSFER = 9013,
++	TR069_FILE_TRANSFER_FAILURE = 9014,
++	TR069_FILE_TRANSFER_FAILURE_CONTACT_SERVER = 9015,
++	TR069_FILE_TRANSFER_FAILURE_ACCESS_FILE = 9016,
++	TR069_FILE_TRANSFER_FAILURE_COMPLETE = 9017,
++	TR069_FILE_TRANSFER_FAILURE_CORRUPTED = 9018,
++	TR069_FILE_TRANSFER_FAILURE_AUTHENTICATION = 9019,
++	TR069_FILE_TRANSFER_FAILURE_TIMEOUT = 9020
++	/* 9800 - 9899: Vendor defined fault codes */
++	/* RPC Fault Code*/
++}tr069ERR_e;
++#endif
++
++
++// config zcfg tr98 debug level
++//#define ZTR_DEBUG_LEVEL ZCFG_LOG_DEBUG
++#define ZTR_DEBUG_LEVEL ZCFG_LOG_WARNING
++
++#ifdef ZCFG_MAPPING_DEBUG_SYSLOG
++#define ZCFGTR98_SYSLOG (1 << 8)
++#else
++#define ZCFGTR98_SYSLOG 0
++#endif
++#ifdef ZCFG_MAPPING_DEBUG_STDLOG
++#define ZCFGTR98_STDLOG (1 << 9)
++#else
++#define ZCFGTR98_STDLOG 0
++#endif
++
++#define LOGLEVEL_MASK ((1 << 3)-1)
++
++#ifndef ZCFG_LOG_USE_DEBUGCFG
++enum {
++        ZTR_SL_EMERG =  ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG,
++        ZTR_SL_ALERT =  ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG,
++        ZTR_SL_CRIT =   ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG,
++        ZTR_SL_ERR  =   ZCFG_LOG_ERR | ZCFGTR98_SYSLOG,
++        ZTR_SL_WARNING = ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG,
++        ZTR_SL_NOTICE = ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG,
++        ZTR_SL_INFO  =  ZCFG_LOG_INFO | ZCFGTR98_SYSLOG,
++        ZTR_SL_DEBUG =  ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG,
++        ZTR_DL_EMERG =  ZCFG_LOG_EMERG | ZCFGTR98_STDLOG,
++        ZTR_DL_ALERT =  ZCFG_LOG_ALERT | ZCFGTR98_STDLOG,
++        ZTR_DL_CRIT =   ZCFG_LOG_CRIT | ZCFGTR98_STDLOG,
++        ZTR_DL_ERR  =   ZCFG_LOG_ERR | ZCFGTR98_STDLOG,
++        ZTR_DL_WARNING = ZCFG_LOG_WARNING | ZCFGTR98_STDLOG,
++        ZTR_DL_NOTICE = ZCFG_LOG_NOTICE | ZCFGTR98_STDLOG,
++        ZTR_DL_INFO  =  ZCFG_LOG_INFO | ZCFGTR98_STDLOG,
++        ZTR_DL_DEBUG =  ZCFG_LOG_DEBUG | ZCFGTR98_STDLOG,
++        ZTR_SDL_EMERG =  ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_ALERT =  ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_CRIT =   ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_ERR  =   ZCFG_LOG_ERR | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_WARNING = ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_NOTICE = ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_INFO  =  ZCFG_LOG_INFO | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_DEBUG =  ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG
++};
++
++// zcfg tr98 debug message
++#ifdef ZCFG_MAPPING_DEBUG_SYSLOG
++#define zsyslog(logLev, format, ...) \
++               { if((ZCFGTR98_SYSLOG & logLev) && (ZTR_DEBUG_LEVEL >= (logLev & LOGLEVEL_MASK))) \
++                    syslog((logLev & LOGLEVEL_MASK), format, ##__VA_ARGS__); }
++#else
++#define zsyslog(logLev, format, ...)  do {}while(0)
++#endif
++
++#ifdef ZCFG_MAPPING_DEBUG_STDLOG
++#define zstdlog(logLev, format, ...) \
++               { if((ZCFGTR98_STDLOG & logLev) && (ZTR_DEBUG_LEVEL >= (logLev & LOGLEVEL_MASK))) \
++                    printf(format, ##__VA_ARGS__); }
++#else
++#define zstdlog(logLev, format, ...)  do {}while(0)
++#endif
++
++#define ztrdbg(logLev, format, ...) do{\
++		zsyslog(logLev, format, ##__VA_ARGS__); \
++		zstdlog(logLev, format, ##__VA_ARGS__); \
++	} while(0)
++#else
++enum {
++        ZTR_SL_EMERG = ZCFG_SL_EMERG, // ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG,
++        ZTR_SL_ALERT = ZCFG_SL_ALERT, // ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG,
++        ZTR_SL_CRIT =  ZCFG_SL_CRIT, // ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG,
++        ZTR_SL_ERR  =  ZCFG_SL_ERR, // ZCFG_LOG_ERR | ZCFGTR98_SYSLOG,
++        ZTR_SL_WARNING = ZCFG_SL_WARNING, // ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG,
++        ZTR_SL_NOTICE = ZCFG_SL_NOTICE, // ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG,
++        ZTR_SL_INFO  = ZCFG_SL_INFO, // ZCFG_LOG_INFO | ZCFGTR98_SYSLOG,
++        ZTR_SL_DEBUG = ZCFG_SL_DEBUG, // ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG,
++        ZTR_DL_EMERG = ZCFG_DL_EMERG, // ZCFG_LOG_EMERG | ZCFGTR98_STDLOG,
++        ZTR_DL_ALERT = ZCFG_DL_ALERT, // ZCFG_LOG_ALERT | ZCFGTR98_STDLOG,
++        ZTR_DL_CRIT = ZCFG_DL_CRIT, // ZCFG_LOG_CRIT | ZCFGTR98_STDLOG,
++        ZTR_DL_ERR  = ZCFG_DL_ERR, // ZCFG_LOG_ERR | ZCFGTR98_STDLOG,
++        ZTR_DL_WARNING = ZCFG_DL_WARNING, // ZCFG_LOG_WARNING | ZCFGTR98_STDLOG,
++        ZTR_DL_NOTICE = ZCFG_DL_NOTICE, // ZCFG_LOG_NOTICE | ZCFGTR98_STDLOG,
++        ZTR_DL_INFO  = ZCFG_DL_INFO, // ZCFG_LOG_INFO | ZCFGTR98_STDLOG,
++        ZTR_DL_DEBUG = ZCFG_DL_DEBUG, // ZCFG_LOG_DEBUG | ZCFGTR98_STDLOG,
++        ZTR_SDL_EMERG = ZCFG_SDL_EMERG, // ZCFG_LOG_EMERG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_ALERT = ZCFG_SDL_ALERT, // ZCFG_LOG_ALERT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_CRIT = ZCFG_SDL_CRIT, // ZCFG_LOG_CRIT | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_ERR  = ZCFG_SDL_ERR, // ZCFG_LOG_ERR | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_WARNING = ZCFG_SDL_WARNING, // ZCFG_LOG_WARNING | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_NOTICE = ZCFG_SDL_NOTICE, // ZCFG_LOG_NOTICE | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_INFO  = ZCFG_SDL_INFO, // ZCFG_LOG_INFO | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG,
++        ZTR_SDL_DEBUG = ZCFG_SDL_DEBUG // ZCFG_LOG_DEBUG | ZCFGTR98_SYSLOG | ZCFGTR98_STDLOG
++};
++
++#define ztrdbg(logLev, format, ...) zcfgLog(logLev, format, ##__VA_ARGS__)
++#endif
++
++#define MSG_EMPTY(msg) ((msg != NULL && msg[0] != '\0') ? msg : "(empty)")
++
++
++#define TRANS_WANIPIFACE_98TO181   1
++#define TRANS_WANIPIFACE_181TO98   2
++
++
++extern int myEid; /*use source Eid to know who use this library*/
++typedef struct tr98Parameter_s {
++	char 			*name;			/*parameter name*/
++	int 			attr;			/*parameter attribute*/
++	int			len;			/*parameter length*/
++	json_type		type;			/*parameter type*/
++}tr98Parameter_t;
++
++typedef struct tr98Object_s {
++	char			*name;			   /*object full path name*/
++	int 			attr;			   /*object attribute*/
++	struct tr98Parameter_s 	*parameter;		   /*next level parameters*/
++	int (*getObj)(char *, int, struct json_object **, bool);
++	int (*setObj)(char *, int, struct json_object *, struct json_object *, char *);
++	int (*addObj)(char *, int *);
++	int (*delObj)(char *);
++	int (*notify)(char *, char *, struct json_object *, int, struct json_object **);
++	int (*getAttr)(char *, int , char *);
++	int (*setAttr)(char *, int , char *, int , struct json_object *);
++}tr98Object_t;
++
++typedef struct tr98NameObj_s {
++	zcfg98sn_t nameSeqNum;
++	tr98Object_t *tr98Obj;
++}tr98NameObj_t;
++
++typedef zcfgRet_t (*parmGurdRout)(const char *objpath, const char *parmname, struct json_object *spvobj, struct json_object *parmGurdObj, char **faultString);
++typedef zcfgRet_t (*rpcSubRout)(const char *, objIndex_t *, struct json_object *, struct json_object *);
++
++#define ZCFG_TR98_PARMGURD "/etc/zcfg_tr98_parmgurd.json"
++typedef struct tr98ParmRout_s {
++	zcfg98sn_t nameSeqNum;
++	parmGurdRout rout;
++}tr98ParmRout_t;
++
++typedef struct tr98RpcSubRout_s {
++	zcfg98sn_t nameSeqNum;
++	rpcSubRout rout;
++}tr98RpcSubRout_t;
++
++
++typedef zcfgRet_t (*tr98QryHandleRout)(const char *, int, objIndex_t *, struct json_object **, void *data);
++typedef struct tr98QueryHandleRout_s {
++	zcfg98sn_t nameSeqNum;
++	tr98QryHandleRout rout;
++}tr98QueryHandleRout_t;
++
++#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++typedef zcfgRet_t (*spvHandleRout)(uint32_t , objIndex_t *, struct json_object *, struct json_object *, char *);
++
++typedef struct tr181SpvHandleRout_s {
++	uint32_t oid;
++	spvHandleRout rout;
++}tr181SpvHandleRout_t;
++
++typedef zcfgRet_t (*qryHandleRout)(uint32_t , objIndex_t *, struct json_object *, void *data);
++typedef struct tr181QueryHandleRout_s {
++	uint32_t oid;
++	qryHandleRout rout;
++}tr181QueryHandleRout_t;
++
++#endif
++
++
++typedef struct objPathIdx_s {
++	uint32_t objnum;
++	int16_t idx[SUPPORTED_INDEX_LEVEL];
++	char objpath[256+2];
++}objPathIdx_t;
++
++void zcfgEnableRootQuryBlackObjPath(int);
++//bool zcfgObjectPathListToStruct(const char *objectPathList, int);
++//bool zcfgObjectPathListPickObjPath(const char *objectPathName);
++int zcfgFeTr98QryRootPath();
++void zcfgFeTr98SetQryRootPath(int );
++
++bool zcfgSetRootQueryNotReplyObjects(const char *, int);
++bool zcfgSetQueryNotReplyObjects(const char *, int);
++void zcfgSetRunningDataModelSpec(const char *);
++zcfgRet_t zcfgQueryPathNameNotReplied(const char *);
++zcfgRet_t zcfgQueryObjectNotReplied(zcfg_offset_t , objIndex_t *);
++
++struct json_object *zcfgFeTr181QueryHandleRoutAddDataObjParamInfo(struct json_object *);
++struct json_object *zcfgFeTr181QueryHandleRoutPullDataObjParamInfo(struct json_object *);
++
++
++#define TR98_MAX_OBJ_NAME_LENGTH 257
++#define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
++
++zcfgRet_t zcfgFeTr98AllIGDNameGet();
++
++void zcfgFe98BondingTag(bool);
++
++zcfgRet_t zcfgFeTr98ObjGet(char *, struct json_object **);
++zcfgRet_t zcfgFe98StaticNameTableInit(void);
++zcfgRet_t zcfgFe98InfoDataSetInit(void);
++zcfgRet_t ReplaceStaticWANDeviceIndex(const char *tr98ObjName, char *pathname);
++#ifdef ZCFG_RUNNING_WANDEV_INDEX_CUSTOMIZATION
++zcfgRet_t zcfgFeTr98StaticWANDevSync(void *);
++bool zcfgFe98StaticWanDevStatus(void);
++#else
++#define zcfgFeTr98StaticWANDevSync(param) do{}while(0)
++#endif
++zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid);
++zcfgRet_t zcfgFe98To181ObjMappingNameGet(const char *tr98PathName, char *tr181PathName);
++zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName);
++zcfgRet_t zcfgFe98NameToSeqnum(const char *tr98PathName, zcfg_name_t *seqnum, objIndex_t *tr98ObjIid);
++zcfgRet_t zcfgFe98SeqnumToName(zcfg_name_t seqnum, objIndex_t *objIid, char *tr98PathName);
++char *zcfgFeTr98ObjQueryInstanceArray(const char *tr98PathName);
++zcfgRet_t zcfgFe98ParmMappingToName(const char *notifyName, char *tr98NotifyName);
++zcfgRet_t zcfgTr98MapAddObjName();
++zcfgRet_t zcfgTr181MapAddObjName();
++#ifdef TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
++void zcfgMappingConvertDataOutput(int enable);
++struct json_object *zcfgTr98CreatePvsNewMapping();
++struct json_object *zcfgTr181CreatePvsNewMapping();
++zcfgRet_t zcfgTr98MappingConvert(struct json_object *, struct json_object *);
++zcfgRet_t zcfgTr181MappingConvert(struct json_object *, struct json_object *);
++#endif
++
++int charHex2Int(char );
++int hexStr2AscStr(const char *, char *);
++int ascStr2HexStr(const char *, char *);
++bool base64Char(char );
++char *base64StrParticularCharHandle(const char *);
++
++zcfgRet_t zcfgFeTr98QueryObjParamNames(const char *, struct json_object **, struct json_object *);
++void zcfgFeTr98GpnQueryHandleRoutInit();
++
++#ifdef ZCFG_TR181_RPC_OBJECT_HANDLE_ROUT
++void zcfgFeTr181SpvHandleRoutInit();
++zcfgRet_t zcfgFeMultiObjJsonSpvHandleRout(struct json_object *multiJobj, char *faultString);
++void zcfgFeTr181QueryHandleRoutInit();
++zcfgRet_t zcfgFeTr181QueryHandleRout(uint32_t oid, objIndex_t *objIid, struct json_object *qryObj, void *data);
++#else
++#define zcfgFeTr181SpvHandleRoutInit() { }
++#define zcfgFeMultiObjJsonSpvHandleRout(multiJobj, faultString) ZCFG_SUCCESS
++#define zcfgFeTr181QueryHandleRoutInit() { }
++#define zcfgFeTr181QueryHandleRout(oid, objIid, qryObj, data) ZCFG_SUCCESS
++#endif
++char *csvStringStripTerm(const char *csv, const char *term);
++zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );
++zcfgRet_t zcfgFeTr98ObjNameObjGet(char *, struct json_object **);
++zcfgRet_t zcfgFeTr98ObjParamSet(char *, uint32_t , struct json_object *, char *);
++zcfgRet_t zcfgFeTr98ObjSet(char *, struct json_object *, char *paramfault);
++zcfgRet_t zcfgFeTr98MultiObjSet(char *, struct json_object *, struct json_object *, char *paramfault);
++zcfgRet_t zcfgFeTr98ObjAdd(char *, int *);
++zcfgRet_t zcfgFeTr98ObjDel(char *);
++zcfgRet_t zcfgFeTr98DefaultValueSet(struct json_object *, char *, int);
++int zcfgFeTr98ObjAttrGet(char *);
++zcfgRet_t zcfgFeTr98Notify(struct json_object *, struct json_object **);
++zcfgRet_t zcfgFeTr98ParamList(char *);
++
++int zcfgFeTr98ParamAttrChk(int , int);
++#ifdef ZCFG_QUERY_TR98_PARM_ATTR_LIST
++zcfgRet_t zcfgFeTr98QueryAttrObjExist(const char *, struct json_object **);
++zcfgRet_t zcfgFeTr98QueryAttrObjName(const char *, struct json_object **);
++
++void zcfgTr98AttrListEnable();
++void *zcfgTr98AttrListSync(struct json_object *);
++void zcfgTr98AttrListClear();
++bool zcfgTr98AttrListUtilized();
++zcfgRet_t zcfgTr98AttrListMultiParmAttrSetSync(zcfgFeSetParmAttrLst_t *);
++
++zcfgRet_t zcfgSetParmAttrLstAddTr98ObjParmAttr(zcfgFeSetParmAttrLst_t *, const char *, const char *, int );
++
++#else
++#define zcfgFeTr98QueryAttrObjExist(name, parm) zcfgFeTr98ObjNameGet(name, parm)
++#define zcfgFeTr98QueryAttrObjName(name, parm) zcfgFeTr98ObjNameGet(name, parm)
++
++#define zcfgTr98AttrListEnable() { }
++#define zcfgTr98AttrListSync(obj) obj
++#define zcfgTr98AttrListClear() { }
++#define zcfgTr98AttrListUtilized() 0
++#define zcfgTr98AttrListMultiParmAttrSetSync(obj) { }
++
++#define zcfgSetParmAttrLstAddTr98ObjParmAttr(obj, parm1, parm2, parm3) { }
++
++#endif
++int zcfgFeTr98ParamAttrGetByName(char *, char *);
++zcfgRet_t zcfgFeTr98AllParamAttrGetByObjName(const char *, struct json_object *);
++int zcfgFeTr98ObjParamAttrGetByName(const char *tr98ObjName, const char *name);
++#ifdef ZCFG_PARM_NAMEMAPPING
++zcfgFeSetParmAttr_t *zcfgFeTr98ParamAttrSetByName(uint32_t objnum, objIndex_t *objIid, const char *parmName, uint32_t setAttrObjNum, objIndex_t *setAttrObjIid, const char *setAttrParmName, uint32_t attr);
++int zcfgFeTr98ParamAttrMultiSetByName(char *tr98ObjName, char *name, int notify, zcfgFeSetParmAttrLst_t *setParmAttrLst);
++#else
++int zcfgFeTr98ParamAttrMultiSetByName(char *, char *, int , struct json_object *);
++#endif
++zcfgRet_t zcfgFeTr98QueryParamListUnit(const char *, const char *, tr98Parameter_t *);
++int zcfgFeTr98ParamTypeGetByName(char *, char *);
++int zcfgFeTr98ParamAttrContentGetByName(char *, char *);
++zcfgRet_t zcfgFeTr98ParamChk(char *, char *, char *);
++zcfgSubObjNameList_t* zcfgFeTr98SubObjNameListGet(char *);
++
++#ifdef ZCFG_TR98_PARAM_GUARD
++zcfgRet_t zcfgTr98ParmGurdInit(void);
++zcfgRet_t zcfgTr98ParmGurdScan(const char *, const char *, struct json_object *, struct json_object *, char **);
++struct json_object *zcfgTr98RetrieveParmGurdObj(const char *);
++#else
++#define zcfgTr98ParmGurdInit() {}
++#define zcfgTr98ParmGurdScan(p, a, r, m, t) ZCFG_SUCCESS
++#define zcfgTr98RetrieveParmGurdObj(n) NULL
++#endif
++
++#ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
++bool zcfgAddSpvSubsequent(struct json_object *tr98SpvObj);
++#else
++
++#define zcfgAddSpvSubsequent(obj) (0)
++
++#endif
++
++zcfgRet_t zcfgFeTr98ObjSpvGet(const char *, struct json_object **, int);
++zcfgRet_t zcfgFeTr98ObjSpvDelete(const char *);
++struct json_object *zcfgFeSessionTr98SpvObjRetrieve();
++void zcfgFeSessionTr98SpvObjSet(struct json_object *);
++zcfgRet_t zcfgFeSessionTr98SpvObjectClear();
++
++struct json_object *zcfgFeNewTr98SpvObject();
++bool zcfgTr98StatusRunSpvValid(struct json_object *);
++bool zcfgFeTr98SpvAndApplyOnSessionComplete(struct json_object *multiobj);
++zcfgRet_t zcfgFeAddTr98SpvObject(struct json_object *, const char *, struct json_object *, struct json_object *);
++zcfgRet_t zcfgFeDeleteTr98SpvObject(struct json_object *, const char *);
++struct json_object *zcfgFeRetrieveTr98SpvObject(struct json_object *tr98SpvObj, const char *objpath, struct json_object **);
++zcfgRet_t zcfgFeTr98SpvObjectAppendReplace(struct json_object *, struct json_object *);
++
++struct json_object *zcfgFe98ParamGuardInit(const char *, void *);
++zcfgRet_t zcfgFe98ParamGuard(struct json_object *, const char *, struct json_object *);
++void zcfgFe98ParamGuardRelease(struct json_object *);
++
++char *translateWanIpIface(int dataTransType, const char *wanIpIfaces);
++zcfgRet_t zcfgFe98To181IpIface(const char *tr98IfaceName, char *ipIface);
++zcfgRet_t zcfgFeTr181IpIfaceRunning(const char *iface, char *paramfault);
++zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied);
++
++zcfgRet_t zcfgFeTr181IfaceStackLowerLayerGet(char *higherLayer, char *result);
++zcfgRet_t zcfgFeTr181IfaceStackHigherLayerGet(char *lowerLayer, char *result);
++
++#define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
++
++#define JSON_OBJ_EMPTY(obj) (!obj || (obj && (json_object_get_object(obj)->count == 0)))
++
++zcfgRet_t feObjStructGet(zcfg_offset_t , objIndex_t *, void **, bool);
++zcfgRet_t feObjStructGetNext(zcfg_offset_t , objIndex_t *, void **, bool);
++zcfgRet_t feObjStructGetSubNext(zcfg_offset_t ,objIndex_t * ,objIndex_t * , void ** ,bool );
++zcfgRet_t feObjJsonGet(zcfg_offset_t , objIndex_t *, struct json_object **, bool);
++zcfgRet_t feObjJsonGetNext(zcfg_offset_t , objIndex_t *, struct json_object **, bool);
++zcfgRet_t feObjJsonSubNext(zcfg_offset_t ,objIndex_t * ,objIndex_t * , struct json_object ** ,bool );
++
++#define zcfgFeRetrieveSpv(objpath) zcfgFeHandRoutRetrieveTr98Spv(objpath, tr98Jobj, multiJobj)
++
++#ifdef ZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
++void zcfgFeSessMultiObjSet();
++void zcfgFeSessMultiObjSetClear();
++struct json_object *zcfgFeSessMultiObjSetRetrieve();
++void zcfgFeSessMultiObjSetSave(struct json_object *multiobj);
++struct json_object *zcfgFeSessMultiObjSetUtilize(struct json_object *multiobj);
++void zcfgFeJsonMultiObjSetParamk(const char *);
++struct json_object *zcfgFeJsonMultiObjParamkRetrieve();
++#else
++#define zcfgFeSessMultiObjSet() { }
++#define zcfgFeSessMultiObjSetClear() { }
++#define zcfgFeSessMultiObjSetRetrieve() NULL
++#define zcfgFeSessMultiObjSetSave(obj) { }
++#define zcfgFeSessMultiObjSetUtilize(obj) obj
++#define zcfgFeJsonMultiObjSetParamk(paramk) { }
++#define zcfgFeJsonMultiObjParamkRetrieve() NULL
++#endif
++
++#ifdef ZCFG_RPC_REQUEST_ADDITIONS
++struct json_object *zcfgFeRpcRequestAdditionNew();
++#else
++#define zcfgFeRpcRequestAdditionNew() NULL
++#endif
++
++void zcfgRpcTr98GpnSpeedObjsEnable();
++void zcfgRpcTr98GpnSpeedObjsClear();
++bool zcfgRpcTr98GpnSpeedObjsUtilized();
++
++void zcfgRpcTr98GpvSpeedObjsEnable();
++void zcfgRpcTr98GpvSpeedObjsClear();
++bool zcfgRpcTr98GpvSpeedObjsUtilized();
++
++void zcfgFeTr98GuiCustomizationSet(char *, void *);
++
++// utilize GpnSpeedObjs to sync the same objects/params
++#define zcfgRpcTr98GpaSpeedEnable() zcfgRpcTr98GpnSpeedObjsEnable()
++#define zcfgRpcTr98GpaSpeedClear() zcfgRpcTr98GpnSpeedObjsClear()
++#define zcfgRpcTr98GpaSpeedUtilized() zcfgRpcTr98GpnSpeedObjsUtilized()
++
++#define zcfgFeRpcRequestAddRpcDelayApply(_rpcObjAddition, _value) zcfgFeRpcRequestAddRpcApplyAttr(_rpcObjAddition, "delayapply", json_object_new_boolean(_value))
++#define zcfgFeRpcRequestAdditionRelease json_object_put
++
++zcfgRet_t zcfgFeRpcRequestAddAttr(struct json_object *, const char *, struct json_object *, bool );
++zcfgRet_t zcfgFeRpcRequestAddReplyAttr(struct json_object *, const char *, struct json_object *);
++zcfgRet_t zcfgFeRpcRequestAddRpcApplyAttr(struct json_object *, const char *, struct json_object *);
++zcfgRet_t zcfgFeRpcRequestAddMethod(struct json_object *, const char *, bool);
++zcfgRet_t zcfgFeRpcRequestSpecifyMethodParam(struct json_object *, const char *, const char *, struct json_object *);
++
++zcfgRet_t zcfgFeRpcObjectRetrieveMethodReply(struct json_object *, const char *, struct json_object **);
++struct json_object *zcfgFeRpcRequestRetrieveMethodReplyParam(struct json_object *, const char *);
++
+ #endif
+\ No newline at end of file
+Index: libzcfg_fe_tr98-1.0/mgmtSrv.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/mgmtSrv.c	2019-06-27 20:53:12.213355895 +0800
++++ libzcfg_fe_tr98-1.0/mgmtSrv.c	2019-06-27 20:53:12.373355890 +0800
+@@ -107,7 +107,7 @@
+ 
+ 		if(!strcmp(paramList->name, "X_ZYXEL_RootQueryWouldNotReplyObjects")){
+ 			const char *objectPathList = json_object_get_string(paramValue);
+-			if(!zcfgObjectPathListToStruct(objectPathList, 0)){
++			if(!zcfgSetRootQueryNotReplyObjects(objectPathList, 0)){
+ 				if(!multiJobj)
+ 					json_object_put(mgmtSrvObj);
+ 				return ZCFG_INVALID_PARAM_VALUE;
+Index: libzcfg_fe_tr98-1.0/mgmtSrv_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/mgmtSrv_parameter.h	2019-06-27 20:53:11.957355902 +0800
++++ libzcfg_fe_tr98-1.0/mgmtSrv_parameter.h	2019-06-27 21:00:01.517344087 +0800
+@@ -1,66 +1,67 @@
+-tr98Parameter_t para_MgmtSrv[] = {
+-	{ "EnableCWMP", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "URL", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "Username", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "Password", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
+-	{ "PeriodicInformEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "PeriodicInformInterval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "PeriodicInformTime", PARAMETER_ATTR_WRITE, 21, json_type_time},
+-	{ "ParameterKey", PARAMETER_ATTR_READONLY, 33, json_type_string},
+-	{ "ConnectionRequestURL", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_ACTIVENOTIFY, 257, json_type_string},
+-	{ "ConnectionRequestUsername", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "ConnectionRequestPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
+-	{ "UpgradesManaged", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "KickURL", PARAMETER_ATTR_READONLY, 257, json_type_string},
+-	{ "DownloadProgressURL", PARAMETER_ATTR_READONLY, 257, json_type_string},
+-	{ "DefaultActiveNotificationThrottle", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "UDPConnectionRequestAddress", PARAMETER_ATTR_READONLY, 257, json_type_string},
+-	{ "UDPConnectionRequestAddressNotificationLimit", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "STUNEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "STUNServerAddress", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "STUNServerPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "STUNUsername", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "STUNPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
+-	{ "STUNMaximumKeepAlivePeriod", PARAMETER_ATTR_WRITE, 0, json_type_int},
+-	{ "STUNMinimumKeepAlivePeriod", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "NATDetected", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
+-	{ "ManageableDeviceNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	//{ "ManageableDeviceNotificationLimit", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "X_ZYXEL_ConnectionRequestUDPPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "X_ZYXEL_ConnectionRequestPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-	{ "X_ZYXEL_BoundInterface", PARAMETER_ATTR_WRITE, 33, json_type_string},
+-	{ "X_ZYXEL_BoundInterfaceList", PARAMETER_ATTR_WRITE, 129, json_type_string},
+-	{ "X_ZYXEL_DataModelSpec", PARAMETER_ATTR_WRITE, 17, json_type_string},
+-	{ "X_ZYXEL_SerialNumber_Type", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+-	{ "X_ZYXEL_V4TrustDomain", PARAMETER_ATTR_WRITE, 65, json_type_string},
+-    { "X_ZYXEL_ROMD_Action", PARAMETER_ATTR_WRITE, 9, json_type_string},
+-	{ "X_ZYXEL_V6TrustDomain", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "X_ZYXEL_IPv6_Protocol", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_IPv4_Protocol", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_AcsSpvNotifyRequired", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_AcsUrlModifyAndClearTransData", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_UtilizeDelayApply", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_SpvOnSessionComplete", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
+-#ifdef ZYXEL_TR69_SUPPLEMENTAL_ACS
+-	{ "X_ZYXEL_Supplemental_EnableCWMP", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_Supplemental_URL", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "X_ZYXEL_Supplemental_Username", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "X_ZYXEL_Supplemental_Password", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
+-	{ "X_ZYXEL_Supplemental_ConnReqURL", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_ACTIVENOTIFY, 257, json_type_string},
+-	{ "X_ZYXEL_Supplemental_ConnReqUsername", PARAMETER_ATTR_WRITE, 257, json_type_string},
+-	{ "X_ZYXEL_Supplemental_ConnReqPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
+-	{ "X_ZYXEL_Supplemental_ConnReqPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
+-#endif
+-	{ "X_ZYXEL_ReplyAllObjectsWhileRootQuery", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_RootQueryWouldNotReplyObjects", PARAMETER_ATTR_WRITE, 513, json_type_string},
+-	{ NULL, 0, 0, 0}
+-};
+-
+-tr98Parameter_t para_MgabDev[] = {
+-	{ "ManufacturerOUI", PARAMETER_ATTR_READONLY, 7, json_type_string},
+-	{ "SerialNumber", PARAMETER_ATTR_READONLY, 65, json_type_string},
+-	{ "ProductClass", PARAMETER_ATTR_READONLY, 65, json_type_string},
+-	{ "Host", PARAMETER_ATTR_READONLY, 1025, json_type_string},
+-	{ NULL, 0, 0, 0}
+-};
+-
++tr98Parameter_t para_MgmtSrv[] = {
++	{ "EnableCWMP", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "URL", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Username", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Password", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
++	{ "PeriodicInformEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "PeriodicInformInterval", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "PeriodicInformTime", PARAMETER_ATTR_WRITE, 21, json_type_time},
++	{ "ParameterKey", PARAMETER_ATTR_READONLY, 33, json_type_string},
++	{ "ConnectionRequestURL", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_ACTIVENOTIFY, 257, json_type_string},
++	{ "ConnectionRequestUsername", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "ConnectionRequestPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
++	{ "UpgradesManaged", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "KickURL", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "DownloadProgressURL", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "DefaultActiveNotificationThrottle", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "UDPConnectionRequestAddress", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "UDPConnectionRequestAddressNotificationLimit", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "STUNEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "STUNServerAddress", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "STUNServerPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "STUNUsername", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "STUNPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
++	{ "STUNMaximumKeepAlivePeriod", PARAMETER_ATTR_WRITE, 0, json_type_int},
++	{ "STUNMinimumKeepAlivePeriod", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "NATDetected", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "ManageableDeviceNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	//{ "ManageableDeviceNotificationLimit", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "X_ZYXEL_ConnectionRequestUDPPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "X_ZYXEL_ConnectionRequestPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "X_ZYXEL_BoundInterface", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "X_ZYXEL_BoundInterfaceList", PARAMETER_ATTR_WRITE, 129, json_type_string},
++	{ "X_ZYXEL_DataModelSpec", PARAMETER_ATTR_WRITE, 17, json_type_string},
++	{ "X_ZYXEL_SerialNumber_Type", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "X_ZYXEL_V4TrustDomain", PARAMETER_ATTR_WRITE, 65, json_type_string},
++    { "X_ZYXEL_ROMD_Action", PARAMETER_ATTR_WRITE, 9, json_type_string},
++	{ "X_ZYXEL_V6TrustDomain", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "X_ZYXEL_IPv6_Protocol", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_IPv4_Protocol", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_AcsSpvNotifyRequired", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_AcsUrlModifyAndClearTransData", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_UtilizeDelayApply", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_SpvOnSessionComplete", PARAMETER_ATTR_WRITE, 0, json_type_boolean},	
++#ifdef ZYXEL_TR69_SUPPLEMENTAL_ACS
++	{ "X_ZYXEL_Supplemental_EnableCWMP", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_Supplemental_URL", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "X_ZYXEL_Supplemental_Username", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "X_ZYXEL_Supplemental_Password", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
++	{ "X_ZYXEL_Supplemental_ConnReqURL", PARAMETER_ATTR_READONLY|PARAMETER_ATTR_ACTIVENOTIFY, 257, json_type_string},
++	{ "X_ZYXEL_Supplemental_ConnReqUsername", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "X_ZYXEL_Supplemental_ConnReqPassword", PARAMETER_ATTR_WRITE | PARAMETER_ATTR_PASSWORD, 257, json_type_string},
++	{ "X_ZYXEL_Supplemental_ConnReqPort", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++#endif
++	{ "X_ZYXEL_ReplyAllObjectsWhileRootQuery", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_QueryRootButNotRepliedObjects", PARAMETER_ATTR_WRITE, 513, json_type_string},
++	//{ "X_ZYXEL_QueryButNotRepliedObjects", PARAMETER_ATTR_WRITE, 513, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_MgabDev[] = {
++	{ "ManufacturerOUI", PARAMETER_ATTR_READONLY, 7, json_type_string},
++	{ "SerialNumber", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "ProductClass", PARAMETER_ATTR_READONLY, 65, json_type_string},
++	{ "Host", PARAMETER_ATTR_READONLY, 1025, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++

@@ -1,0 +1,1351 @@
+Index: wide-dhcpv6-20080615/Makefile.in
+===================================================================
+--- wide-dhcpv6-20080615.orig/Makefile.in	2017-12-14 15:09:05.841059308 +0800
++++ wide-dhcpv6-20080615/Makefile.in	2017-12-14 15:11:30.550897423 +0800
+@@ -40,7 +40,7 @@
+ INC_PATH = $(ALLOWED_INCLUDE_PATHS)
+ 
+ LIB_PATH = -L$(USRLIBDIR) -L$(INSTALL_DIR)/lib/public -L$(INSTALL_DIR)/lib/private
+-LINK_LIB = -ljson -lzcfg_msg
++LINK_LIB = -ljson -lzcfg_msg -lzcmd_tool -lzcfg_fe_rdm_access -lzcfg_fe_rdm_struct
+ 
+ prefix=	@prefix@
+ srcdir=	@srcdir@
+Index: wide-dhcpv6-20080615/common.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.c	2017-12-14 15:09:05.869059768 +0800
++++ wide-dhcpv6-20080615/common.c	2017-12-14 15:10:21.110202400 +0800
+@@ -94,6 +94,11 @@
+ #include "zcfg_fe_rdm_access.h"
+ #include "zcfg_msg.h"
+ 
++#include "zcfg_rdm_obj.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_rdm_access.h"
++
+ struct dhcp6c_Msg dhcp6cMsg = {0};
+ struct dhcp6s_Msg dhcp6sMsg = {0};
+ //struct json_object *dhcp6cMsg = NULL;
+@@ -2014,75 +2019,171 @@
+ 	return (-1);
+ }
+ 
+-static char *
+-dnsdecode(sp, ep, buf, bufsiz)
+-	u_char **sp;
+-	u_char *ep;
+-	char *buf;
+-	size_t bufsiz;
++void dhcp6_send_option(int opt, char* value, int optlen)
+ {
+-	int i, l;
+-	u_char *cp;
+-	char tmpbuf[MAXDNAME + 1];
++	struct json_object *dhcp6cJsonMsg = NULL;
++	char *msg = NULL;
++	int msgLen = 0;
++	dhcp6cJsonMsg = json_object_new_object();
++	json_object_object_add(dhcp6cJsonMsg, "option_tag", json_object_new_int(opt));
++	json_object_object_add(dhcp6cJsonMsg, "option_value", json_object_new_string(value));
++	json_object_object_add(dhcp6cJsonMsg, "option_server", json_object_new_string(dhcp6cMsg.serverIPv6Addr));
++	msg = json_object_to_json_string(dhcp6cJsonMsg);
++	msgLen = strlen(msg) + 1;
++	dhcp6MsgSend(ZCFG_MSG_DHCP6C_OPTION, msgLen, msg);
++	json_object_put(dhcp6cJsonMsg);
++}
+ 
+-	cp = *sp;
+-	*buf = '\0';
+-	i = 0;			/* XXX: appease gcc */
++void dhcp6_send_client_server(p, ep, optinfo)
++	struct dhcp6opt *p, *ep;
++	struct dhcp6_optinfo *optinfo;
++{
++	struct dhcp6opt *np, opth;
++	int i, opt, optlen;
++	char *bp, *cp, *val;
++	u_int32_t val32;
+ 
+-	if (cp >= ep)
+-		return (NULL);
+-	while (cp < ep) {
+-		i = *cp;
+-		if (i == 0 || cp != *sp) {
+-			if (strlcat((char *)buf, ".", bufsiz) >= bufsiz)
+-				return (NULL);	/* result overrun */
++	struct json_object *dhcp6cJsonMsg = NULL;
++	char *msg = NULL;
++	int msgLen = 0;
++
++	bp = (char *)p;
++	for (; p + 1 <= ep; p = np)
++	{
++		struct duid duid0;
++
++		/*
++		 * get the option header.  XXX: since there is no guarantee
++		 * about the header alignment, we need to make a local copy.
++		 */
++		memcpy(&opth, p, sizeof(opth));
++		optlen = ntohs(opth.dh6opt_len);
++		opt = ntohs(opth.dh6opt_type);
++
++		cp = (char *)(p + 1);
++		np = (struct dhcp6opt *)(cp + optlen);
++
++		dprintf(LOG_DEBUG, FNAME, "get DHCP option %s, len %d",
++		    dhcp6optstr(opt), optlen);
++
++		/* option length field overrun */
++		if (np > ep) {
++			dprintf(LOG_INFO, FNAME, "malformed DHCP options");
++			goto fail;
+ 		}
+-		if (i == 0)
+-			break;
+-		cp++;
+ 
+-		if (i > 0x3f)
+-			return (NULL); /* invalid label */
++		switch (opt) {
++			case DH6OPT_SERVERID:
++				if (optlen == 0)
++					goto malformed;
++				duid0.duid_len = optlen;
++				duid0.duid_id = cp;
++				dprintf(LOG_DEBUG, "", "  DUID: %s", duidstr(&duid0));
++				if (duidcpy(&optinfo->serverID, &duid0)) {
++					dprintf(LOG_ERR, FNAME, "failed to copy DUID");
++					goto fail;
++				}
++				sprintf(dhcp6cMsg.serverIPv6Duid, "%s", duidstr(&optinfo->serverID));
++				break;
++			case DH6OPT_REFRESHTIME:
++				if (optlen != 4)
++					goto malformed;
++				memcpy(&val32, cp, sizeof(val32));
++				val32 = ntohl(val32);
++				dprintf(LOG_DEBUG, "",
++					"	information refresh time: %lu", val32);
++				if (val32 < DHCP6_IRT_MINIMUM) {
++					/*
++					 * A client MUST use the refresh time
++					 * IRT_MINIMUM if it receives the option with a
++					 * value less than IRT_MINIMUM.
++					 * [draft-ietf-dhc-lifetime-02.txt,
++					 *	Section 3.2]
++					 */
++					dprintf(LOG_INFO, FNAME,
++						"refresh time is too small (%d), adjusted",
++						val32);
++					val32 = DHCP6_IRT_MINIMUM;
++				}
++				if (optinfo->refreshtime != DH6OPT_REFRESHTIME_UNDEF) {
++					dprintf(LOG_INFO, FNAME,
++						"duplicated refresh time option");
++				} else
++					optinfo->refreshtime = (int64_t)val32;
+ 
+-		if (i > ep - cp)
+-			return (NULL); /* source overrun */
+-		while (i-- > 0 && cp < ep) {
+-			if (!isprint(*cp)) /* we don't accept non-printables */
+-				return (NULL);
+-			l = snprintf(tmpbuf, sizeof(tmpbuf), "%c" , *cp);
+-			if (l >= sizeof(tmpbuf) || l < 0)
+-				return (NULL);
+-			if (strlcat(buf, tmpbuf, bufsiz) >= bufsiz)
+-				return (NULL); /* result overrun */
+-			cp++;
++				dhcp6cMsg.refreshtime = optinfo->refreshtime;
++				break;
++			default:
++				/* no option specific behavior */
++				dprintf(LOG_INFO, FNAME,
++					"unknown or unexpected DHCP6 option %s, len %d",
++					dhcp6optstr(opt), optlen);
++				break;
+ 		}
+ 	}
+-	if (i != 0)
+-		return (NULL);	/* not terminated */
+-	cp++;
+-	*sp = cp;
+-	return (buf);
++
++	dhcp6cJsonMsg = json_object_new_object();
++	json_object_object_add(dhcp6cJsonMsg, "serverIPv6Addr", json_object_new_string(dhcp6cMsg.serverIPv6Addr));
++	json_object_object_add(dhcp6cJsonMsg, "serverIPv6Duid", json_object_new_string(dhcp6cMsg.serverIPv6Duid));
++	json_object_object_add(dhcp6cJsonMsg, "refreshtime", json_object_new_int(dhcp6cMsg.refreshtime));
++	msg = json_object_to_json_string(dhcp6cJsonMsg);
++	msgLen = strlen(msg) + 1;
++	dhcp6MsgSend(ZCFG_MSG_DHCP6C_CLTSRV, msgLen, msg);
++	json_object_put(dhcp6cJsonMsg);
++
++malformed:
++	dprintf(LOG_INFO, FNAME, "malformed DHCP option: type %d, len %d", opt, optlen);
++fail:
++	dhcp6_clear_options(optinfo);
+ }
+ 
+-static int
+-copyin_option(type, p, ep, list)
+-	int type;
++char *
++optionstr(char *option_value, int option_len)
++{
++	int i, n;
++	char *cp, *ep;
++	static char option_str[sizeof("xx:") * 128 + sizeof("...")];
++
++	memset(option_str, 0, sizeof(option_str));
++	cp = option_str;
++	ep = option_str + sizeof(option_str);
++	for (i = 0; i < option_len && i <= 128; i++) {
++		n = snprintf(cp, ep - cp, "%02x", option_value[i] & 0xff);
++		if (n < 0)
++			return NULL;
++		cp += n;
++	}
++	if (i < option_len)
++		snprintf(cp, ep - cp, "%s", "...");
++
++	return (option_str);
++}
++
++int
++dhcp6_add_options_to_rdm(p, ep, optinfo)
+ 	struct dhcp6opt *p, *ep;
+-	struct dhcp6_list *list;
++	struct dhcp6_optinfo *optinfo;
+ {
+-	int opt, optlen;
+-	char *cp;
+ 	struct dhcp6opt *np, opth;
+-	struct dhcp6opt_stcode opt_stcode;
+-	struct dhcp6opt_ia_pd_prefix opt_iapd_prefix;
+-	struct dhcp6_prefix iapd_prefix;
+-	struct dhcp6opt_ia_addr opt_ia_addr;
+-	struct dhcp6_prefix ia_addr;
++	int i, opt, optlen, reqopts, num;
++	u_int16_t num16;
++	char *bp, *cp, *val;
++	u_int16_t val16;
++	u_int32_t val32;
++	struct dhcp6opt_ia optia;
++	struct dhcp6_ia ia;
+ 	struct dhcp6_list sublist;
++	int authinfolen;
++	bool send_flag = true;
+ 
+-	TAILQ_INIT(&sublist);
+-
++	bp = (char *)p;
+ 	for (; p + 1 <= ep; p = np) {
++		struct duid duid0;
++
++		/*
++		 * get the option header.  XXX: since there is no guarantee
++		 * about the header alignment, we need to make a local copy.
++		 */
+ 		memcpy(&opth, p, sizeof(opth));
+ 		optlen = ntohs(opth.dh6opt_len);
+ 		opt = ntohs(opth.dh6opt_type);
+@@ -2090,110 +2191,604 @@
+ 		cp = (char *)(p + 1);
+ 		np = (struct dhcp6opt *)(cp + optlen);
+ 
+-		dprintf(LOG_DEBUG, FNAME, "get DHCP option %s, len %d",
+-		    dhcp6optstr(opt), optlen);
++		printf("get DHCP option %s, len %d",dhcp6optstr(opt), optlen);
+ 
++		/* option length field overrun */
+ 		if (np > ep) {
+-			dprintf(LOG_INFO, FNAME, "malformed DHCP option");
++			dprintf(LOG_INFO, FNAME, "malformed DHCP options");
+ 			goto fail;
+ 		}
+ 
++		send_flag = true;
++		
+ 		switch (opt) {
+-		case DH6OPT_IA_PD_PREFIX:
+-			/* check option context */
+-			if (type != DH6OPT_IA_PD) {
+-				dprintf(LOG_INFO, FNAME,
+-				    "%s is an invalid position for %s",
+-				    dhcp6optstr(type), dhcp6optstr(opt));
++		case DH6OPT_CLIENTID:
++			if (optlen == 0)
++				goto malformed;
++			duid0.duid_len = optlen;
++			duid0.duid_id = cp;
++			dprintf(LOG_DEBUG, "",
++				"  DUID: %s", duidstr(&duid0));
++			if (duidcpy(&optinfo->clientID, &duid0)) {
++				dprintf(LOG_ERR, FNAME, "failed to copy DUID");
+ 				goto fail;
+ 			}
+-			/* check option length */
+-			if (optlen + sizeof(opth) < sizeof(opt_iapd_prefix))
+-				goto malformed;
+-
+-			/* copy and convert option values */
+-			memcpy(&opt_iapd_prefix, p, sizeof(opt_iapd_prefix));
+-			if (opt_iapd_prefix.dh6_iapd_prefix_prefix_len > 128) {
+-				dprintf(LOG_INFO, FNAME,
+-				    "invalid prefix length (%d)",
+-				    opt_iapd_prefix.dh6_iapd_prefix_prefix_len);
++			break;
++		case DH6OPT_SERVERID:
++			if (optlen == 0)
+ 				goto malformed;
++			duid0.duid_len = optlen;
++			duid0.duid_id = cp;
++			dprintf(LOG_DEBUG, "", "  DUID: %s", duidstr(&duid0));
++			if (duidcpy(&optinfo->serverID, &duid0)) {
++				dprintf(LOG_ERR, FNAME, "failed to copy DUID");
++				goto fail;
+ 			}
+-			iapd_prefix.pltime = ntohl(opt_iapd_prefix.dh6_iapd_prefix_preferred_time);
+-			iapd_prefix.vltime = ntohl(opt_iapd_prefix.dh6_iapd_prefix_valid_time);
+-			iapd_prefix.plen =
+-			    opt_iapd_prefix.dh6_iapd_prefix_prefix_len;
+-			memcpy(&iapd_prefix.addr,
+-			    &opt_iapd_prefix.dh6_iapd_prefix_prefix_addr,
+-			    sizeof(iapd_prefix.addr));
+-			/* clear padding bits in the prefix address */
+-			prefix6_mask(&iapd_prefix.addr, iapd_prefix.plen);
+-
+-			dprintf(LOG_DEBUG, FNAME, "  IA_PD prefix: "
+-			    "%s/%d pltime=%lu vltime=%lu",
+-			    in6addr2str(&iapd_prefix.addr, 0),
+-			    iapd_prefix.plen,
+-			    iapd_prefix.pltime, iapd_prefix.vltime);
++			break;
++		case DH6OPT_STATUS_CODE:
++			if (optlen < sizeof(u_int16_t))
++				goto malformed;
++			memcpy(&val16, cp, sizeof(val16));
++			num16 = ntohs(val16);
++			dprintf(LOG_DEBUG, "", "  status code: %s",
++			    dhcp6_stcodestr(num16));
+ 
+-			if (dhcp6_find_listval(list, DHCP6_LISTVAL_PREFIX6,
+-			    &iapd_prefix, 0)) {
+-				dprintf(LOG_INFO, FNAME, 
+-				    "duplicated IA_PD prefix "
+-				    "%s/%d pltime=%lu vltime=%lu",
+-				    in6addr2str(&iapd_prefix.addr, 0),
+-				    iapd_prefix.plen,
+-				    iapd_prefix.pltime, iapd_prefix.vltime);
+-				goto nextoption;
+-			}
++			/* need to check duplication? */
+ 
+-			/* take care of sub-options */
+-			TAILQ_INIT(&sublist);
+-			if (copyin_option(opt,
+-			    (struct dhcp6opt *)((char *)p +
+-			    sizeof(opt_iapd_prefix)), np, &sublist)) {
++			if (dhcp6_add_listval(&optinfo->stcode_list,
++			    DHCP6_LISTVAL_STCODE, &num16, NULL) == NULL) {
++				dprintf(LOG_ERR, FNAME, "failed to copy "
++				    "status code");
+ 				goto fail;
+ 			}
+ 
+-			if (dhcp6_add_listval(list, DHCP6_LISTVAL_PREFIX6,
+-			    &iapd_prefix, &sublist) == NULL) {
+-				dhcp6_clear_list(&sublist);
+-				goto fail;
+-			}
+-			dhcp6_clear_list(&sublist);
+ 			break;
+-		case DH6OPT_IAADDR:
+-			/* check option context */
+-			if (type != DH6OPT_IA_NA) {
+-				dprintf(LOG_INFO, FNAME,
+-				    "%s is an invalid position for %s",
+-				    dhcp6optstr(type), dhcp6optstr(opt));
+-				goto fail;
+-			}
+-			/* check option length */
+-			if (optlen + sizeof(opth) < sizeof(opt_ia_addr))
++		case DH6OPT_ORO:
++			if ((optlen % 2) != 0 || optlen == 0)
+ 				goto malformed;
++			reqopts = optlen / 2;
++			for (i = 0, val = cp; i < reqopts;
++			     i++, val += sizeof(u_int16_t)) {
++				u_int16_t opttype;
+ 
+-			/* copy and convert option values */
+-			memcpy(&opt_ia_addr, p, sizeof(opt_ia_addr));
+-			ia_addr.pltime = ntohl(opt_ia_addr.dh6_ia_addr_preferred_time);
+-			ia_addr.vltime = ntohl(opt_ia_addr.dh6_ia_addr_valid_time);
+-			memcpy(&ia_addr.addr, &opt_ia_addr.dh6_ia_addr_addr,
+-			    sizeof(ia_addr.addr));
++				memcpy(&opttype, val, sizeof(u_int16_t));
++				num = (int)ntohs(opttype);
+ 
+-			dprintf(LOG_DEBUG, FNAME, "  IA_NA address: "
+-			    "%s pltime=%lu vltime=%lu",
+-			    in6addr2str(&ia_addr.addr, 0),
+-			    ia_addr.pltime, ia_addr.vltime);
++				dprintf(LOG_DEBUG, "",
++					"  requested option: %s",
++					dhcp6optstr(num));
+ 
+-			if (dhcp6_find_listval(list,
+-			    DHCP6_LISTVAL_STATEFULADDR6, &ia_addr, 0)) {
+-				dprintf(LOG_INFO, FNAME, 
+-				    "duplicated IA_NA address"
+-				    "%s pltime=%lu vltime=%lu",
+-				    in6addr2str(&ia_addr.addr, 0),
+-				    ia_addr.pltime, ia_addr.vltime);
+-				goto nextoption;
+-			}
++				if (dhcp6_find_listval(&optinfo->reqopt_list,
++				    DHCP6_LISTVAL_NUM, &num, 0)) {
++					dprintf(LOG_INFO, FNAME, "duplicated "
++					    "option type (%s)",
++					    dhcp6optstr(opttype));
++					goto nextoption;
++				}
++
++				if (dhcp6_add_listval(&optinfo->reqopt_list,
++				    DHCP6_LISTVAL_NUM, &num, NULL) == NULL) {
++					dprintf(LOG_ERR, FNAME,
++					    "failed to copy requested option");
++					goto fail;
++				}
++			  nextoption:
++				;
++			}
++			break;
++		case DH6OPT_PREFERENCE:
++			if (optlen != 1)
++				goto malformed;
++			dprintf(LOG_DEBUG, "", "  preference: %d",
++			    (int)*(u_char *)cp);
++			if (optinfo->pref != DH6OPT_PREF_UNDEF) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated preference option");
++			} else
++				optinfo->pref = (int)*(u_char *)cp;
++			break;
++		case DH6OPT_ELAPSED_TIME:
++			if (optlen != 2)
++				goto malformed;
++			memcpy(&val16, cp, sizeof(val16));
++			val16 = ntohs(val16);
++			dprintf(LOG_DEBUG, "", "  elapsed time: %lu",
++			    (u_int32_t)val16);
++			if (optinfo->elapsed_time !=
++			    DH6OPT_ELAPSED_TIME_UNDEF) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated elapsed time option");
++			} else
++				optinfo->elapsed_time = val16;
++			break;
++		case DH6OPT_RELAY_MSG:
++			if ((optinfo->relaymsg_msg = malloc(optlen)) == NULL)
++				goto fail;
++			memcpy(optinfo->relaymsg_msg, cp, optlen);
++			optinfo->relaymsg_len = optlen;
++			break;
++		case DH6OPT_SOL_MAX_RT:
++			/*Kerker 2016/02/04
++			 *	SOL_MAX_RT
++			 */
++			if (optlen != 4)
++				goto malformed;
++			memcpy(&val32, cp, sizeof(val32));
++			val32 = ntohs(val32);
++			if(val32<60||val32>86400){
++				optinfo->max_rt=(SOL_MAX_RT / 1000);
++			}else{
++				optinfo->max_rt = val32;
++			}
++			break;
++		case DH6OPT_AUTH:
++			if (optlen < sizeof(struct dhcp6opt_auth) - 4)
++				goto malformed;
++
++			/*
++			 * Any DHCP message that includes more than one
++			 * authentication option MUST be discarded.
++			 * [RFC3315 Section 21.4.2]
++			 */
++			if (optinfo->authproto != DHCP6_AUTHPROTO_UNDEF) {
++				dprintf(LOG_INFO, FNAME, "found more than one "
++				    "authentication option");
++				goto fail;
++			}
++
++			optinfo->authproto = *cp++;
++			optinfo->authalgorithm = *cp++;
++			optinfo->authrdm = *cp++;
++			memcpy(&optinfo->authrd, cp, sizeof(optinfo->authrd));
++			cp += sizeof(optinfo->authrd);
++
++			dprintf(LOG_DEBUG, "", "  %s", sprint_auth(optinfo));
++
++			authinfolen =
++			    optlen - (sizeof(struct dhcp6opt_auth) - 4);
++			switch (optinfo->authproto) {
++			case DHCP6_AUTHPROTO_DELAYED:
++				if (authinfolen == 0) {
++					optinfo->authflags |=
++					    DHCP6OPT_AUTHFLAG_NOINFO;
++					break;
++				}
++				/* XXX: should we reject an empty realm? */
++				if (authinfolen <
++				    sizeof(optinfo->delayedauth_keyid) + 16) {
++					goto malformed;
++				}
++
++				optinfo->delayedauth_realmlen = authinfolen -
++				    (sizeof(optinfo->delayedauth_keyid) + 16);
++				optinfo->delayedauth_realmval =
++				    malloc(optinfo->delayedauth_realmlen);
++				if (optinfo->delayedauth_realmval == NULL) {
++					dprintf(LOG_WARNING, FNAME, "failed "
++					    "allocate memory for auth realm");
++					goto fail;
++				}
++				memcpy(optinfo->delayedauth_realmval, cp,
++				    optinfo->delayedauth_realmlen);
++				cp += optinfo->delayedauth_realmlen;
++
++				memcpy(&optinfo->delayedauth_keyid, cp,
++				    sizeof(optinfo->delayedauth_keyid));
++				optinfo->delayedauth_keyid =
++				    ntohl(optinfo->delayedauth_keyid);
++				cp += sizeof(optinfo->delayedauth_keyid);
++
++				optinfo->delayedauth_offset = cp - bp;
++				cp += 16;
++
++				dprintf(LOG_DEBUG, "", "  auth key ID: %x, "
++				    "offset=%d, realmlen=%d",
++				    optinfo->delayedauth_keyid,
++				    optinfo->delayedauth_offset,
++				    optinfo->delayedauth_realmlen);
++				break;
++//#ifdef notyet
++			case DHCP6_AUTHPROTO_RECONFIG:
++				if (authinfolen == 0) {
++					optinfo->authflags |=
++						DHCP6OPT_AUTHFLAG_NOINFO;
++				break;
++				}
++
++				optinfo->reconfigauth_type = *cp++;
++				optinfo->reconfigauth_offset = cp - bp;
++				struct dhcp6 *dh6;
++				//memcpy(optinfo->reconfigauth_val, cp, optinfo->reconfigauth_offset);
++				memcpy(optinfo->reconfigauth_val, cp, sizeof(optinfo->reconfigauth_val));
++				cp += sizeof(optinfo->reconfigauth_val);
++				break;
++//#endif
++			default:
++				dprintf(LOG_INFO, FNAME,
++				    "unsupported authentication protocol: %d",
++				    *cp);
++				goto fail;
++			}
++			break;
++		case DH6OPT_RAPID_COMMIT:
++			if (optlen != 0)
++				goto malformed;
++			optinfo->rapidcommit = 1;
++			break;
++		case DH6OPT_INTERFACE_ID:
++			if ((optinfo->ifidopt_id = malloc(optlen)) == NULL)
++				goto fail;
++			memcpy(optinfo->ifidopt_id, cp, optlen);
++			optinfo->ifidopt_len = optlen;
++			break;
++		case DH6OPT_RECONF_MSG:
++			optinfo->reconfigureMsgType = *cp++;
++			break;
++		case DH6OPT_RECONF_ACCEPT:
++			if (optlen != 0)
++				goto malformed;
++			optinfo->reconfigureAccept = 1;
++			break;
++		case DH6OPT_SIP_SERVER_D:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->sipname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_DNSNAME:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->dnsname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NIS_DOMAIN_NAME:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->nisname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NISP_DOMAIN_NAME:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->nispname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_BCMCS_SERVER_D:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->bcmcsname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_SIP_SERVER_A:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->sip_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_DNS:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->dns_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NIS_SERVERS:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->nis_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NISP_SERVERS:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->nisp_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_BCMCS_SERVER_A:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->bcmcs_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NTP:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->ntp_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_IA_PD:
++			if (optlen + sizeof(struct dhcp6opt) <
++			    sizeof(optia))
++				goto malformed;
++			memcpy(&optia, p, sizeof(optia));
++			ia.iaid = ntohl(optia.dh6_ia_iaid);
++			ia.t1 = ntohl(optia.dh6_ia_t1);
++			ia.t2 = ntohl(optia.dh6_ia_t2);
++
++			dprintf(LOG_DEBUG, "",
++			    "  IA_PD: ID=%lu, T1=%lu, T2=%lu",
++			    ia.iaid, ia.t1, ia.t2);
++
++			/* duplication check */
++			if (dhcp6_find_listval(&optinfo->iapd_list,
++			    DHCP6_LISTVAL_IAPD, &ia, 0)) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated IA_PD %lu", ia.iaid);
++				break; /* ignore this IA_PD */
++			}
++
++			/* take care of sub-options */
++			TAILQ_INIT(&sublist);
++			if (copyin_option(opt,
++			    (struct dhcp6opt *)((char *)p + sizeof(optia)),
++			    (struct dhcp6opt *)(cp + optlen), &sublist)) {
++				goto fail;
++			}
++
++			/* link this option set */
++			if (dhcp6_add_listval(&optinfo->iapd_list,
++			    DHCP6_LISTVAL_IAPD, &ia, &sublist) == NULL) {
++				dhcp6_clear_list(&sublist);
++				goto fail;
++			}
++			dhcp6_clear_list(&sublist);
++
++			break;
++		case DH6OPT_REFRESHTIME:
++			if (optlen != 4)
++				goto malformed;
++			memcpy(&val32, cp, sizeof(val32));
++			val32 = ntohl(val32);
++			dprintf(LOG_DEBUG, "",
++			    "   information refresh time: %lu", val32);
++			if (val32 < DHCP6_IRT_MINIMUM) {
++				/*
++				 * A client MUST use the refresh time
++				 * IRT_MINIMUM if it receives the option with a
++				 * value less than IRT_MINIMUM.
++				 * [draft-ietf-dhc-lifetime-02.txt,
++				 *  Section 3.2]
++				 */
++				dprintf(LOG_INFO, FNAME,
++				    "refresh time is too small (%d), adjusted",
++				    val32);
++				val32 = DHCP6_IRT_MINIMUM;
++			}
++			if (optinfo->refreshtime != DH6OPT_REFRESHTIME_UNDEF) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated refresh time option");
++			} else
++				optinfo->refreshtime = (int64_t)val32;
++			break;
++		case DH6OPT_IA_NA:
++			if (optlen + sizeof(struct dhcp6opt) <
++			    sizeof(optia))
++				goto malformed;
++			memcpy(&optia, p, sizeof(optia));
++			ia.iaid = ntohl(optia.dh6_ia_iaid);
++			ia.t1 = ntohl(optia.dh6_ia_t1);
++			ia.t2 = ntohl(optia.dh6_ia_t2);
++
++			dprintf(LOG_DEBUG, "",
++			    "  IA_NA: ID=%lu, T1=%lu, T2=%lu",
++			    ia.iaid, ia.t1, ia.t2);
++
++			/* duplication check */
++			if (dhcp6_find_listval(&optinfo->iana_list,
++			    DHCP6_LISTVAL_IANA, &ia, 0)) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated IA_NA %lu", ia.iaid);
++				break; /* ignore this IA_NA */
++			}
++
++			/* take care of sub-options */
++			TAILQ_INIT(&sublist);
++			if (copyin_option(opt,
++			    (struct dhcp6opt *)((char *)p + sizeof(optia)),
++			    (struct dhcp6opt *)(cp + optlen), &sublist)) {
++				goto fail;
++			}
++
++			/* link this option set */
++			if (dhcp6_add_listval(&optinfo->iana_list,
++			    DHCP6_LISTVAL_IANA, &ia, &sublist) == NULL) {
++				dhcp6_clear_list(&sublist);
++				goto fail;
++			}
++			dhcp6_clear_list(&sublist);
++
++			break;
++		default:
++			/* no option specific behavior */
++			dprintf(LOG_INFO, FNAME,
++			    "unknown or unexpected DHCP6 option %s, len %d",
++			    dhcp6optstr(opt), optlen);
++			send_flag = false;
++			break;
++		}
++
++		if(send_flag)
++			dhcp6_send_option(opt, optionstr(cp, optlen), optlen);
++	}
++
++	return (0);
++
++  malformed:
++	dprintf(LOG_INFO, FNAME, "malformed DHCP option: type %d, len %d",
++	    opt, optlen);
++  fail:
++	dhcp6_clear_options(optinfo);
++	return (-1);
++}
++
++static char *
++dnsdecode(sp, ep, buf, bufsiz)
++	u_char **sp;
++	u_char *ep;
++	char *buf;
++	size_t bufsiz;
++{
++	int i, l;
++	u_char *cp;
++	char tmpbuf[MAXDNAME + 1];
++
++	cp = *sp;
++	*buf = '\0';
++	i = 0;			/* XXX: appease gcc */
++
++	if (cp >= ep)
++		return (NULL);
++	while (cp < ep) {
++		i = *cp;
++		if (i == 0 || cp != *sp) {
++			if (strlcat((char *)buf, ".", bufsiz) >= bufsiz)
++				return (NULL);	/* result overrun */
++		}
++		if (i == 0)
++			break;
++		cp++;
++
++		if (i > 0x3f)
++			return (NULL); /* invalid label */
++
++		if (i > ep - cp)
++			return (NULL); /* source overrun */
++		while (i-- > 0 && cp < ep) {
++			if (!isprint(*cp)) /* we don't accept non-printables */
++				return (NULL);
++			l = snprintf(tmpbuf, sizeof(tmpbuf), "%c" , *cp);
++			if (l >= sizeof(tmpbuf) || l < 0)
++				return (NULL);
++			if (strlcat(buf, tmpbuf, bufsiz) >= bufsiz)
++				return (NULL); /* result overrun */
++			cp++;
++		}
++	}
++	if (i != 0)
++		return (NULL);	/* not terminated */
++	cp++;
++	*sp = cp;
++	return (buf);
++}
++
++static int
++copyin_option(type, p, ep, list)
++	int type;
++	struct dhcp6opt *p, *ep;
++	struct dhcp6_list *list;
++{
++	int opt, optlen;
++	char *cp;
++	struct dhcp6opt *np, opth;
++	struct dhcp6opt_stcode opt_stcode;
++	struct dhcp6opt_ia_pd_prefix opt_iapd_prefix;
++	struct dhcp6_prefix iapd_prefix;
++	struct dhcp6opt_ia_addr opt_ia_addr;
++	struct dhcp6_prefix ia_addr;
++	struct dhcp6_list sublist;
++
++	TAILQ_INIT(&sublist);
++
++	for (; p + 1 <= ep; p = np) {
++		memcpy(&opth, p, sizeof(opth));
++		optlen = ntohs(opth.dh6opt_len);
++		opt = ntohs(opth.dh6opt_type);
++
++		cp = (char *)(p + 1);
++		np = (struct dhcp6opt *)(cp + optlen);
++
++		dprintf(LOG_DEBUG, FNAME, "get DHCP option %s, len %d",
++		    dhcp6optstr(opt), optlen);
++
++		if (np > ep) {
++			dprintf(LOG_INFO, FNAME, "malformed DHCP option");
++			goto fail;
++		}
++
++		switch (opt) {
++		case DH6OPT_IA_PD_PREFIX:
++			/* check option context */
++			if (type != DH6OPT_IA_PD) {
++				dprintf(LOG_INFO, FNAME,
++				    "%s is an invalid position for %s",
++				    dhcp6optstr(type), dhcp6optstr(opt));
++				goto fail;
++			}
++			/* check option length */
++			if (optlen + sizeof(opth) < sizeof(opt_iapd_prefix))
++				goto malformed;
++
++			/* copy and convert option values */
++			memcpy(&opt_iapd_prefix, p, sizeof(opt_iapd_prefix));
++			if (opt_iapd_prefix.dh6_iapd_prefix_prefix_len > 128) {
++				dprintf(LOG_INFO, FNAME,
++				    "invalid prefix length (%d)",
++				    opt_iapd_prefix.dh6_iapd_prefix_prefix_len);
++				goto malformed;
++			}
++			iapd_prefix.pltime = ntohl(opt_iapd_prefix.dh6_iapd_prefix_preferred_time);
++			iapd_prefix.vltime = ntohl(opt_iapd_prefix.dh6_iapd_prefix_valid_time);
++			iapd_prefix.plen =
++			    opt_iapd_prefix.dh6_iapd_prefix_prefix_len;
++			memcpy(&iapd_prefix.addr,
++			    &opt_iapd_prefix.dh6_iapd_prefix_prefix_addr,
++			    sizeof(iapd_prefix.addr));
++			/* clear padding bits in the prefix address */
++			prefix6_mask(&iapd_prefix.addr, iapd_prefix.plen);
++
++			dprintf(LOG_DEBUG, FNAME, "  IA_PD prefix: "
++			    "%s/%d pltime=%lu vltime=%lu",
++			    in6addr2str(&iapd_prefix.addr, 0),
++			    iapd_prefix.plen,
++			    iapd_prefix.pltime, iapd_prefix.vltime);
++
++			if (dhcp6_find_listval(list, DHCP6_LISTVAL_PREFIX6,
++			    &iapd_prefix, 0)) {
++				dprintf(LOG_INFO, FNAME, 
++				    "duplicated IA_PD prefix "
++				    "%s/%d pltime=%lu vltime=%lu",
++				    in6addr2str(&iapd_prefix.addr, 0),
++				    iapd_prefix.plen,
++				    iapd_prefix.pltime, iapd_prefix.vltime);
++				goto nextoption;
++			}
++
++			/* take care of sub-options */
++			TAILQ_INIT(&sublist);
++			if (copyin_option(opt,
++			    (struct dhcp6opt *)((char *)p +
++			    sizeof(opt_iapd_prefix)), np, &sublist)) {
++				goto fail;
++			}
++
++			if (dhcp6_add_listval(list, DHCP6_LISTVAL_PREFIX6,
++			    &iapd_prefix, &sublist) == NULL) {
++				dhcp6_clear_list(&sublist);
++				goto fail;
++			}
++			dhcp6_clear_list(&sublist);
++			break;
++		case DH6OPT_IAADDR:
++			/* check option context */
++			if (type != DH6OPT_IA_NA) {
++				dprintf(LOG_INFO, FNAME,
++				    "%s is an invalid position for %s",
++				    dhcp6optstr(type), dhcp6optstr(opt));
++				goto fail;
++			}
++			/* check option length */
++			if (optlen + sizeof(opth) < sizeof(opt_ia_addr))
++				goto malformed;
++
++			/* copy and convert option values */
++			memcpy(&opt_ia_addr, p, sizeof(opt_ia_addr));
++			ia_addr.pltime = ntohl(opt_ia_addr.dh6_ia_addr_preferred_time);
++			ia_addr.vltime = ntohl(opt_ia_addr.dh6_ia_addr_valid_time);
++			memcpy(&ia_addr.addr, &opt_ia_addr.dh6_ia_addr_addr,
++			    sizeof(ia_addr.addr));
++
++			dprintf(LOG_DEBUG, FNAME, "  IA_NA address: "
++			    "%s pltime=%lu vltime=%lu",
++			    in6addr2str(&ia_addr.addr, 0),
++			    ia_addr.pltime, ia_addr.vltime);
++
++			if (dhcp6_find_listval(list,
++			    DHCP6_LISTVAL_STATEFULADDR6, &ia_addr, 0)) {
++				dprintf(LOG_INFO, FNAME, 
++				    "duplicated IA_NA address"
++				    "%s pltime=%lu vltime=%lu",
++				    in6addr2str(&ia_addr.addr, 0),
++				    ia_addr.pltime, ia_addr.vltime);
++				goto nextoption;
++			}
+ 
+ 			/* take care of sub-options */
+ 			TAILQ_INIT(&sublist);
+@@ -2360,6 +2955,308 @@
+ 
+ 	return (0);
+ }
++
++int dhcp6_tran_str_to_hex(char *str, uint8_t *hex)
++{
++	char inStr[257];
++	char arrStr[257][4]= {'\0'};
++	int i,j;
++	int k = 0;
++	int len = 0;
++
++	strcpy(inStr,str);
++	len = strlen(inStr);
++	for(i = 0; i < (len/2); i++)
++	{
++		for(j=0; j < 2; j++)
++		{
++			arrStr[i][j] = inStr[k++];
++		}
++		arrStr[i][j] = '\0';
++	}
++
++	for(i = 0; i < (len/2); i++)
++	{
++		sscanf((char *)arrStr[i], "%2" SCNx8, &hex[i]);
++	}
++
++	return (0);
++}
++
++typedef struct dhcp6_ia dhcp6_ia_t;
++int dhcp6_get_PassthroughClient(char *tmpValue, int tag, objIndex_t *dhcpCltIid)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	rdm_Dhcpv6Client_t *dhcp6CltObj = NULL;
++	char suggestedT1_str[9] = {'\0'};
++	char suggestedT2_str[9] = {'\0'};
++	int len;
++
++	if(zcfgFeObjStructGet(RDM_OID_DHCPV6_CLIENT, dhcpCltIid, (void **)&dhcp6CltObj) == ZCFG_SUCCESS)
++	{
++		switch(tag)
++		{
++			case DH6OPT_CLIENTID:
++			case DH6OPT_SERVERID:
++				strcpy(tmpValue, dhcp6CltObj->DUID);
++				break;
++			case DH6OPT_IA_NA:
++			case DH6OPT_IA_PD:
++				sprintf(suggestedT1_str,"%.8x",dhcp6CltObj->SuggestedT1);
++				sprintf(suggestedT2_str,"%.8x",dhcp6CltObj->SuggestedT2);
++				strncpy(tmpValue+8, suggestedT1_str, 8);
++				strncpy(tmpValue+16, suggestedT2_str, 8);
++				break;
++			case DH6OPT_RAPID_COMMIT:
++				if(!dhcp6CltObj->RapidCommit)
++					strcpy(tmpValue,"false");
++			default:
++				dprintf(LOG_DEBUG, FNAME, "failed an option",tag);
++				break;
++		}
++		zcfgFeObjStructFree(dhcp6CltObj);
++	}
++
++	return (0);
++}
++
++int dhcp6_get_options_from_rdm(struct dhcp6_optinfo *optinfo)
++{
++	rdm_Dhcpv6SrvPoolOpt_t *srvPoolOptObj = NULL;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t dhcpIid, optIid, dhcpCltIid;
++	char tmpValue[257];
++	uint8_t hexDump[257];
++	dhcp6_ia_t *ia_new;
++	struct dhcp6_list sublist;
++
++	char file_buf[16];
++
++	IID_INIT(dhcpIid);
++	dhcpIid.level = 1;
++	dhcpIid.idx[0] = 1;
++
++	IID_INIT(optIid);
++	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV6_SRV_POOL_OPT, &dhcpIid, &optIid, (void **)&srvPoolOptObj)) == ZCFG_SUCCESS)
++	{
++		if(srvPoolOptObj->Enable)
++		{
++			strcpy(tmpValue, srvPoolOptObj->Value);
++			if(strlen(srvPoolOptObj->PassthroughClient)>0)
++			{
++				IID_INIT(dhcpCltIid);
++				dhcpCltIid.level = 1;
++				sscanf(srvPoolOptObj->PassthroughClient, "DHCPv6.Client.%hhu", &dhcpCltIid.idx[0]);
++				dhcp6_get_PassthroughClient(tmpValue, srvPoolOptObj->Tag, &dhcpCltIid);
++			}
++
++			//printf("Tag=%d, tmpValue=%s\n",srvPoolOptObj->Tag, tmpValue);
++			switch(srvPoolOptObj->Tag)
++			{
++				case DH6OPT_CLIENTID:
++					dhcp6_tran_str_to_hex(tmpValue, hexDump);
++					optinfo->clientID.duid_len = strlen(tmpValue)/2;
++					memcpy(optinfo->clientID.duid_id, hexDump, optinfo->clientID.duid_len);
++					break;
++				case DH6OPT_SERVERID:
++					dhcp6_tran_str_to_hex(tmpValue, hexDump);
++					optinfo->serverID.duid_len = strlen(tmpValue)/2;
++					memcpy(optinfo->serverID.duid_id, hexDump, optinfo->serverID.duid_len);
++					break;
++				case DH6OPT_IA_NA:
++					dhcp6_tran_str_to_hex(tmpValue, hexDump);
++					ia_new = (dhcp6_ia_t *) (hexDump);
++					//printf("dhcp6_get_options_from_rdm: ia_new->iaid=%d\n",ia_new->iaid);
++					//printf("dhcp6_get_options_from_rdm: ia_new->t1=%d\n",ia_new->t1);
++					//printf("dhcp6_get_options_from_rdm: ia_new->t2=%d\n",ia_new->t2);
++
++					if (dhcp6_find_listval(&optinfo->iana_list,
++						DHCP6_LISTVAL_IANA, ia_new, 0)) {
++						dprintf(LOG_DEBUG, FNAME, "dhcp6_find_listval ignore IA_NA %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						break;
++					}
++
++					TAILQ_INIT(&sublist);
++					if (copyin_option(DH6OPT_IA_NA,
++					    (struct dhcp6opt *)((char *)hexDump + sizeof(dhcp6_ia_t)),
++					    (struct dhcp6opt *)((char *)hexDump + (strlen(tmpValue)/2)), &sublist)) {
++						dprintf(LOG_DEBUG, FNAME, "copyin_option fail IA_NA %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						dhcp6_clear_list(&sublist);
++						zcfgFeObjStructFree(srvPoolOptObj);
++						return (-1);
++					}
++					
++					/* link this option set */
++					if (dhcp6_add_listval(&optinfo->iana_list,
++					    DHCP6_LISTVAL_IANA, ia_new, &sublist) == NULL) {
++						dprintf(LOG_DEBUG, FNAME, "dhcp6_add_listval fail IA_NA %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						dhcp6_clear_list(&sublist);
++						zcfgFeObjStructFree(srvPoolOptObj);
++						return (-1);
++					}
++					dhcp6_clear_list(&sublist);
++					break;
++				case DH6OPT_IAADDR:
++					break;
++				case DH6OPT_RAPID_COMMIT:
++					if(strcmp(tmpValue, "false")!=0)
++						optinfo->rapidcommit = 1;
++					break;
++				default:
++					dprintf(LOG_DEBUG, FNAME, "failed to construct an option",srvPoolOptObj->Tag);
++					break;
++			}
++		}
++		zcfgFeObjStructFree(srvPoolOptObj);
++	}
++
++	return (0);
++}
++
++int
++dhcp6_set_send_options_from_rdm(optinfo)
++	struct dhcp6_optinfo *optinfo;
++{
++	rdm_Dhcpv6ClientSentOpt_t *sentOptObj = NULL;
++	objIndex_t optIid;
++	objIndex_t dhcpIid;
++	char ipIntf[256] = "";
++	int found = 0;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	uint8_t hexDump[257];
++    int idx=-1;
++	u_int16_t val16;
++	dhcp6_ia_t *ia_new;
++	struct dhcp6_list sublist;
++	int len, i, num;
++	u_int16_t opttype;
++
++	IID_INIT(dhcpIid);
++	dhcpIid.level = 1;
++	dhcpIid.idx[0] = 1;
++
++	IID_INIT(optIid);
++	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV6_CLIENT_SENT_OPT, &dhcpIid, &optIid, (void **)&sentOptObj)) == ZCFG_SUCCESS)
++	{
++		if(sentOptObj->Enable)
++		{
++			memset(hexDump,0,sizeof(hexDump));
++			switch(sentOptObj->Tag)
++			{
++				case DH6OPT_CLIENTID:
++					dhcp6_tran_str_to_hex(sentOptObj->Value, hexDump);
++					optinfo->clientID.duid_len = strlen(sentOptObj->Value)/2;
++					memcpy(optinfo->clientID.duid_id, hexDump, optinfo->clientID.duid_len);
++					break;
++				case DH6OPT_SERVERID:
++					dhcp6_tran_str_to_hex(sentOptObj->Value, hexDump);
++					optinfo->serverID.duid_len = strlen(sentOptObj->Value)/2;
++					memcpy(optinfo->serverID.duid_id, hexDump, optinfo->serverID.duid_len);
++					break;
++				case DH6OPT_IA_NA:
++					dhcp6_tran_str_to_hex(sentOptObj->Value, hexDump);
++					ia_new = (dhcp6_ia_t *) (hexDump);
++					if (dhcp6_find_listval(&optinfo->iana_list,
++						DHCP6_LISTVAL_IANA, ia_new, 0)) {
++						dprintf(LOG_DEBUG, FNAME, "dhcp6_find_listval ignore IA_NA %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						break;
++					}
++
++					TAILQ_INIT(&sublist);
++					if (copyin_option(DH6OPT_IA_NA,
++					    (struct dhcp6opt *)((char *)hexDump + sizeof(dhcp6_ia_t)),
++					    (struct dhcp6opt *)((char *)hexDump + (strlen(sentOptObj->Value)/2)), &sublist)) {
++					    	dprintf(LOG_DEBUG, FNAME, "copyin_option fail IA_NA %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++							dhcp6_clear_list(&sublist);
++							zcfgFeObjStructFree(sentOptObj);
++							return (-1);
++						}
++
++					/* link this option set */
++					if (dhcp6_add_listval(&optinfo->iana_list,
++					    DHCP6_LISTVAL_IANA, ia_new, &sublist) == NULL) {
++					    dprintf(LOG_DEBUG, FNAME, "copyin_option add fail IA_NA %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						dhcp6_clear_list(&sublist);
++						zcfgFeObjStructFree(sentOptObj);
++						return (-1);
++					}
++					dhcp6_clear_list(&sublist);
++					break;
++				case DH6OPT_ORO:
++					dhcp6_tran_str_to_hex(sentOptObj->Value, hexDump);
++					len = strlen(sentOptObj->Value)/2;
++
++					for (i = 0; i < len; i=i+sizeof(u_int16_t))
++					{
++						memcpy(&val16, hexDump+i, sizeof(val16));
++						num = (int)(val16);
++
++						if (dhcp6_find_listval(&optinfo->reqopt_list, DHCP6_LISTVAL_NUM, &num, 0)) 
++						{
++							continue;
++						}
++
++						if (dhcp6_add_listval(&optinfo->reqopt_list, DHCP6_LISTVAL_NUM, &num, NULL) == NULL)
++						{
++							continue;
++						}
++					}
++					break;
++				case DH6OPT_ELAPSED_TIME:
++					dhcp6_tran_str_to_hex(sentOptObj->Value, hexDump);
++					memcpy(&val16, hexDump, sizeof(val16));
++					//val16 = ntohs(val16);
++					optinfo->elapsed_time = val16;
++					break;
++				case DH6OPT_RAPID_COMMIT:
++					optinfo->rapidcommit = 1;
++					break;
++				case DH6OPT_VENDOR_CLASS:
++					break;
++				case DH6OPT_RECONF_ACCEPT:
++					optinfo->reconfigureAccept = 1;
++					break;
++				case DH6OPT_IA_PD:
++					dhcp6_tran_str_to_hex(sentOptObj->Value, hexDump);
++					ia_new = (dhcp6_ia_t *) (hexDump);
++					if (dhcp6_find_listval(&optinfo->iapd_list,
++						DHCP6_LISTVAL_IAPD, ia_new, 0)) {
++						dprintf(LOG_DEBUG, FNAME, "dhcp6_find_listval ignore IA_PD %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						break;
++					}
++
++					TAILQ_INIT(&sublist);
++					if (copyin_option(DH6OPT_IA_PD,
++					    (struct dhcp6opt *)((char *)hexDump + sizeof(dhcp6_ia_t)),
++					    (struct dhcp6opt *)((char *)hexDump + (strlen(sentOptObj->Value)/2)), &sublist)) {
++						dprintf(LOG_DEBUG, FNAME, "copyin_option fail IA_PD %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						dhcp6_clear_list(&sublist);
++						zcfgFeObjStructFree(sentOptObj);
++						return (-1);
++					}
++
++					/* link this option set */
++					if (dhcp6_add_listval(&optinfo->iapd_list,
++					    DHCP6_LISTVAL_IAPD, ia_new, &sublist) == NULL) {
++						dprintf(LOG_DEBUG, FNAME, "dhcp6_add_listval fail IA_PD %lu, %s(%d)\n", ia_new->iaid, __FUNCTION__, __LINE__);
++						dhcp6_clear_list(&sublist);
++						zcfgFeObjStructFree(sentOptObj);
++						return (-1);
++					}
++					dhcp6_clear_list(&sublist);
++					break;
++				case DH6OPT_CLIENT_FQDN:
++					break;
++				default:
++					dprintf(LOG_DEBUG, FNAME, "failed to add a send option",sentOptObj->Tag);
++					break;
++			}
++		}
++		zcfgFeObjStructFree(sentOptObj);
++	}
++
++	return (0);
++}
+ 
+ int
+ dhcp6_set_options(type, optbp, optep, optinfo)
+Index: wide-dhcpv6-20080615/common.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.h	2017-12-14 15:09:05.873059834 +0800
++++ wide-dhcpv6-20080615/common.h	2017-12-14 15:10:25.016378200 +0800
+@@ -137,6 +137,9 @@
+ 	int eidtNameServer;/*check send name server msg or not*/
+ 	char domainName[128];
+ 	int eidtDomain;/*check send domain msg or not*/
++	char serverIPv6Addr[49]; /*DHCP server's v6 ip */
++	char serverIPv6Duid[48]; /*server's DHCP Unique Identifier */
++	int refreshtime; /*DHCP refresh time */
+ };
+ 
+ struct dhcp6s_Msg {
+@@ -204,6 +207,8 @@
+ 				   struct dhcp6_optinfo *));
+ extern int dhcp6_get_options __P((struct dhcp6opt *, struct dhcp6opt *,
+ 				  struct dhcp6_optinfo *));
++extern int dhcp6_add_options_to_rdm __P((struct dhcp6opt *, struct dhcp6opt *,
++				  struct dhcp6_optinfo *));
+ extern int dhcp6_set_options __P((int, struct dhcp6opt *, struct dhcp6opt *,
+ 				  struct dhcp6_optinfo *));
+ extern void dhcp6_set_timeoparam __P((struct dhcp6_event *));
+Index: wide-dhcpv6-20080615/dhcp6c.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c.c	2017-12-14 15:09:05.853059504 +0800
++++ wide-dhcpv6-20080615/dhcp6c.c	2017-12-14 15:10:32.959128400 +0800
+@@ -1669,6 +1669,11 @@
+ 		goto end;
+ 	}
+ 
++#ifdef ZYXEL_DHCPV6C_OPTION
++	/*add option info from dhcp6c send option rdm*/
++	dhcp6_set_send_options_from_rdm(&optinfo);
++#endif
++
+ 	/* set options in the message */
+ 	if ((optlen = dhcp6_set_options(dh6->dh6_msgtype,
+ 	    (struct dhcp6opt *)(dh6 + 1),
+@@ -1823,14 +1828,31 @@
+ 	    dhcp6msgstr(dh6->dh6_msgtype),
+ 	    addr2str((struct sockaddr *)&from), ifp->ifname);
+ 
++#ifdef ZYXEL_DHCPV6C_OPTION
++	/*Record the DHCPv6 server IP*/
++	sprintf(dhcp6cMsg.serverIPv6Addr, "%s", addr2str((struct sockaddr *)&from));
++
++	dhcp6_init_options(&optinfo);
++	p = (struct dhcp6opt *)(dh6 + 1);
++	ep = (struct dhcp6opt *)((char *)dh6 + len);
++	dhcp6_send_client_server(p, ep, &optinfo);
++#endif
++
+ 	/* get options */
+ 	dhcp6_init_options(&optinfo);
+ 	p = (struct dhcp6opt *)(dh6 + 1);
+ 	ep = (struct dhcp6opt *)((char *)dh6 + len);
++#ifdef ZYXEL_DHCPV6C_OPTION
++	if (dhcp6_add_options_to_rdm(p, ep, &optinfo) < 0) {
++		dprintf(LOG_INFO, FNAME, "failed to get and add options to RDM");
++		return;
++	}
++#else
+ 	if (dhcp6_get_options(p, ep, &optinfo) < 0) {
+ 		dprintf(LOG_INFO, FNAME, "failed to parse options");
+ 		return;
+ 	}
++#endif
+ 
+ 	switch(dh6->dh6_msgtype) {
+ 	case DH6_ADVERTISE:
+Index: wide-dhcpv6-20080615/dhcp6s.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6s.c	2017-12-14 15:09:05.869059768 +0800
++++ wide-dhcpv6-20080615/dhcp6s.c	2017-12-14 15:10:37.941897100 +0800
+@@ -2801,6 +2801,11 @@
+ 	dh6->dh6_msgtypexid = origmsg->dh6_msgtypexid;
+ 	dh6->dh6_msgtype = (u_int8_t)type;
+ 
++#ifdef ZYXEL_DHCPV6S_OPTION
++	/*load tr98 table dhcpv6 server pool option*/
++	dhcp6_get_options_from_rdm(roptinfo);
++#endif
++
+ 	/* set options in the reply message */
+ 	if ((optlen = dhcp6_set_options(type, (struct dhcp6opt *)(dh6 + 1),
+ 	    (struct dhcp6opt *)(replybuf + sizeof(replybuf)), roptinfo)) < 0) {
+@@ -2861,6 +2866,11 @@
+ 		memcpy(&dh6relay->dh6relay_peeraddr, &relayinfo->peeraddr,
+ 		    sizeof (dh6relay->dh6relay_peeraddr));
+ 
++#ifdef ZYXEL_DHCPV6S_OPTION
++		/*load tr98 table dhcpv6 server pool option*/
++		dhcp6_get_options_from_rdm(&relayopt);
++#endif
++
+ 		len = sizeof(*dh6relay);
+ 		if ((optlen = dhcp6_set_options(DH6_RELAY_REPLY,
+ 		    (struct dhcp6opt *)(dh6relay + 1),

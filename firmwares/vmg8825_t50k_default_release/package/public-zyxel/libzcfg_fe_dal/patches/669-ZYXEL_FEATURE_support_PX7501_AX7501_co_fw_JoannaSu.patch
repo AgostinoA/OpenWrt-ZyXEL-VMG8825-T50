@@ -1,0 +1,194 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2019-05-24 16:43:47.676094660 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2019-05-24 16:51:26.887274723 +0800
+@@ -266,6 +266,14 @@
+ CFLAGS += -DSAME_FW_FOR_TWO_BOARD
+ endif
+ 
++#CO-FW
++ifeq ($(CONFIG_ZYXEL_BOARD_DETECT_BY_GPIO),y)
++CFLAGS += -DZYXEL_BOARD_DETECT_BY_GPIO
++endif
++ifeq ($(CONFIG_SAME_FW_FOR_PROJECTS),y)
++CFLAGS += -DZYXEL_SAME_FW_FOR_PROJECTS
++endif
++
+ #Support PPTP VPN
+ ifeq ($(CONFIG_KERNEL_ZYXEL_PPTP_SUPPORT),y)
+ CFLAGS += -DCONFIG_PPTP_SUPPORT
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2019-05-24 16:43:47.676094660 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2019-05-24 17:16:18.232384960 +0800
+@@ -10,6 +10,7 @@
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_msg.h"
++#include "zyutil.h"
+ 
+ #define CWMP_SOAP_MSG_DEBUG (1 << 1)
+ #define isEmptyIns(obj) json_object_get_boolean(json_object_object_get(obj, "emptyIns"))
+@@ -651,6 +652,8 @@
+ 	struct json_object *devInfoObj = NULL, *sysInfoObj = NULL, *hostObj = NULL; 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+     char RdpaWanType[16] = {0};
++    char psp_wantype[16] = {0};
++    char psp_wanrate[16] = {0};
+     char WanRate_RX[8] = {0};
+     char WanRate_TX[8] = {0};
+     const char *optStatus = NULL;
+@@ -695,50 +698,35 @@
+ 	IID_INIT(iid);
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_OPT_INTF, &iid, &optIbtfObj) == ZCFG_SUCCESS) {
+ 		json_object_array_add(optIntfJarray, optIbtfObj);
+-#if defined(CONFIG_BCM96858)
++#if defined(CONFIG_BCM96858) && defined(ZYXEL_BOARD_DETECT_BY_GPIO)
+         optStatus=json_object_get_string (json_object_object_get(optIbtfObj, "Status"));
+-        if (optStatus == NULL)
+-        {
+-			optStatus = "";
+-		}
++
+         if (strcmp(optStatus, "Up") == 0)
+         {
+-            FILE *fp = NULL;
+-            system("pspctl dump RdpaWanType > /tmp/pspctl_wanType");
+-            fp = fopen("/tmp/pspctl_wanType", "r");
+-			if (fp)
++            if(zyUtilIGetScratchPadSetting(&psp_wantype, &psp_wanrate) == ZCFG_SUCCESS)
+             {
+-                char wantype[16] = {0};
+-				fread(wantype, 1, sizeof(wantype) - 1, fp);
+-                if (strncmp(wantype, "XGS", 3) == 0)
++                if (strncmp(psp_wantype, "XGS", 3) == 0)
+                 {
+                     strcpy(RdpaWanType, "XGSPON");
+                 }
+-                else
+-                {
+-                    strcpy(RdpaWanType, "Unknown");
+-                }
+-				fclose(fp);
+-			}
+-            
+-            system("pspctl dump WanRate > /tmp/pspctl_wanRate");
+-            fp = fopen("/tmp/pspctl_wanRate", "r");
+-			if (fp)
+-            {
+-                char wanrate[8] = {0};
+-				fread(wanrate, 1, sizeof(wanrate) - 1, fp);
+-                if (strncmp(wanrate, "1010", 4) == 0)
++
++                if (strncmp(psp_wanrate, "1010", 4) == 0)
+                 {
+                     strcpy(WanRate_RX, "10Gbps");
+                     strcpy(WanRate_TX, "10Gbps");
+                 }
+-                else
+-                {
+-                    strcpy(WanRate_RX, "-1");
+-                    strcpy(WanRate_TX, "-1");
+-                }
+-				fclose(fp);
+-			}
++            }
++        }
++
++        if(strlen(RdpaWanType) == 0)
++        {
++            strcpy(RdpaWanType, "Unknown");
++        }
++
++        if(strlen(WanRate_RX) == 0)
++        {
++            strcpy(WanRate_RX, "-1");
++            strcpy(WanRate_TX, "-1");
+         }
+ #else
+     strcpy(RdpaWanType, "");
+@@ -882,6 +870,8 @@
+                *optStatus = NULL;
+ 	char ethConnectionStatus[16] = {0};  
+     char RdpaWanType[16] = {0};
++    char psp_wantype[16] = {0};
++    char psp_wanrate[16] = {0};
+     char WanRate_RX[8] = {0};
+     char WanRate_TX[8] = {0};
+     
+@@ -928,56 +918,41 @@
+ 	IID_INIT(iid);
+ 	while(zcfgFeObjJsonGetNext(RDM_OID_OPT_INTF, &iid, &optIbtfObj) == ZCFG_SUCCESS) {
+ 		json_object_array_add(optIntfJarray, optIbtfObj);
+-#if defined(CONFIG_BCM96858)
++#if defined(CONFIG_BCM96858) && defined(ZYXEL_BOARD_DETECT_BY_GPIO)
+         optStatus=json_object_get_string (json_object_object_get(optIbtfObj, "Status"));
+-        if (optStatus == NULL)
+-        {
+-			optStatus = "";
+-		}
++
+         if (strcmp(optStatus, "Up") == 0)
+         {
+-            FILE *fp = NULL;
+-            system("pspctl dump RdpaWanType > /tmp/pspctl_wanType");
+-            fp = fopen("/tmp/pspctl_wanType", "r");
+-			if (fp)
++            if(zyUtilIGetScratchPadSetting(&psp_wantype, &psp_wanrate) == ZCFG_SUCCESS)
+             {
+-                char wantype[16] = {0};
+-				fread(wantype, 1, sizeof(wantype) - 1, fp);
+-                if (strncmp(wantype, "XGS", 3) == 0)
++                if (strncmp(psp_wantype, "XGS", 3) == 0)
+                 {
+                     strcpy(RdpaWanType, "XGSPON");
+                 }
+-                else
+-                {
+-                    strcpy(RdpaWanType, "Unknown");
+-                }
+-				fclose(fp);
+-			}
+-            
+-            system("pspctl dump WanRate > /tmp/pspctl_wanRate");
+-            fp = fopen("/tmp/pspctl_wanRate", "r");
+-			if (fp)
+-            {
+-                char wanrate[8] = {0};
+-				fread(wanrate, 1, sizeof(wanrate) - 1, fp);
+-                if (strncmp(wanrate, "1010", 4) == 0)
++
++                if (strncmp(psp_wanrate, "1010", 4) == 0)
+                 {
+                     strcpy(WanRate_RX, "10Gbps");
+                     strcpy(WanRate_TX, "10Gbps");
+                 }
+-                else
+-                {
+-                    strcpy(WanRate_RX, "-1");
+-                    strcpy(WanRate_TX, "-1");
+-                }
+-				fclose(fp);
+-			}
++            }
++        }
++
++        if(strlen(RdpaWanType) == 0)
++        {
++            strcpy(RdpaWanType, "Unknown");
++        }
++
++        if(strlen(WanRate_RX) == 0)
++        {
++            strcpy(WanRate_RX, "-1");
++            strcpy(WanRate_TX, "-1");
+         }
+ #else
+     strcpy(RdpaWanType, "");
+     strcpy(WanRate_RX, "-1");
+     strcpy(WanRate_TX, "-1");
+-#endif            
++#endif
+ 	}
+ 
+ 	ethnewObj = json_object_new_object();

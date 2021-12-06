@@ -1,0 +1,118 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2014-06-15 01:15:28.587795055 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2014-06-15 01:25:52.227754841 +0800
+@@ -3888,8 +3888,8 @@
+ 	char ipIface[32] = {0};
+ 	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char ifBuf[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+-	objIndex_t ifsetIid;
+-	struct json_object *ifsetJobj = NULL;
++	objIndex_t ifsetIid, ipIfaceIid;
++	struct json_object *ifsetJobj = NULL, *ipIfaceJobj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;	
+@@ -3907,6 +3907,15 @@
+ 		return ret;
+ 	}
+ 
++	IID_INIT(ipIfaceIid);
++	ipIfaceIid.level = 1;
++	sscanf(ipIface, "IP.Interface.%hhu", &ipIfaceIid.idx[0]);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceJobj)) != ZCFG_SUCCESS) {
++		printf("%s : Get IP.Interface fail\n", __FUNCTION__);
++		json_object_put(ipIfaceJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
+ 	IID_INIT(ifsetIid);
+ 	while((ret = zcfgFeObjJsonGetNext(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, &ifsetJobj)) == ZCFG_SUCCESS) {
+ 		strcpy(ifBuf, json_object_get_string(json_object_object_get(ifsetJobj, "Interface")));
+@@ -3923,9 +3932,18 @@
+ 
+ 
+ 	if(multiJobj){
+-		tmpObj = ifsetJobj;
+-		ifsetJobj = NULL;
+-		ifsetJobj = zcfgFeJsonMultiObjAppend(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, multiJobj, tmpObj);
++		if(ifsetJobj){
++			tmpObj = ifsetJobj;
++			ifsetJobj = NULL;
++			ifsetJobj = zcfgFeJsonMultiObjAppend(RDM_OID_RT_ADV_INTF_SET, &ifsetIid, multiJobj, tmpObj);
++		}
++
++		if(ipIfaceJobj){
++			tmpObj = ipIfaceJobj;
++			ipIfaceJobj = NULL;
++			ipIfaceJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 	}
+ 
+ 	paramList = tr98Obj[handler].parameter;
+@@ -3933,6 +3951,18 @@
+ 		/*Write new parameter value from tr98 object to tr181 objects*/		
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL) {
++			if(!strcmp(paramList->name, "AdvManagedFlag")){
++				if(ipIfaceJobj){
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_AdvManagedFlag", JSON_OBJ_COPY(paramValue));
++				}
++			}
++
++			if(!strcmp(paramList->name, "AdvOtherConfigFlag")){
++				if(ipIfaceJobj){
++					json_object_object_add(ipIfaceJobj, "X_ZYXEL_AdvOtherConfigFlag", JSON_OBJ_COPY(paramValue));
++				}
++			}
++
+ 			/*Write value from WANIPConnection to Device.IP.Interface.i*/
+ 			tr181ParamValue = json_object_object_get(ifsetJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+@@ -4140,6 +4170,10 @@
+ 		if(paramValue != NULL) {
+ 			/*special case*/
+ 			if(strcmp( paramList->name, "IANAPrefixes") == 0){//transfer
++				paramList++;
++				continue;
++			}
++			else if(strcmp( paramList->name, "IANAManualPrefixes") == 0){//transfer
+ 				strcpy(prefixObjName, json_object_get_string(paramValue));
+ 				ptr = strstr(prefixObjName, ".X_ZYXEL_IPv6Prefix");
+ 				if(ptr){
+@@ -4152,7 +4186,7 @@
+ 						continue;
+ 					}
+ 				}
+-			}		
++			}
+ 			/*Write value from WANIPConnection to Device.IP.Interface.i*/
+ 			tr181ParamValue = json_object_object_get(srvpoolJobj, paramList->name);
+ 			if(tr181ParamValue != NULL) {
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2014-06-15 01:15:28.667795054 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2014-06-15 01:19:51.023396816 +0800
+@@ -52,9 +52,9 @@
+ 	{ "X_ZYXEL_IPv6Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+ #if 0
+ 	{ "X_ZYXEL_IPv6DNSEnabled", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "X_ZYXEL_IPv6DNSServers", PARAMETER_ATTR_WRITE, 65, json_type_string},
+ 	{ "X_ZYXEL_IPv6LanIdentifierEUI64Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #endif
++	{ "X_ZYXEL_IPv6Origin", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	{ "X_ZYXEL_IPv6IdentifierType", PARAMETER_ATTR_WRITE, 17, json_type_string},
+ 	{ "X_ZYXEL_IPv6Identifier", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	{ "X_ZYXEL_IPv6AddressNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+@@ -111,7 +111,10 @@
+ 	{ "Status", PARAMETER_ATTR_READONLY, 19, json_type_string},
+ 	{ "IANAEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "IANAPrefixes", PARAMETER_ATTR_READONLY, 800, json_type_string},//comman separate *8
++	{ "IANAManualPrefixes", PARAMETER_ATTR_WRITE, 800, json_type_string},
+ 	{ "X_ZYXEL_DNSServers", PARAMETER_ATTR_WRITE, 65, json_type_string},
++	{ "X_ZYXEL_MinAddress", PARAMETER_ATTR_WRITE, 33, json_type_string},
++	{ "X_ZYXEL_MaxAddress", PARAMETER_ATTR_WRITE, 33, json_type_string},
+ 	{ NULL, 0, 0, 0}
+ };
+ #endif

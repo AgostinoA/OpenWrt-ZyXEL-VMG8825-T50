@@ -1,0 +1,229 @@
+diff -ruN a/common/cmd_jffs2.c b/common/cmd_jffs2.c
+--- a/common/cmd_jffs2.c	2012-07-13 22:33:08.824534728 +0800
++++ b/common/cmd_jffs2.c	2012-07-13 22:41:58.297217790 +0800
+@@ -143,6 +143,11 @@
+ u8 current_mtd_partnum = 0;
+ #endif
+ 
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#include <spi_flash.h>
++struct spi_flash *spiFlash = NULL;
++#endif
++
+ #if defined(CONFIG_CMD_CRAMFS)
+ extern int cramfs_check (struct part_info *info);
+ extern int cramfs_load (char *loadoffset, struct part_info *info, char *filename);
+@@ -177,6 +182,14 @@
+ 
+ 		printf("no such FLASH device: %s%d (valid range 0 ... %d\n",
+ 				MTD_DEV_TYPE(type), num, CONFIG_SYS_MAX_FLASH_BANKS - 1);
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++		spiFlash = spi_flash_probe(CONFIG_JFFS2_SPI_BUS, num, CONFIG_JFFS2_SPI_MAX_HZ, CONFIG_JFFS2_SPI_MODE);
++		if ( spiFlash != NULL ) {
++			*size = spiFlash->size;
++			return 0;
++		}
++		printf("no such SPI FLASH device: cannot found flash on bus%d cs%d\n",
++				CONFIG_JFFS2_SPI_BUS, num);
+ #else
+ 		printf("support for FLASH devices not present\n");
+ #endif
+@@ -300,6 +313,8 @@
+ 	}
+ 
+ 	return sector_size;
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++	return spiFlash->sector_size;
+ #else
+ 	BUG();
+ 	return 0;
+diff -ruN a/fs/jffs2/jffs2_1pass.c b/fs/jffs2/jffs2_1pass.c
+--- a/fs/jffs2/jffs2_1pass.c	2009-12-16 06:20:54.000000000 +0800
++++ b/fs/jffs2/jffs2_1pass.c	2012-05-27 16:37:45.948663762 +0800
+@@ -145,6 +145,11 @@
+ /* keeps pointer to currentlu processed partition */
+ static struct part_info *current_part;
+ 
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#include <spi_flash.h>
++extern struct spi_flash *spiFlash;
++#endif
++
+ #if (defined(CONFIG_JFFS2_NAND) && \
+      defined(CONFIG_CMD_NAND) )
+ #include <nand.h>
+@@ -389,6 +394,94 @@
+ }
+ #endif
+ 
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++#define SPIFLASH_PAGE_SIZE 512
++#define SPIFLASH_PAGE_MASK (~(SPIFLASH_PAGE_SIZE-1))
++
++#ifndef SPIFLASH_CACHE_PAGES
++#define SPIFLASH_CACHE_PAGES 16
++#endif
++#define SPIFLASH_CACHE_SIZE (SPIFLASH_CACHE_PAGES*SPIFLASH_PAGE_SIZE)
++
++static u8* spiflash_cache = NULL;
++static u32 spiflash_cache_off = (u32)-1;
++
++static int read_spiflash_cached(u32 off, u32 size, u_char *buf)
++{
++	u32 bytes_read = 0;
++	int cpy_bytes;
++
++	while (bytes_read < size) {
++		if ((off + bytes_read < spiflash_cache_off) ||
++		    (off + bytes_read >= spiflash_cache_off+SPIFLASH_PAGE_SIZE)) {
++			spiflash_cache_off = (off + bytes_read) & SPIFLASH_PAGE_MASK;
++			if (!spiflash_cache) {
++				/* This memory never gets freed but 'cause
++				   it's a bootloader, nobody cares */
++				spiflash_cache = malloc(SPIFLASH_CACHE_SIZE);
++				if (!spiflash_cache) {
++					printf("read_nand_cached: can't alloc cache size %d bytes\n",
++					       SPIFLASH_CACHE_SIZE);
++					return -1;
++				}
++			}
++
++			if (spiFlash->read(spiFlash, spiflash_cache_off, SPIFLASH_CACHE_SIZE, spiflash_cache) != 0 ) {
++				printf("read_spiflash_cached: error reading flash off %#x size %d bytes\n",
++						spiflash_cache_off, SPIFLASH_CACHE_SIZE);
++				return -1;
++			}
++		}
++		cpy_bytes = spiflash_cache_off + SPIFLASH_CACHE_SIZE - (off + bytes_read);
++		if (cpy_bytes > size - bytes_read)
++			cpy_bytes = size - bytes_read;
++		memcpy(buf + bytes_read,
++		       spiflash_cache + off + bytes_read - spiflash_cache_off,
++		       cpy_bytes);
++		bytes_read += cpy_bytes;
++	}
++	return bytes_read;
++}
++
++static inline void *get_fl_mem_spi(u32 off, u32 size, void *ext_buf)
++{
++	u_char *buf = ext_buf ? (u_char*)ext_buf : (u_char*)malloc(size);
++
++	if (NULL == buf) {
++		printf("get_fl_mem_spi: can't alloc %d bytes\n", size);
++		return NULL;
++	}
++	if (read_spiflash_cached(off, size, buf) < 0) {
++		if (!ext_buf)
++			free(buf);
++		return NULL;
++	}
++
++	return buf;
++}
++
++static inline void *get_node_mem_spi(u32 off, void *ext_buf)
++{
++	struct jffs2_unknown_node node;
++	void *ret = NULL;
++
++	if (NULL == get_fl_mem_spi(off, sizeof(node), &node))
++		return NULL;
++
++	if (!(ret = get_fl_mem_spi(off, node.magic ==
++				   JFFS2_MAGIC_BITMASK ? node.totlen : sizeof(node),
++				   ext_buf))) {
++		printf("off = %#x magic %#x type %#x node.totlen = %d\n",
++			   off, node.magic, node.nodetype, node.totlen);
++	}
++	return ret;
++}
++
++static void put_fl_mem_spi(void *buf)
++{
++	free(buf);
++}
++#endif
+ 
+ /*
+  * Generic jffs2 raw memory and node read routines.
+@@ -399,9 +492,25 @@
+ 	struct mtdids *id = current_part->dev->id;
+ 
+ #if defined(CONFIG_CMD_FLASH)
++	extern flash_info_t flash_info[];
++	if (id->type == MTD_DEV_TYPE_NOR) {
++		if ( flash_info[id->num].size > 0 ) {
++			return get_fl_mem_nor(off, size, ext_buf);
++		} else {
++  #if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++			return get_fl_mem_spi(off, size, ext_buf);
++  #else
++			return NULL;
++  #endif
++		}
++	}
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
+ 	if (id->type == MTD_DEV_TYPE_NOR) {
+-		return get_fl_mem_nor(off, size, ext_buf);
++		return get_fl_mem_spi(off, size, ext_buf);
++	} else {
++		return NULL;
+ 	}
++
+ #endif
+ 
+ #if defined(CONFIG_JFFS2_NAND) && defined(CONFIG_CMD_NAND)
+@@ -423,8 +532,25 @@
+ 	struct mtdids *id = current_part->dev->id;
+ 
+ #if defined(CONFIG_CMD_FLASH)
+-	if (id->type == MTD_DEV_TYPE_NOR)
+-		return get_node_mem_nor(off, ext_buf);
++	extern flash_info_t flash_info[];
++	if (id->type == MTD_DEV_TYPE_NOR) {
++		if ( flash_info[id->num].size > 0 ) {
++			return get_node_mem_nor(off, ext_buf);
++		} else {
++  #if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++			return get_node_mem_spi(off, ext_buf);
++  #else
++			return NULL;
++  #endif
++		}
++	}
++#elif defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++	if (id->type == MTD_DEV_TYPE_NOR) {
++		return get_node_mem_spi(off, ext_buf);
++	} else {
++		return NULL;
++	}
++
+ #endif
+ 
+ #if defined(CONFIG_JFFS2_NAND) && \
+@@ -451,6 +577,10 @@
+ 	if (buf == ext_buf)
+ 		return;
+ 	switch (id->type) {
++#if defined(CONFIG_SPI_FLASH) || defined(CONFIG_SPI_FLASH_RT6855A)
++	case MTD_DEV_TYPE_NOR:
++		return put_fl_mem_spi(buf);
++#endif
+ #if defined(CONFIG_JFFS2_NAND) && defined(CONFIG_CMD_NAND)
+ 	case MTD_DEV_TYPE_NAND:
+ 		return put_fl_mem_nand(buf);
+diff -ruN a/include/spi_flash.h b/include/spi_flash.h
+--- a/include/spi_flash.h	2009-12-16 06:20:54.000000000 +0800
++++ b/include/spi_flash.h	2012-05-27 11:38:48.100756610 +0800
+@@ -38,6 +38,10 @@
+ 
+ 	u32		size;
+ 
++#ifdef CONFIG_CMD_JFFS2
++	u32		sector_size;
++#endif
++
+ 	int		(*read)(struct spi_flash *flash, u32 offset,
+ 				size_t len, void *buf);
+ 	int		(*write)(struct spi_flash *flash, u32 offset,

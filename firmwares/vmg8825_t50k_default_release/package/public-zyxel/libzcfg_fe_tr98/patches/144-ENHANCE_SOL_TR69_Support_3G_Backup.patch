@@ -1,0 +1,126 @@
+--- a/Makefile
++++ b/Makefile
+@@ -141,3 +141,6 @@ endif
+ ifeq ($(CONFIG_SOL_TR69_FIREWALL_CONTROL),y)
+ CFLAGS += -DSOL_TR69_FIREWALL_CONTROL
+ endif
++ifeq ($(CONFIG_SOL_TR69_3G_Backup),y)
++CFLAGS += -DSOL_TR69_3G_Backup
++endif
+--- a/wanDev.c
++++ b/wanDev.c
+@@ -53,9 +53,74 @@ zcfgRet_t WANDeviceObjGet(char *tr98Full
+ 	*tr98Jobj = json_object_new_object();
+ 	json_object_object_add(*tr98Jobj, "WANConnectionNumberOfEntries", json_object_new_int(count));
+ 
++#ifdef SOL_TR69_3G_Backup
++	if(strstr(tr98FullPathName, "WANDevice.4") ){
++		objIndex_t wwanBackupIid;
++		rdm_ZyWWANBackup_t *wwanBackupobj = NULL;
++		
++		IID_INIT(wwanBackupIid);
++		if(feObjStructGet(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanBackupIid, (void **)&wwanBackupobj, updateFlag) == ZCFG_SUCCESS) {
++			json_object_object_add(*tr98Jobj, "X_ZYXEL_3GEnable", json_object_new_boolean(wwanBackupobj->Enable));
++			json_object_object_add(*tr98Jobj, "X_ZYXEL_PinNumber", json_object_new_string(wwanBackupobj->PIN));
++			zcfgFeObjStructFree(wwanBackupobj);
++		}
++	}
++#endif
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#ifdef SOL_TR69_3G_Backup
++/* InternetGatewayDevice.WANDevice.i */
++zcfgRet_t WANDeviceObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	if(strstr(tr98FullPathName, "WANDevice.4") ){
++		zcfgRet_t ret;
++		objIndex_t wwanBackupIid;
++		struct json_object *wwanBackupJobj = NULL;
++		struct json_object *paramValue = NULL;
++		struct json_object *tmpObj = NULL;
++	
++		zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	
++		IID_INIT(wwanBackupIid);
++		if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanBackupIid, &wwanBackupJobj)) != ZCFG_SUCCESS)
++			return ret;
++		if(multiJobj){
++			tmpObj = wwanBackupJobj;
++			wwanBackupJobj = NULL;
++			wwanBackupJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanBackupIid, multiJobj, tmpObj);
++		}
++	
++		paramValue = json_object_object_get(tr98Jobj, "X_ZYXEL_3GEnable");
++		if(paramValue != NULL) {
++			json_object_object_add(wwanBackupJobj, "Enable", JSON_OBJ_COPY(paramValue));
++		}
++		
++		paramValue = json_object_object_get(tr98Jobj, "X_ZYXEL_PinNumber");
++		if(paramValue != NULL) {
++			json_object_object_add(wwanBackupJobj, "PIN", JSON_OBJ_COPY(paramValue));
++		}
++		
++		/*Set */
++		if(multiJobj){
++			json_object_put(tmpObj);
++		}
++		else{
++			if((ret = zcfgFeObjJsonSet(RDM_OID_ZY_W_W_A_N_BACKUP, &wwanBackupIid, wwanBackupJobj, NULL)) != ZCFG_SUCCESS ) {
++				json_object_put(wwanBackupJobj);
++				return ret;
++			}
++			json_object_put(wwanBackupJobj);
++		}
++	
++	return ZCFG_SUCCESS;
++	}else{
++		return ZCFG_INVALID_ARGUMENTS;
++}
++}
++#endif
++
+ #define LT_PARM_EMPTY  "None"
+ 
+ /* InternetGatewayDevice.WANDevice.1.WANDSLDiagnostics */
+--- a/wanDev.h
++++ b/wanDev.h
+@@ -48,6 +48,9 @@ extern tr98Parameter_t para_WanAtmF4LoDi
+ 
+ /*Handler Function*/
+ extern zcfgRet_t WANDeviceObjGet(char *, int, struct json_object **, bool);
++#ifdef SOL_TR69_3G_Backup
++extern zcfgRet_t WANDeviceObjSet(char *, int, struct json_object *, struct json_object *);
++#endif
+ 
+ extern zcfgRet_t WANCommIfaceCfgObjGet(char *, int, struct json_object **, bool);
+ 
+--- a/wanDev_parameter.h
++++ b/wanDev_parameter.h
+@@ -1,5 +1,9 @@
+ tr98Parameter_t para_WanDev[] = {
+ 	{ "WANConnectionNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++#ifdef SOL_TR69_3G_Backup
++	{ "X_ZYXEL_3GEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "X_ZYXEL_PinNumber", PARAMETER_ATTR_WRITE, 33, json_type_string},
++#endif
+ 	{ NULL, 0, 0, 0}
+ };
+ 
+--- a/zcfg_fe_tr98_handle.h
++++ b/zcfg_fe_tr98_handle.h
+@@ -322,7 +322,12 @@ tr98Object_t tr98Obj[] = {
+ //{TR98_LAN_INTF_ETH_INTF_CONF,   ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_USB_INTF_CONF,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_INTF_WLAN_CFG,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_WAN_DEV,                  ATTR_INDEXNODE,	para_WanDev,            WANDeviceObjGet,         NULL,                   NULL,             NULL,            NULL},
++//Nick
++#ifdef SOL_TR69_3G_Backup
++{TR98_WAN_DEV,                  ATTR_INDEXNODE,	para_WanDev,            WANDeviceObjGet,         WANDeviceObjSet,                   NULL,             NULL,            NULL},
++#else
++{TR98_WAN_DEV,                  ATTR_INDEXNODE, para_WanDev,            WANDeviceObjGet,         NULL,                   NULL,             NULL,            NULL},
++#endif
+ {TR98_WAN_COMM_INTF_CONF,       0,              para_WANCommIfaceCfg,   WANCommIfaceCfgObjGet,   NULL,                   NULL,             NULL,            NULL},
+ //{TR98_WAN_COMM_INTF_CONNECT,    ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_DSL_INTF_CONF,        0,              para_WANDslIfaceCfg,    WANDslIfaceCfgObjGet,    WANDslIfaceCfgObjSet,   NULL,             NULL,            NULL},

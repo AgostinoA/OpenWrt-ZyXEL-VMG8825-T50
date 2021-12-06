@@ -1,0 +1,740 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2016-08-18 14:33:22.152293631 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2016-08-18 16:05:22.620982280 +0800
+@@ -5733,6 +5733,210 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i.Stats
++ *
++ *   Related object in TR181:
++ *
++ *   Device.WiFi.AccessPoint.i.AssociatedDevice.i.Stats
++ */
++
++zcfgRet_t lanDevWlanCfgAssocDevStatObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char wlanConfigPath[128] = {0};
++	char ssidRef[32] = {0};
++	char *ptr = NULL;
++	char wifiSsid[32] = {0};
++	objIndex_t ssidIid, apIid, assocDevStatIid;
++	struct json_object *ssidJobj = NULL;
++	struct json_object *apJobj = NULL;
++	struct json_object *assocDevStatJobj = NULL;
++	bool found = false;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	
++	printf("%s : Enter\n", __FUNCTION__);
++
++	strcpy(wlanConfigPath, tr98FullPathName);
++	ptr = strstr(wlanConfigPath, ".AssociatedDevice");
++	*ptr = '\0';
++	if((ret = zcfgFe98To181MappingNameGet(wlanConfigPath, wifiSsid)) != ZCFG_SUCCESS) {
++		return ret;
++	}
++
++	IID_INIT(ssidIid);
++	ssidIid.level = 1;
++	sscanf(wifiSsid, "WiFi.SSID.%hhu", &ssidIid.idx[0]);
++
++	if((ret = feObjJsonGet(RDM_OID_WIFI_SSID, &ssidIid, &ssidJobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.SSID Fail\n", __FUNCTION__);
++		return ret;
++	}
++	json_object_put(ssidJobj);	
++
++	IID_INIT(apIid);
++	while((ret = feObjJsonGetNext(RDM_OID_WIFI_ACCESS_POINT, &apIid, &apJobj, TR98_GET_WITHOUT_UPDATE)) == ZCFG_SUCCESS) {
++		strcpy(ssidRef, json_object_get_string(json_object_object_get(apJobj, "SSIDReference")));
++		if(!strcmp(ssidRef, wifiSsid)){
++			found = true;
++			json_object_put(apJobj);
++			break;
++		}
++		else
++			json_object_put(apJobj);
++	}
++
++	if(found){
++		IID_INIT(assocDevStatIid);
++		assocDevStatIid.level = 2;
++		assocDevStatIid.idx[0] = apIid.idx[0];
++		sscanf(tr98FullPathName, "%*[^.].%*[^.].%*d.WLANConfiguration.%*d.AssociatedDevice.%hhu.Stats", &(assocDevStatIid.idx[1]));
++		if((ret = feObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_ASSOC_DEV_ST, &assocDevStatIid, &assocDevStatJobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.AssociatedDevice.i.Stats Fail\n", __FUNCTION__);
++			return ret;
++		}
++	}
++	else
++		return ZCFG_INVALID_OBJECT;
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(assocDevStatJobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(assocDevStatJobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t lanDevWlanCfgAssocDevStatObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++#if 0 //not ready
++int lanDevWlanCfgAssocDevStatObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  oid = 0;
++	objIndex_t iid;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(iid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	oid = zcfgFeObjNameToObjId(tr181Obj, &iid);
++	
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		
++		/*special case*/
++
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t lanDevWlanCfgAssocDevStatObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  oid = 0;
++	objIndex_t iid;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(iid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	oid = zcfgFeObjNameToObjId(tr181Obj, &iid);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++		
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(oid, multiAttrJobj, paramList->name, attrValue);
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, oid, paramList->name);
++		}
++		break;
++	}
++	
++	return ret;
++}
++#endif
++
+ /*   TR98 Object Name : InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.PreSharedKey.i
+  *
+  *   Related object in TR181:
+@@ -6015,6 +6219,367 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t wifiNeiborDiagObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *jobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_WIFI_DIAGNOSTIC, &objIid, &jobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;	
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(jobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(jobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t wifiNeiborDiagObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *jobj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_DIAGNOSTIC, &objIid, &jobj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = jobj;
++		jobj = NULL;
++		jobj = zcfgFeJsonMultiObjAppend(RDM_OID_WIFI_DIAGNOSTIC, &objIid, multiJobj, tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/	
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(jobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_WIFI_DIAGNOSTIC, &objIid, jobj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(jobj);
++			return ret;
++		}
++		json_object_put(jobj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t wifiNeiborDiagObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int wifiNeiborDiagObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  oid = 0;
++	objIndex_t iid;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(iid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	oid = zcfgFeObjNameToObjId(tr181Obj, &iid);
++	
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		
++		/*special case*/
++
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t wifiNeiborDiagObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char tr181Obj[128] = {0};
++	char mapObj[128] = {0};
++	uint32_t  oid = 0;
++	objIndex_t iid;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++	IID_INIT(iid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mapObj);
++	oid = zcfgFeObjNameToObjId(tr181Obj, &iid);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++		
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(oid, multiAttrJobj, paramList->name, attrValue);
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, oid, paramList->name);
++		}
++		break;
++	}
++	
++	return ret;
++}
++
++zcfgRet_t wifiNeiborDiagResultObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	uint32_t  oid = 0;
++	objIndex_t iid;
++	struct json_object *jobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++	
++	IID_INIT(iid);
++	iid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic.Result.%hhu", &iid.idx[0]);
++	
++	if((ret = feObjJsonGet(RDM_OID_WIFI_DIAGNOSTIC_RESULTS, &iid, &jobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS){
++		return ret;	
++	}
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(jobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(jobj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t wifiNeiborDiagResultObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
++{
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++int wifiNeiborDiagResultObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	zcfgRet_t ret;
++	uint32_t  oid = RDM_OID_WIFI_DIAGNOSTIC_RESULTS;
++	objIndex_t iid;
++	struct json_object *jobj = NULL;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(iid);
++	iid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic.Result.%hhu", &iid.idx[0]);
++	if((ret = feObjJsonGet(oid, &iid, &jobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS)
++		return ret; 
++	
++	json_object_put(jobj);
++	
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		
++		/*special case*/
++
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t wifiNeiborDiagResultObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	uint32_t  oid = RDM_OID_WIFI_DIAGNOSTIC_RESULTS;
++	objIndex_t iid;
++	struct json_object *jobj = NULL;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(iid);
++	iid.level = 1;
++	sscanf(tr98FullPathName, "InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic.Result.%hhu", &iid.idx[0]);
++	if((ret = feObjJsonGet(oid, &iid, &jobj, TR98_GET_WITHOUT_UPDATE)) != ZCFG_SUCCESS)
++		return ret; 
++	
++	json_object_put(jobj);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++		
++		attrValue = zcfgFeParamAttrGetByName(oid, paramList->name);
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(oid, multiAttrJobj, paramList->name, attrValue);
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, oid, paramList->name);
++		}
++		break;
++	}
++	
++	return ret;
++}
++
+ zcfgRet_t lanDevWlanCfgWEPKeyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2016-08-18 14:33:21.764293624 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2016-08-18 14:33:22.220293632 +0800
+@@ -26,8 +26,11 @@
+ extern tr98Parameter_t para_LanDevWlanCfgStat[];
+ extern tr98Parameter_t para_LanDevWlanCfgWps[];
+ extern tr98Parameter_t para_LanDevWlanCfgAssocDev[];
++extern tr98Parameter_t para_LanDevWlanCfgAssocDevStat[];
+ extern tr98Parameter_t para_WepKey[];
+ extern tr98Parameter_t para_Psk[];
++extern tr98Parameter_t para_NeiborWifiDiag[];
++extern tr98Parameter_t para_NeiborWifiDiagResult[];
+ extern tr98Parameter_t para_Hosts[];
+ extern tr98Parameter_t para_Host[];
+ 
+@@ -133,6 +136,12 @@
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i*/
+ extern zcfgRet_t lanDevWlanCfgAssocDevObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ 
++/*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i.Stats*/
++extern zcfgRet_t lanDevWlanCfgAssocDevStatObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t lanDevWlanCfgAssocDevStatObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo);
++extern int lanDevWlanCfgAssocDevStatObjAttrGet(char *tr98FullPathName, int handler, char *paramName);
++extern zcfgRet_t lanDevWlanCfgAssocDevStatObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj);
++
+ /*InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.PreSharedKey.i*/
+ extern zcfgRet_t lanDevWlanCfgPskObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDevWlanCfgPskObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+@@ -141,6 +150,19 @@
+ extern zcfgRet_t lanDevWlanCfgWEPKeyObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool);
+ extern zcfgRet_t lanDevWlanCfgWEPKeyObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ 
++/*InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic*/
++extern zcfgRet_t wifiNeiborDiagObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t wifiNeiborDiagObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
++extern zcfgRet_t wifiNeiborDiagObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo);
++extern int wifiNeiborDiagObjAttrGet(char *tr98FullPathName, int handler, char *paramName);
++extern zcfgRet_t wifiNeiborDiagObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj);
++
++/*InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic.Result.i*/
++extern zcfgRet_t wifiNeiborDiagResultObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
++extern zcfgRet_t wifiNeiborDiagResultObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo);
++extern int wifiNeiborDiagResultObjAttrGet(char *tr98FullPathName, int handler, char *paramName);
++extern zcfgRet_t wifiNeiborDiagResultObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj);
++
+ /*InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i.X_ZYXEL_IPv6Address.i*/
+ extern zcfgRet_t lanIpIntfV6AddrObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t lanIpIntfV6AddrObjSet(char *, int, struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/lanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev_parameter.h	2016-08-18 14:33:21.864293625 +0800
++++ libzcfg_fe_tr98-1.0/lanDev_parameter.h	2016-08-18 14:33:22.220293632 +0800
+@@ -349,6 +349,19 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_LanDevWlanCfgAssocDevStat[] = {
++	{ "BytesSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "BytesReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "PacketsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "PacketsReceived", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ErrorsSent", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "RetransCount", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "FailedRetransCount", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "RetryCount", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "MultipleRetryCount", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WepKey[] = {
+ 	{ "WEPKey", PARAMETER_ATTR_WRITE, 129, json_type_string},
+ 	{ NULL, 0, 0, 0}
+@@ -362,6 +375,33 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_NeiborWifiDiag[] = {
++	{ "DiagnosticsState", PARAMETER_ATTR_WRITE, 25, json_type_string},
++	{ "ResultNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_NeiborWifiDiagResult[] = {
++	{ "Radio", PARAMETER_ATTR_READONLY, 51, json_type_string},
++	{ "SSID", PARAMETER_ATTR_READONLY, 33, json_type_string},
++	{ "BSSID", PARAMETER_ATTR_READONLY, 17, json_type_string},
++	{ "Mode", PARAMETER_ATTR_READONLY, 17, json_type_string},
++	{ "Channel", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "SignalStrength", PARAMETER_ATTR_READONLY, 0, json_type_int},
++	{ "SecurityModeEnabled", PARAMETER_ATTR_READONLY, 33, json_type_string},
++	{ "EncryptionMode", PARAMETER_ATTR_READONLY, 9, json_type_string},
++	{ "OperatingFrequencyBand", PARAMETER_ATTR_READONLY, 9, json_type_string},
++	{ "SupportedStandards", PARAMETER_ATTR_READONLY, 13, json_type_string},
++	{ "OperatingStandards", PARAMETER_ATTR_READONLY, 13, json_type_string},
++	{ "OperatingChannelBandwidth", PARAMETER_ATTR_READONLY, 13, json_type_string},
++	{ "BeaconPeriod", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "Noise", PARAMETER_ATTR_READONLY, 0, json_type_int},
++	{ "BasicDataTransferRates", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "SupportedDataTransferRates", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "DTIMPeriod", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_Hosts[] = {
+ 	{ "HostNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-08-18 14:33:21.984293628 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-08-18 14:42:28.477772838 +0800
+@@ -110,10 +110,13 @@
+ #define TR98_WPS                      "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WPS"
+ #define TR98_REG                      "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WPS.Registrar.i"
+ #define TR98_ASSOC_DEV                "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i"
++#define TR98_ASSOC_DEV_STAT           "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.AssociatedDevice.i.Stats"
+ #define TR98_WEP_KEY                  "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.WEPKey.i"
+ #define TR98_PSK                      "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.PreSharedKey.i"
+ #define TR98_AP_WMM_PARAM             "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.APWMMParameter.i"
+ #define TR98_STA_WMM_PARAM            "InternetGatewayDevice.LANDevice.i.WLANConfiguration.i.STAWMMParameter.i"
++#define TR98_NEIBOR_WIFI_DIAG         "InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic"
++#define TR98_NEIBOR_WIFI_DIAG_RESULT  "InternetGatewayDevice.X_ZYXEL_NeighboringWiFiDiagnostic.Result.i"
+ #define TR98_HOSTS                    "InternetGatewayDevice.LANDevice.i.Hosts"
+ #define TR98_HOST                     "InternetGatewayDevice.LANDevice.i.Hosts.Host.i"
+ #define TR98_LAN_INTF                 "InternetGatewayDevice.LANInterfaces"
+@@ -369,10 +372,13 @@
+ {TR98_WPS,                      0,              para_LanDevWlanCfgWps,  lanDevWlanCfgWpsObjGet,  lanDevWlanCfgWpsObjSet, NULL,             NULL,            NULL},
+ //{TR98_REG,                      ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_ASSOC_DEV,                ATTR_INDEXNODE, para_LanDevWlanCfgAssocDev,          lanDevWlanCfgAssocDevObjGet,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_ASSOC_DEV_STAT,			0             , para_LanDevWlanCfgAssocDevStat,      lanDevWlanCfgAssocDevStatObjGet,			     NULL,					 NULL,			   NULL,		    NULL},
+ {TR98_WEP_KEY,                  ATTR_INDEXNODE, para_WepKey,            lanDevWlanCfgWEPKeyObjGet,lanDevWlanCfgWEPKeyObjSet,                   NULL,             NULL,            NULL},
+ {TR98_PSK,                      ATTR_INDEXNODE, para_Psk,               lanDevWlanCfgPskObjGet,  lanDevWlanCfgPskObjSet, NULL,             NULL,            NULL},
+ //{TR98_AP_WMM_PARAM,             ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_STA_WMM_PARAM,            ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_NEIBOR_WIFI_DIAG, 		0             , para_NeiborWifiDiag, 	wifiNeiborDiagObjGet,	 wifiNeiborDiagObjSet, NULL, NULL, wifiNeiborDiagObjNotify, wifiNeiborDiagObjAttrGet, wifiNeiborDiagObjAttrSet},
++{TR98_NEIBOR_WIFI_DIAG_RESULT,  ATTR_INDEXNODE, para_NeiborWifiDiagResult, wifiNeiborDiagResultObjGet,     NULL, NULL, NULL, wifiNeiborDiagResultObjNotify, wifiNeiborDiagResultObjAttrGet, wifiNeiborDiagResultObjAttrSet},
+ {TR98_HOSTS,                    0, para_Hosts,				lanDevHostsObjGet,			NULL,                   NULL,             NULL,            lanDevHostsObjNotify, NULL, lanDevHostsObjAttrSet},
+ {TR98_HOST,                     ATTR_INDEXNODE, para_Host,				lanDevHostObjGet,			NULL,                   NULL,             NULL,            lanDevHostObjNotify, lanDevHostObjAttrGet, lanDevHostObjAttrSet},
+ {TR98_LAN_INTF,                 0, para_LanDev,           lanIfacesObjGet,                    NULL,                   NULL,             NULL,            NULL},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-08-18 14:33:21.988293628 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-08-18 14:33:22.220293632 +0800
+@@ -155,10 +155,13 @@
+ {e_TR98_WPS                     , &tr98Obj[e_TR98_WPS                     -e_TR98_START]},
+ //{e_TR98_REG                     , &tr98Obj[e_TR98_REG                     -e_TR98_START]},
+ {e_TR98_ASSOC_DEV               , &tr98Obj[e_TR98_ASSOC_DEV               -e_TR98_START]},
++{e_TR98_ASSOC_DEV_STAT			, &tr98Obj[e_TR98_ASSOC_DEV_STAT 		  -e_TR98_START]},
+ {e_TR98_WEP_KEY                 , &tr98Obj[e_TR98_WEP_KEY                 -e_TR98_START]},
+ {e_TR98_PSK                     , &tr98Obj[e_TR98_PSK                     -e_TR98_START]},
+ //{e_TR98_AP_WMM_PARAM            , &tr98Obj[e_TR98_AP_WMM_PARAM            -e_TR98_START]},
+ //{e_TR98_STA_WMM_PARAM           , &tr98Obj[e_TR98_STA_WMM_PARAM           -e_TR98_START]},
++{e_TR98_NEIBOR_WIFI_DIAG        , &tr98Obj[e_TR98_NEIBOR_WIFI_DIAG        -e_TR98_START]},
++{e_TR98_NEIBOR_WIFI_DIAG_RESULT , &tr98Obj[e_TR98_NEIBOR_WIFI_DIAG_RESULT -e_TR98_START]},
+ {e_TR98_HOSTS                   , &tr98Obj[e_TR98_HOSTS                   -e_TR98_START]},
+ {e_TR98_HOST                    , &tr98Obj[e_TR98_HOST                    -e_TR98_START]},
+ {e_TR98_LAN_INTF                , &tr98Obj[e_TR98_LAN_INTF                -e_TR98_START]},

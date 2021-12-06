@@ -1,0 +1,124 @@
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2015-05-08 11:03:05.350805773 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2015-05-08 11:04:40.308376221 +0800
+@@ -1435,6 +1435,48 @@
+ 	    override = lease->override;
+ 
+ 	  log_packet("DHCPACK", &mess->yiaddr, emac, emac_len, iface_name, hostname, NULL, mess->xid);  
++#if 1 //__ZYXEL__, Chi-Hsiang send message to esmd
++	char buf[1024] = {0};
++	int payloadLen = 0, i;
++	char *payload = buf;
++	char str[INET_ADDRSTRLEN+1]={};
++	unsigned char *optTmp = NULL;
++
++/*parse to json format
++/{"ifName":"br0","chAddr":"00:1a:92:e4:a1:81","yiAddr":"192.168.1.123","OPT61":"","OPT12":"hostname","OPT60":""}
++/ dnsmasq_info already contain opt60/opt61, skip here.
++*/
++	payload += sprintf(payload, "{\"ifName\":\"%s\"" ,iface_name);
++	payload += sprintf(payload, ",\"chAddr\":\"%02X:%02X:%02X:%02X:%02X:%02X\"", 
++		mess->chaddr[0], mess->chaddr[1], mess->chaddr[2], mess->chaddr[3], mess->chaddr[4], mess->chaddr[5]);
++	inet_ntop( AF_INET, &mess->yiaddr, str, INET_ADDRSTRLEN);	
++	payload += sprintf(payload, ",\"yiAddr\":\"%s\"", str);
++	
++	if((optTmp = option_find(mess, sz, OPTION_CLIENT_ID, 2))){
++		payload += sprintf(payload, ",\"OPT61\":\"");
++		payload += sprintf(payload, "%.2x", *((unsigned char*)option_ptr(optTmp, 0)));
++		for(i=1;i<option_len(optTmp);i++){
++			payload += sprintf(payload, ":%.2x", *((unsigned char*)option_ptr(optTmp, i)));
++		}
++		payload += sprintf(payload, "\"");
++	}
++	
++	if((optTmp = option_find(mess, sz, OPTION_VENDOR_ID, 1))){
++		payload += sprintf(payload, ",\"OPT60\":\"");
++		memcpy(payload, option_ptr(optTmp, 0), option_len(optTmp));
++		payload += option_len(optTmp);
++		payload += sprintf(payload, "\"");
++	}
++	
++	if(hostname){
++		payload += sprintf(payload, ",\"OPT12\":\"%s\"", hostname);
++	}
++	payload += sprintf(payload, "}");
++
++	payloadLen=payload - buf +1;
++	handle_Auto_Reserve_IP_request(payloadLen, buf);
++#endif
++
+ 	  
+ 	  clear_packet(mess, end);
+ 	  option_put(mess, end, OPTION_MESSAGE_TYPE, 1, DHCPACK);
+@@ -1451,63 +1493,6 @@
+ 		     netid, subnet_addr, fqdn_flags, borken_opt, pxearch, uuid, vendor_class_len, now);
+ 	}
+ 
+-#if 1//__ZYXEL__, Chi-Hsiang Auto reserve IP for the same host.
+-	char payload[128] = {};
+-	int payloadLen = 0;
+-	char str[INET_ADDRSTRLEN]={};
+-	char buf[]={};
+-/*parse to json format
+-/{"ifName":"br0","chAddr":"00:1a:92:e4:a1:81","yiAddr":"192.168.1.123","OPT61":"","OPT12":"hostname","OPT60":""}
+-/ dnsmasq_info already contain opt60/opt61, skip here.
+-*/
+-	inet_ntop( AF_INET, &mess->yiaddr, str, INET_ADDRSTRLEN);
+-	sprintf( buf, "%02X:%02X:%02X:%02X:%02X:%02X",
+-	mess->chaddr[0], mess->chaddr[1], mess->chaddr[2], mess->chaddr[3], mess->chaddr[4], mess->chaddr[5]);
+-	/*
+-	char *optCI = option_find(mess, sz, OPTION_CLIENT_ID, 2);
+-	char *optVCI = option_find(mess, sz, OPTION_VENDOR_IDENT, 1);
+-	char tmpCI[]={};
+-	char tmpVCI[]={};
+-	*/
+-	strcat(payload, "{\"ifName\":\"");
+-	strcat(payload, iface_name);
+-	strcat(payload, "\",");
+-	strcat(payload, "\"chAddr\":\"");
+-	strcat(payload, buf);
+-	strcat(payload, "\",");
+-	strcat(payload, "\"yiAddr\":\"");
+-	strcat(payload, str);
+-	//strcat(payload, "\",");
+-	/*
+-	strcat(payload, "\"OPT61\":\"");
+-
+-	while(optCI){
+-		sprintf(tmpCI[i], "%c", *optCI);
+-		optCI++;
+-	}
+-	strcat(payload, tmpCI);
+-	strcat(payload, "\",");
+-
+-
+-	strcat(payload, "\"OPT12\":\"");
+-	strcat(payload, hostname);
+-
+-
+-	strcat(payload, "\",");
+-	strcat(payload, "\"OPT60\":\"");
+-
+-	while(optVCI){
+-		sprintf(tmpVCI[i], "%c", *optVCI);
+-		optVCI++;
+-	}
+-	strcat(payload, tmpVCI);
+-	*/
+-	strcat(payload, "\"}");
+-
+-	payloadLen=strlen(payload)+1;
+-	handle_Auto_Reserve_IP_request(payloadLen, payload);
+-#endif
+-
+       return dhcp_packet_size(mess, agent_id, real_end); 
+       
+     case DHCPINFORM:
+@@ -2663,4 +2648,4 @@
+   
+ 
+ 
+-  
++  
+\ No newline at end of file

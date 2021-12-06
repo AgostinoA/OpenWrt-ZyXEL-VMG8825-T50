@@ -1,0 +1,626 @@
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/routing/zcfg_fe_dal_static_route.c	2017-06-09 11:41:18.085881720 +0800
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c	2017-06-09 11:41:47.370947400 +0800
+@@ -10,11 +10,13 @@
+ 
+ dal_param_t STATICROUTE_param[] =
+ {
+-	{"Name",				dalType_string,			1,	32,	NULL, NULL, 		dal_Add|dal_Edit|dal_Delete},
++	{"Index",				dalType_int,			0,	0,	NULL, NULL, 		dal_Edit|dal_Delete},
++	{"Name",				dalType_string,			1,	32,	NULL, NULL, 		dal_Add},
+ 	{"Enable",				dalType_boolean,		0,	0,	NULL, NULL,			dal_Add},
+-	{"ipver",				dalType_string,			0,	0,	NULL, "IPv4|IPv6",	dal_Add|dal_Edit|dal_Delete},
+-	{"DestIPAddress",		dalType_v4v6Addr,		0,	0,	NULL, NULL,			0},
++	{"ipver",				dalType_string,			0,	0,	NULL, "IPv4|IPv6",	dal_Add},
++	{"DestIPAddress",		dalType_v4Addr,			0,	0,	NULL, NULL,			0},
+ 	{"DestSubnetMask",		dalType_v4Mask,			0,	0,	NULL, NULL,			0},
++	{"UseGateIpAddr",		dalType_boolean,		0,	0,	NULL, NULL,			dal_Add},
+ 	{"GatewayIPAddress",	dalType_v4Addr,			0,	0,	NULL, NULL,			0},
+ 	{"DestIPPrefix",		dalType_v6AddrPrefix,	0,	0,	NULL, NULL,			0},
+ 	{"NextHop",				dalType_v6Addr,			0,	0,	NULL, NULL,			0},	
+@@ -23,77 +25,6 @@
+ 
+ };
+ 
+-objIndex_t fwdIid = {0};
+-
+-struct json_object *fwdObj;
+-
+-const char *GatewayIPAddress;
+-bool Enable;
+-const char *Alias;
+-const char *tempAlias;
+-const char *ipver;
+-const char *DestIPAddress;
+-const char *DestSubnetMask;
+-const char *Interface;
+-const char *targetName;
+-const char *NextHop;
+-const char *DestIPPrefix;
+-
+-void initIpv4FwdGlobalObjects(){
+-	fwdObj = NULL;
+-
+-	return;
+-}
+-
+-void freeAllStaticRouteObjects(){
+-	if(fwdObj) json_object_put(fwdObj);
+-
+-	return;
+-}
+-
+-#if 0
+-zcfgRet_t getIpIfaceMultiObj(struct json_object **ipIfaceMultiObj){
+-	objIndex_t ipIfaceIid, ethLinkIid, brIid;
+-	struct json_object *ipIfaceObj = NULL;
+-	struct json_object *ethLinkObj = NULL;
+-	struct json_object *brObj = NULL;
+-	char path[64] = {0};
+-	const char *X_ZYXEL_SrvName = NULL, *X_ZYXEL_IfName = NULL, *LowerLayers = NULL;
+-
+-	*ipIfaceMultiObj = json_object_new_object();
+-	IID_INIT(ipIfaceIid);
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceObj) == ZCFG_SUCCESS) {
+-		sprintf(path, "IP.Interface.%u", ipIfaceIid.idx[0]);
+-		json_object_object_add(*ipIfaceMultiObj, path, ipIfaceObj);
+-		/* For Bridge interface, Name is stored in Bridging.Bridge.i.X_ZYXEL_BridgeName */
+-		LowerLayers = json_object_get_string(json_object_object_get(ipIfaceObj, "LowerLayers"));
+-		X_ZYXEL_IfName  = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_IfName"));
+-		X_ZYXEL_SrvName = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_SrvName"));
+-			
+-		if(!strcmp(X_ZYXEL_SrvName, "") && strstr(X_ZYXEL_IfName, "br") && !strstr(X_ZYXEL_IfName, ":") && !strncmp(LowerLayers, "Ethernet.Link.", 14)){
+-			IID_INIT(ethLinkIid);
+-			ethLinkIid.level = 1;
+-			sscanf(LowerLayers, "Ethernet.Link.%hhu", &(ethLinkIid.idx[0]));
+-			if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_LINK, &ethLinkIid, &ethLinkObj) == ZCFG_SUCCESS){
+-				LowerLayers = json_object_get_string(json_object_object_get(ethLinkObj, "LowerLayers"));
+-				if(!strncmp(LowerLayers, "Bridging.Bridge.", 16)){
+-					IID_INIT(brIid);
+-					brIid.level = 1;
+-					sscanf(LowerLayers, "Bridging.Bridge.%hhu.Port.%*hhu", &(brIid.idx[0]));
+-					if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_BRIDGING_BR, &brIid, &brObj) == ZCFG_SUCCESS){
+-						json_object_object_add(ipIfaceObj, "X_ZYXEL_SrvName", JSON_OBJ_COPY(json_object_object_get(brObj, "X_ZYXEL_BridgeName")));
+-						json_object_put(brObj);
+-					}
+-				}
+-				json_object_put(ethLinkObj);
+-			}
+-		}
+-	}
+-
+-	return ZCFG_SUCCESS;
+-}
+-#endif
+-
+ void zcfgFeDalShowStaticRoute(struct json_object *Jarray){
+ 
+ 	int i, len = 0;
+@@ -105,14 +36,15 @@
+ 		return;
+ 	}
+ 
+-	printf("%-15s %-7s %-7s %-35s %-17s %-22s %-22s\n",
+-		     "Name", "Enable", "IPver", "DestIPAddress/DestPrefix", "DestMask", "Interface", "Gateway/NextHop");		
++	printf("%-10s %-10s %-7s %-7s %-45s %-17s %-15s %-10s\n",
++		     "Index", "Name", "Enable", "IPver", "DestIPAddress/DestPrefix", "DestMask", "Interface", "Gateway/NextHop");		
+ 	len = json_object_array_length(Jarray);
+ 	for(i=0;i<len;i++){
+ 		obj = json_object_array_get_idx(Jarray, i);
+ 		ipver = json_object_get_string(json_object_object_get(obj, "ipver"));
+ 		if(!strcmp(ipver, "IPv4")){
+-			printf("%-15s %-7u %-7s %-35s %-17s %-22s %-22s\n",
++			printf("%-10s %-10s %-7u %-7s %-45s %-17s %-15s %-10s\n",
++					json_object_get_string(json_object_object_get(obj, "Index")),
+ 				    json_object_get_string(json_object_object_get(obj, "Name")),
+ 				    json_object_get_boolean(json_object_object_get(obj, "Enable")),
+ 				    ipver,
+@@ -122,7 +54,8 @@
+ 				    json_object_get_string(json_object_object_get(obj, "GatewayIPAddress")));
+ 		}
+ 		else{
+-			printf("%-15s %-7u %-7s %-35s %-17s %-22s %-22s\n",
++			printf("%-10s %-10s %-7u %-7s %-45s %-17s %-15s %-10s\n",
++					json_object_get_string(json_object_object_get(obj, "Index")),
+ 					json_object_get_string(json_object_object_get(obj, "Name")),
+ 					json_object_get_boolean(json_object_object_get(obj, "Enable")),
+ 					ipver,
+@@ -134,47 +67,6 @@
+ 	}
+ 	
+ }
+-void getStaticRouteBasicInfo(struct json_object *Jobj){
+-	GatewayIPAddress = json_object_get_string(json_object_object_get(Jobj, "GatewayIPAddress"));
+-	NextHop = json_object_get_string(json_object_object_get(Jobj, "NextHop"));
+-	DestIPPrefix = json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix"));
+-	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
+-	Alias = json_object_get_string(json_object_object_get(Jobj, "Name"));
+-	ipver= json_object_get_string(json_object_object_get(Jobj, "ipver"));
+-	DestIPAddress = json_object_get_string(json_object_object_get(Jobj, "DestIPAddress"));
+-	DestSubnetMask = json_object_get_string(json_object_object_get(Jobj, "DestSubnetMask"));
+-	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
+-	targetName = json_object_get_string(json_object_object_get(Jobj, "targetName"));
+-}
+-
+-zcfgRet_t zcfgFeDalStaticRouteObjEditIidGet(struct json_object *Jobj){
+-	IID_INIT(fwdIid);
+-	zcfg_offset_t targetOid;
+-
+-	if(strcmp(ipver,"IPv4") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+-	}else if(strcmp(ipver,"IPv6") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
+-	}
+-
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(targetOid, &fwdIid, &fwdObj) == ZCFG_SUCCESS) {
+-		tempAlias = json_object_get_string(json_object_object_get(fwdObj, "Alias"));
+-		if(targetName != NULL){
+-			if(!strcmp(targetName,tempAlias)){
+-				return ZCFG_SUCCESS;
+-			}
+-		}
+-		else{
+-			Alias = json_object_get_string(json_object_object_get(Jobj, "Name"));
+-			if(Alias != NULL && !strcmp(Alias, tempAlias)){
+-				return ZCFG_SUCCESS;
+-			}
+-		}
+-		zcfgFeJsonObjFree(fwdObj);
+-	}
+-
+-	return ZCFG_NOT_FOUND;
+-}
+ 
+ zcfgRet_t zcfgFeDalStaticRouteGetAll(struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -185,13 +77,7 @@
+ 	bool StaticRoute;
+ 	const char *Alias, *DestIPAddress, *Origin, *DestIPPrefix;
+ 	const char *X_ZYXEL_SrvName = NULL, *X_ZYXEL_IfName = NULL, *LowerLayers = NULL;
+-#if 0
+-	struct json_object *ipIfaceObj = NULL;
+-	struct json_object *ipIfaceMultiObj = NULL;
+-	const char *Interface;
+-	
+-	getIpIfaceMultiObj(&ipIfaceMultiObj);
+-#endif
++	int count = 1;
+ 	
+ 	IID_INIT(iid);
+ 	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &iid, &obj) == ZCFG_SUCCESS) {
+@@ -200,6 +86,7 @@
+ 		StaticRoute = json_object_get_boolean(json_object_object_get(obj, "StaticRoute"));
+ 		if(StaticRoute && strcmp(Alias, "") && strcmp(DestIPAddress, "")){
+ 			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Index", json_object_new_int(count));
+ 			json_object_object_add(pramJobj, "Name", json_object_new_string(Alias));
+ 			json_object_object_add(pramJobj, "DestIPAddress", json_object_new_string(DestIPAddress));
+ 			json_object_object_add(pramJobj, "StaticRoute", json_object_new_boolean(StaticRoute));
+@@ -208,14 +95,11 @@
+ 			json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
+ 			json_object_object_add(pramJobj, "DestSubnetMask", JSON_OBJ_COPY(json_object_object_get(obj, "DestSubnetMask")));
+ 			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(obj, "Interface")));
+-#if 0
+-			Interface = json_object_get_string(json_object_object_get(obj, "Interface"));
+-			ipIfaceObj = json_object_object_get(ipIfaceMultiObj, Interface);
+-			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(ipIfaceObj, "X_ZYXEL_SrvName")));
+-#endif
++			json_object_object_add(pramJobj, "idx", json_object_new_int(iid.idx[1]));
++
+ 			json_object_array_add(Jarray, pramJobj);
++			count++;
+ 		}
+-		
+ 		zcfgFeJsonObjFree(obj);
+ 	}
+ 
+@@ -226,224 +110,241 @@
+ 		Origin = json_object_get_string(json_object_object_get(obj, "Origin"));
+ 		if(!strcmp(Origin, "Static") && strcmp(Alias, "") && strcmp(DestIPPrefix, "")){
+ 			pramJobj = json_object_new_object();
++			json_object_object_add(pramJobj, "Index", json_object_new_int(count));
+ 			json_object_object_add(pramJobj, "Name", json_object_new_string(Alias));
+ 			json_object_object_add(pramJobj, "DestIPPrefix", json_object_new_string(DestIPPrefix));
+ 			json_object_object_add(pramJobj, "ipver", json_object_new_string("IPv6"));
+ 			json_object_object_add(pramJobj, "NextHop", JSON_OBJ_COPY(json_object_object_get(obj, "NextHop")));
+ 			json_object_object_add(pramJobj, "Enable", JSON_OBJ_COPY(json_object_object_get(obj, "Enable")));
+ 			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(obj, "Interface")));
+-#if 0
+-			Interface = json_object_get_string(json_object_object_get(obj, "Interface"));
+-			ipIfaceObj = json_object_object_get(ipIfaceMultiObj, Interface);
+-			json_object_object_add(pramJobj, "Interface", JSON_OBJ_COPY(json_object_object_get(ipIfaceObj, "X_ZYXEL_SrvName")));
+-#endif
++			json_object_object_add(pramJobj, "idx", json_object_new_int(iid.idx[1]));
++			
+ 			json_object_array_add(Jarray, pramJobj);
++			count++;
+ 		}
+ 		zcfgFeJsonObjFree(obj);
+ 	}
+-
+-#if 0
+-	zcfgFeJsonObjFree(ipIfaceMultiObj);
+-#endif
+-	
+ 	return ret;
+ 	
+ }
+ 
+-zcfgRet_t zcfgFeDalStaticRouteIpfwdEdit(struct json_object *Jobj, zcfg_offset_t oid, char *replyMsg){
++zcfgRet_t zcfgFeDalStaticRouteEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *paramObj = NULL;
+-	objIndex_t iid;
+-#if 0
+-	struct json_object *ipIfaceMultiObj = NULL;
+-	const char *Interface, *SrvName = NULL;
+-	char tr181path[64] = {0};
+-	bool found = false;
+-#endif
++	struct json_object *StaticRouteObj = NULL, *obj = NULL, *objtmp = NULL;
++	objIndex_t StaticRouteIid = {0};
++	zcfg_offset_t oid;
++	const char *iptype = NULL;
++	const char *Name = NULL;
++	const char *GatewayIPAddress = NULL;
++	const char *NextHop = NULL;
++	const char *DestIPPrefix = NULL;
++	const char *DestIPAddress = NULL;
++	const char *DestSubnetMask = NULL;
++	const char *Interface = NULL;
++	const char *idx = NULL;
++	bool Enable = false;
++	bool useGateIpaddr = false;
++	int len = 0, i, index = 0;
+ 	
+-	if((ret = zcfgFeObjJsonGetWithoutUpdate(oid, &fwdIid, &fwdObj)) != ZCFG_SUCCESS){
+-		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get ipvfwd fail oid(%d)\n ",__FUNCTION__,oid);
+-		return ZCFG_INTERNAL_ERROR;
+-	}
+-
+-	if((paramObj = json_object_object_get(Jobj, "GatewayIPAddress")) != NULL)
+-		json_object_object_add(fwdObj, "GatewayIPAddress", JSON_OBJ_COPY(paramObj));
+-	if((paramObj = json_object_object_get(Jobj, "Enable")) != NULL)
+-		json_object_object_add(fwdObj, "Enable", JSON_OBJ_COPY(paramObj));
+-	if((paramObj = json_object_object_get(Jobj, "Name")) != NULL)
+-		json_object_object_add(fwdObj, "Alias", JSON_OBJ_COPY(paramObj));
+-	if((paramObj = json_object_object_get(Jobj, "Interface")) != NULL){
+-		json_object_object_add(fwdObj, "Interface", JSON_OBJ_COPY(paramObj));
+-#if 0		
+-		Interface = json_object_get_string(paramObj);
+-		if(!strncmp(Interface, "IP.Interface.", 13)){
+-			json_object_object_add(fwdObj, "Interface", JSON_OBJ_COPY(paramObj));
++	obj = json_object_new_array();
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	Name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++	iptype = json_object_get_string(json_object_object_get(Jobj, "ipver"));
++	useGateIpaddr = json_object_get_boolean(json_object_object_get(Jobj, "UseGateIpAddr"));
++	GatewayIPAddress = json_object_get_string(json_object_object_get(Jobj, "GatewayIPAddress"));
++	NextHop = json_object_get_string(json_object_object_get(Jobj, "NextHop"));
++	DestIPPrefix = json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix"));
++	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	DestIPAddress = json_object_get_string(json_object_object_get(Jobj, "DestIPAddress"));
++	DestSubnetMask = json_object_get_string(json_object_object_get(Jobj, "DestSubnetMask"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	if(!json_object_object_get(Jobj, "GatewayIPAddress"))
++		GatewayIPAddress = "";
++	zcfgFeDalStaticRouteGetAll(obj, NULL);
++	len = json_object_array_length(obj);
++	for(i=0;i<len;i++){
++		objtmp = json_object_array_get_idx(obj, i);
++		if(index == atoi(json_object_get_string(json_object_object_get(objtmp, "Index")))){
++			idx = json_object_get_string(json_object_object_get(objtmp, "idx"));
++			if(strcmp(iptype,json_object_get_string(json_object_object_get(objtmp, "ipver")))){
++				if(replyMsg != NULL)
++					strcat(replyMsg, "The iptype of rule cannot change.");	
++				return ZCFG_INVALID_PARAM_VALUE;
++			}				
+ 		}
+ 		else{
+-			getIpIfaceMultiObj(&ipIfaceMultiObj);
+-			json_object_object_foreach(ipIfaceMultiObj, ipifPath, ipifObj){
+-				SrvName = json_object_get_string(json_object_object_get(ipifObj, "X_ZYXEL_SrvName"));
+-				if(!strcmp(Interface, SrvName)){
+-					json_object_object_add(fwdObj, "Interface", json_object_new_string(ipifPath));
+-					found = true;
+-					break;
+-				}
+-			}
+-			zcfgFeJsonObjFree(ipIfaceMultiObj);
+-			
+-			if(!found){
++			if(!strcmp(Name,json_object_get_string(json_object_object_get(objtmp, "Name")))){
+ 				if(replyMsg != NULL)
+-					sprintf(replyMsg, "Can't find Interface %s", Interface);
++					strcat(replyMsg, "Name is duplicate.");			
+ 				return ZCFG_INVALID_PARAM_VALUE;
+-			}
+-		}
+-#endif
+-	}
+-	
+-#if 0	
+-	zcfgFeJsonObjFree(ipIfaceMultiObj);
+-#endif
+-
+-	if(!strcmp(ipver,"IPv4")){
+-		if((paramObj = json_object_object_get(Jobj, "DestIPAddress")) != NULL)
+-			json_object_object_add(fwdObj, "DestIPAddress", JSON_OBJ_COPY(paramObj));
+-		if((paramObj = json_object_object_get(Jobj, "DestSubnetMask")) != NULL)
+-			json_object_object_add(fwdObj, "DestSubnetMask", JSON_OBJ_COPY(paramObj));
+-	}else if(!strcmp(ipver,"IPv6")){
+-		if((paramObj = json_object_object_get(Jobj, "DestIPPrefix")) != NULL)
+-			json_object_object_add(fwdObj, "DestIPPrefix", JSON_OBJ_COPY(paramObj));
+-		if((paramObj = json_object_object_get(Jobj, "NextHop")) != NULL)
+-			json_object_object_add(fwdObj, "NextHop", JSON_OBJ_COPY(paramObj));
+-	}
+ 
+-	return ret;
+ }
+-
+-
+-zcfgRet_t zcfgFeDalStaticRouteEdit(struct json_object *Jobj, char *replyMsg){
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	zcfg_offset_t targetOid;
+-	//printf("%s():--- Edit StaticRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-
+-	initIpv4FwdGlobalObjects();
+-	getStaticRouteBasicInfo(Jobj);
+-	if ((ret = zcfgFeDalStaticRouteObjEditIidGet(Jobj)) != ZCFG_SUCCESS){
+-		goto exit;
+ 	}
+-
+-	if(strcmp(ipver,"IPv4") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+-	}else if(strcmp(ipver,"IPv6") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
+ 	}
+-
+-	if((ret = zcfgFeDalStaticRouteIpfwdEdit(Jobj, targetOid, replyMsg)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to edit ipv6 static route \n", __FUNCTION__);
+-		goto exit;
++	StaticRouteIid.level = 2;
++	StaticRouteIid.idx[0] = 1;
++	StaticRouteIid.idx[1] = atoi(idx);
++	if(!strcmp(iptype,"IPv4")){
++		oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++		if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
++			if(json_object_object_get(Jobj, "UseGateIpAddr")){
++				if(useGateIpaddr){
++					json_object_object_add(StaticRouteObj, "GatewayIPAddress", json_object_new_string(GatewayIPAddress));
++				}
++				else
++					json_object_object_add(StaticRouteObj, "GatewayIPAddress", json_object_new_string(""));
++			}
++			else if(json_object_object_get(Jobj, "GatewayIPAddress"))
++				json_object_object_add(StaticRouteObj, "GatewayIPAddress", json_object_new_string(GatewayIPAddress));
++				
++			if(json_object_object_get(Jobj, "Name"))
++				json_object_object_add(StaticRouteObj, "Alias", json_object_new_string(Name));
++			if(json_object_object_get(Jobj, "Enable"))
++				json_object_object_add(StaticRouteObj, "Enable", json_object_new_boolean(Enable));
++			if(json_object_object_get(Jobj, "DestIPAddress"))
++				json_object_object_add(StaticRouteObj, "DestIPAddress", json_object_new_string(DestIPAddress));
++			if(json_object_object_get(Jobj, "DestSubnetMask"))
++				json_object_object_add(StaticRouteObj, "DestSubnetMask", json_object_new_string(DestSubnetMask));
++			if(json_object_object_get(Jobj, "Interface"))
++				json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
++		}
++	}
++	else if(!strcmp(iptype,"IPv6")){
++		oid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++		if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
++			if(json_object_object_get(Jobj, "UseGateIpAddr")){
++				if(useGateIpaddr){
++					json_object_object_add(StaticRouteObj, "NextHop", json_object_new_string(NextHop));
++				}
++				else
++					json_object_object_add(StaticRouteObj, "NextHop", json_object_new_string(""));
++			}
++			else if(json_object_object_get(Jobj, "GatewayIPAddress"))
++				json_object_object_add(StaticRouteObj, "NextHop", json_object_new_string(NextHop));
++			
++			if(json_object_object_get(Jobj, "Name"))
++				json_object_object_add(StaticRouteObj, "Alias", json_object_new_string(Name));
++			if(json_object_object_get(Jobj, "Enable"))
++				json_object_object_add(StaticRouteObj, "Enable", json_object_new_boolean(Enable));
++			if(json_object_object_get(Jobj, "DestIPPrefix"))
++				json_object_object_add(StaticRouteObj, "DestIPPrefix", json_object_new_string(DestIPPrefix));
++			if(json_object_object_get(Jobj, "Interface"))
++				json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
+ 	}
+-
+-	if((ret = zcfgFeObjJsonSet(targetOid, &fwdIid, fwdObj, NULL)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_ROUTER_V4_FWD);
+ 	}
+-
+-exit:
+-	freeAllStaticRouteObjects();
++	ret = zcfgFeObjJsonSet(oid, &StaticRouteIid, StaticRouteObj, NULL);
++	zcfgFeJsonObjFree(StaticRouteObj);
+ 	return ret;
+ }
+ 
+ zcfgRet_t zcfgFeDalStaticRouteAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	zcfg_offset_t targetOid;
+-	struct json_object *routeV4FwdObj = NULL;
+-	struct json_object *routeV6FwdObj = NULL;
+-	zcfg_offset_t routeV4FwdIid = {0};
+-	zcfg_offset_t routeV6FwdIid = {0};
+-	//printf("%s():--- Add StaticRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-	initIpv4FwdGlobalObjects();
+-	getStaticRouteBasicInfo(Jobj);
+-
+-	IID_INIT(fwdIid);
+-	fwdIid.level = 1;
+-	fwdIid.idx[0] = 1;
+-
+-	if(strcmp(ipver,"IPv4") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+-		if(DestIPAddress == NULL || DestSubnetMask == NULL){
+-			if(replyMsg != NULL)
+-				strcpy(replyMsg, "DestIPAddress and DestSubnetMask are mandatory");
+-			ret = ZCFG_INVALID_PARAM_VALUE;
+-			goto exit;
+-		}
+-	}
+-	else if(strcmp(ipver,"IPv6") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
+-		if(DestIPPrefix == NULL){
++	struct json_object *StaticRouteObj = NULL, *obj = NULL, *objtmp = NULL;
++	objIndex_t StaticRouteIid = {0};
++	zcfg_offset_t oid;
++	const char *iptype = NULL;
++	const char *Name = NULL;
++	const char *GatewayIPAddress = NULL;
++	const char *NextHop = NULL;
++	const char *DestIPPrefix = NULL;
++	const char *DestIPAddress = NULL;
++	const char *DestSubnetMask = NULL;
++	const char *Interface = NULL;
++	bool Enable = false;
++	bool useGateIpaddr = false;
++	
++	int len = 0, i;
++	StaticRouteIid.level = 1;
++	StaticRouteIid.idx[0] = 1;
++	
++	obj = json_object_new_array();
++	Name = json_object_get_string(json_object_object_get(Jobj, "Name"));
++	iptype = json_object_get_string(json_object_object_get(Jobj, "ipver"));
++	useGateIpaddr = json_object_get_boolean(json_object_object_get(Jobj, "UseGateIpAddr"));
++	GatewayIPAddress = json_object_get_string(json_object_object_get(Jobj, "GatewayIPAddress"));
++	NextHop = json_object_get_string(json_object_object_get(Jobj, "NextHop"));
++	DestIPPrefix = json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix"));
++	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	DestIPAddress = json_object_get_string(json_object_object_get(Jobj, "DestIPAddress"));
++	DestSubnetMask = json_object_get_string(json_object_object_get(Jobj, "DestSubnetMask"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	if(!useGateIpaddr)
++		GatewayIPAddress = "";
++	
++	zcfgFeDalStaticRouteGetAll(obj, NULL);
++	len = json_object_array_length(obj);
++	for(i=0;i<len;i++){
++		objtmp = json_object_array_get_idx(obj, i);
++		if(!strcmp(Name,json_object_get_string(json_object_object_get(objtmp, "Name")))){
+ 			if(replyMsg != NULL)
+-				strcpy(replyMsg, "DestIPPrefix is mandatory");
+-			ret = ZCFG_INVALID_PARAM_VALUE;
+-			goto exit;
+-		}
+-	}
+-
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &routeV4FwdIid, &routeV4FwdObj) == ZCFG_SUCCESS){	
+-		if(!strcmp(Alias, json_object_get_string(json_object_object_get(routeV4FwdObj, "Alias")))){	
+-			zcfgFeJsonObjFree(routeV4FwdObj);					
+ 			strcat(replyMsg, "Name is duplicate.");			
+ 			return ZCFG_INVALID_PARAM_VALUE;		
+ 		}	
+-		zcfgFeJsonObjFree(routeV4FwdObj);	
+ 	}
+-	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_ROUTER_V6_FWD, &routeV6FwdIid, &routeV6FwdObj) == ZCFG_SUCCESS){	
+-		if(!strcmp(Alias, json_object_get_string(json_object_object_get(routeV6FwdObj, "Alias")))){	
+-			zcfgFeJsonObjFree(routeV6FwdObj);					
+-			strcat(routeV6FwdObj, "Name is duplicate.");			
+-			return ZCFG_INVALID_PARAM_VALUE;		
++	if(!strcmp(iptype,"IPv4")){
++		oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++		if(zcfgFeObjJsonAdd(oid, &StaticRouteIid, NULL) == ZCFG_SUCCESS){
++			if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
++				if(!useGateIpaddr)
++					GatewayIPAddress = "";
++				json_object_object_add(StaticRouteObj, "Alias", json_object_new_string(Name));
++				json_object_object_add(StaticRouteObj, "Enable", json_object_new_boolean(Enable));
++				json_object_object_add(StaticRouteObj, "DestIPAddress", json_object_new_string(DestIPAddress));
++				json_object_object_add(StaticRouteObj, "DestSubnetMask", json_object_new_string(DestSubnetMask));
++				json_object_object_add(StaticRouteObj, "GatewayIPAddress", json_object_new_string(GatewayIPAddress));
++				json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
++			}
+ 		}	
+-		zcfgFeJsonObjFree(routeV6FwdObj);	
+ 	}
+-
+-	if((ret = zcfgFeObjJsonBlockedAdd(targetOid, &fwdIid, NULL)) != ZCFG_SUCCESS){
+-		printf("%s():(ERROR) zcfgFeObjJsonAdd add Static Route \n ",__FUNCTION__);
+-		return ZCFG_INTERNAL_ERROR;
++	else if(!strcmp(iptype,"IPv6")){
++		oid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++		if(zcfgFeObjJsonAdd(oid, &StaticRouteIid, NULL) == ZCFG_SUCCESS){
++			if(zcfgFeObjJsonGet(oid, &StaticRouteIid, &StaticRouteObj) == ZCFG_SUCCESS){
++				if(!useGateIpaddr)
++					NextHop = "";
++				json_object_object_add(StaticRouteObj, "Alias", json_object_new_string(Name));
++				json_object_object_add(StaticRouteObj, "Enable", json_object_new_boolean(Enable));
++				json_object_object_add(StaticRouteObj, "DestIPPrefix", json_object_new_string(DestIPPrefix));
++				json_object_object_add(StaticRouteObj, "NextHop", json_object_new_string(NextHop));
++				json_object_object_add(StaticRouteObj, "Interface", json_object_new_string(Interface));
+ 	}
+-
+-	if((ret = zcfgFeDalStaticRouteIpfwdEdit(Jobj, targetOid, replyMsg)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to edit ipv4 static route \n", __FUNCTION__);
+-		goto exit;
+ 	}
+-
+-	if((ret = zcfgFeObjJsonSet(targetOid, &fwdIid, fwdObj, NULL)) != ZCFG_SUCCESS){
+-		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_ROUTER_V4_FWD);
+ 	}
+-
+-exit:
+-	freeAllStaticRouteObjects();
++	ret = zcfgFeObjJsonSet(oid, &StaticRouteIid, StaticRouteObj, NULL);
++	zcfgFeJsonObjFree(StaticRouteObj);
+ 	return ret;
+ }
+ 
+ zcfgRet_t zcfgFeDalStaticRouteDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	zcfg_offset_t targetOid;
+-	//printf("%s():--- Delete StaticRoute Input Json Object--- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
+-	initIpv4FwdGlobalObjects();
+-	getStaticRouteBasicInfo(Jobj);
+-	if ((ret = zcfgFeDalStaticRouteObjEditIidGet(Jobj)) != ZCFG_SUCCESS){
+-		return ret;
++	struct json_object *obj = NULL, *objtmp = NULL;
++	obj = json_object_new_array();
++	objIndex_t StaticRouteIid = {0};
++	zcfg_offset_t oid;
++	const char *iptype = NULL, *idx = NULL;
++	int index = 0, len = 0, i;
++	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	zcfgFeDalStaticRouteGetAll(obj, NULL);
++	len = json_object_array_length(obj);
++	for(i=0;i<len;i++){
++		objtmp = json_object_array_get_idx(obj, i);
++		if(index == atoi(json_object_get_string(json_object_object_get(objtmp, "Index")))){
++			iptype = json_object_get_string(json_object_object_get(objtmp, "ipver"));
++			idx = json_object_get_string(json_object_object_get(objtmp, "idx"));
++			break;
+ 	}
+-
+-	if(strcmp(ipver,"IPv4") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
+-	}else if(strcmp(ipver,"IPv6") == 0){
+-		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
+ 	}
+-
+-	if((ret = zcfgFeObjJsonDel(targetOid, &fwdIid, NULL)) != ZCFG_SUCCESS){
+-		printf("%s: delete static route obj fail \n", __FUNCTION__);
++	if(!strcmp(iptype,"IPv4"))
++		oid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++	else if(!strcmp(iptype, "IPv6"))
++		oid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++	StaticRouteIid.level = 2;
++	StaticRouteIid.idx[0] = 1;
++	StaticRouteIid.idx[1] = atoi(idx);
++	ret = zcfgFeObjJsonDel(oid, &StaticRouteIid, NULL);
+ 		return ret;
+ 	}
+ 
+-	return ret;
+-}
+ 
+ zcfgRet_t zcfgFeDalStaticRoute(const char *method, struct json_object *Jobj, char *replyMsg)
+ {

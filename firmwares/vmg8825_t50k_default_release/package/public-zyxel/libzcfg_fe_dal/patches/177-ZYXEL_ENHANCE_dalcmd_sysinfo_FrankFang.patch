@@ -1,0 +1,116 @@
+Index: libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_sysinfo.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/zcfg_fe_dal_sysinfo.c	2017-05-12 16:27:40.817493706 +0800
++++ libzcfg_fe_dal-1.0/maintenance/zcfg_fe_dal_sysinfo.c	2017-05-12 16:46:42.130872372 +0800
+@@ -16,6 +16,51 @@
+ 	{NULL,			0,	0,	0,	NULL},
+ };
+ 
++void zcfgFeDalShowSystemInfo(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++	const char *hostName = NULL;
++	const char *domainName = NULL;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray,i);
++		hostName = json_object_get_string(json_object_object_get(obj, "HostName"));
++		domainName = json_object_get_string(json_object_object_get(obj, "DomainName"));
++		printf("%-15s %s\n","Host name: ",hostName);
++		printf("%-15s %s\n","Domain name: ",domainName);
++	}
++}
++
++zcfgRet_t zcfgFeDal_System_Info_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL;
++	struct json_object *sysObj = NULL;
++	objIndex_t sysIid = {0};
++	const char *hostName = NULL;
++	const char *domainName = NULL;
++
++	IID_INIT(sysIid);
++	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_SYSTEM_INFO, &sysIid, &obj);
++
++	if(ret == ZCFG_SUCCESS){
++		sysObj = json_object_new_object();
++		hostName = json_object_get_string(json_object_object_get(obj, "HostName"));
++		domainName = json_object_get_string(json_object_object_get(obj, "DomainName"));
++		json_object_object_add(sysObj, "HostName", json_object_new_string(hostName));
++		json_object_object_add(sysObj, "DomainName", json_object_new_string(domainName));
++		json_object_array_add(Jarray, sysObj);
++		zcfgFeJsonObjFree(obj);
++	}
++	
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDal_System_Info_Edit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	struct json_object *sysObj = NULL;
+@@ -30,12 +75,16 @@
+ 		hostName = json_object_get_string(json_object_object_get(Jobj, "HostName"));
+ 		domainName = json_object_get_string(json_object_object_get(Jobj, "DomainName"));
+ 
+-		json_object_object_add(sysObj, "HostName", json_object_new_string(hostName));
+-		json_object_object_add(sysObj, "DomainName", json_object_new_string(domainName));
++		if(json_object_object_get(Jobj, "HostName")){
++			json_object_object_add(sysObj, "HostName", json_object_new_string(hostName));
++		}
++		if(json_object_object_get(Jobj, "DomainName")){
++			json_object_object_add(sysObj, "DomainName", json_object_new_string(domainName));
++		}
+ 		ret = zcfgFeObjJsonSet(RDM_OID_SYSTEM_INFO, &sysIid, sysObj, NULL);
++		zcfgFeJsonObjFree(sysObj);
+ 	}
+ 	
+-	zcfgFeJsonObjFree(sysObj);
+ 	return ret;
+ }
+ 
+@@ -43,11 +92,15 @@
+ zcfgRet_t zcfgFeDalSystemInfo(const char *method, struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+-	if(!strcmp(method, "PUT"))
++	if(!strcmp(method, "PUT")){
+ 		ret = zcfgFeDal_System_Info_Edit(Jobj, NULL);
+-	else
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_System_Info_Get(Jobj, NULL);
++	}
++	else{
+ 		printf("Unknown method:%s\n", method);
+-
++	}
+ 	return ret;
+ }
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-12 16:27:42.245493713 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-12 16:45:13.569027095 +0800
+@@ -177,6 +177,7 @@
+ extern void zcfgFeDalShowFirewall(struct json_object *Jarray);
+ extern void zcfgFeDalShowHomeConnect(struct json_object *Jarray);
+ extern void zcfgFeDalShowWanAdvance(struct json_object *Jarray);
++extern void zcfgFeDalShowSystemInfo(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"WAN",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -220,7 +221,7 @@
+ {"WIFI_WPS",		WIFI_WPS_param,		zcfgFeDalWifiWps,		NULL,						"edit",				""},//Wireless
+ {"WIFI_WMM",		WIFI_WMM_param,		zcfgFeDalWifiWmm,		NULL,						"edit",				""},//Wireless
+ {"WIFI_OTHERS",		WIFI_OTHERS_param,	zcfgFeDalWifiOthers,	NULL,						"edit",				""},//Wireless
+-{"SYSINFO", 		SYSTEM_INFO_param,	zcfgFeDalSystemInfo,	NULL,						"edit",				""},//System
++{"SYSINFO", 		SYSTEM_INFO_param,	zcfgFeDalSystemInfo,	zcfgFeDalShowSystemInfo,	"edit|get",			"System"},
+ {"SNMP",			SNMP_param, 		zcfgFeDalSNMP,			NULL,						"edit",				""},//SNMP
+ {"TIME",			TIME_param, 		zcfgFeDalTime,			NULL,						"edit",				""},//Time
+ {"TRUST_DOMAIN",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain,	NULL,						"add|delete",		""},//Remote_MGMT

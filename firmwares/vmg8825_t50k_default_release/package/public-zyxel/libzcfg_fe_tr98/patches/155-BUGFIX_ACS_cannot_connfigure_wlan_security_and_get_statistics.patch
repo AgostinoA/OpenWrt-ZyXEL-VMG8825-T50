@@ -1,0 +1,150 @@
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2015-06-24 09:16:40.202520461 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2015-06-24 09:24:05.706524147 +0800
+@@ -2858,6 +2858,7 @@
+ 	char ssidRef[32] = {0};
+ 	objIndex_t ssidIid, radioIid, apIid;
+ 	struct json_object *radioJobj = NULL;
++	struct json_object *ssidStatsJobj = NULL;
+ 	struct json_object *ssidJobj = NULL;
+ 	struct json_object *apJobj = NULL;
+ 	struct json_object *apSecJobj = NULL;
+@@ -2883,6 +2884,12 @@
+ 		return ret;
+ 	}
+ 
++	if((ret = feObjJsonGet(RDM_OID_WIFI_SSID_STAT, &ssidIid, &ssidStatsJobj, updateFlag)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.SSID.i.Stats Fail\n", __FUNCTION__);
++		json_object_put(ssidJobj);
++		return ret;
++	}
++
+ 	strcpy(wifiRadio, json_object_get_string(json_object_object_get(ssidJobj, "LowerLayers")));
+ 	IID_INIT(radioIid);
+ 	radioIid.level = 1;
+@@ -2891,6 +2898,7 @@
+ 	if((ret = feObjJsonGet(RDM_OID_WIFI_RADIO, &radioIid, &radioJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 		zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.Radio Fail\n", __FUNCTION__);
+ 		json_object_put(ssidJobj);
++		json_object_put(ssidStatsJobj);
+ 		return ret;
+ 	}
+ 
+@@ -2911,6 +2919,7 @@
+ 		if((ret = feObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_SEC, &apIid, &apSecJobj, updateFlag)) != ZCFG_SUCCESS) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Get WiFi.AccessPoint.i.Security Fail\n", __FUNCTION__);
+ 			json_object_put(radioJobj);
++			json_object_put(ssidStatsJobj);
+ 			json_object_put(ssidJobj);
+ 			json_object_put(apJobj);
+ 			return ret;
+@@ -2970,7 +2979,19 @@
+ 		}
+ 
+ 		/*special case*/
+-		if(!strcmp(paramList->name, "RadioEnabled")) {
++		if(!strcmp(paramList->name, "TotalBytesSent")) {
++			paramValue = json_object_object_get(ssidStatsJobj, "BytesSent");
++		}
++		else if(!strcmp(paramList->name, "TotalBytesReceived")) {
++			paramValue = json_object_object_get(ssidStatsJobj, "BytesReceived");
++		}
++		else if(!strcmp(paramList->name, "TotalPacketsSent")) {
++			paramValue = json_object_object_get(ssidStatsJobj, "PacketsSent");
++		}
++		else if(!strcmp(paramList->name, "TotalPacketsReceived")) {
++			paramValue = json_object_object_get(ssidStatsJobj, "PacketsReceived");
++		}
++		else if(!strcmp(paramList->name, "RadioEnabled")) {
+ 			paramValue = json_object_object_get(radioJobj, "Enable");
+ 		}
+ 		else if(!strcmp(paramList->name, "PeerBSSID")) {
+@@ -3124,6 +3145,7 @@
+ 	}
+ 
+ 	json_object_put(radioJobj);
++	json_object_put(ssidStatsJobj);
+ 	json_object_put(ssidJobj);	
+ 	json_object_put(apJobj);
+ 	json_object_put(apSecJobj);
+@@ -3207,8 +3229,9 @@
+ 			}
+ 		}
+ 	}
+-#ifdef WIFI_SECURITY_WPA
++//#ifdef WIFI_SECURITY_WPA
+ 	else if(!strcmp(type, "WPA")) {
++		bool invalid=false;
+ 		tr98ParamValue = json_object_object_get(tr98Jobj, "WPAAuthenticationMode");
+ 		if(tr98ParamValue) {
+ 			if(!strcmp(json_object_get_string(tr98ParamValue), "EAPAuthentication")) {
+@@ -3216,20 +3239,29 @@
+ 			}
+ 			else if(!strcmp(json_object_get_string(tr98ParamValue), "PSKAuthentication")) {
+ 				json_object_object_add(apSecJobj, "ModeEnabled", json_object_new_string("WPA-Personal"));
+-			}else return ZCFG_INVALID_PARAM_VALUE;
++			}//else return ZCFG_INVALID_PARAM_VALUE;
++			else invalid=true;
+ 		}		
+ 
+ 		tr98ParamValue = json_object_object_get(tr98Jobj, "WPAEncryptionModes");		
+ 		if(tr98ParamValue) {
+ 			if(!strcmp(json_object_get_string(tr98ParamValue), "TKIPandAESEncryption")) {
+ 				json_object_object_add(apSecJobj, "X_ZYXEL_Encryption", json_object_new_string("tkipaes"));
++				invalid=false;
++			}
++			else if(!strcmp(json_object_get_string(tr98ParamValue), "TKIPEncryption")) {
++				json_object_object_add(apSecJobj, "X_ZYXEL_Encryption", json_object_new_string("tkip"));
++				invalid=false;
+ 			}
+ 			else if(!strcmp(json_object_get_string(tr98ParamValue), "AESEncryption")) {
+ 				json_object_object_add(apSecJobj, "X_ZYXEL_Encryption", json_object_new_string("aes"));
++				invalid=false;
+ 			}else return ZCFG_INVALID_PARAM_VALUE;
+ 		}
++		if (invalid) return ZCFG_INVALID_PARAM_VALUE;
++
+ 	}
+-#endif
++//#endif
+ 	else if(!strcmp(type, "11i")) {
+ 		char *tr98ParmStr_1, *tr98ParmStr_2;
+ 		int apAuth = 0, apEncryp = 0;
+@@ -3237,8 +3269,9 @@
+ 		tr98ParmStr_1 = json_object_get_string(json_object_object_get(tr98Jobj, "IEEE11iAuthenticationMode"));
+ 		tr98ParmStr_2 = json_object_get_string(json_object_object_get(tr98Jobj, "WPAAuthenticationMode"));
+ 
+-		if(strcmp(tr98ParmStr_2, "EAPAuthentication") && strcmp(tr98ParmStr_2, "PSKAuthentication")) return ZCFG_INVALID_PARAM_VALUE;
+-		if(strcmp(tr98ParmStr_1, "EAPAuthentication") && strcmp(tr98ParmStr_1, "PSKAuthentication")) return ZCFG_INVALID_PARAM_VALUE;
++		if((strcmp(tr98ParmStr_2, "EAPAuthentication")==0) || (strcmp(tr98ParmStr_2, "PSKAuthentication")==0)) ;//return ZCFG_INVALID_PARAM_VALUE;
++		else if((strcmp(tr98ParmStr_1, "EAPAuthentication")==0) || (strcmp(tr98ParmStr_1, "PSKAuthentication")==0)) ;//return ZCFG_INVALID_PARAM_VALUE;
++		else return ZCFG_INVALID_PARAM_VALUE;
+ 
+ 		if(strstr(json_object_get_string(json_object_object_get(apSecJobj, "ModeEnabled")), "WPA2-Enterprise")) apAuth = WPA2_ENTERPRISE;
+ 		else if(strstr(json_object_get_string(json_object_object_get(apSecJobj, "ModeEnabled")), "WPA2-Personal")) apAuth = WPA2_PERSONAL;
+@@ -3276,8 +3309,9 @@
+ 		tr98ParmStr_1 = json_object_get_string(json_object_object_get(tr98Jobj, "IEEE11iAuthenticationMode"));
+ 		tr98ParmStr_2 = json_object_get_string(json_object_object_get(tr98Jobj, "WPAAuthenticationMode"));
+ 
+-		if(strcmp(tr98ParmStr_2, "EAPAuthentication") && strcmp(tr98ParmStr_2, "PSKAuthentication")) return ZCFG_INVALID_PARAM_VALUE;
+-		if(strcmp(tr98ParmStr_1, "EAPAuthentication") && strcmp(tr98ParmStr_1, "PSKAuthentication")) return ZCFG_INVALID_PARAM_VALUE;
++		if((strcmp(tr98ParmStr_2, "EAPAuthentication")==0) || (strcmp(tr98ParmStr_2, "PSKAuthentication")==0)) ; //return ZCFG_INVALID_PARAM_VALUE;
++		else if((strcmp(tr98ParmStr_1, "EAPAuthentication")==0) || (strcmp(tr98ParmStr_1, "PSKAuthentication")==0)) ;//return ZCFG_INVALID_PARAM_VALUE;
++		else return ZCFG_INVALID_PARAM_VALUE;
+ 
+ 		if(strstr(json_object_get_string(json_object_object_get(apSecJobj, "ModeEnabled")), "WPA2-Enterprise")) apAuth = WPA2_ENTERPRISE;
+ 		else if(strstr(json_object_get_string(json_object_object_get(apSecJobj, "ModeEnabled")), "WPA2-Personal")) apAuth = WPA2_PERSONAL;
+@@ -3311,9 +3345,9 @@
+ 
+ 		tr98ParmStr_1 = json_object_get_string(json_object_object_get(tr98Jobj, "IEEE11iEncryptionModes"));
+ 		tr98ParmStr_2 = json_object_get_string(json_object_object_get(tr98Jobj, "WPAEncryptionModes"));
+-
+-		if(strcmp(tr98ParmStr_2, "TKIPandAESEncryption") && strcmp(tr98ParmStr_2, "AESEncryption")) return ZCFG_INVALID_PARAM_VALUE;
+-		if(strcmp(tr98ParmStr_1, "TKIPandAESEncryption") && strcmp(tr98ParmStr_1, "AESEncryption")) return ZCFG_INVALID_PARAM_VALUE;
++		if((strcmp(tr98ParmStr_2, "TKIPandAESEncryption")==0) || (strcmp(tr98ParmStr_2, "AESEncryption")==0)) ;//return ZCFG_INVALID_PARAM_VALUE;
++		else if((strcmp(tr98ParmStr_1, "TKIPandAESEncryption")==0) || (strcmp(tr98ParmStr_1, "AESEncryption")==0)) ;//return ZCFG_INVALID_PARAM_VALUE;
++		else return ZCFG_INVALID_PARAM_VALUE;
+ 
+ 		if(!strcmp(json_object_get_string(json_object_object_get(apSecJobj, "X_ZYXEL_Encryption")), "aes")) apEncryp = AES;
+ 		else if(!strcmp(json_object_get_string(json_object_object_get(apSecJobj, "X_ZYXEL_Encryption")), "tkipaes")) apEncryp = TKIPAES;

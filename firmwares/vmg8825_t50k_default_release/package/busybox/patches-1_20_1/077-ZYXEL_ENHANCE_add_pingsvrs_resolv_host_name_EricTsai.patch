@@ -1,0 +1,379 @@
+Index: busybox-1_20_1/networking/ping.c
+===================================================================
+--- busybox-1_20_1.orig/networking/ping.c	2017-08-04 14:20:04.638094101 +0800
++++ busybox-1_20_1/networking/ping.c	2017-08-04 14:13:08.876959900 +0800
+@@ -149,6 +149,20 @@
+ # endif
+ #endif
+ 
++
++#ifdef ZCFG_SUPPORT
++#define MAX_HOSTLIST_SIZE 2600
++#define zcfg_host_and_af2sockaddr host_and_af2sockaddr
++#define zcfg_output_diagstat_and_exit(diagstatstr){ \
++		strcpy(diagstat, diagstatstr); \
++		print_stats_and_exit(EXIT_SUCCESS); }
++#else
++#define zcfg_host_and_af2sockaddr xhost_and_af2sockaddr
++#define zcfg_output_diagstat_and_exit(diagstatstr){ }
++#endif
++
++
++
+ enum {
+ 	DEFDATALEN = 56,
+ 	MAXIPLEN = 60,
+@@ -357,6 +371,7 @@
+ 	unsigned timeoutstart;
+ 	unsigned svrstmin, svrstmax, svrstavg;
+ 	char pingsdiagstat[100];
++	char diagstat[100];
+ 	char svrhostname[257];
+ #endif
+ } FIX_ALIASING;
+@@ -387,6 +402,7 @@
+ #define pings        (G.pings       )
+ #define pingsdiagstat (G.pingsdiagstat)
+ #define nhost        (G.nhost       )
++#define diagstat     (G.diagstat    )
+ 
+ #define svrstmin     (G.svrstmin    )
+ #define svrstmax     (G.svrstmax    )
+@@ -457,6 +473,11 @@
+ 	struct json_object *ping_stat = NULL;
+ 	const char *payload = NULL;
+ 	int payloadLen = 0;
++
++
++	if(strstr(diagstat, "Error"))
++		goto diag_complete;
++
+ #endif
+ 	signal(SIGINT, SIG_IGN);
+ 
+@@ -488,26 +509,36 @@
+ 
+ #ifdef ZCFG_SUPPORT
+ 
++diag_complete:
+ 
+ 	ping_stat = json_object_new_object();
+ 	if(pings){
+-		printf("pings: min/avg/max %u/%u/%u\n\n", tmin, tavg, tmax);
+-		json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string(pingsdiagstat));
+-		json_object_object_add(ping_stat, "FastestHost", json_object_new_string(hostname));
+-		if(tmin != UINT_MAX){
+-			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
+-			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
+-			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++		if(strstr(diagstat, "Error")){
++			json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string("pings_complete"));
++			json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(diagstat));
+ 		}else{
+-			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
+-			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
+-			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++			printf("pings: min/avg/max %u/%u/%u\n", tmin, tavg, tmax);
++			json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string(pingsdiagstat));
++			json_object_object_add(ping_stat, "FastestHost", json_object_new_string(hostname));
++			if(tmin != UINT_MAX){
++				json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
++				json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
++				json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++			}else{
++				json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
++				json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
++				json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++			}
+ 		}
+ 	}
+ 	else if(pingsvrs){
+ 		//printf("pingsvrs: min/avg/max %u/%u/%u\n", svrstmin, svrstavg, svrstmax);
+-		json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string(pingsdiagstat));
+-		json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++		if(strstr(diagstat, "Error")){
++			strcpy(pingsdiagstat, "pings_complete");
++			json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string("pings_complete"));
++		}else
++			json_object_object_add(ping_stat, "PingsDiagnosticsState", json_object_new_string(pingsdiagstat));
++		json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(strlen(diagstat) ? diagstat : DIAG_COMPLETE));
+ #if 0
+ 		if(svrstavg != UINT_MAX){
+ 			json_object_object_add(ping_stat, "FastestHost", json_object_new_string(svrhostname));
+@@ -522,18 +552,22 @@
+ #endif
+ 	}
+ 	else{
+-		json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
+-		json_object_object_add(ping_stat, "SuccessCount", json_object_new_int(recv_count));
+-		json_object_object_add(ping_stat, "FailureCount", json_object_new_int(send_count - recv_count));
+-		if (tmin != UINT_MAX){
+-			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
+-			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
+-			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
+-		}
+-		else{
+-			json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
+-			json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
+-			json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++		if(strstr(diagstat, "Error")){
++			json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(diagstat));
++		}else{
++			json_object_object_add(ping_stat, "DiagnosticsState", json_object_new_string(DIAG_COMPLETE));
++			json_object_object_add(ping_stat, "SuccessCount", json_object_new_int(recv_count));
++			json_object_object_add(ping_stat, "FailureCount", json_object_new_int(send_count - recv_count));
++			if (tmin != UINT_MAX){
++				json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(tavg));
++				json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(tmin));
++				json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(tmax));
++			}
++			else{
++				json_object_object_add(ping_stat, "AverageResponseTime", json_object_new_int(0));
++				json_object_object_add(ping_stat, "MinimumResponseTime", json_object_new_int(0));
++				json_object_object_add(ping_stat, "MaximumResponseTime", json_object_new_int(0));
++			}
+ 		}
+ 	}
+ 
+@@ -983,23 +1017,23 @@
+ 
+ 	printf("%s: hostname %s\n", __FUNCTION__, hostname);
+ #if ENABLE_PING6
+-#ifdef ZCFG_SUPPORT
+-	if(pings){
+-		lsa = xhost_and_af2sockaddr(hostname, 0, AF_UNSPEC);
+-	}else
+-#endif
+ 	{
+ 		sa_family_t af = AF_UNSPEC;
+ 		if (opt & OPT_IPV4)
+ 			af = AF_INET;
+ 		if (opt & OPT_IPV6)
+ 			af = AF_INET6;
+-		lsa = xhost_and_af2sockaddr(hostname, 0, af);
++		//lsa = xhost_and_af2sockaddr(hostname, 0, af);
++		lsa = zcfg_host_and_af2sockaddr(hostname, 0, af);
+ 	}
+ #else
+-	lsa = xhost_and_af2sockaddr(hostname, 0, AF_INET);
++	lsa = zcfg_host_and_af2sockaddr(hostname, 0, AF_INET);
+ #endif
+ 
++	if(!lsa){
++		zcfg_output_diagstat_and_exit(DIAG_CANNOT_RESOLVE_HOST_NAME);
++	}
++
+ 	if (source_lsa && source_lsa->u.sa.sa_family != lsa->u.sa.sa_family)
+ 		/* leaking it here... */
+ 		source_lsa = NULL;
+@@ -1010,6 +1044,41 @@
+ 	//print_stats_and_exit(DIAG_COMPLETE);
+ }
+ 
++static char *common_ping_resolvhost(int opt, char *req_resolv_hostname)
++{
++	len_and_sockaddr *lsa;
++	char *hostdotted;
++
++	printf("%s: hostname %s", __FUNCTION__, req_resolv_hostname);
++#if ENABLE_PING6
++	{
++		sa_family_t af = AF_UNSPEC;
++		if (opt & OPT_IPV4)
++			af = AF_INET;
++		if (opt & OPT_IPV6)
++			af = AF_INET6;
++		//lsa = xhost_and_af2sockaddr(hostname, 0, af);
++		lsa = zcfg_host_and_af2sockaddr(req_resolv_hostname, 0, af);
++	}
++#else
++	lsa = zcfg_host_and_af2sockaddr(req_resolv_hostname, 0, AF_INET);
++#endif
++
++	if(!lsa){
++		zcfg_output_diagstat_and_exit(DIAG_CANNOT_RESOLVE_HOST_NAME);
++	}
++
++	hostdotted = xmalloc_sockaddr2dotted_noport(&lsa->u.sa);
++	if(hostdotted)
++		printf(" %s\n", hostdotted);
++	else
++		printf(" \n\n");
++
++	free(lsa);
++
++	return hostdotted;
++}
++
+ static void enable_pings(int opt)
+ {
+ 	char pingscmd[300] = {0};
+@@ -1017,6 +1086,16 @@
+ 
+ 	if(strlen(hostname) > 256) return;
+ 	sprintf(pingscmd, "pings");
++
++	if(opt & OPT_IPV4){
++		sprintf(param, " -4");
++		strcat(pingscmd, param);
++	}
++	if(opt & OPT_IPV6){
++		sprintf(param, " -6");
++		strcat(pingscmd, param);
++	}
++
+ 	if(pingcount > 0){
+ 		sprintf(param, " -c %u", pingcount);
+ 		strcat(pingscmd, param);
+@@ -1040,6 +1119,94 @@
+ 	system(pingscmd);
+ }
+ 
++static char *pingsvrs_resolvehosts(int opt, char *hostlist)
++{
++	char *paramPtr, *paramPos;
++	char pinghostname[257];
++	char *resolvhosts = NULL;
++
++	if(hostlist){
++		resolvhosts = malloc(MAX_HOSTLIST_SIZE);
++		memset(resolvhosts, 0, MAX_HOSTLIST_SIZE);
++	}
++
++	//a.b.c.d,a:b::c,host.name
++	paramPtr = hostlist;
++	paramPos = strchr(hostlist, ',');
++	while(paramPos){
++		*paramPos = '\0';
++		memset(pinghostname, 0, sizeof(pinghostname));
++		strncpy(pinghostname, paramPtr, 256);
++		//hostname = pinghostname;
++		//++nhost;
++		char *resolvhost = common_ping_resolvhost(opt, pinghostname);
++		if(resolvhost){
++			strcat(resolvhosts, resolvhost);
++			strcat(resolvhosts, ",");
++			free(resolvhost);
++		}
++
++		paramPtr = paramPos + 1;
++		paramPos = strchr(paramPtr, ',');
++	}
++	if(paramPtr && strlen(paramPtr)){
++		memset(pinghostname, 0, sizeof(pinghostname));
++		strncpy(pinghostname, paramPtr, 256);
++		hostname = pinghostname;
++		//++nhost;
++		char *resolvhost = common_ping_resolvhost(opt, pinghostname);
++		if(resolvhost){
++			strcat(resolvhosts, resolvhost);
++			strcat(resolvhosts, ",");
++		}
++	}
++	if(strlen(resolvhosts))
++		*(resolvhosts+strlen(resolvhosts)-1) = '\0';
++	else{
++		free(resolvhosts);
++		resolvhosts = NULL;
++	}
++	printf("pingsvrs_resolvehosts complete\n");
++
++	return resolvhosts;
++}
++
++static int pingsvrs_hosts(int opt, char *hostlist)
++{
++	char *paramPtr, *paramPos;
++	char pinghostname[257];
++
++	svrstmin = 0;
++	svrstavg = UINT_MAX;
++	svrstmax = 0;
++	memset(svrhostname, 0, sizeof(svrhostname));
++
++	paramPtr = hostlist;
++	paramPos = strchr(hostlist, ',');
++	while(paramPos){
++		*paramPos = '\0';
++		memset(pinghostname, 0, sizeof(pinghostname));
++		strncpy(pinghostname, paramPtr, 256);
++		hostname = pinghostname;
++		++nhost;
++		enable_pings(opt);
++
++		paramPtr = paramPos + 1;
++		paramPos = strchr(paramPtr, ',');
++	}
++	if(paramPtr && strlen(paramPtr)){
++		memset(pinghostname, 0, sizeof(pinghostname));
++		strncpy(pinghostname, paramPtr, 256);
++		hostname = pinghostname;
++		++nhost;
++		enable_pings(opt);
++	}
++
++	printf("pingsvrs complete\n");
++	strcpy(pingsdiagstat, "pings_complete");
++	print_stats_and_exit(EXIT_SUCCESS);
++}
++
+ static int common_ping_main(int opt, char **argv)
+ {
+ 	char *str_s;
+@@ -1068,6 +1235,25 @@
+ 
+ #ifdef ZCFG_SUPPORT
+ 	if(pingsvrs){
++		char *hosts = NULL;
++		char *resolvhosts = NULL;
++
++		hostlist = argv[optind];
++		int hostlistsz = 0;
++		if(!hostlist || (hostlistsz = strlen(hostlist)) >= MAX_HOSTLIST_SIZE)
++			print_stats_and_exit(EXIT_SUCCESS);
++
++		//a.b.c.d,a:b::c,host.name
++		hosts = (char *)malloc(hostlistsz+1);
++		memcpy(hosts, hostlist, hostlistsz);
++		*(hosts+hostlistsz) = '\0';
++		resolvhosts = pingsvrs_resolvehosts(opt, hosts);
++		free(hosts);
++
++		if(resolvhosts)
++			pingsvrs_hosts(opt, resolvhosts);
++
++#if 0
+ 		char *paramPtr, *paramPos;
+ 		char pinghostname[257];
+ 
+@@ -1078,6 +1264,10 @@
+ 		svrstmax = 0;
+ 		memset(svrhostname, 0, sizeof(svrhostname));
+ 
++		//pingsvrs = PINGSVRS_RUNNING;
++		//dup hostlist;
++		//resolve hosts
++
+ 		paramPtr = hostlist;
+ 		paramPos = strchr(hostlist, ',');
+ 		while(paramPos){
+@@ -1087,8 +1277,10 @@
+ 			hostname = pinghostname;
+ 			++nhost;
+ 			enable_pings(opt);
++
+ 			paramPtr = paramPos + 1;
+ 			paramPos = strchr(paramPtr, ',');
++			//print_stats_and_exit(EXIT_SUCCESS);
+ 		}
+ 		if(paramPtr && strlen(paramPtr)){
+ 			memset(pinghostname, 0, sizeof(pinghostname));
+@@ -1101,7 +1293,7 @@
+ 		printf("pingsvrs complete\n");
+ 		strcpy(pingsdiagstat, "pings_complete");
+ 		print_stats_and_exit(EXIT_SUCCESS);
+-
++#endif
+ 		exit(0);
+ 	}else
+ #endif

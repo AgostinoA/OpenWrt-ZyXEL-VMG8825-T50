@@ -1,0 +1,224 @@
+Index: libzcfg_fe_tr98-1.0/diag.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag.c	2017-09-22 20:19:16.630533053 +0800
++++ libzcfg_fe_tr98-1.0/diag.c	2017-09-22 20:19:16.747445900 +0800
+@@ -1026,7 +1026,8 @@
+ zcfgRet_t udpEchoCfgObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+-	bool tr98ParamEnable = 0;
++	bool tr98ObjParamEnableValue = 0, tr181ObjParmEnableValue = 0;
++	struct json_object *tr98ObjParamEnable = NULL;
+ 	objIndex_t objIid;
+ 	struct json_object *udpEchoObj = NULL;
+ 	struct json_object *paramValue = NULL;
+@@ -1043,6 +1044,8 @@
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_DIAG_UDP_ECHO_CFG, &objIid, &udpEchoObj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 
++	tr98Jobj = zcfgFeRetrieveSpv(tr98FullPathName);
++
+ 	if(multiJobj){
+ 		tmpObj = udpEchoObj;
+ 		udpEchoObj = NULL;
+@@ -1050,6 +1053,7 @@
+ 		json_object_put(tmpObj);
+ 	}
+ 
++	tr181ObjParmEnableValue = json_object_get_boolean(json_object_object_get(udpEchoObj, "Enable"));
+ 	paramList = tr98Obj[handler].parameter;
+ 	//This is specific implementation on 'UdpEchoConfig'
+ 	while((nParm < UDPECHOCFG_SET_PARM_NUM) && (paramList->name != NULL)) {
+@@ -1061,76 +1065,42 @@
+ 		}
+ 
+ 		if(!strcmp(paramList->name, "Enable")) {
+-			bool tr181ObjParmValue;
+-			bool tr98ObjParmValue = json_object_get_boolean(paramValue);
+-			if(!(tr181ObjParm = json_object_object_get(udpEchoObj, paramList->name))) {
+-				json_object_put(udpEchoObj);
+-				return ZCFG_NO_SUCH_OBJECT;
+-			}
+-			tr98ParamEnable = tr98ObjParmValue;
+-			tr181ObjParmValue = json_object_get_boolean(tr181ObjParm);
+-			if(tr98ObjParmValue && tr181ObjParmValue){
+-				json_object_put(udpEchoObj);
++			tr98ObjParamEnable = paramValue;
++			//if(!(tr181ObjParm = json_object_object_get(udpEchoObj, paramList->name))) {
++			//}
++			tr98ObjParamEnableValue = tr98ObjParamEnable ? json_object_get_boolean(tr98ObjParamEnable) : 0;
++			if(tr181ObjParmEnableValue && tr98ObjParamEnableValue){
++				if(!multiJobj) json_object_put(udpEchoObj);
++				sprintf(paramfault, "UDPEchoConfig running, and require disable!");
+ 				return ZCFG_INVALID_PARAM_VALUE;
+ 			}else {
+ 				json_object_object_add(udpEchoObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 			}
+ 		}else if(!strcmp(paramList->name, "Interface")) {
+-			sprintf(paramfault, "%s.%s", tr98FullPathName, paramList->name);
+ 			const char *tmpTr98ObjParmValue = json_object_get_string(paramValue);
+ 			char tr98ObjParmValue[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 			strcpy(tr98ObjParmValue, tmpTr98ObjParmValue);
+ 			ReplaceWANDeviceIndex(tmpTr98ObjParmValue, tr98ObjParmValue); //recover the active wan from WANDEV.1 back to it original WANDEV.
+ 			if(!strcmp(tr98ObjParmValue, "")) {
+ 				json_object_object_add(udpEchoObj, paramList->name, json_object_new_string(""));
+-			}else {
+-				objIndex_t ipIfIid, addrIid;
+-				struct json_object *ipv4AddrObj = NULL;
+-				//if((zcfgFe98To181MappingNameGet(tr98ObjParmValue, iface)) != ZCFG_SUCCESS) {
+-				if((zcfgFe98To181MappingNameGet((char *)tr98ObjParmValue, iface)) != ZCFG_SUCCESS) {
+-					//zcfgLog(ZCFG_LOG_ERR, "%s : get mapping name failed\n", __FUNCTION__);
+-					json_object_put(udpEchoObj);
+-					return ZCFG_INVALID_PARAM_VALUE;
+-				}
+-				if(strstr(iface, "PPP.Interface") != NULL) {
+-					if((zcfgFeTr181IfaceStackHigherLayerGet(iface, higherLayer)) != ZCFG_SUCCESS) {
+-						//zcfgLog(ZCFG_LOG_ERR, "%s : get higher layer interface failed\n", __FUNCTION__);
+-						json_object_put(udpEchoObj);
+-						return ZCFG_INVALID_PARAM_VALUE;
+-					}
+-					memset(iface, 0, sizeof(iface));
+-					strcpy(iface, higherLayer);
+-				}
+-				printf("%s: interface %s\n", __FUNCTION__, iface);
+-				IID_INIT(ipIfIid);
+-				sscanf(iface, "IP.Interface.%hhu", &ipIfIid.idx[0]);
+-				ipIfIid.level = 1;
+-				IID_INIT(addrIid);
+-				if(zcfgFeSubInObjJsonGetNext(RDM_OID_IP_IFACE_V4_ADDR, &ipIfIid, &addrIid, &ipv4AddrObj) != ZCFG_SUCCESS) {
+-					json_object_put(udpEchoObj);
+-					return ZCFG_INVALID_PARAM_VALUE;
+-				}
+-				if((json_object_get_boolean(json_object_object_get(ipv4AddrObj, "Enable"))) != true) {
+-					json_object_put(udpEchoObj);
+-					json_object_put(ipv4AddrObj);
+-					return ZCFG_INVALID_PARAM_VALUE;
+-				}
+-				json_object_put(ipv4AddrObj);
+-
++			}else if(zcfgFe98To181IpIface(tr98ObjParmValue, iface) == ZCFG_SUCCESS){
+ 				json_object_object_add(udpEchoObj, paramList->name, json_object_new_string(iface));
++			}else{
++				sprintf(paramfault, "Interface config not correct!");
++				if(!multiJobj) json_object_put(udpEchoObj);
++				return ZCFG_INVALID_PARAM_VALUE;
+ 			}
+-			strcpy(paramfault, "");
+ 		}else if(!strcmp(paramList->name, "SourceIPAddress")) {
+ 			char addr[sizeof(struct in_addr)] = {0};
+ 			const char *srcIpAddress = json_object_get_string(paramValue);
+-			if((!srcIpAddress || !strlen(srcIpAddress)) && tr98ParamEnable)
++			if((!srcIpAddress || !strlen(srcIpAddress)) && tr98ObjParamEnableValue)
+ 			{
+-				json_object_put(udpEchoObj);
++				if(!multiJobj) json_object_put(udpEchoObj);
+ 				return ZCFG_INVALID_ARGUMENTS;
+ 			}
+ 			else if((inet_pton(AF_INET, srcIpAddress, (void *)addr)) != 1) {
+ 				//zcfgLog(ZCFG_LOG_ERR, "%s : wrong IP address\n", __FUNCTION__);
+-				json_object_put(udpEchoObj);
++				if(!multiJobj) json_object_put(udpEchoObj);
+ 				return ZCFG_INVALID_ARGUMENTS;
+ 			}
+ 			json_object_object_add(udpEchoObj, paramList->name, JSON_OBJ_COPY(paramValue));
+@@ -1141,8 +1111,32 @@
+ 		nParm++;
+ 	}
+ 
++	if(!tr98ObjParamEnable){
++		if(tr181ObjParmEnableValue){
++			if(!multiJobj) json_object_put(udpEchoObj);
++			sprintf(paramfault, "UDPEchoConfig running, and require disable!");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++		zcfgFeJsonMultiObjAddParam(multiJobj, RDM_OID_IP_DIAG_UDP_ECHO_CFG, &objIid, "apply", json_object_new_boolean(false));
++	}else if(tr98ObjParamEnableValue){
++		zcfgRet_t rst;
++		char *srcIpAddressStr = json_object_get_string(json_object_object_get(udpEchoObj, "SourceIPAddress"));
++		const char *iface = json_object_get_string(json_object_object_get(udpEchoObj, "Interface"));
++		if(!srcIpAddressStr || strlen(srcIpAddressStr) == 0){
++			if(!multiJobj) json_object_put(udpEchoObj);
++			sprintf(paramfault, "Require SourceIPAddress specifying!");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}else if(((rst = zcfgFeTr181IpIfaceRunning(iface, paramfault)) != ZCFG_SUCCESS) && rst != ZCFG_EMPTY_OBJECT){
++			if(!multiJobj) json_object_put(udpEchoObj);
++			sprintf(paramfault, "Interface not correct!");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++	}
++
++
+ 	if(!multiJobj) {
+ 		//set parameter
++		//zcfgFeObjWrite(RDM_OID_IP_DIAG_IPPING, &objIid, ipping, REQUEST_SET_OBJ | ZCFG_PARTIAL_OBJECT_SET, NULL))
+ 		json_object_put(udpEchoObj);
+ 	}
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-09-22 20:19:16.910533058 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-09-22 20:19:16.938533059 +0800
+@@ -1044,6 +1044,40 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t zcfgFeTr181IpIfaceRunning(const char *iface, char *paramfault)
++{
++	objIndex_t ipIfIid, addrIid;
++	struct json_object *ipv4AddrObj;
++	const char *status;
++
++	if(!iface || strlen(iface) == 0)
++		return ZCFG_EMPTY_OBJECT;
++
++	IID_INIT(ipIfIid);
++	if(sscanf(iface, "IP.Interface.%hhu", &ipIfIid.idx[0]) != 1){
++		if(paramfault) sprintf(paramfault, "%s not correct!", iface ? iface : "Interface");
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	ipIfIid.level = 1;
++	IID_INIT(addrIid);
++	if(zcfgFeSubInObjJsonGetNext(RDM_OID_IP_IFACE_V4_ADDR, &ipIfIid, &addrIid, &ipv4AddrObj) != ZCFG_SUCCESS) {
++		if(paramfault) sprintf(paramfault, "Interface not running!");
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++
++	if( (json_object_get_boolean(json_object_object_get(ipv4AddrObj, "Enable")) != true) ||
++	!(status = json_object_get_string(json_object_object_get(ipv4AddrObj, "Status"))) ||
++	 strcmp(status, "Enabled") ) {
++		json_object_put(ipv4AddrObj);
++		if(paramfault) sprintf(paramfault, "Interface not running!");
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++	json_object_put(ipv4AddrObj);
++
++	return ZCFG_SUCCESS;
++}
++
+ #define MAX_TR181_WANIPIFACE_PARAM_LEN 1024
+ #define MAX_TR98_WANIPIFACE_PARAM_LEN 1500
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-09-22 20:19:16.910533058 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-09-22 20:19:16.938533059 +0800
+@@ -289,8 +289,8 @@
+ 
+ #ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
+ bool zcfgAddSpvSubsequent(struct json_object *tr98SpvObj);
+-#else
+-#define zcfgAddSpvSubsequent(obj) (0)
++#else
++#define zcfgAddSpvSubsequent(obj) (0)
+ #endif
+ 
+ zcfgRet_t zcfgFeTr98ObjSpvGet(const char *, struct json_object **);
+@@ -311,6 +311,7 @@
+ 
+ char *translateWanIpIface(int dataTransType, const char *wanIpIfaces);
+ zcfgRet_t zcfgFe98To181IpIface(const char *tr98IfaceName, char *ipIface);
++zcfgRet_t zcfgFeTr181IpIfaceRunning(const char *iface, char *paramfault);
+ zcfg_offset_t zcfgFeTr181WanSetLink(char *wanLinkName, bool set, void **retObj, objIndex_t *retObjIndex, int *applied);
+ 
+ zcfgRet_t zcfgFeTr181IfaceStackLowerLayerGet(char *higherLayer, char *result);

@@ -1,0 +1,562 @@
+Index: libzyutil-1.0/common.c
+===================================================================
+--- libzyutil-1.0.orig/common.c	2018-09-10 13:40:52.694019364 +0800
++++ libzyutil-1.0/common.c	2018-09-10 13:47:45.908276515 +0800
+@@ -23,6 +23,7 @@
+ 
+ #include "zcfg_rdm_oid.h"
+ #include "zcfg_msg.h"
++#include "zlog_api.h"
+ #include "zos_api.h"
+ 
+ #define MID_SIZE_MAX  32
+@@ -47,8 +48,8 @@
+ /*
+  *  Function Name: zyUtilIfaceHwAddrGet
+  *  Description: Used to get the MAC Addfree of interface
+- *  Parameters: 
+- *              
++ *  Parameters:
++ *
+  */
+ void zyUtilIfaceHwAddrGet(char *ifname, char *hwaddr)
+ {
+@@ -149,7 +150,7 @@
+ 
+ void zyUtilAddIntfToBridge(char *ifName, char *bridgeName)
+ {
+-	char sysCmd[64];	
++	char sysCmd[64];
+ 
+ 	if(ifName == NULL || ifName[0] == 0) return;
+ 	if(bridgeName == NULL || bridgeName[0] == 0) return;
+@@ -224,7 +225,7 @@
+ 	domainNameStartPtr = strstr(url, "://");
+ 	if (NULL == domainNameStartPtr) {
+ 		domainNameStartPtr = url;
+-	} 
++	}
+ 	else {
+ 		domainNameStartPtr += strlen("://");
+ 	}
+@@ -246,15 +247,15 @@
+ 	domainNameStartPtr = strstr(tmpdomainName, "*.");
+ 	if (NULL == domainNameStartPtr) {
+ 		domainNameStartPtr = tmpdomainName;
+-	} 
++	}
+ 	else {
+-		domainNameStartPtr += strlen("*.");		
++		domainNameStartPtr += strlen("*.");
+ 	}
+-	
++
+ 	domainNameEndPtr = tmpdomainName + strlen(tmpdomainName);
+ 
+ 	strncpy(domainName, domainNameStartPtr, (domainNameEndPtr-domainNameStartPtr));
+-	
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+@@ -318,7 +319,7 @@
+ 		snprintf(sysCmd, sizeof(sysCmd), "kill -9 %d", pid);
+ 		zcfgLog(ZCFG_LOG_DEBUG, "Command %s\n", sysCmd);
+ 		if(system(sysCmd) != 0)
+-			ret = ZCFG_INTERNAL_ERROR; 
++			ret = ZCFG_INTERNAL_ERROR;
+ 		fclose(fptr);
+ 	}
+ 
+@@ -328,23 +329,35 @@
+ 
+ zcfgRet_t zyUtilAppStopByPidfile(char *pidFile)
+ {
+-	zcfgRet_t ret = ZCFG_SUCCESS;
+-	FILE *fptr = NULL;
+-	int pid = 0;
++	zcfgRet_t   ret = ZCFG_SUCCESS;
++	FILE        *fptr = NULL;
++	int         pid = 0;
+ 
+-	zcfgLog(ZCFG_LOG_DEBUG, "%s : Enter\n", __FUNCTION__);
++	fptr = fopen(pidFile, "r");
++	if (fptr == NULL)
++	{
++	    ZLOG_WARNING("fail to open pid file = %s", pidFile);
++	    return ret;
++	}
++
++	fscanf(fptr, "%d", &pid);
++	fclose(fptr);
+ 
+-	if((fptr = fopen(pidFile, "r")) != NULL) {
+-		fscanf(fptr, "%d", &pid);
+-		printf("%s : Stop process with PID %d\n", __FUNCTION__, pid);
+ #if defined(SUNRISE_RELEASE_DHCP_PPP_BEFORE_IFDOWN) || defined(ECONET_PLATFORM)
+-		if ( strstr(pidFile,"pppd")!=NULL || strstr(pidFile,"/var/dhcpc")!=NULL ){
+-			kill(pid, SIGTERM);
+-			sleep(1);
+-		}
++	if (strstr(pidFile,"pppd") != NULL || strstr(pidFile,"/var/dhcpc") != NULL)
++	{
++		kill(pid, SIGTERM);
++		sleep(1);
++	}
+ #endif
+-		kill(pid, SIGKILL);
+-		fclose(fptr);
++
++	if (kill(pid, SIGKILL) == 0)
++	{
++        ZLOG_DEBUG("kill process with PID %d", pid);
++	}
++	else
++	{
++        ZLOG_WARNING("fail to kill process with PID %d", pid);
+ 	}
+ 
+ 	return ret;
+@@ -352,17 +365,27 @@
+ 
+ zcfgRet_t zyUtilMacStrToNum(const char *macStr, uint8_t *macNum)
+ {
+-	char *pToken = NULL;
+-	char *pLast = NULL;
+-	char *buf;
+-	int i;
++	char    *pToken = NULL;
++	char    *pLast = NULL;
++	char    *buf;
++	int     i;
+ 
+-	if(macNum == NULL || macStr == NULL) {
++	if (macNum == NULL)
++	{
++	    ZLOG_ERROR("macNum == NULL");
+ 		return ZCFG_INVALID_ARGUMENTS;
+ 	}
+ 
+-	if((buf = (char *)malloc(MAC_STR_LEN+1)) == NULL) {
+-		zcfgLog(ZCFG_LOG_ERR, "%s : malloc of %d bytes failed\n", __FUNCTION__, MAC_STR_LEN+1);
++	if (macStr == NULL)
++	{
++	    ZLOG_ERROR("macStr == NULL");
++		return ZCFG_INVALID_ARGUMENTS;
++	}
++
++	buf = (char *)ZOS_MALLOC(MAC_STR_LEN + 1);
++	if (buf == NULL)
++	{
++		ZLOG_ERROR("memory insufficient");
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 
+@@ -374,12 +397,13 @@
+ 	 */
+ 	pToken = strtok_r(buf, ":", &pLast);
+ 	macNum[0] = (uint8_t)strtol(pToken, (char **)NULL, 16);
+-	for (i = 1; i < MAC_ADDR_LEN; i++) {
++	for (i = 1; i < MAC_ADDR_LEN; ++i)
++	{
+ 		pToken = strtok_r(NULL, ":", &pLast);
+ 		macNum[i] = (uint8_t)strtol(pToken, (char **)NULL, 16);
+ 	}
+ 
+-	free(buf);
++	ZOS_FREE(buf);
+ 
+ 	return ZCFG_SUCCESS;
+ }
+@@ -472,7 +496,7 @@
+ {
+ 	char tmpStr[513] = {};
+ 	int i = 0, j = 0, sym = 0;
+-	
++
+ 	for (i=0; i<strlen(str); i++) {
+ 		if ((48 <= *(str+i) && *(str+i) <= 57) || (65 <= *(str+i) && *(str+i) <= 90) || (97 <= *(str+i) && *(str+i) <= 122))
+ 			sym = 0;
+@@ -486,7 +510,7 @@
+ 		j++;
+ 	}
+ 	strcpy(str, tmpStr);
+-		
++
+ 	return;
+ }
+ 
+@@ -494,7 +518,7 @@
+ {
+ 	char tmpStr[513] = {};
+ 	int i = 0, j = 0, sym = 0;
+-	
++
+ 	for (i=0; i<strlen(str); i++) {
+ 		if ((*(str+i) == 34 ) || (*(str+i) == 36) || (*(str+i) == 92) || (*(str+i) == 96)){
+ 			*(tmpStr+j) = 0x5c;
+@@ -504,7 +528,7 @@
+ 		j++;
+ 	}
+ 	strcpy(str, tmpStr);
+-		
++
+ 	return;
+ }
+ 
+@@ -655,7 +679,7 @@
+ 	if(nvramDataGet(&nvramData) < 0)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+-        sprintf(mac ,"%02X%02X%02X%02X%02X%02X", 
++        sprintf(mac ,"%02X%02X%02X%02X%02X%02X",
+ 			nvramData.ucaBaseMacAddr[0],
+ 			nvramData.ucaBaseMacAddr[1],
+         	nvramData.ucaBaseMacAddr[2],
+@@ -745,28 +769,39 @@
+ 	int csvLen = strlen(csv);
+ 
+ 
+-	if(!csv || !term || (csvLen <= 0))
++	if (!csv || !term || (csvLen <= 0))
+ 		return NULL;
+ 
+ 	str_1 = strstr(csv, term);
+-	if(!str_1) {
++	if (!str_1)
++	{
+ 		return NULL;
+ 	}
+ 
+-	new_Csv = malloc(csvLen);
++	new_Csv = ZOS_MALLOC(csvLen);
++	if (new_Csv == NULL)
++	{
++	    ZLOG_ERROR("memory insufficient");
++	    return NULL;
++	}
++
+ 	memset(new_Csv, 0, csvLen);
+ 
+-	if(str_1 == csv) {
++	if (str_1 == csv)
++	{
+ 		str_2 = str_1 + strlen(term);
+-		if(str_2[0] != '\0') {
++		if (str_2[0] != '\0')
++		{
+ 			str_2++;
+ 			strcpy(new_Csv, str_2);
+ 		}
+ 	}
+-	else {
++	else
++	{
+ 		str_2 = str_1 + strlen(term);
+ 		strncpy(new_Csv, csv, (str_1-csv)-1);
+-		if(str_2[0] != '\0') {
++		if (str_2[0] != '\0')
++		{
+ 			strcat(new_Csv, str_2);
+ 		}
+ 	}
+@@ -804,7 +839,7 @@
+ 	return ((addr1 & mask) == (addr2 & mask)) ? 0 : 1;
+ }
+ 
+-#ifdef ZCFG_LOG_USE_DEBUGCFG 
++#ifdef ZCFG_LOG_USE_DEBUGCFG
+ int zyUtilQueryUtilityEid(const char *name)
+ {
+ 	//(!name || !strlen(name))
+@@ -1051,9 +1086,9 @@
+ /*zyUtilIptablesLockInit() should be only called once, for now it is called by beIptablesInit() in zcfg_be_iptables.c*/
+ void zyUtilIptablesLockInit(){
+ 	union semun sem_union;
+-	
++
+ 	iptables_sem_id = semget(ZCFG_IPTABLES_SEM_KEY,1,IPC_CREAT|0666);
+-	
++
+ 	sem_union.val = 1;
+ 	semctl(iptables_sem_id, 0, SETVAL, sem_union);
+ }
+@@ -1063,7 +1098,7 @@
+ 
+ 	if(iptables_sem_id < 0)
+ 		iptables_sem_id = semget(ZCFG_IPTABLES_SEM_KEY,1,IPC_CREAT|0666);
+-	
++
+ 	sem_b.sem_num = 0;
+ 	sem_b.sem_op = -1;
+ 	sem_b.sem_flg = SEM_UNDO;
+@@ -1072,10 +1107,10 @@
+ 
+ void zyUtilIptablesUnLock(){
+ 	struct sembuf sem_b;
+-	
++
+ 	if(iptables_sem_id < 0)
+ 		iptables_sem_id = semget(ZCFG_IPTABLES_SEM_KEY,1,IPC_CREAT|0666);
+-	
++
+ 	sem_b.sem_num = 0;
+ 	sem_b.sem_op = 1;
+ 	sem_b.sem_flg = SEM_UNDO;
+@@ -1083,13 +1118,28 @@
+ }
+ #endif
+ 
+-void zyUtilInitIptablesConfig(iptCfg_t **ipt){	
+-	*ipt = malloc(sizeof(iptCfg_t));
++bool zyUtilInitIptablesConfig(iptCfg_t **ipt)
++{
++    if (ipt == NULL)
++    {
++        ZLOG_ERROR("ipt == NULL");
++        return false;
++    }
++
++	*ipt = ZOS_MALLOC(sizeof(iptCfg_t));
++	if (*ipt == NULL)
++	{
++	    ZLOG_ERROR("memory insufficient");
++	    return false;
++	}
++
+ 	(*ipt)->fp_m = open_memstream(&(*ipt)->buf_m, &(*ipt)->len_m);
+ 	(*ipt)->fp_f = open_memstream(&(*ipt)->buf_f, &(*ipt)->len_f);
+ 	(*ipt)->fp_n = open_memstream(&(*ipt)->buf_n, &(*ipt)->len_n);
+ 	(*ipt)->fp_m6 = open_memstream(&(*ipt)->buf_m6, &(*ipt)->len_m6);
+ 	(*ipt)->fp_f6 = open_memstream(&(*ipt)->buf_f6, &(*ipt)->len_f6);
++
++	return true;
+ }
+ 
+ void zyUtilRestoreIptablesConfig(iptCfg_t *ipt, const char *file, const char *func, int line){
+@@ -1140,7 +1190,7 @@
+ 
+ 		unlink(fileName);
+ 	}
+-	
++
+ 	//ip6tables-restore
+ 	if(ipt->len_m6 || ipt->len_f6){
+ 		strcpy(fileName, "/tmp/iptablesConfig-XXXXXX");
+@@ -1170,20 +1220,20 @@
+ 		unlink(fileName);
+ 	}
+ 
+-	free(ipt->buf_m);
+-	free(ipt->buf_f);
+-	free(ipt->buf_n);
+-	free(ipt->buf_m6);
+-	free(ipt->buf_f6);
+-	free(ipt);
++	ZOS_FREE(ipt->buf_m);
++	ZOS_FREE(ipt->buf_f);
++	ZOS_FREE(ipt->buf_n);
++	ZOS_FREE(ipt->buf_m6);
++	ZOS_FREE(ipt->buf_f6);
++	ZOS_FREE(ipt);
+ }
+ 
+-		// return:
+-		// -3: auth file does not exist
+-		// -2: user account does not exist
+-		// -1: auth fail
+-		//  0: auth success
+-		//  1: not support sha512 hash account password
++// return:
++// -3: auth file does not exist
++// -2: user account does not exist
++// -1: auth fail
++//  0: auth success
++//  1: not support sha512 hash account password
+ int zyUtilAuthUserAccount(const char *username, const char *password)
+ {
+ 	static unsigned int fileSerialNumber = 19475;
+@@ -1200,10 +1250,12 @@
+ 	fileSerialNumber += 91;
+ 	sprintf(accFile, "/var/tmp/tmp%d", fileSerialNumber);
+ 	fd = open(accFile, O_RDWR|O_CREAT, 0600);
+-	if (fd < 0) {
++	if (fd < 0)
++	{
+ 		printf("%s.%d: cant not open file! \n", __func__, __LINE__);
+ 		return -3;
+ 	}
++
+ 	sprintf(syscmd, "%s\r\n%s\r\n", username, password);
+ 	write(fd, syscmd, strlen(syscmd));
+ 	close(fd);
+@@ -1212,12 +1264,14 @@
+ 	ZOS_SYSTEM(syscmd);
+ 
+ 	fd = open(accFile, O_RDONLY);
+-	if (fd < 0) {
++	if (fd < 0)
++	{
+ 		sprintf(syscmd, "rm %s", accFile);
+ 		ZOS_SYSTEM(syscmd);
+ 		printf("%s.%d: cant not open file! \n", __func__, __LINE__);
+ 		return -3;
+ 	}
++
+ 	r = read(fd, &accInfo[0], 512);
+ 	close(fd);
+ 
+@@ -1252,34 +1306,46 @@
+     return NULL;
+ }
+ 
+-void zyRemoveAccountInfoFromFile(char *username, char *filePath){
+-    char strBuff[513] = {0};
+-    char *tmpFilePath = NULL;
+-    FILE *fp;
+-    FILE *tmpFp;
++void zyRemoveAccountInfoFromFile(char *username, char *filePath)
++{
++    char    strBuff[513] = {0};
++    char    *tmpFilePath = NULL;
++    FILE    *fp;
++    FILE    *tmpFp;
+ 
+     fp = fopen(filePath, "r");
+-    if(fp == NULL){
+-        printf("%s: cannot open file '%s'!\n", __FUNCTION__, filePath);
++    if (fp == NULL)
++    {
++        ZLOG_ERROR("fail to open file %s", filePath);
+         return;
+     }
+ 
+-    tmpFilePath = malloc(sizeof(char) * (strlen(filePath) + 4 + 1));
++    tmpFilePath = ZOS_MALLOC(sizeof(char) * (strlen(filePath) + 4 + 1));
++	if (tmpFilePath == NULL)
++	{
++	    ZLOG_ERROR("memory insufficient");
++	    return;
++	}
++
+     sprintf(tmpFilePath, "%s.tmp", filePath);
+     tmpFp = fopen(tmpFilePath, "w");
+-    if(tmpFp == NULL){
+-        printf("%s: cannot create tmp file '%s'!\n", __FUNCTION__, tmpFilePath);
++    if (tmpFp == NULL)
++    {
++        ZLOG_ERROR("fail to create tmp file %s", tmpFilePath);
+         fclose(fp);
+-        free(tmpFilePath);
++        ZOS_FREE(tmpFilePath);
+         return;
+     }
+ 
+-    while(fgets(strBuff, sizeof(strBuff), fp) != NULL){
+-        if(strncmp(username, strBuff, sizeof(username)) != 0){
++    while (fgets(strBuff, sizeof(strBuff), fp) != NULL)
++    {
++        if (strncmp(username, strBuff, sizeof(username)) != 0)
++        {
+             fputs(strBuff, tmpFp);
+         }
+         memset(strBuff, 0, sizeof(strBuff));
+     }
++
+     fclose(tmpFp);
+     fclose(fp);
+ 
+@@ -1288,20 +1354,25 @@
+     sprintf(strBuff, "chmod 644 %s", filePath);
+     system(strBuff);
+ 
+-    free(tmpFilePath);
++    ZOS_FREE(tmpFilePath);
+ }
+ 
+ #ifdef ABOG_CUSTOMIZATION
+-#define REMOTE_MANAGEMENT_FILE_FOLDER "/tmp/rmm/"
++#define REMOTE_MANAGEMENT_FILE_FOLDER   "/tmp/rmm/"
+ void zyTouchFile(int pid, char *ip)
+ {
+-	char cmd[128] = {0};
+-	char *addr = NULL;
+-	FILE *fp = NULL;
++	char    cmd[128] = {0};
++	char    *addr = NULL;
++	FILE    *fp = NULL;
+ 
+-	if(!(fp = fopen("/tmp/isWANRoute.sh", "r")))
++	fp = fopen("/tmp/isWANRoute.sh", "r");
++	if (fp != NULL)
+ 	{
+ 		fp = fopen("/tmp/isWANRoute.sh", "w");
++		if (fp == NULL)
++		{
++		    ZLOG_ERROR("fp == NULL");
++		}
+ 		fprintf(fp, "route=`ip r get $1`\n");
+ 		fprintf(fp, "if expr \"$1\" : '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' >/dev/null; then\n");
+ 		fprintf(fp, "	iface=`echo $route | awk '{print substr($3,1,3)}'`\n");
+@@ -1374,7 +1445,6 @@
+ 	sprintf(cmd, "touch %s%d", REMOTE_MANAGEMENT_FILE_FOLDER, pid);
+ 	system(cmd);
+ 
+-
+ 	system("echo 0 > /proc/tc3162/led_pwr_green");
+ 	system("echo 1 > /proc/tc3162/led_pwr_green");
+ }
+@@ -1386,11 +1456,16 @@
+ 	struct dirent *entry;
+ 
+ 	dirp = opendir(REMOTE_MANAGEMENT_FILE_FOLDER); /* There should be error handling after this */
+-	if (dirp==NULL)
++	if (dirp == NULL)
++	{
+ 		return 0;
+-	while ((entry = readdir(dirp)) != NULL) {
+-		if (entry->d_type == DT_REG) { /* If the entry is a regular file */
+-			file_count++;
++	}
++
++	while ((entry = readdir(dirp)) != NULL)
++	{
++		if (entry->d_type == DT_REG) /* If the entry is a regular file */
++		{
++			++file_count;
+ 		}
+ 	}
+ 	closedir(dirp);
+@@ -1452,7 +1527,7 @@
+     }
+ 
+     ret = 0;
+-    for (i = 0; i < SERIAL_NUM_STR_LEN; i++)
++    for (i = 0; i < SERIAL_NUM_STR_LEN; ++i)
+     {
+         if ( ! _common_isalnum(str[i]) )
+         {
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2018-09-10 13:40:52.694019364 +0800
++++ libzyutil-1.0/zyutil.h	2018-09-10 13:31:35.216294200 +0800
+@@ -31,8 +31,8 @@
+ zcfgRet_t zyUtilWriteBufToFlash(char *devName, void *buf, uint32_t buf_size);
+ int zyUtilReadBufFromFlash(char *devName, void *buf, uint32_t buf_size);
+ #if 1 //#ifdef ZYXEL_WWAN
+-int zyUtilMtdErase(const char *mtd); 
+-int zyUtilUpdateWWANPackage(void); 
++int zyUtilMtdErase(const char *mtd);
++int zyUtilUpdateWWANPackage(void);
+ #define ZY_WWANPACKAGE_MAXSIZE	131072  // (1024*128) bytes
+ #define WWANPACKAGE_HEADER_LEN	32  // theoretically speaking 31 is match
+ #define FW_WWANPACKAGE_FILE	"/etc/fw_wwanpackage"
+@@ -117,7 +117,7 @@
+ 	size_t len_f6;
+ }iptCfg_t;
+ 
+-void zyUtilInitIptablesConfig(iptCfg_t **ipt);
++bool zyUtilInitIptablesConfig(iptCfg_t **ipt);
+ void zyUtilRestoreIptablesConfig(iptCfg_t *ipt, const char *file, const char *func, int line);
+ //void zyUtilIptablesLockInit(void);
+ //void zyUtilIptablesLock(void);

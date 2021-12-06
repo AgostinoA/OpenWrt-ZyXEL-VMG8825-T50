@@ -1,0 +1,500 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_macflt.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_macflt.c	2017-09-04 17:04:36.538556467 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_macflt.c	2017-09-04 17:05:53.004990500 +0800
+@@ -12,10 +12,12 @@
+ 
+ dal_param_t WIFI_MACFILTER_param[] =
+ {
+-	{"Index",			dalType_int,			1,	8,	NULL,	NULL,	dal_Add|dal_Delete},
+-	{"MacAddress",		dalType_MacAddrHyphen,	0,	0,	NULL,	NULL,	dal_Add|dal_Delete},
++	{"Index",			dalType_int,			1,	8,	NULL,	NULL,	dalcmd_Forbid},
++	{"SSID",			dalType_wifiSSID,		0,	0,	NULL,	NULL,	dal_Add|dal_Delete},
++	{"MacAddress",		dalType_MacAddrHyphen,	0,	0,	NULL,	NULL,	dal_Add|dal_Delete|dal_Edit_ignore},
+ 	{"FilterLists",		dalType_string,			0,	0,	NULL,	NULL,	dalcmd_Forbid},
+-	{"FilterMode",		dalType_string,			0,	0,	NULL,	NULL,	dalcmd_Forbid},
++	{"MACMode",		dalType_string,			0,	0,	NULL,	"Disable|Deny|Allow",	dal_Edit},
++	{"FilterMode",		dalType_string,			0,	0,	NULL,	NULL,	dalcmd_Forbid},	// for webgui
+ 	{NULL,		0,	0,	0,	NULL}
+ };
+ 
+@@ -104,11 +106,42 @@
+ zcfgRet_t zcfgFeDalWifiMACFilterEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+-	struct json_object *WifiMACFilterJobj = NULL;
+-	int index;
++	struct json_object *WifiMACFilterJobj = NULL, *wifissidObj = NULL, *obj = NULL;
++	int index, objLen = 0, idx = 0, i;
++	const char *mode = NULL, *ssid = NULL;
++
++
++	if(!json_object_object_get(Jobj, "Index")){
++		ssid = json_object_get_string(json_object_object_get(Jobj, "SSID"));
++		getwifiSSIDObj(&wifissidObj);
++		objLen = json_object_array_length(wifissidObj);
++		for(i=0;i<objLen;i++){
++			obj = json_object_array_get_idx(wifissidObj, i);
++			if(!strcmp(ssid,json_object_get_string(json_object_object_get(obj,"SSID")))){
++				idx = json_object_get_int(json_object_object_get(obj,"idx"));
++				json_object_object_add(Jobj, "Index", json_object_new_int(idx));
++				break;
++			}
++		}
++		zcfgFeJsonObjFree(wifissidObj);
++	}
+ 
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	IID_INIT(objIid);
++
++	if(json_object_object_get(Jobj, "MACMode")){
++		mode = json_object_get_string(json_object_object_get(Jobj, "MACMode"));
++		if(!strcmp(mode, "Disable")){
++			json_object_object_add(Jobj, "FilterMode", json_object_new_int(0));
++		}
++		else if(!strcmp(mode, "Deny")){
++			json_object_object_add(Jobj, "FilterMode", json_object_new_int(1));
++		}
++		else if(!strcmp(mode, "Allow")){
++			json_object_object_add(Jobj, "FilterMode", json_object_new_int(2));
++		}
++	}
++	
+ 	objIid.level = 1;
+ 	objIid.idx[0] = index;
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_WIFI_STA_FILTER, &objIid, &WifiMACFilterJobj)) != ZCFG_SUCCESS) {
+@@ -129,17 +162,29 @@
+ zcfgRet_t zcfgFeDalWifiMACFilterAdd(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+-	struct json_object *WifiMACFilterJobj = NULL;
++	struct json_object *WifiMACFilterJobj = NULL, *curObj = NULL, *wifissidObj = NULL, *obj = NULL;
+ 
+-	int index;
++	int index, len=0, j, rrr, objLen = 0, i, idx = 0;
+ 	char *macAddr=NULL;
+ 
+ 	char *curlist;
+ 	char newlist[512]={0};
+-	int len=0;
+-	int j;
+-	int rrr;
+-	struct json_object *curObj = NULL;
++	const char *ssid = NULL;
++
++	if(!json_object_object_get(Jobj, "Index")){
++		ssid = json_object_get_string(json_object_object_get(Jobj, "SSID"));
++		getwifiSSIDObj(&wifissidObj);
++		objLen = json_object_array_length(wifissidObj);
++		for(i=0;i<objLen;i++){
++			obj = json_object_array_get_idx(wifissidObj, i);
++			if(!strcmp(ssid,json_object_get_string(json_object_object_get(obj,"SSID")))){
++				idx = json_object_get_int(json_object_object_get(obj,"idx"));
++				json_object_object_add(Jobj, "Index", json_object_new_int(idx));
++				break;
++			}
++		}
++		zcfgFeJsonObjFree(wifissidObj);
++	}
+ 
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	macAddr = json_object_get_string(json_object_object_get(Jobj, "MacAddress"));
+@@ -172,14 +217,27 @@
+ zcfgRet_t zcfgFeDalWifiMACFilterDelete(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t objIid;
+-	struct json_object *WifiMACFilterJobj = NULL;
+-	int index;
++	struct json_object *WifiMACFilterJobj = NULL, *curObj = NULL, *newObj = NULL, *wifissidObj = NULL, *obj = NULL;
++	int index, rrr, i, len, objLen = 0, idx = 0;
+ 	char *macAddr=NULL;
+ 	char *curlist;
+ 	char newlist[512]={0};
+-	int rrr, i, len;
+-	struct json_object *curObj = NULL;
+-	struct json_object *newObj = NULL;
++	const char *ssid = NULL;
++
++	if(!json_object_object_get(Jobj, "Index")){
++		ssid = json_object_get_string(json_object_object_get(Jobj, "SSID"));
++		getwifiSSIDObj(&wifissidObj);
++		objLen = json_object_array_length(wifissidObj);
++		for(i=0;i<objLen;i++){
++			obj = json_object_array_get_idx(wifissidObj, i);
++			if(!strcmp(ssid,json_object_get_string(json_object_object_get(obj,"SSID")))){
++				idx = json_object_get_int(json_object_object_get(obj,"idx"));
++				json_object_object_add(Jobj, "Index", json_object_new_int(idx));
++				break;
++			}
++		}
++		zcfgFeJsonObjFree(wifissidObj);
++	}
+ 
+ 	index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+ 	macAddr = json_object_get_string(json_object_object_get(Jobj, "MacAddress"));
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_others.c	2017-09-04 17:04:36.582556467 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_others.c	2017-09-04 17:05:57.133990500 +0800
+@@ -18,17 +18,17 @@
+ dal_param_t WIFI_OTHERS_param[]={
+ 	//WiFi Radio
+ 	{"Band",						dalType_string,		0,	0,	NULL,	"2.4GHz|5GHz",	dal_Edit},
+-	{"wlRtsThrshld",				dalType_int,		0,	0,	NULL,	NULL,	0},
+-	{"wlFrgThrshld",				dalType_int, 		0,	0,	NULL,	NULL,	0},
++	{"wlRtsThrshld",				dalType_int,		0,	2347,	NULL,	NULL,	0},
++	{"wlFrgThrshld",				dalType_int, 		256,	2346,	NULL,	NULL,	0},
+ 	{"AutoChannelTimer",			dalType_int,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{"wlCsScanTimer",				dalType_int,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+-	{"wlTxPwrPcnt",					dalType_int,		0,	0,	NULL,	NULL,	0},
+-	{"wlBcnIntvl",					dalType_int,		0,	0,	NULL,	NULL,	0},
+-	{"wlDtmIntvl",					dalType_int,		0,	0,	NULL,	NULL,	0},
+-	{"wlMode",						dalType_string,		0,	0,	NULL,	NULL,	0},
+-	{"wlProtect",					dalType_string,		0,	0,	NULL,	NULL,	0},
++	{"wlTxPwrPcnt",					dalType_int,		0,	0,	NULL,	"20|40|60|80|100",	0},
++	{"wlBcnIntvl",					dalType_int,		50,	1000,	NULL,	NULL,	0},
++	{"wlDtmIntvl",					dalType_int,		1,	255,	NULL,	NULL,	0},
++	{"wlMode",						dalType_wlanMode,	0,	0,	NULL,	NULL,	0},
++	{"wlProtect",					dalType_string,		0,	0,	NULL,	"auto|off",	0},
+ 	//{"wlRifsAdvert",				dalType_string,		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+-	{"wlPreamble",					dalType_string, 	0,	0,	NULL,	NULL,	0},
++	{"wlPreamble",					dalType_string, 	0,	0,	NULL,	"long|short",	0},
+ 	{"wlRxChainPwrSave",			dalType_int, 		0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	//{"wlObssCox",					dalType_boolean, 	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+ 	{"wlFrameburst",				dalType_boolean,	0,	0,	NULL,	NULL,	dalcmd_Forbid},
+@@ -130,7 +130,6 @@
+ bool cbt5GWifiWmmApsd;
+ #endif
+ 
+-time_t t1, t2;
+ 
+ void zcfgFeDalShowWifiOthers(struct json_object *Jarray){
+ 	int i, len = 0;
+@@ -356,7 +355,7 @@
+ 	wlTxPwrPcnt = json_object_get_int(json_object_object_get(Jobj, "wlTxPwrPcnt"));
+ 	wlBcnIntvl = json_object_get_int(json_object_object_get(Jobj, "wlBcnIntvl"));
+ 	wlDtmIntvl = json_object_get_int(json_object_object_get(Jobj, "wlDtmIntvl"));
+-	wlMode = json_object_get_string(json_object_object_get(Jobj, "wlMode"));;
++	wlMode = json_object_get_string(json_object_object_get(Jobj, "wlMode"));
+ 	wlProtect = json_object_get_string(json_object_object_get(Jobj, "wlProtect"));
+ 	//wlRifsAdvert = json_object_get_string(json_object_object_get(Jobj, "wlRifsAdvert"));
+ 	wlPreamble = json_object_get_string(json_object_object_get(Jobj, "wlPreamble"));
+@@ -492,14 +491,7 @@
+ 	struct json_object *iidArray = NULL;
+ 	uint8_t iidIdx =0;
+ 	const char* tmpOperatingFrequencyBand;
+-	/*
+-	iidArray = json_object_object_get(Jobj, "wifiRadioOthersIid");
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		wifiRadioOthersIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(wifiRadioOthersIid.idx[iidIdx] != 0)
+-			wifiRadioOthersIid.level = iidIdx+1;
+-	}
+-	*/
++
+ 	objIndex_t SsidIid={0};
+ 	struct json_object *SsidObj = NULL;
+ 	const char *tmpLowerLayer = NULL;
+@@ -588,14 +580,6 @@
+ 	struct json_object *iidArray = NULL;
+ 	uint8_t iidIdx =0;
+ 	
+-	/*
+-	iidArray = json_object_object_get(Jobj, "wifiSecOthersIid");
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		wifiSecOthersIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(wifiSecOthersIid.idx[iidIdx] != 0)
+-			wifiSecOthersIid.level = iidIdx+1;
+-	}
+-	*/
+ 	IID_INIT(wifiSecOthersIid);
+ 	wifiSecOthersIid.level = 1;
+ 	wifiSecOthersIid.idx[0] = json_object_get_int(json_object_object_get(Jobj,"Index"));
+@@ -620,8 +604,6 @@
+ 			json_object_object_add(wifiSecOthersObj, "X_ZYXEL_PmfMethod", json_object_new_int(1));
+ 		}
+ 	}
+-		
+-	
+ 	return ret;
+ }
+ 
+@@ -671,14 +653,6 @@
+ 	struct json_object *iidArray = NULL;
+ 	uint8_t iidIdx =0;
+ 	
+-	/*
+-	iidArray = json_object_object_get(Jobj, "wifiApWpsOthersIid");
+-	for(iidIdx=0;iidIdx<6;iidIdx++){
+-		wifiApWpsOthersIid.idx[iidIdx] = json_object_get_int( json_object_array_get_idx(iidArray, iidIdx));
+-		if(wifiApWpsOthersIid.idx[iidIdx] != 0)
+-			wifiApWpsOthersIid.level = iidIdx+1;
+-	}
+-	*/
+ 	IID_INIT(wifiApWpsOthersIid);
+ 	wifiApWpsOthersIid.level = 1;
+ 	wifiApWpsOthersIid.idx[0] = json_object_get_int(json_object_object_get(Jobj,"Index"));
+@@ -746,6 +720,8 @@
+ 
+ zcfgRet_t zcfgFeDalWifiOthersEdit(struct json_object *Jobj, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	printf("%s %s %d \n",json_object_to_json_string(Jobj),__func__,__LINE__);
++	
+ 	
+ 	initGlobalWlOthersObjects();
+ 
+@@ -760,9 +736,6 @@
+ 	}
+ #endif
+ 	
+-	t2 = time(NULL);
+-	printf("line=%d, time=%d\n", __LINE__, (int) difftime(t2, t1));
+-
+ #ifdef CBT_CUSTOMIZATION
+ 	if(cbtAdvSetting == true){
+ 		if((ret = cbtEditwifiRadioAdvObject(Jobj)) != ZCFG_SUCCESS){
+@@ -782,29 +755,24 @@
+ 	}else{
+ #endif	
+ 	if((ret = editWifiOthersApWpsObject(Jobj)) != ZCFG_SUCCESS){
+-		printf("aaaaaa", __LINE__);
++		printf("editWifiOthersApWpsObject fail", __LINE__);
+ 		goto dalwlan_edit_fail;
+ 	}
+ 	
+ 	if((ret = editWifiOthersSecObject(Jobj)) != ZCFG_SUCCESS){
+-		printf("bbbbbb", __LINE__);
++		printf("editWifiOthersSecObject fail", __LINE__);
+ 		goto dalwlan_edit_fail;
+ 	}
+ 		
+ 	 
+ 	if((ret = editwifiRadioOthersObjects(Jobj)) != ZCFG_SUCCESS){
+-		printf("cccccc", __LINE__);
++		printf("editwifiRadioOthersObjects fail", __LINE__);
+ 		goto dalwlan_edit_fail;
+ 	}
+ 	
+ #ifdef CBT_CUSTOMIZATION
+ 	}
+ #endif		
+-		
+-	t2 = time(NULL);
+-	
+-	printf("before set, time=%d seconds\n", (int) difftime(t2, t1));
+-	
+ 	setAllWlOthersObjects(Jobj);
+ 
+ dalwlan_edit_fail:
+@@ -816,8 +784,6 @@
+ zcfgRet_t zcfgFeDalWifiOthers(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	
+-	t1 = time(NULL);
+-
+ 	prepareJObj(Jobj);
+ 	
+ 	//if(!strcmp(method, "POST"))
+@@ -828,9 +794,6 @@
+ 		ret = zcfgFeDalWifiOthersGet(Jobj, Jarray, replyMsg);
+ 	else
+ 		printf("Unknown method:%s\n", method);
+-	
+-	t2 = time(NULL);
+-    printf("zcfgFeDalWifiOthers() Total time=%d seconds ret=%d\n", (int) difftime(t2, t1), ret);
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-09-04 17:04:37.146556469 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-09-04 17:05:33.630990500 +0800
+@@ -1214,6 +1214,172 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t getVlanWithoutBrRefKeyinfoObj(struct json_object **VlanObj){
++	struct json_object *vlanObj = NULL;
++	struct json_object *obj = NULL;
++	objIndex_t vlanIid = {0};
++	const char *vlantmp = NULL;
++	char vlanName[256] = {0};
++	int len = 0;
++	
++	*VlanObj = json_object_new_array();
++	obj = json_object_new_object();
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VLAN_GROUP, &vlanIid, &vlanObj) == ZCFG_SUCCESS){
++		if(!strcmp(json_object_get_string(json_object_object_get(vlanObj, "BrRefKey")),"")){
++			vlantmp = json_object_get_string(json_object_object_get(vlanObj, "GroupName"));
++			strcat(vlanName,vlantmp);
++			strcat(vlanName,",");
++		}
++		json_object_put(vlanObj);
++		vlanObj = NULL;
++	}
++	len = strlen(vlanName);
++	if(len >0){
++		if(vlanName[len-1] == ',')
++			vlanName[len-1] = '\0';
++	}
++	if(!strcmp(vlanName,"")){
++		strcat(vlanName, "Vlan type cannot support now, please add a vlan rule.");
++	}
++	json_object_object_add(obj, "VlanName", json_object_new_string(vlanName));
++	json_object_array_add(*VlanObj, obj);
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t getwlanModeObj(struct json_object **modeObj){
++	struct json_object *obj = NULL;
++	struct json_object *radioObj = NULL;
++	objIndex_t radioIid = {0};
++	const char *band = NULL;
++	const char *stardard = NULL;
++	char buf[32] = {0}, mode[64] = {0};
++	char *tmp = NULL, *b = NULL, *g = NULL, *n = NULL, *a = NULL, *ac = NULL;
++	int len = 0;
++	*modeObj = json_object_new_array();
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_RADIO, &radioIid, &radioObj) == ZCFG_SUCCESS){
++		obj = json_object_new_object();
++		mode[0] = '\0';
++		band = json_object_get_string(json_object_object_get(radioObj, "SupportedFrequencyBands"));
++		stardard = json_object_get_string(json_object_object_get(radioObj, "SupportedStandards"));
++		if(!strcmp(band, "2.4GHz")){
++			strcpy(buf, stardard);
++			b = strtok_r(buf, ",", &tmp);
++			g = strtok_r(tmp, ",", &n);
++			if(!strcmp(b, "b")){
++				strcat(mode, "802.11");
++				strcat(mode,b);
++				strcat(mode,",");
++			}
++			if(!strcmp(g, "g")){
++				strcat(mode, "802.11");
++				strcat(mode,g);
++				strcat(mode,",");
++			}
++			if(!strcmp(n, "n")){
++				strcat(mode, "802.11");
++				strcat(mode,n);
++				strcat(mode,",");
++			}
++			if(!strcmp(b, "b") && !strcmp(g, "g")){
++				strcat(mode, "802.11");
++				strcat(mode,b);
++				strcat(mode,"/");
++				strcat(mode,g);
++				strcat(mode,",");
++			}
++			if(!strcmp(b, "b") && !strcmp(g, "g") && !strcmp(n, "n")){
++				strcat(mode, "802.11");
++				strcat(mode,b);
++				strcat(mode,"/");
++				strcat(mode,g);
++				strcat(mode,"/");
++				strcat(mode,n);
++				strcat(mode,",");
++			}
++			len = strlen(mode);
++			if(len > 0){
++				if(mode[len-1] == ',')
++					mode[len-1] = '\0';
++			}
++			
++		}
++		else if(!strcmp(band, "5GHz")){
++			strcpy(buf, stardard);
++			a = strtok_r(buf, ",", &tmp);
++			n = strtok_r(tmp, ",", &ac);
++			if(!strcmp(a, "a")){
++				strcat(mode, "802.11");
++				strcat(mode,a);
++				strcat(mode,",");
++			}
++			if(!strcmp(n, "n")){
++				strcat(mode, "802.11");
++				strcat(mode,n);
++				strcat(mode,",");
++			}
++			if(!strcmp(ac, "ac")){
++				strcat(mode, "802.11");
++				strcat(mode,ac);
++				strcat(mode,",");
++			}
++			if(!strcmp(a, "a") && !strcmp(n, "n")){
++				strcat(mode, "802.11");
++				strcat(mode,a);
++				strcat(mode,"/");
++				strcat(mode,n);
++				strcat(mode,",");
++			}
++			if(!strcmp(a, "a") && !strcmp(n, "n") && !strcmp(ac, "ac")){
++				strcat(mode, "802.11");
++				strcat(mode,a);
++				strcat(mode,"/");
++				strcat(mode,n);
++				strcat(mode,"/");
++				strcat(mode,ac);
++				strcat(mode,",");
++			}
++			len = strlen(mode);
++			if(len > 0){
++				if(mode[len-1] == ',')
++					mode[len-1] = '\0';
++			}
++
++		}
++		json_object_object_add(obj, "band", json_object_new_string(band));
++		json_object_object_add(obj, "mode", json_object_new_string(mode));
++		json_object_array_add(*modeObj, obj);
++		
++		json_object_put(radioObj);
++		radioObj = NULL;
++	}
++
++}
++
++zcfgRet_t getwifiSSIDObj(struct json_object **ssidObj){
++	struct json_object *wifissidObj = NULL;
++	struct json_object *obj = NULL;
++	objIndex_t wifissidIid = {0};
++	int count = 1;
++	char buf[32] = {0};
++	const char *ssid = NULL;
++
++	*ssidObj = json_object_new_array();
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_WIFI_SSID, &wifissidIid, &wifissidObj) == ZCFG_SUCCESS){
++		buf[0] = '\0';
++		obj = json_object_new_object();
++		ssid = json_object_get_string(json_object_object_get(wifissidObj, "SSID"));
++		sprintf(buf,"%d.%s",count,ssid);
++		json_object_object_add(obj, "SSID", json_object_new_string(buf));
++		json_object_object_add(obj, "idx", json_object_new_int(wifissidIid.idx[0]));
++		json_object_array_add(*ssidObj, obj);
++		json_object_put(wifissidObj);
++		wifissidObj = NULL;
++		count++;
++	}
++	return ZCFG_SUCCESS;
++}
++
+ const char *getLoginUserName(char *userName)
+ {
+ 	uid_t uid = geteuid();
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2017-09-04 17:04:36.650556467 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2017-09-04 17:05:41.711990500 +0800
+@@ -124,7 +124,10 @@
+ 	dalType_serveraddr,
+ 	dalType_sambafolder, 
+ 	dalType_usbInfo,
+-	dalType_usrAccount
++	dalType_usrAccount,
++	dalType_intfVlan,					// vlan group name without BrRefKey value
++	dalType_wlanMode,					// 802.11b, 802.11g, 802.11n, ...
++	dalType_wifiSSID
+ };
+ 
+ bool getSpecificObj(zcfg_offset_t oid, char *key, json_type type, void *value, objIndex_t *outIid, struct json_object **outJobj);

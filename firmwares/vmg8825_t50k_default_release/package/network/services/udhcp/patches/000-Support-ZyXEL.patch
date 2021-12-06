@@ -1,0 +1,1119 @@
+Index: udhcp-0.9.8/clientpacket.c
+===================================================================
+--- udhcp-0.9.8.orig/clientpacket.c	2002-11-01 01:29:26.000000000 +0800
++++ udhcp-0.9.8/clientpacket.c	2014-04-18 15:37:47.311294215 +0800
+@@ -18,7 +18,7 @@
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  */
+- 
++#include <stdio.h> 
+ #include <string.h>
+ #include <sys/socket.h>
+ #include <features.h>
+@@ -47,6 +47,7 @@
+ #include "dhcpc.h"
+ #include "debug.h"
+ 
++extern int last_option_index;
+ 
+ /* Create a random xid */
+ unsigned long random_xid(void)
+@@ -77,12 +78,19 @@
+ 		char vendor, length;
+ 		char str[sizeof("udhcp "VERSION)];
+ 	} vendor_id = { DHCP_VENDOR,  sizeof("udhcp "VERSION) - 1, "udhcp "VERSION};
+-	
++
+ 	init_header(packet, type);
+ 	memcpy(packet->chaddr, client_config.arp, 6);
+-	add_option_string(packet->options, client_config.clientid);
++#if 1 /* ZyXEL DHCP option support, John */
++	int end = 0;
++	end = end_option(packet->options);
++	memcpy(&packet->options[end], sent_config_options, optLen);
++#else
+ 	if (client_config.hostname) add_option_string(packet->options, client_config.hostname);
++	
++	add_option_string(packet->options, client_config.clientid);	
+ 	add_option_string(packet->options, (unsigned char *) &vendor_id);
++#endif
+ }
+ 
+ 
+@@ -114,6 +122,8 @@
+ 	if (requested)
+ 		add_simple_option(packet.options, DHCP_REQUESTED_IP, requested);
+ 
++	//options[last_option_index-3].flags |= OPTION_REQ;
++
+ 	add_requests(&packet);
+ 	LOG(LOG_DEBUG, "Sending discover...");
+ 	return raw_packet(&packet, INADDR_ANY, CLIENT_PORT, INADDR_BROADCAST, 
+@@ -132,7 +142,7 @@
+ 
+ 	add_simple_option(packet.options, DHCP_REQUESTED_IP, requested);
+ 	add_simple_option(packet.options, DHCP_SERVER_ID, server);
+-	
++
+ 	add_requests(&packet);
+ 	addr.s_addr = requested;
+ 	LOG(LOG_DEBUG, "Sending select for %s...", inet_ntoa(addr));
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2002-10-19 09:10:43.000000000 +0800
++++ udhcp-0.9.8/dhcpc.c	2014-04-18 15:38:53.291653508 +0800
+@@ -46,6 +46,13 @@
+ #include "debug.h"
+ #include "pidfile.h"
+ 
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++
++#include <json/json.h>
++
+ static int state;
+ static unsigned long requested_ip; /* = 0 */
+ static unsigned long server_addr;
+@@ -58,6 +65,20 @@
+ #define LISTEN_KERNEL 1
+ #define LISTEN_RAW 2
+ static int listen_mode;
++#if 1 /* vlan autohunt, ZyXEL, John */
++int vlanId = -1;
++#endif
++
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++char en_vendor_class_id=0;
++char en_client_id=0;
++char en_vsi=0;
++char vendor_class_id[256]="";
++char client_id[256]="";
++char vsi[256]="";
++
++extern int last_option_index;
++#endif
+ 
+ #define DEFAULT_SCRIPT	"/usr/share/udhcpc/default.script"
+ 
+@@ -76,6 +97,25 @@
+ 	arp: "\0\0\0\0\0\0",		/* appease gcc-3.0 */
+ };
+ 
++int daemon_init(void) {
++
++        pid_t pid;
++
++        if((pid = fork()) < 0)
++        	return(-1);
++        else if(pid != 0) 
++		exit(0); /* parent exit */ 
++
++	/* child continues */
++	dup2(2,1);       /* redirect stdout to stderr because close stdout make CPU usage raise abnormally */  
++	close(2);        
++
++      	setsid();
++	chdir("/"); /* change working directory */
++
++        return(0);
++}
++
+ #ifndef BB_VER
+ static void show_usage(void)
+ {
+@@ -96,6 +136,9 @@
+ "  -s, --script=file               Run file at dhcp events (default:\n"
+ "                                  " DEFAULT_SCRIPT ")\n"
+ "  -v, --version                   Display version\n"
++#if 1 /* vlan autohunt, ZyXEL, John */
++"  -V, --vid				   	   vlan auto hunt\n"
++#endif
+ 	);
+ 	exit(0);
+ }
+@@ -132,6 +175,7 @@
+ 		state = INIT_SELECTING;
+ 		break;
+ 	case INIT_SELECTING:
++		break;
+ 	}
+ 
+ 	/* start things over */
+@@ -141,12 +185,18 @@
+ 	timeout = 0;
+ }
+ 
+-
+ /* perform a release */
+ static void perform_release(void)
+ {
+ 	char buffer[16];
+ 	struct in_addr temp_addr;
++#if 1   /* send ZCFG_MSG_DHCP_RELEASE to ESMD for notification, ZyXEL, John  */
++	char ip[16] = {0};
++	unsigned char *tmpIp;
++	struct json_object *dhcpc_opt = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0;
++#endif
+ 
+ 	/* send release packet */
+ 	if (state == BOUND || state == RENEWING || state == REBINDING) {
+@@ -155,7 +205,25 @@
+ 		temp_addr.s_addr = requested_ip;
+ 		LOG(LOG_INFO, "Unicasting a release of %s to %s", 
+ 				inet_ntoa(temp_addr), buffer);
++#if 1   /* send ZCFG_MSG_DHCP_RELEASE to ESMD for notification, ZyXEL, John  */
++		dhcpc_opt = json_object_new_object();
++
++		tmpIp = (unsigned char *) &requested_ip;
++		sprintf(ip, "%d.%d.%d.%d", tmpIp[0], tmpIp[1], tmpIp[2], tmpIp[3]);
++		json_object_object_add(dhcpc_opt, "ip", json_object_new_string(ip));
++
++		json_object_object_add(dhcpc_opt, "addressAssigned", json_object_new_boolean(false));
++		json_object_object_add(dhcpc_opt, "pidfile", json_object_new_string(client_config.pidfile));
++
++		payload = json_object_to_json_string(dhcpc_opt);
++
++		payloadLen = strlen(payload) + 1;
++		dhcpMsgSend(ZCFG_MSG_DHCPC_RELEASE, ZCFG_EID_ESMD, payloadLen, payload);
++		json_object_put(dhcpc_opt);
++						
++#endif
+ 		send_release(server_addr, requested_ip); /* unicast */
++
+ 		run_script(NULL, "deconfig");
+ 	}
+ 	LOG(LOG_INFO, "Entering released state");
+@@ -178,7 +246,10 @@
+ /* Signal handler */
+ static void signal_handler(int sig)
+ {
+-	if (send(signal_pipe[1], &sig, sizeof(sig), MSG_DONTWAIT) < 0) {
++	//char sigbuf[8];
++	//sprintf(sigbuf,"%d",sig);
++	if (send(signal_pipe[1], (void*) &sig, sizeof(sig), MSG_DONTWAIT) < 0){
++	//if (send(signal_pipe[1], sigbuf, sizeof(sigbuf), MSG_DONTWAIT) < 0) {
+ 		LOG(LOG_ERR, "Could not send signal: %s",
+ 			strerror(errno));
+ 	}
+@@ -189,14 +260,17 @@
+ {
+ 	int pid_fd;
+ 
++	printf("Enter background\n");
++
+ 	pid_fd = pidfile_acquire(client_config.pidfile); /* hold lock during fork. */
+ 	while (pid_fd >= 0 && pid_fd < 3) pid_fd = dup(pid_fd); /* don't let daemon close it */
+-	if (daemon(0, 0) == -1) {
++	if (daemon_init() == -1) {
+ 		perror("fork");
+ 		exit_client(1);
+ 	}
+ 	client_config.foreground = 1; /* Do not fork again. */
+-	pidfile_write_release(pid_fd);
++	pidfile_write_release(pid_fd); 
++
+ }
+ 
+ 
+@@ -221,10 +295,14 @@
+ 	int sig;
+ 
+ 	static struct option arg_options[] = {
++#if 0 /* ZyXEL DHCP options support, ZyXEL, John */
+ 		{"clientid",	required_argument,	0, 'c'},
++#endif
+ 		{"foreground",	no_argument,		0, 'f'},
+ 		{"background",	no_argument,		0, 'b'},
++#if 0 /* ZyXEL DHCP options support, ZyXEL, John */
+ 		{"hostname",	required_argument,	0, 'H'},
++#endif
+ 		{"hostname",    required_argument,      0, 'h'},
+ 		{"interface",	required_argument,	0, 'i'},
+ 		{"now", 	no_argument,		0, 'n'},
+@@ -233,17 +311,23 @@
+ 		{"request",	required_argument,	0, 'r'},
+ 		{"script",	required_argument,	0, 's'},
+ 		{"version",	no_argument,		0, 'v'},
++#if 1 /* vlan autohunt, ZyXEL, John */
++		{"vid",	required_argument,	0, 'V'},
++#endif
+ 		{"help",	no_argument,		0, '?'},
+ 		{0, 0, 0, 0}
+ 	};
+ 
++	zcfgEidInit(ZCFG_EID_UDHCPC, NULL);
++
+ 	/* get options */
+ 	while (1) {
+ 		int option_index = 0;
+-		c = getopt_long(argc, argv, "c:fbH:h:i:np:qr:s:v", arg_options, &option_index);
++		c = getopt_long(argc, argv, "c:fbH:h:i:np:qr:s:vV:C:I:SW", arg_options, &option_index);
+ 		if (c == -1) break;
+ 		
+ 		switch (c) {
++#if 0 /* ZyXEL DHCP options support, ZyXEL, John */
+ 		case 'c':
+ 			len = strlen(optarg) > 255 ? 255 : strlen(optarg);
+ 			if (client_config.clientid) free(client_config.clientid);
+@@ -253,12 +337,14 @@
+ 			client_config.clientid[OPT_DATA] = '\0';
+ 			strncpy(client_config.clientid + OPT_DATA, optarg, len);
+ 			break;
++#endif
+ 		case 'f':
+ 			client_config.foreground = 1;
+ 			break;
+ 		case 'b':
+ 			client_config.background_if_no_lease = 1;
+ 			break;
++#if 0 /* ZyXEL DHCP options support, ZyXEL, John */
+ 		case 'h':
+ 		case 'H':
+ 			len = strlen(optarg) > 255 ? 255 : strlen(optarg);
+@@ -268,6 +354,7 @@
+ 			client_config.hostname[OPT_LEN] = len;
+ 			strncpy(client_config.hostname + 2, optarg, len);
+ 			break;
++#endif
+ 		case 'i':
+ 			client_config.interface =  optarg;
+ 			break;
+@@ -290,6 +377,11 @@
+ 			printf("udhcpcd, version %s\n\n", VERSION);
+ 			exit_client(0);
+ 			break;
++#if 1 /* vlan autohunt, ZyXEL, John */
++		case 'V':
++			vlanId = atoi(optarg);
++			break;
++#endif
+ 		default:
+ 			show_usage();
+ 		}
+@@ -304,7 +396,10 @@
+ 	if (read_interface(client_config.interface, &client_config.ifindex, 
+ 			   NULL, client_config.arp) < 0)
+ 		exit_client(1);
+-		
++	
++#if 1 /* ZyXEL DHCP options support, ZyXEL, John */
++	read_config_options();
++#else
+ 	if (!client_config.clientid) {
+ 		client_config.clientid = xmalloc(6 + 3);
+ 		client_config.clientid[OPT_CODE] = DHCP_CLIENT_ID;
+@@ -312,7 +407,7 @@
+ 		client_config.clientid[OPT_DATA] = 1;
+ 		memcpy(client_config.clientid + 3, client_config.arp, 6);
+ 	}
+-
++#endif	
+ 	/* setup signal handlers */
+ 	socketpair(AF_UNIX, SOCK_STREAM, 0, signal_pipe);
+ 	signal(SIGUSR1, signal_handler);
+@@ -335,7 +430,7 @@
+ 			else
+ 				fd = raw_socket(client_config.ifindex);
+ 			if (fd < 0) {
+-				LOG(LOG_ERR, "FATAL: couldn't listen on socket, %s", strerror(errno));
++				LOG(LOG_ERR, "FATAL: couldn't listen on socket on [%s, %d], %s", listen_mode == LISTEN_KERNEL?client_config.interface:"NULL", vlanId,strerror(errno));
+ 				exit_client(0);
+ 			}
+ 		}
+@@ -419,6 +514,28 @@
+ 				/* Either set a new T2, or enter INIT state */
+ 				if ((lease - t2) <= (lease / 14400 + 1)) {
+ 					/* timed out, enter init state */
++#if 1	/* send ZCFG_MSG_WAN_CONNECTION_LOST to ESMD for notification, ZyXEL, John  */
++					char ip[16] = {0};
++					unsigned char *tmpIp;
++					struct json_object *dhcpc_opt = NULL;
++					const char *payload = NULL;
++					int payloadLen = 0;
++
++					dhcpc_opt = json_object_new_object();
++					tmpIp = (unsigned char *) &requested_ip;
++					sprintf(ip, "%d.%d.%d.%d", tmpIp[0], tmpIp[1], tmpIp[2], tmpIp[3]);
++					json_object_object_add(dhcpc_opt, "ip", json_object_new_string(ip));
++
++					json_object_object_add(dhcpc_opt, "addressAssigned", json_object_new_boolean(false));
++					json_object_object_add(dhcpc_opt, "pidfile", json_object_new_string(client_config.pidfile));
++
++					payload = json_object_to_json_string(dhcpc_opt);
++
++					payloadLen = strlen(payload) + 1;
++					dhcpMsgSend(ZCFG_MSG_DHCPC_RELEASE, ZCFG_EID_ESMD, payloadLen, payload);
++					json_object_put(dhcpc_opt);
++#endif
++
+ 					state = INIT_SELECTING;
+ 					LOG(LOG_INFO, "Lease lost, entering init state");
+ 					run_script(NULL, "deconfig");
+@@ -450,18 +567,17 @@
+ 				change_mode(listen_mode); /* just close and reopen */
+ 			}
+ 			if (len < 0) continue;
+-			
++
++			if ((message = get_option(&packet, DHCP_MESSAGE_TYPE)) == NULL) {
++				DEBUG(LOG_ERR, "couldnt get option from packet -- ignoring");
++				continue;
++			}
+ 			if (packet.xid != xid) {
+ 				DEBUG(LOG_INFO, "Ignoring XID %lx (our xid is %lx)",
+ 					(unsigned long) packet.xid, xid);
+ 				continue;
+ 			}
+-			
+-			if ((message = get_option(&packet, DHCP_MESSAGE_TYPE)) == NULL) {
+-				DEBUG(LOG_ERR, "couldnt get option from packet -- ignoring");
+-				continue;
+-			}
+-			
++
+ 			switch (state) {
+ 			case INIT_SELECTING:
+ 				/* Must be a DHCPOFFER to one of our xid's */
+@@ -492,7 +608,6 @@
+ 						memcpy(&lease, temp, 4);
+ 						lease = ntohl(lease);
+ 					}
+-						
+ 					/* enter bound state */
+ 					t1 = lease / 2;
+ 					
+@@ -504,6 +619,12 @@
+ 					start = now;
+ 					timeout = t1 + start;
+ 					requested_ip = packet.yiaddr;
++#if 1 /* vlan autohunt, ZyXEL, John */
++					if(vlanId != -1){
++						dhcpMsgSend(ZCFG_MSG_VLAN_HUNT_SUCCESS, ZCFG_EID_VLAN_AUTOHUNT, 0, NULL);
++						exit_client(0);
++					}
++#endif
+ 					run_script(&packet,
+ 						   ((state == RENEWING || state == REBINDING) ? "renew" : "bound"));
+ 
+@@ -528,14 +649,22 @@
+ 					sleep(3); /* avoid excessive network traffic */
+ 				}
+ 				break;
+-			/* case BOUND, RELEASED: - ignore all packets */
++			case BOUND:
++				break;
++			case RELEASED:
++				/* case RELEASED: - ignore all packets */
++				break;
+ 			}	
+ 		} else if (retval > 0 && FD_ISSET(signal_pipe[0], &rfds)) {
+-			if (read(signal_pipe[0], &sig, sizeof(signal)) < 0) {
++			//char sigbuf[8]="";
++			if (read(signal_pipe[0], (void*) &sig, sizeof(sig)) < 0) {
++			//if (read(signal_pipe[0], sigbuf, sizeof(sigbuf)) < 0) {
+ 				DEBUG(LOG_ERR, "Could not read signal: %s", 
+ 					strerror(errno));
+ 				continue; /* probably just EINTR */
+ 			}
++			//sig = atoi(sigbuf);
++			printf("*** dhcpc receive signal:%d\n",sig);
+ 			switch (sig) {
+ 			case SIGUSR1: 
+ 				perform_renew();
+Index: udhcp-0.9.8/dhcpd.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpd.c	2002-09-21 04:36:15.000000000 +0800
++++ udhcp-0.9.8/dhcpd.c	2014-04-18 15:37:47.311294215 +0800
+@@ -168,7 +168,7 @@
+ 		}
+ 		
+ 		if (FD_ISSET(signal_pipe[0], &rfds)) {
+-			if (read(signal_pipe[0], &sig, sizeof(sig)) < 0)
++			if (read(signal_pipe[0], (void*) &sig, sizeof(sig)) < 0)
+ 				continue; /* probably just EINTR */
+ 			switch (sig) {
+ 			case SIGUSR1:
+Index: udhcp-0.9.8/dhcpd.h
+===================================================================
+--- udhcp-0.9.8.orig/dhcpd.h	2002-09-21 04:36:15.000000000 +0800
++++ udhcp-0.9.8/dhcpd.h	2014-04-18 15:37:47.315294215 +0800
+@@ -61,8 +61,11 @@
+ #define DHCP_T2			0x3b
+ #define DHCP_VENDOR		0x3c
+ #define DHCP_CLIENT_ID		0x3d
+-
+-#define DHCP_END		0xFF
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++#define DHCP_VSI		0x7d
++#endif
++#define DHCP_6RD_OPT        0xd4
++#define DHCP_END            0xFF
+ 
+ 
+ #define BOOTREQUEST		1
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2002-11-01 02:46:43.000000000 +0800
++++ udhcp-0.9.8/Makefile	2014-04-18 15:37:47.315294215 +0800
+@@ -17,12 +17,18 @@
+ CFLAGS += -DSYSLOG
+ 
+ #CROSS_COMPILE=arm-uclibc-
+-CC = $(CROSS_COMPILE)gcc
+-LD = $(CROSS_COMPILE)gcc
++#CC = $(CROSS_COMPILE)gcc
++#LD = $(CROSS_COMPILE)gcc
+ INSTALL = install
+ 
+ VER := 0.9.8
+ 
++#USERSPACE_ZCFG_DIR = $(BUILD_DIR)/userspace/zyxel/private/apps/zcfg
++#USERSPACE_ZCFG_INCLUDE = $(USERSPACE_ZCFG_DIR)/include
++
++#INC_PATH = -I$(USERSPACE_ZCFG_INCLUDE)
++
++LINK_LIBS = -ljson -lzcfg_msg -lzcmd_tool -lzcfg_fe_rdm_access -lzcfg_fe_rdm_struct 
+ 
+ OBJS_SHARED = options.o socket.o packet.o pidfile.o
+ DHCPD_OBJS = dhcpd.o arpping.o files.o leases.o serverpacket.o
+@@ -61,45 +67,47 @@
+ STRIP=$(CROSS_COMPILE)strip
+ endif
+ 
+-all: $(EXEC1) $(EXEC2) $(EXEC3)
++
++all: clean $(EXEC1) $(EXEC2) $(EXEC3)
+ 	$(STRIP) --remove-section=.note --remove-section=.comment $(EXEC1) $(EXEC2) $(EXEC3)
+ 
+ $(OBJS1) $(OBJS2) $(OBJS3): *.h Makefile
+ $(EXEC1) $(EXEC2) $(EXEC3): Makefile
+ 
+ .c.o:
+-	$(CC) -c $(CFLAGS) $<
++	$(CC) -c $(CFLAGS) -L$(INSTALL_DIR)/lib/public $(INC_PATH) $(LINK_LIBS) $<
+ 	
+ $(EXEC1): $(OBJS1)
+-	$(LD) $(LDFLAGS) $(OBJS1) -o $(EXEC1)
++	$(CC) $(LDFLAGS) $(OBJS1) -L$(INSTALL_DIR)/lib/public $(INC_PATH) $(LINK_LIBS) -o $(EXEC1)
+ 
+ $(EXEC2): $(OBJS2)
+-	$(LD) $(LDFLAGS) $(OBJS2) -o $(EXEC2)
++	$(CC) $(LDFLAGS) $(OBJS2) -L$(INSTALL_DIR)/lib/public $(INC_PATH) $(LINK_LIBS) -o $(EXEC2)
+ 
+ $(EXEC3): $(OBJS3)
+-	$(LD) $(LDFLAGS) $(OBJS3) -o $(EXEC3)
++	$(CC) $(LDFLAGS) $(OBJS3) -o $(EXEC3)
+ 
+ 
+ install: all
+-
+-	$(INSTALL) $(DAEMONS) $(USRSBINDIR)
+-	$(INSTALL) $(COMMANDS) $(USRBINDIR)
++#	$(INSTALL) $(DAEMONS) $(USRSBINDIR)
++#	$(INSTALL) $(COMMANDS) $(USRBINDIR)
+ ifdef COMBINED_BINARY
+ 	ln -sf $(USRSBINDIR)/$(DAEMONS) $(SBINDIR)/$(BOOT_PROGRAMS)
+ else
+-	$(INSTALL) $(BOOT_PROGRAMS) $(SBINDIR)
++#	$(INSTALL) $(BOOT_PROGRAMS) $(SBINDIR)
++	install -m 755 $(BOOT_PROGRAMS) $(INSTALL_DIR)/bin
++	$(STRIP) $(INSTALL_DIR)/bin/$(BOOT_PROGRAMS)
+ endif
+-	mkdir -p $(USRSHAREDIR)/udhcpc
+-	for name in bound deconfig renew script ; do \
++#	mkdir -p $(USRSHAREDIR)/udhcpc
++#	for name in bound deconfig renew script ; do \
+ 		$(INSTALL) samples/sample.$$name \
+ 			$(USRSHAREDIR)/udhcpc/default.$$name ; \
+ 	done
+-	mkdir -p $(USRSHAREDIR)/man/man1
+-	$(INSTALL) dumpleases.1 $(USRSHAREDIR)/man/man1
+-	mkdir -p $(USRSHAREDIR)/man/man5
+-	$(INSTALL) udhcpd.conf.5 $(USRSHAREDIR)/man/man5
+-	mkdir -p $(USRSHAREDIR)/man/man8
+-	$(INSTALL) udhcpc.8 udhcpd.8 $(USRSHAREDIR)/man/man8
++#	mkdir -p $(USRSHAREDIR)/man/man1
++#	$(INSTALL) dumpleases.1 $(USRSHAREDIR)/man/man1
++#	mkdir -p $(USRSHAREDIR)/man/man5
++#	$(INSTALL) udhcpd.conf.5 $(USRSHAREDIR)/man/man5
++#	mkdir -p $(USRSHAREDIR)/man/man8
++#	$(INSTALL) udhcpc.8 udhcpd.8 $(USRSHAREDIR)/man/man8
+ 
+ clean:
+ 	-rm -f udhcpd udhcpc dumpleases *.o core
+Index: udhcp-0.9.8/Makefile.bak
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ udhcp-0.9.8/Makefile.bak	2014-04-18 15:37:47.315294215 +0800
+@@ -0,0 +1,106 @@
++# udhcp makefile
++
++prefix=/usr
++SBINDIR=/sbin
++USRSBINDIR=${prefix}/sbin
++USRBINDIR=${prefix}/bin
++USRSHAREDIR=${prefix}/share
++
++# Uncomment this to get a shared binary. Call as udhcpd for the server,
++# and udhcpc for the client
++#COMBINED_BINARY=1
++
++# Uncomment this for extra output and to compile with debugging symbols
++#DEBUG=1
++
++# Uncomment this to output messages to syslog, otherwise, messages go to stdout
++CFLAGS += -DSYSLOG
++
++#CROSS_COMPILE=arm-uclibc-
++#CC = $(CROSS_COMPILE)gcc
++#LD = $(CROSS_COMPILE)gcc
++INSTALL = install
++
++VER := 0.9.8
++
++
++OBJS_SHARED = options.o socket.o packet.o pidfile.o
++DHCPD_OBJS = dhcpd.o arpping.o files.o leases.o serverpacket.o
++DHCPC_OBJS = dhcpc.o clientpacket.o script.o
++
++ifdef COMBINED_BINARY
++EXEC1 = udhcpd
++OBJS1 = $(DHCPD_OBJS) $(DHCPC_OBJS) $(OBJS_SHARED) frontend.o
++CFLAGS += -DCOMBINED_BINARY
++else
++EXEC1 = udhcpd
++OBJS1 = $(DHCPD_OBJS) $(OBJS_SHARED)
++
++EXEC2 = udhcpc
++OBJS2 = $(DHCPC_OBJS) $(OBJS_SHARED)
++endif
++
++EXEC3 = dumpleases
++OBJS3 = dumpleases.o
++
++BOOT_PROGRAMS = udhcpc
++DAEMONS = udhcpd
++COMMANDS = dumpleases
++
++ifdef SYSLOG
++CFLAGS += -DSYSLOG
++endif
++
++CFLAGS += -W -Wall -Wstrict-prototypes -DVERSION='"$(VER)"'
++
++ifdef DEBUG
++CFLAGS += -g -DDEBUG
++STRIP=true
++else
++CFLAGS += -Os -fomit-frame-pointer
++STRIP=$(CROSS_COMPILE)strip
++endif
++
++all: $(EXEC1) $(EXEC2) $(EXEC3)
++	$(STRIP) --remove-section=.note --remove-section=.comment $(EXEC1) $(EXEC2) $(EXEC3)
++
++$(OBJS1) $(OBJS2) $(OBJS3): *.h Makefile
++$(EXEC1) $(EXEC2) $(EXEC3): Makefile
++
++.c.o:
++	$(CC) -c $(CFLAGS) $<
++	
++$(EXEC1): $(OBJS1)
++	$(LD) $(LDFLAGS) $(OBJS1) -o $(EXEC1)
++
++$(EXEC2): $(OBJS2)
++	$(LD) $(LDFLAGS) $(OBJS2) -o $(EXEC2)
++
++$(EXEC3): $(OBJS3)
++	$(LD) $(LDFLAGS) $(OBJS3) -o $(EXEC3)
++
++
++install: all
++
++	$(INSTALL) $(DAEMONS) $(USRSBINDIR)
++	$(INSTALL) $(COMMANDS) $(USRBINDIR)
++ifdef COMBINED_BINARY
++	ln -sf $(USRSBINDIR)/$(DAEMONS) $(SBINDIR)/$(BOOT_PROGRAMS)
++else
++	$(INSTALL) $(BOOT_PROGRAMS) $(SBINDIR)
++endif
++	mkdir -p $(USRSHAREDIR)/udhcpc
++	for name in bound deconfig renew script ; do \
++		$(INSTALL) samples/sample.$$name \
++			$(USRSHAREDIR)/udhcpc/default.$$name ; \
++	done
++	mkdir -p $(USRSHAREDIR)/man/man1
++	$(INSTALL) dumpleases.1 $(USRSHAREDIR)/man/man1
++	mkdir -p $(USRSHAREDIR)/man/man5
++	$(INSTALL) udhcpd.conf.5 $(USRSHAREDIR)/man/man5
++	mkdir -p $(USRSHAREDIR)/man/man8
++	$(INSTALL) udhcpc.8 udhcpd.8 $(USRSHAREDIR)/man/man8
++
++clean:
++	-rm -f udhcpd udhcpc dumpleases *.o core
++
+Index: udhcp-0.9.8/options.c
+===================================================================
+--- udhcp-0.9.8.orig/options.c	2002-05-24 03:20:42.000000000 +0800
++++ udhcp-0.9.8/options.c	2014-04-18 15:37:47.315294215 +0800
+@@ -13,6 +13,11 @@
+ #include "options.h"
+ #include "leases.h"
+ 
++#include "zcfg_common.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_fe_rdm_struct.h"
++
+ 
+ /* supported options are easily added here */
+ struct dhcp_option options[] = {
+@@ -43,6 +48,11 @@
+ 	{"message",	OPTION_STRING,				0x38},
+ 	{"tftp",	OPTION_STRING,				0x42},
+ 	{"bootfile",	OPTION_STRING,				0x43},
++	{"6rd", OPTION_STRING,          DHCP_6RD_OPT},
++#if 1 /* DHCP option 43, 121(must be last two options in this array for implementation concerns), ZyXEL, John */
++	{"acsinfo",	OPTION_STRING,				0x2b},
++	{"sroute",	OPTION_STRING | OPTION_LIST,				0x79},
++#endif
+ 	{"",		0x00,				0x00}
+ };
+ 
+@@ -59,6 +69,11 @@
+ 	[OPTION_S32] =		4
+ };
+ 
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++int optLen = 1; /* 1 byte for DHCP_END */
++unsigned char sent_config_options[OPTION60_MAX_LEN + OPTION61_MAX_LEN + OPTION125_MAX_LEN];
++int last_option_index = sizeof(options)/sizeof(struct dhcp_option) - 1;
++#endif
+ 
+ /* get an option with bounds checking (warning, not aligned). */
+ unsigned char *get_option(struct dhcpMessage *packet, int code)
+@@ -228,3 +243,79 @@
+ 		*curr = new;		
+ 	}
+ }
++
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++void hexOptionToString(char *hexOpt, char *hexStr)
++{
++	char buf[12];
++	int i = 0;
++	unsigned char len = (unsigned char)(hexOpt[OPT_LEN]) + 2;
++	
++	hexStr[0] = '\0';
++	while(i < len){
++		sprintf(buf, "%02x", (unsigned char)(hexOpt[i]));
++		strcat(hexStr, buf);
++		i++;
++	}
++}
++
++void hexStringToOption(char *hexStr, char *hexOpt)
++{
++	char *dataPtr, *ptr = hexStr;
++	int value, i;
++	
++	memset(hexOpt, 0, sizeof(hexOpt));
++	
++	dataPtr = hexOpt;
++	
++	/* fill data */
++	while ( sscanf(ptr, "%02x%n", &value, &i) == 1 )
++	{
++		*dataPtr++ = value;
++		ptr += i;
++	}
++}
++
++int read_config_options()
++{
++	rdm_Dhcpv4ReqOpt_t *reqOptObj = NULL;
++	rdm_Dhcpv4SentOpt_t *sentOptObj = NULL;
++	objIndex_t optIid;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char hexOpt[256];
++	
++
++	IID_INIT(optIid);
++	while((ret = zcfgFeObjStructGetNext(RDM_OID_DHCPV4_REQ_OPT, &optIid, (void **)&reqOptObj)) == ZCFG_SUCCESS){
++		if(reqOptObj->Enable){
++			if(reqOptObj->Tag == DHCP_6RD_OPT) {
++				options[last_option_index - 3].flags |= OPTION_REQ;
++			}
++
++			if(reqOptObj->Tag == 0x2b){
++				options[last_option_index - 2].flags |= OPTION_REQ;
++			}
++
++			if(reqOptObj->Tag == 0x79){
++				options[last_option_index - 1].flags |= OPTION_REQ;
++			}
++		}
++
++		zcfgFeObjStructFree(reqOptObj);
++	}
++
++	sent_config_options[0] = DHCP_END;
++	
++	IID_INIT(optIid);
++	while((ret = zcfgFeObjStructGetNext(RDM_OID_DHCPV4_SENT_OPT, &optIid, (void **)&sentOptObj)) == ZCFG_SUCCESS){
++		if(sentOptObj->Enable){
++			hexStringToOption(sentOptObj->Value, hexOpt);
++			add_option_string(sent_config_options, (unsigned char *)hexOpt);
++			optLen += hexOpt[1] + 2;
++		}
++		zcfgFeObjStructFree(reqOptObj);
++	}
++
++	return 0;
++}
++#endif
+Index: udhcp-0.9.8/options.h
+===================================================================
+--- udhcp-0.9.8.orig/options.h	2002-03-23 08:34:03.000000000 +0800
++++ udhcp-0.9.8/options.h	2014-04-18 15:37:47.315294215 +0800
+@@ -21,6 +21,27 @@
+ #define OPTION_REQ	0x10 /* have the client request this option */
+ #define OPTION_LIST	0x20 /* There can be a list of 1 or more of these */
+ 
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++#define HOSTNAME_MAX_LEN 64
++
++#define VENDOR_ID_MAX_LEN 256
++
++#define CLIENT_IDENTIFIER_IAID_INFO_LEN      4
++#define VENDOR_DUID_MAX_LEN 64
++
++
++#define VENDOR_ENTERPRISE_LEN             4    /* 4 bytes */
++#define VENDOR_GATEWAY_OUI_MAX_LEN           6
++#define VENDOR_GATEWAY_SERIAL_NUMBER_MAX_LEN 64
++#define VENDOR_GATEWAY_PRODUCT_CLASS_MAX_LEN 64
++
++/* config request options */
++#define OPTION12_MAX_LEN HOSTNAME_MAX_LEN
++#define OPTION60_MAX_LEN VENDOR_ID_MAX_LEN
++#define OPTION61_MAX_LEN CLIENT_IDENTIFIER_IAID_INFO_LEN + VENDOR_DUID_MAX_LEN
++#define OPTION125_MAX_LEN HOSTNAME_MAX_LEN + VENDOR_ENTERPRISE_LEN + VENDOR_GATEWAY_OUI_MAX_LEN + VENDOR_GATEWAY_SERIAL_NUMBER_MAX_LEN + VENDOR_GATEWAY_PRODUCT_CLASS_MAX_LEN
++#endif
++
+ struct dhcp_option {
+ 	char name[10];
+ 	char flags;
+@@ -30,11 +51,22 @@
+ extern struct dhcp_option options[];
+ extern int option_lengths[];
+ 
++#if 1 /* ZyXEL DHCP option support, John */
++extern int optLen;
++extern unsigned char sent_config_options[];
++#endif
++
+ unsigned char *get_option(struct dhcpMessage *packet, int code);
+ int end_option(unsigned char *optionptr);
+ int add_option_string(unsigned char *optionptr, unsigned char *string);
+ int add_simple_option(unsigned char *optionptr, unsigned char code, u_int32_t data);
+ struct option_set *find_option(struct option_set *opt_list, char code);
+ void attach_option(struct option_set **opt_list, struct dhcp_option *option, char *buffer, int length);
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++void hexOptionToString(char *hexOpt, char *hexStr);
++void hexStringToOption(char * hexStr,char * hexOpt);
++int read_config_options(void);
++#endif
++
+ 
+ #endif
+Index: udhcp-0.9.8/pidfile.c
+===================================================================
+--- udhcp-0.9.8.orig/pidfile.c	2001-10-02 03:16:49.000000000 +0800
++++ udhcp-0.9.8/pidfile.c	2014-04-18 15:37:47.315294215 +0800
+@@ -56,11 +56,11 @@
+ 		fprintf(out, "%d\n", getpid());
+ 		fclose(out);
+ 	}
++
+ 	lockf(pid_fd, F_UNLCK, 0);
+ 	close(pid_fd);
+ }
+ 
+-
+ void pidfile_delete(char *pidfile)
+ {
+ 	if (pidfile) unlink(pidfile);
+Index: udhcp-0.9.8/script.c
+===================================================================
+--- udhcp-0.9.8.orig/script.c	2002-09-21 04:36:15.000000000 +0800
++++ udhcp-0.9.8/script.c	2014-04-18 15:37:47.315294215 +0800
+@@ -37,6 +37,15 @@
+ #include "options.h"
+ #include "debug.h"
+ 
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++
++#include <json/json.h>
++
++extern struct client_config_t client_config;
++
+ /* get a rough idea of how long an option will be (rounding up...) */
+ static int max_option_length[] = {
+ 	[OPTION_IP] =		sizeof("255.255.255.255 "),
+@@ -50,6 +59,39 @@
+ 	[OPTION_S32] =		sizeof("-2147483684 "),
+ };
+ 
++zcfgRet_t dhcpMsgSend(int msg_type, zcfgEid_t dstEid, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	char *recv_str = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_UDHCPC;
++	sendMsgHdr->dstEid = dstEid;
++
++	LOG(LOG_INFO, "%s: msgType[%d]\n", __FUNCTION__, msg_type);
++	
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		printf("Receive message : %s\n", recv_str);
++		free(recvBuf);
++	}
++
++	return ret;
++}
+ 
+ static int upper_length(int length, struct dhcp_option *option)
+ {
+@@ -64,7 +106,7 @@
+ 
+ 
+ /* Fill dest with the text of option 'option'. */
+-static void fill_options(char *dest, unsigned char *option, struct dhcp_option *type_p)
++static void fill_options(char *dest, unsigned char *option, struct dhcp_option *type_p, struct json_object *dhcpc_opt)
+ {
+ 	int type, optlen;
+ 	u_int16_t val_u16;
+@@ -72,8 +114,14 @@
+ 	u_int32_t val_u32;
+ 	int32_t val_s32;
+ 	int len = option[OPT_LEN - 2];
++	int tmpLen = 0;
++	char *tmp = NULL;
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++	char optStr[256];
++#endif
+ 
+ 	dest += sprintf(dest, "%s=", type_p->name);
++	tmp = dest;
+ 
+ 	type = type_p->flags & TYPE_MASK;
+ 	optlen = option_lengths[type];
+@@ -110,6 +158,31 @@
+ 			dest += sprintf(dest, "%ld ", (long) ntohl(val_s32));
+ 			break;
+ 		case OPTION_STRING:
++#if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
++			/* DHCP option 43 */
++			if(type_p->code == 0x2b || type_p->code == 0x79){
++				hexOptionToString((char *)(option - 2), optStr);
++				json_object_object_add(dhcpc_opt, type_p->name, json_object_new_string(optStr));
++			}
++			else if(type_p->code == DHCP_6RD_OPT) {
++				uint16_t *ptr16;
++				char prefix[64];
++				char brAddr[16];
++
++				json_object_object_add(dhcpc_opt, "v6rdAssigned", json_object_new_boolean(1));
++
++				json_object_object_add(dhcpc_opt, "v4MaskLen", json_object_new_int((int)option[0]));
++				json_object_object_add(dhcpc_opt, "v6PrefixLen", json_object_new_int((int)option[1]));
++
++				ptr16 = (uint16_t*)&option[2];
++
++				sprintf(prefix, "%x:%x:%x:%x:%x:%x:%x:%x", ptr16[0], ptr16[1], ptr16[2], ptr16[3], ptr16[4], ptr16[5], ptr16[6], ptr16[7]);
++				json_object_object_add(dhcpc_opt, "v6Prefix", json_object_new_string(prefix));
++
++				sprintf(brAddr, "%d.%d.%d.%d", option[18], option[19], option[20], option[21]);
++				json_object_object_add(dhcpc_opt, "brAddr", json_object_new_string(brAddr));
++			}
++#endif
+ 			memcpy(dest, option, len);
+ 			dest[len] = '\0';
+ 			return;	 /* Short circuit this case */
+@@ -118,6 +191,10 @@
+ 		len -= optlen;
+ 		if (len <= 0) break;
+ 	}
++
++	tmpLen = strlen(tmp);
++	tmp[tmpLen-1] = '\0';
++	json_object_object_add(dhcpc_opt, type_p->name, json_object_new_string(tmp));
+ }
+ 
+ 
+@@ -140,9 +217,15 @@
+ {
+ 	int num_options = 0;
+ 	int i, j;
+-	char **envp;
++	//char **envp;
++	char buf[128] = {0};
++	char ip[16] = {0};
++	unsigned char *tmpIp;
+ 	unsigned char *temp;
+ 	char over = 0;
++	struct json_object *dhcpc_opt = NULL;
++	const char *payload = NULL;
++	int payloadLen = 0;
+ 
+ 	if (packet == NULL)
+ 		num_options = 0;
+@@ -156,54 +239,98 @@
+ 		if (!(over & FILE_FIELD) && packet->file[0]) num_options++;
+ 		if (!(over & SNAME_FIELD) && packet->sname[0]) num_options++;		
+ 	}
+-	
++#if 0
+ 	envp = xmalloc((num_options + 5) * sizeof(char *));
+ 	envp[0] = xmalloc(sizeof("interface=") + strlen(client_config.interface));
+ 	sprintf(envp[0], "interface=%s", client_config.interface);
+ 	envp[1] = find_env("PATH", "PATH=/bin:/usr/bin:/sbin:/usr/sbin");
+ 	envp[2] = find_env("HOME", "HOME=/");
+-
++#endif
+ 	if (packet == NULL) {
+-		envp[3] = NULL;
+-		return envp;
++		//envp[3] = NULL;
++		//return envp;
++		return NULL;
+ 	}
+ 
+-	envp[3] = xmalloc(sizeof("ip=255.255.255.255"));
+-	sprintip(envp[3], "ip=", (unsigned char *) &packet->yiaddr);
++	dhcpc_opt = json_object_new_object();
++	//envp[3] = xmalloc(sizeof("ip=255.255.255.255"));
++	tmpIp = (unsigned char *) &packet->yiaddr;
++	sprintf(ip, "%d.%d.%d.%d", tmpIp[0], tmpIp[1], tmpIp[2], tmpIp[3]);
++	json_object_object_add(dhcpc_opt, "ip", json_object_new_string(ip));
++	//sprintip(envp[3], "ip=", (unsigned char *) &packet->yiaddr);
++	//sprintf(envp[3], "ip=%s", ip);
++
+ 	for (i = 0, j = 4; options[i].code; i++) {
+ 		if ((temp = get_option(packet, options[i].code))) {
+-			envp[j] = xmalloc(upper_length(temp[OPT_LEN - 2], &options[i]) + strlen(options[i].name) + 2);
+-			fill_options(envp[j], temp, &options[i]);
++			//envp[j] = xmalloc(upper_length(temp[OPT_LEN - 2], &options[i]) + strlen(options[i].name) + 2);
++			//fill_options(envp[j], temp, &options[i], dhcpc_opt);
++			fill_options(buf, temp, &options[i], dhcpc_opt);
+ 			j++;
+ 		}
+ 	}
++
+ 	if (packet->siaddr) {
+-		envp[j] = xmalloc(sizeof("siaddr=255.255.255.255"));
+-		sprintip(envp[j++], "siaddr=", (unsigned char *) &packet->siaddr);
++		//envp[j] = xmalloc(sizeof("siaddr=255.255.255.255"));
++		//sprintip(envp[j++], "siaddr=", (unsigned char *) &packet->siaddr);
++		tmpIp = (unsigned char *)&packet->siaddr;
++		sprintf(ip, "%d.%d.%d.%d", tmpIp[0], tmpIp[1], tmpIp[2], tmpIp[3]);
++		json_object_object_add(dhcpc_opt, "siaddr", json_object_new_string(ip));
+ 	}
+ 	if (!(over & FILE_FIELD) && packet->file[0]) {
+ 		/* watch out for invalid packets */
+ 		packet->file[sizeof(packet->file) - 1] = '\0';
+-		envp[j] = xmalloc(sizeof("boot_file=") + strlen(packet->file));
+-		sprintf(envp[j++], "boot_file=%s", packet->file);
++		//envp[j] = xmalloc(sizeof("boot_file=") + strlen(packet->file));
++		//sprintf(envp[j++], "boot_file=%s", packet->file);
++		json_object_object_add(dhcpc_opt, "boot_file", json_object_new_string(packet->file));
+ 	}
+ 	if (!(over & SNAME_FIELD) && packet->sname[0]) {
+ 		/* watch out for invalid packets */
+ 		packet->sname[sizeof(packet->sname) - 1] = '\0';
+-		envp[j] = xmalloc(sizeof("sname=") + strlen(packet->sname));
+-		sprintf(envp[j++], "sname=%s", packet->sname);
+-	}	
+-	envp[j] = NULL;
+-	return envp;
++		//envp[j] = xmalloc(sizeof("sname=") + strlen(packet->sname));
++		//sprintf(envp[j++], "sname=%s", packet->sname);
++		json_object_object_add(dhcpc_opt, "sname", json_object_new_string(packet->sname));
++	}
++
++	json_object_object_add(dhcpc_opt, "addressAssigned", json_object_new_boolean(true));
++	json_object_object_add(dhcpc_opt, "pidfile", json_object_new_string(client_config.pidfile));
++
++	payload = json_object_to_json_string(dhcpc_opt);
++
++	payloadLen = strlen(payload) + 1;
++	dhcpMsgSend(ZCFG_MSG_DHCPC_BOUND, ZCFG_EID_ESMD, payloadLen, payload);
++
++	json_object_put(dhcpc_opt);
++	
++	//envp[j] = NULL;
++	//return envp;
++	return NULL;
+ }
+ 
+ 
+ /* Call a script with a par file and env vars */
+ void run_script(struct dhcpMessage *packet, const char *name)
+ {
++#if 0
+ 	int pid;
+ 	char **envp;
++#endif
++	if (strcmp(name, "bound") == 0 || strcmp(name, "renew") == 0) {
++		//envp = fill_envp(packet);
++		fill_envp(packet);
++#if 0
++		while(*envp != NULL) {
++			free(*envp);
++			envp++;
++		}
+ 
++		free(envp);
++#endif
++	}
++	else if (strcmp(name, "deconfig") == 0) {
++		/* Expired, set the connection down */
++		printf("Expired, set the connection down\n");
++	}
++#if 0
+ 	if (client_config.script == NULL)
+ 		return;
+ 
+@@ -224,5 +351,6 @@
+ 		LOG(LOG_ERR, "script %s failed: %s",
+ 		    client_config.script, strerror(errno));
+ 		exit(1);
+-	}			
++	}
++#endif
+ }

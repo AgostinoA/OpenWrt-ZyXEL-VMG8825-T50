@@ -1,0 +1,365 @@
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2015-10-12 14:25:07.482715684 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2015-10-12 14:38:37.756546124 +0800
+@@ -63,6 +63,54 @@
+ struct dhcp_boot *find_boot(struct dhcp_netid *netid);
+ #ifdef ZYXEL_PATCH
+ static int find_ifname(unsigned char *subnet_mac, int len, char *ifname, char *interface);
++static int checkIntfGrpCrit(struct dhcp_netid *netid, char *iface_name, char *client_hostname,
++							unsigned char *emac, int emac_len,
++							char *vendor_class_ptr, int vendor_class_len,
++							unsigned char *clid, int clid_len,
++							unsigned char *oui, unsigned char *serial, unsigned char *class
++						)
++{
++	struct dhcp_netid *tmpNetid = NULL;
++	struct CritDhcpInfo crit;
++	char *brNamePtr = NULL;
++
++	
++	for(tmpNetid = netid; tmpNetid; tmpNetid = tmpNetid->next){
++		//my_syslog(MS_DHCP | LOG_WARNING, _("tmpNetid->net=%s, %s"),  tmpNetid->net, iface_name);
++		if( !strncmp(tmpNetid->net, "Crit_br", 7)){
++			brNamePtr = strstr(tmpNetid->net, "br");
++			if(iface_name != NULL && strcmp(brNamePtr, iface_name)){
++				memset(&crit, 0, sizeof(crit));
++				crit.ifname = iface_name;
++				crit.emac = emac;
++				crit.emac_len = emac_len;
++				crit.hostname = client_hostname;
++				strcpy(crit.tag, tmpNetid->net);
++				if(oui){
++					crit.oui = option_ptr(oui, 0);
++					crit.oui_len = option_len(oui);
++				}
++				if(serial){
++					crit.serial = option_ptr(serial, 0);
++					crit.serial_len = option_len(serial);
++				}
++				if(class){
++					crit.pclass = option_ptr(class, 0);
++					crit.pclass_len = option_len(class);
++				}
++				crit.vendor = vendor_class_ptr;
++				crit.vendor_len = vendor_class_len;
++				if(clid){
++					crit.clid = clid;
++					crit.clid_len = clid_len;
++				}
++				sendCritMessageToESMD(&crit);
++				return 1;
++			}	
++		}
++	}
++	return 0;
++}
+ #endif
+   
+ size_t dhcp_reply(struct dhcp_context *context, char *iface_name, int int_index,
+@@ -1042,9 +1090,16 @@
+ 	  else if (!address_allocate(context, &mess->yiaddr, emac, emac_len, tagif_netid, now))
+ 	    message = _("no address available");      
+ 	}
+-      
++#ifdef ZYXEL_PATCH
++	if(checkIntfGrpCrit(tagif_netid, iface_name, client_hostname, emac, emac_len, vendor_class_ptr, vendor_class_len, clid, clid_len, oui, serial, class)
++		|| checkIntfGrpCrit(netid, iface_name, client_hostname, emac, emac_len, vendor_class_ptr, vendor_class_len, clid, clid_len, oui, serial, class)) 
++	{
++		//my_syslog(MS_DHCP | LOG_WARNING, _("Match interface grouping criteria !!! "));
++		return 0;
++	}
++#endif
+       log_packet("DHCPDISCOVER", opt ? option_ptr(opt, 0) : NULL, emac, emac_len, iface_name, NULL, message, mess->xid); 
+-
++	
+       if (message || !(context = narrow_context(context, mess->yiaddr, tagif_netid)))
+ 	return 0;
+ 
+@@ -1171,7 +1226,14 @@
+ 	  fuzz = rand16();
+ 	  mess->yiaddr = mess->ciaddr;
+ 	}
+-      
++#ifdef ZYXEL_PATCH
++	if(checkIntfGrpCrit(tagif_netid, iface_name, client_hostname, emac, emac_len, vendor_class_ptr, vendor_class_len, clid, clid_len, oui, serial, class)
++		|| checkIntfGrpCrit(netid, iface_name, client_hostname, emac, emac_len, vendor_class_ptr, vendor_class_len, clid, clid_len, oui, serial, class)) 
++	{
++		//my_syslog(MS_DHCP | LOG_WARNING, _("Match interface grouping criteria !!! "));
++		return 0;
++	}
++#endif
+       log_packet("DHCPREQUEST", &mess->yiaddr, emac, emac_len, iface_name, NULL, NULL, mess->xid);
+  
+       if (!message)
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2015-10-12 14:25:07.478715684 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2015-10-12 14:37:33.902701709 +0800
+@@ -1342,10 +1342,25 @@
+ 
+ /* extern.c */
+ #ifdef ZYXEL_PATCH 
++struct CritDhcpInfo{
++	char *ifname;
++	char *oui, *serial, *pclass;
++	int oui_len, serial_len, pclass_len;
++	char *emac;
++	int emac_len;
++	char *vendor;
++	int vendor_len;
++	char *hostname;
++	unsigned char *clid;
++	int clid_len;
++	char tag[20];
++};
+ void lease_set_vendor(struct dhcp_lease *, const char* , int );
+ void lease_set_oui(struct dhcp_lease *, const char* , int );
+ void lease_set_serial(struct dhcp_lease *, const char* , int );
+ void lease_set_class(struct dhcp_lease *, const char* , int );
+ void dnsmasq_eid_register(void);
+ void sendLeaseMessageToESMD(int, struct dhcp_lease *, const char*);
++void sendCritMessageToESMD(struct CritDhcpInfo *crit);
++void pruneCritReqList(void);
+ #endif
+\ No newline at end of file
+Index: dnsmasq-2.67/src/extern.c
+===================================================================
+--- dnsmasq-2.67.orig/src/extern.c	2015-10-12 14:25:07.426715685 +0800
++++ dnsmasq-2.67/src/extern.c	2015-10-12 14:25:07.494715684 +0800
+@@ -23,6 +23,108 @@
+ 	}
+ }
+ 
++char *getPhyIfname(const ifname, const char *macaddr, char *reply){
++	static char phyifname[20];
++	char tmp[256] = {0};
++	FILE *fp = NULL;
++	
++	phyifname[0] = 0;
++	sprintf(tmp, "brctl showmacs %s | grep %s", ifname, macaddr);
++	if((fp = popen(tmp, "r"))){
++		tmp[0] = '\0';
++		fgets(tmp, sizeof(tmp)-1, fp);
++		pclose(fp);
++		if(sscanf(tmp, "%*s %*s %*s %*s %s", phyifname) == 1){
++			strcpy(reply, phyifname);
++			if(reply) return reply;
++			return phyifname;
++		}
++	}
++	
++	return "";
++}
++
++#if 1 //Prevent excessive criteria check request to ESMD. 
++struct CritReqList{
++	char mac[20];
++	char phyIf[20];
++	char brIf[20];
++	unsigned long time;
++	struct CritReqList *next;
++} *critReqLists = NULL;
++
++#define CRITTIOMEOUT 15
++
++void pruneCritReqList()
++{
++	unsigned long now = time(NULL);
++	struct CritReqList *next, *prev, *tmp;
++	
++	//my_syslog(MS_DHCP | LOG_DEBUG, "%s ", __func__);
++	
++	if(!critReqLists) return;
++	
++	for(prev = next = critReqLists; next != NULL; ){
++		tmp = next;
++		next = tmp->next;
++		//my_syslog(MS_DHCP | LOG_DEBUG, "%s : %s, %lu", __func__, tmp->mac, now - tmp->time);
++		if((now - tmp->time)>=CRITTIOMEOUT){
++			if(critReqLists == tmp){
++				critReqLists = next;
++				prev = next;
++			}
++			else prev->next = next;
++			free(tmp);
++		}
++		else prev = tmp;
++	}
++}
++
++void addCritReqtoList(const char *mac, const char *brif, const char *phyif)
++{
++	struct CritReqList *tmp, *next, *prev;
++	
++	//my_syslog(MS_DHCP | LOG_DEBUG, "%s ", __func__);
++	
++	tmp = calloc(1, sizeof(struct CritReqList));
++	strncpy(tmp->mac, mac, sizeof(tmp->mac)-1);
++	strncpy(tmp->brIf, brif, sizeof(tmp->brIf)-1);
++	strncpy(tmp->phyIf, phyif, sizeof(tmp->phyIf)-1);
++	tmp->time = time(NULL);
++	
++	if(!critReqLists){
++		critReqLists = tmp;
++	}
++	else{
++		for(next = critReqLists; next != NULL; next = next->next){
++			prev = next;
++		}
++		prev->next = tmp;
++	}
++}
++
++int chkCritReqExist(const char *mac, const char *brif, const char *phyif)
++{
++	struct CritReqList *next;
++	
++	if(!critReqLists) return 0;
++	
++	for(next = critReqLists; next != NULL; next = next->next){
++#if 0 // when parse interface group criteria, ignore the request which is from same bridge port and physical port 
++		if(!strcasecmp(next->mac, mac)){
++			return 1;
++		}
++#else 
++		if(!strcmp(next->brIf, brif) && !strcmp(next->phyIf, phyif)){
++			return 1;
++		}
++#endif
++	}
++	
++	return 0;
++}
++#endif
++
+ static zcfgRet_t dnsmasq_msg_send(int msg_type, int payloadLen, const char *payload, char **reply)
+ {
+ 	zcfgRet_t ret = 0;
+@@ -68,7 +170,8 @@
+ 	char buf[2048] = {0}, *bufPtr, tmp[256] = {0}, *tmpPtr;
+ 	char *actionStr = NULL;
+ 	int i;
+-	my_syslog(MS_DHCP | LOG_INFO, "%s ", __func__);
++	
++	if(lease <= 0) return; 
+ 	
+ 	bufPtr = buf;
+ 	bufPtr += sprintf(bufPtr, "{");
+@@ -90,11 +193,7 @@
+ 	
+ 	bufPtr += sprintf(bufPtr, "\"expire\":\"%lu\",", lease->expires);
+ 	
+-	tmpPtr = tmp;
+-	for (i = 0; i < lease->hwaddr_len-1; i++)
+-		tmpPtr += sprintf(tmpPtr, "%.2x:", lease->hwaddr[i]);
+-	tmpPtr += sprintf(tmpPtr, "%.2x", lease->hwaddr[i]);	
+-	bufPtr += sprintf(bufPtr, "\"mac\":\"%s\",", tmp);
++	bufPtr += sprintf(bufPtr, "\"mac\":\"%s\",", print_mac(tmp, lease->hwaddr, lease->hwaddr_len));
+ 	
+ #ifdef HAVE_DHCP6
+ 	if ((lease->flags & (LEASE_TA | LEASE_NA))){
+@@ -126,9 +225,86 @@
+ 	
+ 	bufPtr = '\0';
+ 	
+-	my_syslog(MS_DHCP | LOG_INFO, "%s send to esmd buf = %s", __func__, buf);
++	my_syslog(MS_DHCP | LOG_DEBUG, "%s send to esmd buf = %s", __func__, buf);
++	ret = dnsmasq_msg_send(ZCFG_MSG_DHCPD_OPTION, strlen(buf), buf, NULL);
++	if(ret != ZCFG_SUCCESS || ret != ZCFG_SUCCESS_AND_NO_REPLY)
++		my_syslog(MS_DHCP | LOG_DEBUG, "%s esmd ret=%d", __func__, ret);
++}
++
++void sendCritMessageToESMD(struct CritDhcpInfo *crit)
++{
++	zcfgRet_t ret = 0;
++	char buf[2048] = {0}, *bufPtr, tmp[256] = {0}, *tmpPtr;
++	char macaddr[20] = {0}, phy_ifname[20] = {0};
++	int i;
++
++	if(crit <= 0) return; 
++	
++	print_mac(macaddr, crit->emac, crit->emac_len);
++	getPhyIfname(crit->ifname, macaddr, phy_ifname);
++	
++	if(chkCritReqExist(macaddr, crit->ifname, phy_ifname)){
++		my_syslog(MS_DHCP | LOG_DEBUG, "%s ignore the host (%s) request", __func__, macaddr);
++		return ;
++	}
++	
++	bufPtr = buf;
++	bufPtr += sprintf(bufPtr, "{");
++	bufPtr += sprintf(bufPtr, "\"ac\":\"%s\",", "crit");
++	bufPtr += sprintf(bufPtr, "\"mac\":\"%s\",", macaddr);
++	
++	bufPtr += sprintf(bufPtr, "\"host\":\"%s\",", (crit->hostname) ? crit->hostname : "*");
++	//option 60
++	if(crit->vendor_len){
++		strncpy(tmp, crit->vendor, crit->vendor_len);
++		tmp[crit->vendor_len] = '\0';
++	}else sprintf(tmp, "*");
++	bufPtr += sprintf(bufPtr, "\"vendor\":\"%s\",", tmp);
++	//option 125
++	strncpy(bufPtr, "\"moui\":\"", 8); bufPtr += 8;
++	if(crit->oui){
++		strncpy(bufPtr, crit->oui, crit->oui_len);
++		bufPtr += crit->oui_len;
++	} else{ *bufPtr = '*'; bufPtr++;}
++	strncpy(bufPtr, "\",", 2); bufPtr += 2;
++	
++	strncpy(bufPtr, "\"serial\":\"", 10); bufPtr += 10;
++	if(crit->serial){
++		strncpy(bufPtr, crit->serial, crit->serial_len);
++		bufPtr += crit->serial_len;
++	} else{ *bufPtr = '*'; bufPtr++;}
++	strncpy(bufPtr, "\",", 2); bufPtr += 2;
++	
++	strncpy(bufPtr, "\"pclass\":\"", 10); bufPtr += 10;
++	if(crit->pclass){
++		strncpy(bufPtr, crit->pclass, crit->pclass_len);
++		bufPtr += crit->pclass_len;
++	} else{ *bufPtr = '*'; bufPtr++;}
++	strncpy(bufPtr, "\",", 2); bufPtr += 2;
++
++	//option 61
++	if (crit->clid && crit->clid_len != 0) {
++		tmpPtr = tmp;
++		for (i = 0; i < crit->clid_len - 1; i++)
++			tmpPtr += sprintf(tmpPtr, "%.2x:", crit->clid[i]);
++		tmpPtr += sprintf(tmpPtr, "%.2x", crit->clid[i]);	
++	}
++	else sprintf(tmp, "*");
++	bufPtr += sprintf(bufPtr, "\"cid\":\"%s\",", tmp);
++	bufPtr += sprintf(bufPtr, "\"tag\":\"%s\",", crit->tag);
++	bufPtr += sprintf(bufPtr, "\"phyif\":\"%s\",", (phy_ifname) ? phy_ifname : "*");
++	bufPtr += sprintf(bufPtr, "\"ifname\":\"%s\"", (crit->ifname) ? crit->ifname : "*");
++	bufPtr += sprintf(bufPtr, "}");
++	
++	bufPtr = '\0';
++	
++	my_syslog(MS_DHCP | LOG_DEBUG, "%s send to esmd buf = %s", __func__, buf);
+ 	ret = dnsmasq_msg_send(ZCFG_MSG_DHCPD_OPTION, strlen(buf), buf, NULL);
+-	my_syslog(MS_DHCP | LOG_INFO, "%s esmd reply=%d", __func__, ret);
++	// when send criteria request to esmd success, add criteria request to criteria block list
++	if(ret == ZCFG_SUCCESS || ret == ZCFG_SUCCESS_AND_NO_REPLY) 
++		addCritReqtoList(macaddr, crit->ifname, phy_ifname);
++	if(ret != ZCFG_SUCCESS || ret != ZCFG_SUCCESS_AND_NO_REPLY)
++		my_syslog(MS_DHCP | LOG_DEBUG, "%s esmd reply=%d", __func__, ret);
+ }
+ 
+ #endif
+Index: dnsmasq-2.67/src/lease.c
+===================================================================
+--- dnsmasq-2.67.orig/src/lease.c	2015-10-12 14:25:07.422715685 +0800
++++ dnsmasq-2.67/src/lease.c	2015-10-12 14:37:33.890701709 +0800
+@@ -1097,7 +1097,9 @@
+ int do_script_run(time_t now)
+ {
+   struct dhcp_lease *lease;
+-
++#ifdef ZYXEL_PATCH
++  pruneCritReqList();
++#endif
+   (void)now;
+ 
+ #ifdef HAVE_DBUS

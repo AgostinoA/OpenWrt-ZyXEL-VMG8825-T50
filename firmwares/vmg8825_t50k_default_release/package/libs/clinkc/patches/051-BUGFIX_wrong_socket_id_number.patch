@@ -1,0 +1,90 @@
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2015-09-03 12:22:41.896977123 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2015-09-03 12:23:25.913477997 +0800
+@@ -264,7 +264,7 @@
+ 	CgHttpServerClientData *clientData;
+ 	CgHttpServer *httpServer;
+ #ifdef ZYXEL_PATCH
+-	fd_set activeFds;
++	fd_set activeFds, readFds;
+ 	CgSocket *activeSock;
+ 	int maxFd, nReturn, nread, clientThreadSize;
+ 	CgSocketList *clientSocks;
+@@ -300,16 +300,18 @@
+ 			break;
+ 		}
+ 		FD_ZERO(&activeFds); 
++		FD_ZERO(&readFds);
+ 		maxFd = -1;
+ 		for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL; activeSock = cg_socket_next(activeSock)){
+ 			FD_SET(activeSock->id, &activeFds);
+-			maxFd = (maxFd < activeSock->id) ? activeSock->id+1 : maxFd;
++			FD_SET(activeSock->id, &readFds);
++			maxFd = (maxFd <= activeSock->id) ? activeSock->id+1 : maxFd;
+ 		}
+ 		cg_thread_unlock(thread);
+ 
+ 		timeout.tv_sec = CG_HTTP_SERVER_READ_TIMEOUT + 60;
+ 		timeout.tv_usec = 0;
+-		nReturn = select(maxFd, &activeFds, NULL, NULL, &timeout); 
++		nReturn = select(maxFd, &readFds, NULL, &activeFds, &timeout);
+ 		if(nReturn < 0) {
+ 			if (errno == EINTR){
+ 				continue; 
+@@ -331,7 +333,7 @@
+ 			for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL, nReturn > 0; ){
+ 				clientSock = activeSock;
+ 				activeSock = cg_socket_next(clientSock);
+-				if(FD_ISSET(clientSock->id, &activeFds)){
++				if(FD_ISSET(clientSock->id, &activeFds) || FD_ISSET(clientSock->id, &readFds)){
+ 					nReturn--;
+ 					if(cg_http_request_read(httpReq, clientSock) == FALSE){		
+ 						cg_thread_lock(thread);
+@@ -459,7 +461,7 @@
+ 	CgSocket *serverSock;
+ 	CgSocket *clientSock;
+ #ifdef ZYXEL_PATCH 
+-	fd_set activeFds;
++	fd_set activeFds, readFds;
+ 	CgSocket *activeSock;
+ 	int maxFd, nReturn, nread, clientThreadSize;
+ 	int waitClientSockets, threadSockets, threadSockets_tmp;
+@@ -476,20 +478,23 @@
+ 	while (cg_thread_isrunnable(thread) == TRUE) {
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 		//poll server socket and all client socket that is not to start handle		
+-		FD_ZERO(&activeFds); 
++		FD_ZERO(&activeFds);
++		FD_ZERO(&readFds);
+ 		FD_SET(serverSock->id, &activeFds);
++		FD_SET(serverSock->id, &readFds);
+ 		maxFd = serverSock->id+1;
+ 		for (activeSock = cg_socketlist_gets(httpServer->clientSocks); activeSock != NULL; activeSock = cg_socket_next(activeSock)){
+ 			FD_SET(activeSock->id, &activeFds);
+-			maxFd = (maxFd < activeSock->id) ? activeSock->id+1 : maxFd;
+-		}	
+-		nReturn = select(maxFd, &activeFds, NULL, NULL, NULL); 
++			FD_SET(activeSock->id, &readFds);
++			maxFd = (maxFd <= activeSock->id) ? activeSock->id+1 : maxFd;
++		}
++		nReturn = select(maxFd, &readFds, NULL, &activeFds, NULL);
+ 		if(nReturn < 0) {
+ 			if (errno == EINTR) continue; 
+             break; 
+ 		}
+ 		else if(nReturn){
+-			if(nReturn && FD_ISSET(serverSock->id, &activeFds)){
++			if(nReturn && (FD_ISSET(serverSock->id, &activeFds) || FD_ISSET(serverSock->id, &readFds))){
+ 				nReturn--;
+ 				if(cg_socketlist_size(httpServer->clientSocks) >= CG_MAX_WAIT_CLIENT_SOCKET){
+ 					cg_log_debug_l4("Over accept socket limitation, don't accpet any connection now.\n");
+@@ -523,7 +528,7 @@
+ 				for (activeSock = cg_socketlist_gets(httpServer->clientSocks); activeSock != NULL, nReturn > 0; ){
+ 					clientSock = activeSock;
+ 					activeSock = cg_socket_next(clientSock);
+-					if(FD_ISSET(clientSock->id, &activeFds)){						
++					if(FD_ISSET(clientSock->id, &activeFds) || FD_ISSET(clientSock->id, &readFds)){						
+ 						nReturn--;
+ 						// Limit client count, if client thread size > limit, wait for thread close
+ 						cg_list_remove((CgList*)clientSock);

@@ -1,0 +1,169 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2017-10-27 17:13:54.428752904 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2017-10-27 17:16:19.722568134 +0800
+@@ -24,6 +24,7 @@
+ MAINTENANCE_LOG_PATH = ./maintenance/logsetting
+ MAINTENANCE_USER_ACCOUNT_PATH = ./maintenance/useraccount
+ MAINTENANCE = ./maintenance
++SECURITY_PPTP_PATH = ./security/pptp
+ VOIP_PATH = ./voip
+ VOIP_SIP_PATH = ./voip/sip
+ VOIP_PHONE_PATH = ./voip/phone
+@@ -53,6 +53,9 @@
+ SOURCES += $(wildcard $(MAINTENANCE_DIAGNOSTIC_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE_USER_ACCOUNT_PATH)/*.c)
+ SOURCES += $(wildcard $(MAINTENANCE)/*.c)
++ifeq ($(CONFIG_KERNEL_ZYXEL_PPTP_SUPPORT),y)
++SOURCES += $(wildcard $(SECURITY_PPTP_PATH)/*.c)
++endif
+ ifeq ($(CONFIG_PACKAGE_ZyIMS),y)
+ SOURCES += $(wildcard $(VOIP_SIP_PATH)/*.c)
+ SOURCES += $(wildcard $(VOIP_PHONE_PATH)/*.c) 
+@@ -171,6 +172,11 @@
+ CFLAGS += -DZYXEL_NAT_LOG
+ endif
+ 
++#Support PPTP VPN
++ifeq ($(CONFIG_KERNEL_ZYXEL_PPTP_SUPPORT),y)
++CFLAGS += -DCONFIG_PPTP_SUPPORT
++endif
++
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+ 
+Index: libzcfg_fe_dal-1.0/security/pptp/zcfg_fe_dal_pptp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/security/pptp/zcfg_fe_dal_pptp.c	2017-11-20 17:09:35.163081917 +0800
+@@ -0,0 +1,96 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++#define CWMP_SOAP_MSG_DEBUG (1 << 1)
++
++dal_param_t PPTP_param[] =
++{
++	{"pptpEnable", 		dalType_boolean,	0,	0,		NULL},
++	{"pptpName", 		dalType_string, 	0, 	64,		NULL},
++	{"pptpServer", 		dalType_string, 	0, 	64,		NULL},
++	{"pptpUsername", 	dalType_string, 	0, 	256,	NULL},
++	{"pptpPassword", 	dalType_string, 	0, 	64,		NULL},
++	{"pptpLanInf", 		dalType_string, 	0, 	0,		NULL},
++	{"pptpSecurity", 	dalType_string,		0, 	0,		NULL},
++	{"pptpStatus", 		dalType_v4Addr,		0,	0,		NULL},
++	{"pptpLocalIP", 	dalType_boolean,	0,	0,		NULL},
++	{"pptpRemoteIP", 	dalType_boolean,	0,	0,		NULL},
++	{"pptpOriAlgStatus",	dalType_boolean,	0,  0,      NULL},
++	{NULL, 				0, 					0, 	0, 		NULL}
++};
++
++
++zcfgRet_t zcfgFeDalPptpEdit(struct json_object *Jobj, char *replyMsg)
++{
++	/*!
++	*  Edit PPTP config.
++	*
++	*  @param[in]     Jobj       The PPTP object
++	*  @param[in]	  replyMsg	 
++	*
++	*  @return		ZCFG_SUCCESS  		- Config PPTP success
++	*				ZCFG_INTERNAL_ERROR	- Config PPTP fail
++	*
++	*  @note     Please ref. RDM_OID_PPTP_CFG
++	*/
++	
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char *paraName;
++	objIndex_t objIid;
++	struct json_object *pptpJobj = NULL;
++	int paramModified = 0, n = 0;
++
++	paraName = (const char *)PPTP_param[n++].paraName;
++	
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_PPTP_CFG, &objIid, &pptpJobj)) != ZCFG_SUCCESS) {
++		printf("%s: Object retrieve fail\n", __FUNCTION__);
++		return ret;
++	}
++	
++	while(paraName){
++		struct json_object *paramValue = json_object_object_get(Jobj, paraName);
++		if(!paramValue) { //get next
++			paraName = (const char *)PPTP_param[n++].paraName;
++			continue;
++		}		
++
++		json_object_object_add(pptpJobj, paraName, JSON_OBJ_COPY(paramValue));
++		paramModified = 1;			
++
++		paraName = (const char *)PPTP_param[n++].paraName;
++	}
++
++	if(paramModified) {
++		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_PPTP_CFG, &objIid, pptpJobj, NULL)) != ZCFG_SUCCESS)
++			printf("%s: Write object fail\n", __FUNCTION__);
++	}
++	
++	json_object_put(pptpJobj);
++	return ret;
++}
++zcfgRet_t zcfgFeDalPptp(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalPptpEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "POST")) {
++		
++	}
++	else if(!strcmp(method, "DELETE")) {
++		
++	}
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-10-27 17:13:54.412752824 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-10-27 17:18:39.655515407 +0800
+@@ -65,6 +65,9 @@
+ extern dal_param_t TIME_param[];
+ extern dal_param_t TRUST_DOMAIN_param[];
+ extern dal_param_t SP_TRUST_DOMAIN_param[];
++#ifdef CONFIG_PPTP_SUPPORT
++extern dal_param_t PPTP_param[];
++#endif
+ #if BUILD_PACKAGE_ZyIMS
+ extern dal_param_t VOIP_LINE_param[];
+ extern dal_param_t VOIP_PROFILE_param[];
+@@ -147,6 +150,9 @@
+ extern zcfgRet_t zcfgFeDalTime(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalTrustDomain(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalSpTrustDomain(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++#ifdef CONFIG_PPTP_SUPPORT
++extern zcfgRet_t zcfgFeDalPptp(const char *method, struct json_object *Jobj, char *replyMsg);
++#endif
+ #if BUILD_PACKAGE_ZyIMS
+ extern zcfgRet_t zcfgFeDalVoipLine(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoipProfile(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -297,6 +303,9 @@
+ {"snmp",			SNMP_param, 		zcfgFeDalSNMP,			zcfgFeDalShowSNMP,			"edit|get",				"SNMP"},
+ {"time",			TIME_param, 		zcfgFeDalTime,			zcfgFeDalShowTime,			"edit|get",				"Time"},//Time
+ {"trust_domain",	TRUST_DOMAIN_param, zcfgFeDalTrustDomain,	zcfgFeDalShowTrustDomain,	"get|add|delete",		"Remote_MGMT"},//Remote_MGMT
++#ifdef CONFIG_PPTP_SUPPORT
++{"PPTP",			PPTP_param,			zcfgFeDalPptp},
++#endif
+ {"sp_trust_domain",	SP_TRUST_DOMAIN_param, zcfgFeDalSpTrustDomain, zcfgFeDalShowSpTrustDomain,	"get|add|delete",		"SP_Domain"},//SP_Domain
+ #if BUILD_PACKAGE_ZyIMS
+ {"sip_account",		VOIP_LINE_param,	zcfgFeDalVoipLine,		zcfgFeDalShowVoipLine,		"get|add|edit|delete", "SIP"},//SIP

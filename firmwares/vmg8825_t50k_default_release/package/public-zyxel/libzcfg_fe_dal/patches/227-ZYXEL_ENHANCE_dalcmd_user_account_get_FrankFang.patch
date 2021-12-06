@@ -1,0 +1,176 @@
+Index: libzcfg_fe_dal-1.0/maintenance/useraccount/zcfg_fe_dal_user_account.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/useraccount/zcfg_fe_dal_user_account.c	2017-06-22 11:34:52.997774242 +0800
++++ libzcfg_fe_dal-1.0/maintenance/useraccount/zcfg_fe_dal_user_account.c	2017-06-22 13:51:01.693627957 +0800
+@@ -12,24 +12,103 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_fe_dal_common.h"
+ 
++int highGpIdx = 1;
++int mediumGpIdx = 2;
++int lowGpIdx = 3;
++
+ 
+ dal_param_t USER_ACCOUNT_param[] =  //RDM_OID_ZY_LOG_CFG_GP_ACCOUNT
+ {
+-	{"FirstIndex", 			dalType_int, 	 0, 	0, 	NULL},
+-	{"SecondIndex", 		dalType_int, 	 0, 	0, 	NULL},
+-	{"Enabled", 			dalType_boolean, 0, 	0, 	NULL},
+-	{"EnableQuickStart", 	dalType_boolean, 0, 	0, 	NULL},
+-	{"Username", 			dalType_string,	 0,	    0,	NULL},
+-	{"Password", 		    dalType_string,	 0,	    0,	NULL},
+-	{"AccountRetryTime", 	dalType_int, 	 0, 	5, 	NULL},
+-	{"AccountIdleTime",     dalType_int,     1, 	3600, NULL},
+-	{"AccountLockTime", 	dalType_int, 	 5, 	5400, NULL},
+-	{"oldPw", 				dalType_string,	 0,	    0,	NULL},
+-	{"verifyNewpassword",   dalType_string,	 0,	    0,	NULL},
+-	{"groupnumber",   		dalType_int,	 0,	    0,	NULL},
+-	{NULL, 					0, 				 0, 	0, 	NULL}
++	{"Index",				dalType_int,	 0, 	0,		NULL,	NULL,	dal_Edit|dal_Delete},
++	{"FirstIndex",			dalType_int,	 0, 	0,		NULL,	NULL,	dalcmd_Forbid},
++	{"SecondIndex", 		dalType_int,	 0, 	0,		NULL,	NULL,	dalcmd_Forbid},
++	{"Enabled", 			dalType_boolean, 0, 	0,		NULL,	NULL,	dal_Add},
++	{"EnableQuickStart",	dalType_boolean, 0, 	0,		NULL,	NULL,	0},
++	{"Username",			dalType_string,  0, 	0,		NULL,	NULL,	dal_Add},
++	{"Password",			dalType_string,  0, 	0,		NULL,	NULL,	dal_Add},
++	{"AccountRetryTime",	dalType_int,	 0, 	5,		NULL,	NULL,	dal_Add},
++	{"AccountIdleTime", 	dalType_int,	 1, 	3600,	NULL,	NULL,	dal_Add},
++	{"AccountLockTime", 	dalType_int,	 5, 	5400,	NULL,	NULL,	dal_Add},
++	{"oldPw",				dalType_string,  0, 	0,		NULL,	NULL,	0},
++	{"verifyNewpassword",	dalType_string,  0, 	0,		NULL,	NULL,	0},
++	{"groupnumber", 		dalType_int,	 0, 	0,		NULL,	NULL,	dalcmd_Forbid},
++	{"groupName",			dalType_string,  0, 	0,		NULL,	"Administrator|User", 	dal_Add},
++	{NULL,					0,				 0, 	0,		NULL,	NULL,	0}
+ };
+ 
++void zcfgFeDalShowUserAccount(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj;
++
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++
++	printf("%-10s %-10s %-15s %-15s %-15s %-15s %-15s\n", "Index", "Active", "User Name", "Retry Times", "Idle Timeout", "Lock Period", "Group");		
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("%-10s ",json_object_get_string(json_object_object_get(obj, "Index")));
++		if(json_object_get_boolean(json_object_object_get(obj, "Enabled")))
++			printf("%-10s ","Enable");
++		else
++			printf("%-10s ","Disable");
++		printf("%-15s ",json_object_get_string(json_object_object_get(obj, "Username")));
++		printf("%-15s ",json_object_get_string(json_object_object_get(obj, "AccountRetryTime")));
++		printf("%-15s ",json_object_get_string(json_object_object_get(obj, "AccountIdleTime")));
++		printf("%-15s ",json_object_get_string(json_object_object_get(obj, "AccountLockTime")));
++		printf("%-15s ",json_object_get_string(json_object_object_get(obj, "groupName")));
++		printf("\n");
++	}
++	
++}
++
++zcfgRet_t zcfgFeDal_User_Account_Get(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t iid;
++	struct json_object *obj = NULL;
++	struct json_object *pramJobj = NULL;
++	struct json_object *accountEnabled = NULL;
++	struct json_object *userName = NULL;
++	struct json_object *retryTime = NULL;
++	struct json_object *idleTime = NULL;
++	struct json_object *lockTime = NULL;
++	
++	int index = 1; // show index 1,2,3,...
++
++	IID_INIT(iid);
++	iid.level=2;
++	iid.idx[0]=mediumGpIdx; // group administrator (iid:[2,x,0,0,0,0]), group user (iid:[3,x,0,0,0,0])
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &iid, &obj) == ZCFG_SUCCESS) {
++		accountEnabled = json_object_object_get(obj, "Enabled");
++		userName = json_object_object_get(obj, "Username");
++		retryTime = json_object_object_get(obj, "AccountRetryTime");
++		idleTime = json_object_object_get(obj, "AccountIdleTime");
++		lockTime = json_object_object_get(obj, "AccountLockTime");
++		pramJobj = json_object_new_object();
++		json_object_object_add(pramJobj, "Index", json_object_new_int(index));
++		json_object_object_add(pramJobj, "Enabled", JSON_OBJ_COPY(accountEnabled));
++		json_object_object_add(pramJobj, "Username", JSON_OBJ_COPY(userName));
++		json_object_object_add(pramJobj, "AccountRetryTime", JSON_OBJ_COPY(retryTime));
++		json_object_object_add(pramJobj, "AccountIdleTime", JSON_OBJ_COPY(idleTime));
++		json_object_object_add(pramJobj, "AccountLockTime", JSON_OBJ_COPY(lockTime));
++		if(iid.idx[0]==mediumGpIdx){
++			json_object_object_add(pramJobj, "groupName",json_object_new_string("Administrator"));
++		}
++		else if(iid.idx[0]==lowGpIdx){
++			json_object_object_add(pramJobj, "groupName",json_object_new_string("User"));
++		}
++		else{
++			printf("%s : Error\n",__FUNCTION__);
++		}
++		json_object_array_add(Jarray, pramJobj);
++		index++;
++		zcfgFeJsonObjFree(obj);
++	}
++	return ret;
++}
++
+ //POST function
+ zcfgRet_t zcfgFeDal_User_Account_Add(struct json_object *Jobj, char *replyMsg){ 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -48,6 +127,22 @@
+ 	int groupnumber = 0;
+ 	int FirstIndex = 0;
+ 	int SecondIndex = 0;
++
++	if(json_object_object_get(Jobj, "groupName")){ // from dalcmd
++		if(!strcmp("Administrator",json_object_get_string(json_object_object_get(Jobj, "groupName")))){
++			FirstIndex = 2;
++		}
++		else if(!strcmp("User",json_object_get_string(json_object_object_get(Jobj, "groupName")))){
++			FirstIndex = 3;
++		}
++		else{
++			printf("ERROR!\n");
++		}
++	}
++	else{ // from GUI
++		FirstIndex = json_object_get_int(json_object_object_get(Jobj, "FirstIndex"));
++	}
++	
+ 	//get iid[0] of this item
+ 	FirstIndex = json_object_get_int(json_object_object_get(Jobj, "FirstIndex"));
+ 	username = json_object_get_string(json_object_object_get(Jobj, "Username"));
+@@ -219,7 +314,9 @@
+ 	if(!method || !Jobj)
+ 		return ZCFG_INTERNAL_ERROR;
+ 
+-	if(!strcmp(method, "PUT")) {
++	if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_User_Account_Get(Jobj, NULL);
++	}else if(!strcmp(method, "PUT")) {
+ 		ret = zcfgFeDal_User_Account_Edit(Jobj, NULL);
+ 	}else if(!strcmp(method, "POST")) {
+ 		ret = zcfgFeDal_User_Account_Add(Jobj, NULL);
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-06-22 11:34:53.085774241 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-06-22 13:45:54.676749305 +0800
+@@ -202,6 +202,7 @@
+ extern void zcfgFeDalShowMgmt(struct json_object *Jarray);
+ extern void zcfgFeDalShowUsbMediaserver(struct json_object *Jarray);
+ extern void zcfgFeDalShowWifiWps(struct json_object *Jarray);
++extern void zcfgFeDalShowUserAccount(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+ {"wan",				WAN_param,			zcfgFeDalWan,			zcfgFeDalShowWan,			"get",				"Broadband"},
+@@ -279,7 +280,7 @@
+ {"SP_MGMT_SRV", 		SP_MGMT_SRV_param,	zcfgFeDalSPMgmtSrv,			NULL,		"edit",			""},
+ {"LOGIN_PRIVILEGE", LOGIN_PRIVILEGE_param,	zcfgFeDalLoginPrivilege,NULL, 					"edit",				""},//root_only
+ {"QUICKSTART", 		QUICK_START_param,	zcfgFeDalQuickStart,	NULL,						"edit",				""},//root_only
+-{"USER_ACCOUNT", 	USER_ACCOUNT_param,	zcfgFeDalUserAccount,	NULL,						"add|edit|delete",	""}, //temporarily root_only //User_Account
++{"USER_ACCOUNT",	USER_ACCOUNT_param, zcfgFeDalUserAccount,	zcfgFeDalShowUserAccount,	"get|add|edit|delete",	"User_Account"}, //temporarily root_only //User_Account
+ {"lanhosts",		NETWORK_MAP_param, zcfgFeDalNetworkMAP,	zcfgFeDalShowNetworkMAP,		"get",				"Status"},
+ {NULL,				NULL,				NULL, 					NULL,						NULL,				 NULL}
+ };

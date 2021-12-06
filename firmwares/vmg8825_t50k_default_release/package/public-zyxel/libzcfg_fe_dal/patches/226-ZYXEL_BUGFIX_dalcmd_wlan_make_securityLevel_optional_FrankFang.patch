@@ -1,0 +1,160 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2017-06-21 17:22:36.446947877 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2017-06-22 09:20:37.697918497 +0800
+@@ -35,7 +35,7 @@
+ 	{"wlGwMode",			dalType_string, 	0,	0,	NULL,		NULL,			dalcmd_Forbid},
+ 	{"wlEnableGuest",		dalType_boolean, 	0,	0,	NULL,		NULL,			dalcmd_Forbid},
+ 	//WiFi Access Point Sec
+-	{"securityLevel",		dalType_string,		0,	0,	NULL,		"NoSecurity|Basic|MoreSecure",	dal_Edit},
++	{"securityLevel",		dalType_string,		0,	0,	NULL,		"NoSecurity|Basic|MoreSecure",	0},
+ 	{"secMode",				dalType_int,		0,	0,	NULL,		"43|149|255",	dalcmd_Forbid},
+ 	{"wep",					dalType_string,		0,	0,	NULL,		"64bit|128bit",	0},
+ 	{"WEPKey",				dalType_string, 	0,	0,	NULL,		NULL,			0},
+@@ -1353,8 +1353,15 @@
+ 			else
+ 				json_object_object_add(wifiSecObj, "ModeEnabled", json_object_new_string("WPA-WPA2-Personal"));
+ 		
+-			json_object_object_add(wifiSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
+-		
++			// AutoGenPSK be from user (Jobj) or default (wifiSecObj)
++			if(json_object_object_get(Jobj,"AutoGenPSK")){
++				json_object_object_add(wifiSecObj, "X_ZYXEL_AutoGenPSK", json_object_new_boolean(X_ZYXEL_AutoGenPSK));
++			}
++			else{
++				X_ZYXEL_AutoGenPSK = json_object_get_boolean(json_object_object_get(wifiSecObj, "X_ZYXEL_AutoGenPSK"));
++				psk_value = json_object_get_string(json_object_object_get(wifiSecObj, "X_ZYXEL_Auto_PSK"));
++			}
++			
+ 			if(X_ZYXEL_AutoGenPSK)
+ 			{
+ 				X_ZYXEL_Auto_PSK = json_object_get_string(json_object_object_get(wifiSecObj, "X_ZYXEL_Auto_PSK"));
+@@ -1405,9 +1412,10 @@
+ 				json_object_object_add(wifiSecObj, "X_ZYXEL_Encryption", json_object_new_string("tkipaes"));
+ 		}
+ 
++		// RekeyingInterval be from user (Jobj) or default
+ 		if(json_object_object_get(Jobj, "RekeyingInterval")){
+ 			json_object_object_add(wifiSecObj, "RekeyingInterval", json_object_new_int(RekeyingInterval));
+-		}			
++		}
+ 	}	
+ #endif
+ 	return ret;
+@@ -1565,6 +1573,47 @@
+ 	struct json_object *wifiWPSObj = NULL;
+ 	int Index;
+ 	bool autoGenMoreSecurePasswd;
++	bool wpsEnabled = false;
++
++	if(!json_object_object_get(Jobj, "securityLevel")){
++		if(json_object_object_get(Jobj, "wep")||
++			json_object_object_get(Jobj, "WEPKey")||
++			json_object_object_get(Jobj, "AutoGenWepKey")||
++			json_object_object_get(Jobj, "WEPKey2")||
++			json_object_object_get(Jobj, "WEPKey3")||
++			json_object_object_get(Jobj, "WEPKey4")||
++			json_object_object_get(Jobj, "WEP64Key1")||
++			json_object_object_get(Jobj, "WEP64Key2")||
++			json_object_object_get(Jobj, "WEP64Key3")||
++			json_object_object_get(Jobj, "WEP64Key4")||
++			json_object_object_get(Jobj, "wepid")||
++			json_object_object_get(Jobj, "wpaMode")||
++			json_object_object_get(Jobj, "AutoGenPSK")||
++			json_object_object_get(Jobj, "psk_value")||
++			json_object_object_get(Jobj, "encryp")||
++			json_object_object_get(Jobj, "RekeyingInterval")){
++			printf("\"securityLevel\" has to be set.\n");
++			return ZCFG_INVALID_PARAM_VALUE;
++		}
++		else
++			return ZCFG_SUCCESS;
++	}
++
++	Index = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	IID_INIT(wifiWPSIid);
++	wifiWPSIid.level = 1;
++	wifiWPSIid.idx[0] = Index;
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_WPS, &wifiWPSIid, &wifiWPSObj)) == ZCFG_SUCCESS) {
++		if(json_object_get_boolean(json_object_object_get(wifiWPSObj, "Enable"))){
++			wpsEnabled = true;
++		}
++		json_object_put(wifiWPSObj);
++	}
++	else{
++		printf("%s : Get WPS object fail.\n",__FUNCTION__);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
+ 
+ 	// secMode must be set to proper value
+ 	if(!json_object_object_get(Jobj, "secMode")){
+@@ -1577,22 +1626,9 @@
+ 	else if(secMode == SLIDER_POS_BASIC){
+ 
+ 		// if WPS is on, return false
+-		Index = json_object_get_int(json_object_object_get(Jobj, "Index"));
+-		IID_INIT(wifiWPSIid);
+-		wifiWPSIid.level = 1;
+-		wifiWPSIid.idx[0] = Index;
+-		if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_ACCESS_POINT_WPS, &wifiWPSIid, &wifiWPSObj)) == ZCFG_SUCCESS) {
+-			if(json_object_get_boolean(json_object_object_get(wifiWPSObj, "Enable"))){
+-				printf("WEP security does not support WPS. You should disable WPS first.\n");
+-				json_object_put(wifiWPSObj);
+-				return ZCFG_INVALID_PARAM_VALUE;
+-			}
+-			else{
+-				json_object_put(wifiWPSObj);
+-			}
+-		}
+-		else{
+-			return ZCFG_NO_SUCH_OBJECT;
++		if(wpsEnabled){
++			printf("WEP security does not support WPS. You should disable WPS first.\n");
++			return ZCFG_REQUEST_REJECT;
+ 		}
+ 
+ 		// wep must be set to proper value
+@@ -1671,20 +1707,30 @@
+ 			printf("wpaMode must be set to \"wpapsk\" or \"wpa2psk\" or \"wpawpa2psk\".\n");
+ 			return ZCFG_INVALID_PARAM_VALUE;
+ 		}
+-		// AutoGenPSK must be set
+-		if(!json_object_object_get(Jobj, "AutoGenPSK")){
+-			printf("AutoGenPSK must be set in \"MoreSecure\" mode.\n");
+-			return ZCFG_INVALID_PARAM_VALUE;
++		// if WPS is on, wpapsk is not available
++		if(!strcmp(wpaMode,"wpapsk") && wpsEnabled){
++			printf("WPS2.0 does not support WPA-PSK. You should disable WPS first.");
++			return ZCFG_REQUEST_REJECT;
+ 		}
+-		// psk_value must be set according to AutoGenPSK's value
+-		autoGenMoreSecurePasswd = json_object_get_boolean(json_object_object_get(Jobj, "AutoGenPSK"));
+-		if(autoGenMoreSecurePasswd && json_object_object_get(Jobj, "psk_value")){
+-			printf("\"psk_value\" should not be set when auto-generated password is enabled.\n");
+-			return ZCFG_INVALID_PARAM_VALUE;
++
++		// AutoGenPSK is optional
++		if(!json_object_object_get(Jobj, "AutoGenPSK")){
++			if(json_object_object_get(Jobj, "psk_value")){
++				printf("\"psk_value\" should be set when auto-generated password is disabled.\n");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
+ 		}
+-		if(!autoGenMoreSecurePasswd && !json_object_object_get(Jobj, "psk_value")){
+-			printf("\"psk_value\" should be set when auto-generated password is disabled.\n");
+-			return ZCFG_INVALID_PARAM_VALUE;
++		else{
++			// When AutoGenPSK is set, psk_value must be set according to AutoGenPSK's value
++			autoGenMoreSecurePasswd = json_object_get_boolean(json_object_object_get(Jobj, "AutoGenPSK"));
++			if(autoGenMoreSecurePasswd && json_object_object_get(Jobj, "psk_value")){
++				printf("\"psk_value\" should not be set when auto-generated password is enabled.\n");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
++			if(!autoGenMoreSecurePasswd && !json_object_object_get(Jobj, "psk_value")){
++				printf("\"psk_value\" should be set when auto-generated password is disabled.\n");
++				return ZCFG_INVALID_PARAM_VALUE;
++			}
+ 		}
+ 
+ 		// encryp must be set

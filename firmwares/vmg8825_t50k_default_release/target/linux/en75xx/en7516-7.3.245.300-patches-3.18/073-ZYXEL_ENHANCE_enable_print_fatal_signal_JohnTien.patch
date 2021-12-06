@@ -1,0 +1,412 @@
+Index: linux-2.6.36/kernel/signal.c
+===================================================================
+--- linux-2.6.36.orig/kernel/signal.c	2010-10-21 04:30:22.000000000 +0800
++++ linux-2.6.36/kernel/signal.c	2018-04-24 11:19:55.492916216 +0800
+@@ -43,7 +43,7 @@
+ 
+ static struct kmem_cache *sigqueue_cachep;
+ 
+-int print_fatal_signals __read_mostly;
++int print_fatal_signals __read_mostly = 1;
+ 
+ static void __user *sig_handler(struct task_struct *t, int sig)
+ {
+@@ -1008,6 +1008,12 @@
+ 	preempt_disable();
+ 	show_regs(regs);
+ 	preempt_enable();
++#if 1
++	{
++		extern void do_backtrace_mips32(const struct pt_regs *regs);
++		do_backtrace_mips32(regs);
++	}
++#endif
+ }
+ 
+ static int __init setup_print_fatal_signals(char *str)
+Index: linux-2.6.36/kernel/Makefile
+===================================================================
+--- linux-2.6.36.orig/kernel/Makefile	2010-10-21 04:30:22.000000000 +0800
++++ linux-2.6.36/kernel/Makefile	2018-04-20 17:54:01.000430100 +0800
+@@ -14,6 +14,8 @@
+ obj-$(CONFIG_HAVE_EARLY_RES) += early_res.o
+ obj-y += groups.o
+ 
++obj-y += zyxel/
++
+ ifdef CONFIG_FUNCTION_TRACER
+ # Do not trace debug files and internal ftrace files
+ CFLAGS_REMOVE_lockdep.o = -pg
+Index: linux-2.6.36/kernel/zyxel/Makefile
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-2.6.36/kernel/zyxel/Makefile	2018-04-20 17:54:01.000430100 +0800
+@@ -0,0 +1,2 @@
++
++obj-y += backtrace_wrapper.o
+Index: linux-2.6.36/kernel/zyxel/backtrace_wrapper.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-2.6.36/kernel/zyxel/backtrace_wrapper.c	2018-04-24 11:35:07.401438126 +0800
+@@ -0,0 +1,361 @@
++
++#include <linux/ptrace.h>
++#include <linux/fs.h>
++#include <linux/buffer_head.h>
++
++#include <asm/segment.h>
++#include <asm/uaccess.h>
++#include <asm/ptrace.h>
++#include <asm/param.h>
++
++
++
++#define MAX_LOG_NUM     4
++#define BUFF_SIZE       128
++#define NUM_OF_RA       32
++
++
++#ifdef BACKTRACE_DUMP_TO_FILE
++#define DUMP_TO_FILE(format, ...) \
++    do{ \
++        snprintf(buff, BUFF_SIZE, format, ##__VA_ARGS__); \
++        wfp->f_op->write(wfp, buff, strlen(buff), &wfp->f_pos); \
++    }while(0)
++
++#else //do nothing
++#define DUMP_TO_FILE(format, ...)
++#endif
++
++
++int backtrace_mips32(void **pBuff, int size, const struct pt_regs *regs)
++{
++    #define ADDIU_SP_SP     0x27BD0000
++    #define SW_SP_RA        0xAFBF0000
++    #define SW_SP_GP        0xAFBE0000
++    #define LUI_GP          0x3C1C0000
++    #define JR_RA           0x03E00008
++
++    unsigned long *pc, *ra, *sp;
++    unsigned long *addr;
++    unsigned long ra_offset;
++    unsigned long stack_size;
++    int depth = 0;
++    int leaf_found = 0;
++    int leaf = 0;
++
++
++    if(!pBuff || size<=0 || !regs) {
++        return 0;
++    }
++
++    sp = (unsigned long*)(regs->regs[29]);
++    ra = (unsigned long*)(regs->regs[31]);
++    pc = (unsigned long*)(regs->cp0_epc);
++
++
++    printk("\nbacktrace_mips32: sp:0x%08x ra:0x%08x pc:0x%08x \n",
++        (unsigned int)sp, (unsigned int)ra,(unsigned int)pc);
++
++
++    while(depth < size && pc) {
++        pBuff[depth++] = pc;
++
++        ra_offset = 0;
++        stack_size = 0;
++
++        /* scan backwards */
++        for(addr=pc; addr && (!ra_offset || !stack_size); addr--) {
++            if( (*addr & 0xffff0000) == ADDIU_SP_SP) {
++                if(*addr & 0x8000) {
++                    stack_size = abs( (short)(*addr & 0xffff) );
++
++                    if(!leaf_found && (*(addr+1) & 0xffff0000)==SW_SP_GP ) {
++                        leaf_found = 1;
++                        leaf = 1;
++                    }
++                }
++            }
++
++            if( (*addr & 0xffff0000) == SW_SP_RA) {
++                ra_offset = (short)(*addr & 0xffff);
++            }
++
++            if( (*addr & 0xffff0000) == LUI_GP) {
++                printk(">LUI_GP handling at 0x%08x  %08x\n", (unsigned int)addr, (unsigned int)*addr);
++                return depth;
++            }
++        }
++
++        if(leaf && leaf_found) {
++            leaf = 0;
++            pc = ra;
++        } else {
++            if(ra_offset) {
++                pc =  *(unsigned long**) ((unsigned long)sp + ra_offset);
++            }
++        }
++
++        if(stack_size) {
++            sp = (unsigned long*)((unsigned long)sp + stack_size);
++        }
++
++        printk("[%-2d] ra_off:0x%-8lx stack_size:0x%-8lx ra:0x%08lx sp:0x%08lx\n",
++            depth, ra_offset, stack_size, (unsigned long int)pc, (unsigned long int)sp);
++
++    }
++
++    return depth;
++}
++
++static void save_n_dump_process_maps(struct file *wfp)
++{
++    char buff[BUFF_SIZE+4] ={};
++    struct file *fp;
++    int len, i;
++    mm_segment_t oldfs;
++
++
++    snprintf(buff, BUFF_SIZE, "/proc/%d/maps", current->pid);
++
++    oldfs = get_fs();
++    set_fs(get_ds());
++    fp=filp_open(buff, O_RDONLY, 0);
++    set_fs(oldfs);
++    if(!fp) {
++        printk("open process map file %s failed!\n", buff);
++        return;
++    }
++
++    if(fp->f_op && fp->f_op->read) {
++        oldfs = get_fs();
++        set_fs(get_ds());
++        while( (len=fp->f_op->read(fp, buff, BUFF_SIZE, &fp->f_pos)) > 0) {
++            if(len == BUFF_SIZE) {
++                printk("%s", buff);
++            } else {
++                for(i=0; i<len; i++) {
++                    printk("%c", buff[i]);
++                }
++            }
++
++            /* write to file */
++            if(wfp && wfp->f_op && wfp->f_op->write) {
++                wfp->f_op->write(wfp, buff, len, &wfp->f_pos);
++            }
++        }
++        set_fs(oldfs);
++    }
++
++    filp_close(fp,NULL);
++
++    return;
++}
++
++
++void save_regs_to_file(const struct pt_regs *regs, struct file *wfp)
++{
++#ifdef BACKTRACE_DUMP_TO_FILE
++    char buff[BUFF_SIZE+4] ={};
++    const int field = 2 * sizeof(unsigned long);
++    unsigned int cause = regs->cp0_cause;
++    int i;
++
++    DUMP_TO_FILE("Cpu %d\n", smp_processor_id());
++
++    /*
++     * Saved main processor registers
++     */
++    for (i = 0; i < 32; ) {
++        if ((i % 4) == 0)
++            DUMP_TO_FILE("$%2d   :", i);
++        if (i == 0)
++            DUMP_TO_FILE(" %0*lx", field, 0UL);
++        else if (i == 26 || i == 27)
++            DUMP_TO_FILE(" %*s", field, "");
++        else
++            DUMP_TO_FILE(" %0*lx", field, regs->regs[i]);
++
++        i++;
++        if ((i % 4) == 0)
++            DUMP_TO_FILE("\n");
++    }
++
++    DUMP_TO_FILE("Hi    : %0*lx\n", field, regs->hi);
++    DUMP_TO_FILE("Lo    : %0*lx\n", field, regs->lo);
++
++    /*
++     * Saved cp0 registers
++     */
++    DUMP_TO_FILE("epc   : %0*lx %pS\n", field, regs->cp0_epc,
++           (void *) regs->cp0_epc);
++    DUMP_TO_FILE("    %s\n", print_tainted());
++    DUMP_TO_FILE("ra    : %0*lx %pS\n", field, regs->regs[31],
++           (void *) regs->regs[31]);
++
++    DUMP_TO_FILE("Status: %08x    ", (uint32_t) regs->cp0_status);
++
++    if (current_cpu_data.isa_level == MIPS_CPU_ISA_I) {
++        if (regs->cp0_status & ST0_KUO)
++            DUMP_TO_FILE("KUo ");
++        if (regs->cp0_status & ST0_IEO)
++            DUMP_TO_FILE("IEo ");
++        if (regs->cp0_status & ST0_KUP)
++            DUMP_TO_FILE("KUp ");
++        if (regs->cp0_status & ST0_IEP)
++            DUMP_TO_FILE("IEp ");
++        if (regs->cp0_status & ST0_KUC)
++            DUMP_TO_FILE("KUc ");
++        if (regs->cp0_status & ST0_IEC)
++            DUMP_TO_FILE("IEc ");
++    } else {
++        if (regs->cp0_status & ST0_KX)
++            DUMP_TO_FILE("KX ");
++        if (regs->cp0_status & ST0_SX)
++            DUMP_TO_FILE("SX ");
++        if (regs->cp0_status & ST0_UX)
++            DUMP_TO_FILE("UX ");
++        switch (regs->cp0_status & ST0_KSU) {
++        case KSU_USER:
++            DUMP_TO_FILE("USER ");
++            break;
++        case KSU_SUPERVISOR:
++            DUMP_TO_FILE("SUPERVISOR ");
++            break;
++        case KSU_KERNEL:
++            DUMP_TO_FILE("KERNEL ");
++            break;
++        default:
++            DUMP_TO_FILE("BAD_MODE ");
++            break;
++        }
++        if (regs->cp0_status & ST0_ERL)
++            DUMP_TO_FILE("ERL ");
++        if (regs->cp0_status & ST0_EXL)
++            DUMP_TO_FILE("EXL ");
++        if (regs->cp0_status & ST0_IE)
++            DUMP_TO_FILE("IE ");
++    }
++    DUMP_TO_FILE("\n");
++
++    DUMP_TO_FILE("Cause : %08x  ", cause);
++    cause = (cause & CAUSEF_EXCCODE) >> CAUSEB_EXCCODE;
++    switch(cause)
++    {
++        case 0:
++            DUMP_TO_FILE("INT\n");
++            break;
++        case 1:
++        case 2:
++        case 3:
++            DUMP_TO_FILE("TLB\n");
++            break;
++        case 4:
++            DUMP_TO_FILE("ADDRL\n");
++            break;
++        case 5:
++            DUMP_TO_FILE("ADDRS\n");
++            break;
++        case 6:
++            DUMP_TO_FILE("IBUS\n");
++            break;
++        case 7:
++            DUMP_TO_FILE("DBUS\n");
++            break;
++        case 8:
++            DUMP_TO_FILE("SYSCALL\n");
++            break;
++        case 9:
++            DUMP_TO_FILE("BKPT\n");
++            break;
++        case 10:
++            DUMP_TO_FILE("RI\n");
++            break;
++        case 11:
++            DUMP_TO_FILE("coprocessor missing\n");
++            break;
++        case 12:
++            DUMP_TO_FILE("OVF\n");
++            break;
++        default:
++            DUMP_TO_FILE("floating point/reserved\n");
++            break;
++    }
++    if (1 <= cause && cause <= 5)
++        DUMP_TO_FILE("BadVA : %0*lx\n", field, regs->cp0_badvaddr);
++
++    DUMP_TO_FILE("PrId  : %08x (%s)\n", read_c0_prid(),
++           cpu_name_string());
++#endif
++}
++
++void do_backtrace_mips32(const struct pt_regs *regs)
++{
++    int i;
++    int size;
++    char buff[BUFF_SIZE+4];
++    unsigned long raddr[NUM_OF_RA];
++    struct file *wfp=NULL;
++    mm_segment_t oldfs;
++    static int log_index = 0;
++
++
++    printk("\n/proc/%d/maps:\n", current->pid);
++    save_n_dump_process_maps(NULL);
++    printk("\n\n");
++
++    size = backtrace_mips32((void**)&raddr, NUM_OF_RA, regs);
++    printk("\nshow_backtrace_mips32:\n");
++    for(i=0;i<size;i++) {
++        printk("  %08lx\n", raddr[i]);
++    }
++
++
++    /* open log file */
++    snprintf(buff, BUFF_SIZE, "/tmp/fatal_log_%d", log_index);
++    if(++log_index >= MAX_LOG_NUM) {
++        log_index = 0;
++    }
++    oldfs = get_fs();
++    set_fs(get_ds());
++
++#ifdef BACKTRACE_DUMP_TO_FILE
++    printk("\nopen log file %s\n", buff);
++
++    wfp=filp_open(buff, O_WRONLY|O_CREAT , 0);
++    set_fs(oldfs);
++    if(!wfp) {
++        printk("open write log file %s failed!\n", buff);
++    }
++#endif
++
++
++    if(wfp && wfp->f_op && wfp->f_op->write) {
++        oldfs = get_fs();
++        set_fs(get_ds());
++
++        DUMP_TO_FILE("process %s(%d)\n", current->comm, current->pid);
++
++        /* write registers to log */
++        save_regs_to_file(regs, wfp);
++
++        /* write call trace to log */
++        DUMP_TO_FILE("\nshow_backtrace_mips32:\n");
++        for(i=0;i<size;i++) {
++            DUMP_TO_FILE("  %08lx\n", raddr[i]);
++        }
++
++        DUMP_TO_FILE("\n/proc/%d/maps:\n", current->pid);
++
++        set_fs(oldfs);
++    }
++
++#ifdef BACKTRACE_DUMP_TO_FILE
++    printk("\n/proc/%d/maps:\n", current->pid);
++    save_n_dump_process_maps(wfp);
++    printk("\n\n");
++#endif
++
++    if(wfp)
++        filp_close(wfp,NULL);
++
++}

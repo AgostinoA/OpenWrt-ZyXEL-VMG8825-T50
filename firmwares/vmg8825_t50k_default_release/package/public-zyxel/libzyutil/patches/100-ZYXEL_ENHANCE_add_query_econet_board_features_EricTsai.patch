@@ -1,0 +1,127 @@
+Index: libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_econet_wrapper.h	2019-01-18 18:46:08.829878371 +0800
++++ libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h	2019-01-18 18:48:36.645874107 +0800
+@@ -32,4 +32,5 @@
+ zcfgRet_t zyUtilSetMrdInfo(PMRD_DATA mrd);
+ int endian_check();
+ 
++#define ECONET_BOARDFEATURES_PROC_PATH "/proc/tc3162/prtype"
+ #endif
+Index: libzyutil-1.0/ECONET/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_wrapper.c	2019-01-18 18:46:09.285878358 +0800
++++ libzyutil-1.0/ECONET/libzyutil_wrapper.c	2019-01-18 18:46:09.365878356 +0800
+@@ -858,4 +858,70 @@
+     return -1;
+ }
+ //-----------------------------------------------------
++
++#ifdef ZYXEL_DETECT_PRODUCT_TYPE
++int zyUtilAskBoardFeaturesStringBits(char *bits, int bitsLen)
++{
++   FILE *pf = fopen(ECONET_BOARDFEATURES_PROC_PATH, "r");
++   if(!pf || !bits){
++     return -1;
++   }
++
++   int n = fread(bits, 1, bitsLen-1, pf);
++   fclose(pf);
++   return n;
++}
++
++
++/*
++000  (2 port FXS) VMG8623-T50B
++001  (1 port FXS) EMG5523-T50B (VMG8623-T50B abandon VD WAN)
++010  (0 port FXS) VMG3625-T50B (VMG8623-T50B VoIP not involved)
++011               EMG3525-T50B (VMG8623-T50B but VD WAN, VoIP not there)
++*/
++// return: -1: err, 1: has dsl, 0: dsl not on board
++int zyUtilAskBoardDslSupport(const char *bits)
++{
++   int n = 0;
++   char prtype[100] = {0}, **p = NULL;
++
++   n = bits ? strlen(bits) : 0;
++
++   if(n < 3){
++     return -1;
++   }
++   printf("%s: %s\n", __FUNCTION__, bits);
++   strncpy(prtype, bits + (n-3), sizeof(prtype)-1);
++
++   unsigned long type = strtoul((const char *)prtype, p, 2);
++   if(type == 1 || type == 3)
++     return 0;
++   else if(type == 0 || type == 2)
++     return 1;
++   else
++     return 0;
++}
++
++// return: -1: err, 1: has voip, 0: voip not on board
++int zyUtilAskBoardVoIPSupport(const char *bits)
++{
++   int n = 0;
++   char prtype[100] = {0}, **p = NULL;
++
++   n = bits ? strlen(bits) : 0;
++   if(n < 3){
++     return -1;
++   }
++   strncpy(prtype, bits + (n-3), sizeof(prtype)-1);
++
++   unsigned long type = strtoul((const char *)prtype, p, 2);
++   if(type == 2 || type == 3)
++     return 0;
++   else if(type == 0 || type == 1)
++     return 1;
++   else
++     return 0;
++}
++#endif
++
+ #endif
+Index: libzyutil-1.0/Makefile
+===================================================================
+--- libzyutil-1.0.orig/Makefile	2019-01-18 18:46:09.209878360 +0800
++++ libzyutil-1.0/Makefile	2019-01-18 18:46:09.365878356 +0800
+@@ -49,6 +49,9 @@
+ ifneq ($(strip $(TCSUPPORT_DUAL_WLAN_MT7615E)),)
+ ZCFLAGS+=-DMT7615E
+ endif
++ifneq ($(strip $(CONFIG_EN7516SDK_ZYXEL_DETECT_PRODUCT_TYPE)),)
++ZCFLAGS += -DZYXEL_DETECT_PRODUCT_TYPE
++endif
+ ifneq ($(strip $(TCSUPPORT_WLAN_MT7615_11N)),)
+ ZCFLAGS+=-DMT7615_11N
+ endif
+@@ -141,4 +144,4 @@
+ 
+ ifeq ($(strip $(CONFIG_WIND_ITALY_CUSTOMIZATION)), y)
+ 	CFLAGS += -DWIND_ITALY_CUSTOMIZATION
+-endif
+\ No newline at end of file
++endif
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2019-01-18 18:46:09.269878358 +0800
++++ libzyutil-1.0/zyutil.h	2019-01-18 18:47:56.929875252 +0800
+@@ -55,6 +55,16 @@
+ char *zyUtilStrCsvString(const char *, const char *);
+ char *zyUtilCsvStringStripTerm(const char *, const char *);
+ 
++#ifdef ZYXEL_DETECT_PRODUCT_TYPE
++int zyUtilAskBoardFeaturesStringBits(char *, int );
++int zyUtilAskBoardDslSupport(const char *);
++int zyUtilAskBoardVoIPSupport(const char *);
++#else
++#define zyUtilAskBoardFeaturesStringBits(bits, bitsLen) (-1)
++#define zyUtilAskBoardDslSupport(bits) (0)
++#define zyUtilAskBoardVoIPSupport(bits) {0}
++#endif
++
+ zcfgRet_t zyUtilHandleRecvdMsgDebugCfg(const char *msg);
+ unsigned int zcfgMsgDebugCfgLevel(void);
+ void zcfgMsgDebugCfgLevelSet(unsigned int debugCfgLevel);

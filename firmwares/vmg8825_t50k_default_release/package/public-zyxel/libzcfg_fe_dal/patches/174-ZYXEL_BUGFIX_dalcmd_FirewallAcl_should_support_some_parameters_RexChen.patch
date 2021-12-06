@@ -1,0 +1,135 @@
+Index: libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/security/firewall/zcfg_fe_dal_firewall_acl.c	2017-05-10 14:43:19.764628270 +0800
++++ libzcfg_fe_dal-1.0/security/firewall/zcfg_fe_dal_firewall_acl.c	2017-05-10 14:44:37.638390100 +0800
+@@ -27,10 +27,10 @@
+ 	{"ProtocolExclude", 	dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"IPVersion", 			dalType_string,	 0, 	0, 		NULL,	"IPv4|IPv6", 					dal_Add},
+ 	/*src des ip*/
+-	{"SourceIP", 			dalType_v4v6Addr,  0, 	0, 		NULL,	NULL, 							dal_Add},
++	{"SourceIP", 			dalType_v4v6Addr,  0, 	0, 		NULL,	"AnyIP", 						dal_Add},
+ 	{"SourceMask", 			dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"SourceMaskLen", 		dalType_int,  	 0, 	0, 		NULL,	NULL, 							dal_Add}, //same parameter to SourceMask, for dalcmd
+-	{"DestIP", 				dalType_v4v6Addr,  0, 	0, 		NULL,	NULL, 							dal_Add},
++	{"DestIP", 				dalType_v4v6Addr,  0, 	0, 		NULL,	"AnyIP", 						dal_Add},
+ 	{"DestMask", 			dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"DestMaskLen", 		dalType_int,  	 0, 	0, 		NULL,	NULL, 							dal_Add}, //same parameter to DestMask, for dalcmd
+ 	/*Port*/
+@@ -41,13 +41,14 @@
+ 	{"SourcePort", 			dalType_int, 	-1, 	65535, 	NULL,	NULL, 							dal_Add},
+ 	{"SourcePortRangeMax", 	dalType_int, 	-1, 	65535, 	NULL,	NULL, 							0},
+ 	/*TCP flag*/
++	{"TCPFlag", 			dalType_string,  0, 	0, 		NULL,	"SYN|ACK|URG|PSH|RST|FIN",		0},	//for dalcmd TCP flag
+ 	{"X_ZYXEL_TCPFlagComp", dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"X_ZYXEL_TCPFlagMask", dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"X_ZYXEL_ServiceIndex",dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"Direction", 			dalType_string,  0, 	0, 		NULL,	"WAN_TO_LAN|LAN_TO_WAN|WAN_TO_ROUTER|LAN_TO_ROUTER", dal_Add},
+ 	/*rate limit*/
+-	{"X_ZYXEL_LimitRate", 	dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+-	{"X_ZYXEL_LimitRateUnit",dalType_string,  0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
++	{"LimitRate", 			dalType_int, 	 0, 	512, 		NULL,	NULL, 						0},
++	{"LimitRateUnit",		dalType_string,  0, 	0, 		NULL,	"minute|second", 				0},
+ 	{"X_ZYXEL_ScheduleRule",dalType_int, 	 0, 	0, 		NULL,	NULL, 							dalcmd_Forbid},
+ 	{"ICMPv6Type", 			dalType_int, 	-1, 	143, 	NULL,	NULL, 							0},
+ 	{"ICMPv6TypeCode",		dalType_int, 	-1, 	4, 		NULL,	NULL, 							0},
+@@ -166,6 +167,7 @@
+  	objIndex_t aclIid = {0};
+ 	objIndex_t chainIid = {0};
+ 	const char *charVal = NULL;
++	const char *protocol = NULL;
+ 	int intVal = 0;
+ 	char buf[32] = {0};
+ 
+@@ -192,6 +194,18 @@
+ 				else if(!strcmp(charVal, "IPv6"))
+ 					json_object_object_add(aclObj, "IPVersion", json_object_new_int(6));
+ 			}
++			if((paramObj = json_object_object_get(Jobj, "TCPFlag")) != NULL){
++				protocol = json_object_get_string(json_object_object_get(Jobj, "Protocol"));
++				if(!strcmp(protocol, "TCP") || !strcmp(protocol, "TCPUDP")){
++					json_object_object_add(aclObj, "X_ZYXEL_TCPFlagMask", JSON_OBJ_COPY(paramObj));
++					json_object_object_add(aclObj, "X_ZYXEL_TCPFlagComp", JSON_OBJ_COPY(paramObj));
++					json_object_object_del(aclObj, "TCPFlag");
++				}
++				else{
++					strcpy(replyMsg, "TCP flag should choose Protocol TCP or TCP/UDP.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
+ 			if((paramObj = json_object_object_get(Jobj, "Protocol")) != NULL){
+ 				charVal = json_object_get_string(paramObj);
+ 				if(!strcmp(charVal, "ALL"))
+@@ -231,7 +245,22 @@
+ 				json_object_object_add(aclObj, "X_ZYXEL_ICMPTypeCode", JSON_OBJ_COPY(paramObj));
+ 				json_object_object_del(aclObj, "ICMPv6TypeCode");
+ 			}
+-			
++			if((paramObj = json_object_object_get(Jobj, "SourceIP")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "SourceIP")), "AnyIP"))
++				json_object_object_add(aclObj, "SourceIP", json_object_new_string(""));
++			}
++			if((paramObj = json_object_object_get(Jobj, "DestIP")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "DestIP")), "AnyIP"))
++				json_object_object_add(aclObj, "DestIP", json_object_new_string(""));
++			}
++			if((paramObj = json_object_object_get(Jobj, "LimitRate")) != NULL){
++				json_object_object_add(aclObj, "X_ZYXEL_LimitRate", JSON_OBJ_COPY(paramObj));
++				json_object_object_del(aclObj, "LimitRate");
++			}
++			if((paramObj = json_object_object_get(Jobj, "LimitRateUnit")) != NULL){
++				json_object_object_add(aclObj, "X_ZYXEL_LimitRateUnit", JSON_OBJ_COPY(paramObj));
++				json_object_object_del(aclObj, "LimitRateUnit");
++			}
+ 			ret = zcfgFeObjJsonBlockedSet(RDM_OID_FIREWALL_CHAIN_RULE, &aclIid, aclObj, NULL);
+ 		}
+ 	}
+@@ -248,6 +277,7 @@
+ 	bool found = false;
+ 	struct json_object *paramObj = NULL;
+ 	const char *charVal = NULL;
++	const char *protocol = NULL;
+ 	int intVal = 0;
+ 	char buf[32] = {0};
+ 	
+@@ -268,6 +298,18 @@
+ 				else if(!strcmp(charVal, "IPv6"))
+ 					json_object_object_add(aclObj, "IPVersion", json_object_new_int(6));
+ 			}
++			if((paramObj = json_object_object_get(Jobj, "TCPFlag")) != NULL){
++				protocol = json_object_get_string(json_object_object_get(Jobj, "Protocol"));
++				if(!strcmp(protocol, "TCP") || !strcmp(protocol, "TCPUDP")){
++					json_object_object_add(aclObj, "X_ZYXEL_TCPFlagMask", JSON_OBJ_COPY(paramObj));
++					json_object_object_add(aclObj, "X_ZYXEL_TCPFlagComp", JSON_OBJ_COPY(paramObj));
++					json_object_object_del(aclObj, "TCPFlag");
++				}
++				else{
++					strcpy(replyMsg, "TCP flag should choose Protocol TCP or TCP/UDP.");
++					return ZCFG_INVALID_PARAM_VALUE;
++				}
++			}
+ 			if((paramObj = json_object_object_get(Jobj, "Protocol")) != NULL){
+ 				charVal = json_object_get_string(paramObj);
+ 				if(!strcmp(charVal, "ALL"))
+@@ -307,6 +349,22 @@
+ 				json_object_object_add(aclObj, "X_ZYXEL_ICMPTypeCode", JSON_OBJ_COPY(paramObj));
+ 				json_object_object_del(aclObj, "ICMPv6TypeCode");
+ 			}
++			if((paramObj = json_object_object_get(Jobj, "SourceIP")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "SourceIP")), "AnyIP"))
++				json_object_object_add(aclObj, "SourceIP", json_object_new_string(""));
++			}
++			if((paramObj = json_object_object_get(Jobj, "DestIP")) != NULL){
++				if(!strcmp(json_object_get_string(json_object_object_get(Jobj, "DestIP")), "AnyIP"))
++				json_object_object_add(aclObj, "DestIP", json_object_new_string(""));
++			}
++			if((paramObj = json_object_object_get(Jobj, "LimitRate")) != NULL){
++				json_object_object_add(aclObj, "X_ZYXEL_LimitRate", JSON_OBJ_COPY(paramObj));
++				json_object_object_del(aclObj, "LimitRate");
++			}
++			if((paramObj = json_object_object_get(Jobj, "LimitRateUnit")) != NULL){
++				json_object_object_add(aclObj, "X_ZYXEL_LimitRateUnit", JSON_OBJ_COPY(paramObj));
++				json_object_object_del(aclObj, "LimitRateUnit");
++			}
+ 			ret = zcfgFeObjJsonBlockedSet(RDM_OID_FIREWALL_CHAIN_RULE, &aclIid, aclObj, NULL);
+ 			zcfgFeJsonObjFree(aclObj);
+ 		}

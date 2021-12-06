@@ -1,0 +1,115 @@
+Index: libzcfg_fe_tr98-1.0/devInfo.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo.c	2016-04-20 10:20:20.773119153 +0800
++++ libzcfg_fe_tr98-1.0/devInfo.c	2016-04-20 10:20:20.793119153 +0800
+@@ -19,6 +19,19 @@
+ #define SYSLOG_FILE_1 "/var/log/syslog.log.1"
+ #define SYSLOG_FILE "/var/log/syslog.log"
+ 
++#define DATA_SIZE 256
++
++#define retrieveData(fd, log, retrieve_size)	{ \
++		char data[DATA_SIZE] = {0}; \
++		int len = 0; \
++		bool complete = ((fgets(data, DATA_SIZE, fd)) != NULL && (len < retrieve_size-1)) ? false : true; \
++		while(!complete) { \
++			strncpy(log+len, data, retrieve_size-len); \
++			len = strlen(log); \
++			complete = ((fgets(data, DATA_SIZE, fd)) != NULL && (len < retrieve_size-1)) ? false : true; \
++		} \
++		log[retrieve_size-1] = '\0'; \
++	}
+ 
+ /* InternetGatewayDevice.DeviceInfo */
+ zcfgRet_t devInfoObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+@@ -33,12 +46,13 @@
+ 	struct json_object *devInfoObj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char log[FILE_SIZE] = {0};
+-	char log_old[FILE_SIZE] = {0};
++	//char log[FILE_SIZE] = {0};
++	//char log_old[FILE_SIZE] = {0};
++	char *log = NULL, *log2 = NULL;
+ 	int filelen1 = 0, filelen2 = 0;
+ 	FILE *fd1 = NULL;
+ 	FILE *fd2 = NULL;
+-	char *lst = calloc(256, sizeof(char));
++	//char *lst = calloc(256, sizeof(char));
+ 
+ #if 0
+ 	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mapObj) != ZCFG_SUCCESS) {
+@@ -54,10 +68,8 @@
+ #else
+ 	/* InternetGatewayDevice.DeviceInfo <-> Device.DeviceInfo */
+ 	IID_INIT(devInfoIid);
+-	if((ret = feObjJsonGet(RDM_OID_DEV_INFO, &devInfoIid, &devInfoObj, updateFlag)) != ZCFG_SUCCESS) {
+-		free(lst);
++	if((ret = feObjJsonGet(RDM_OID_DEV_INFO, &devInfoIid, &devInfoObj, updateFlag)) != ZCFG_SUCCESS)
+ 		return ret;
+-	}
+ #endif	
+ 
+ 	/*fill up tr98 devInfo object*/
+@@ -79,6 +91,7 @@
+ 					printf("TR69 open log file fail!!\n");
+ 				}
+ 			}
++			log = calloc(FILE_SIZE, sizeof(char));
+ 			strcpy(log, "");
+ 			if((fd1 != NULL) || (fd2 != NULL)){
+ 				if(fd1 != NULL){
+@@ -93,6 +106,8 @@
+ 				}
+ 				if(filelen2 > FILE_SIZE){
+ 					fseek(fd2, ((filelen2%FILE_SIZE) + (filelen2/FILE_SIZE - 1)*FILE_SIZE), SEEK_SET);
++					retrieveData(fd2, log, FILE_SIZE);
++#if 0
+ 					fgets(lst, 256, fd2);
+ 					while((fgets(lst, 256, fd2)) != NULL) {
+ //						strcat(log, lst);
+@@ -100,9 +115,12 @@
+ 						strcpy(log, lst);
+ 						strcat(log, log_old);
+ 					}
++#endif
+ 				}else{
+-					if(fd1 != NULL){
++					if(fd1 != NULL && (filelen2 != FILE_SIZE)){
+ 						fseek(fd1, (filelen1 - (FILE_SIZE - filelen2)), SEEK_SET);
++						retrieveData(fd1, log, (FILE_SIZE - filelen2+1));
++#if 0
+ 						fgets(lst, 256, fd1);
+ 						while((fgets(lst, 256, fd1)) != NULL) {
+ //							strcat(log, lst);
+@@ -110,13 +128,20 @@
+ 							strcpy(log, lst);
+ 							strcat(log, log_old);
+ 						}
++#endif
++					}
++					if(fd2 != NULL) {
++						log2  = log + (FILE_SIZE - filelen2);
++						retrieveData(fd2, log2, filelen2);
+ 					}
++#if 0
+ 					while((fgets(lst, 256, fd2)) != NULL) {
+ //						strcat(log, lst);
+ 						strcpy(log_old, log);
+ 						strcpy(log, lst);
+ 						strcat(log, log_old);
+ 					}
++#endif
+ 				}
+ 				if(fd1 != NULL){
+ 					fclose(fd1);
+@@ -127,7 +152,8 @@
+ 			}
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(log));
+ 			paramList++;
+-			free(lst);
++			free(log);
++			//free(lst);
+ 			continue;	
+ 		}
+ 		

@@ -1,0 +1,274 @@
+Index: dnsmasq-2.78/src/forward.c
+===================================================================
+--- dnsmasq-2.78.orig/src/forward.c	2018-10-30 21:27:08.244884357 +0800
++++ dnsmasq-2.78/src/forward.c	2018-10-30 21:27:08.392810356 +0800
+@@ -433,6 +433,13 @@
+         if (start->sfd)
+           fd = start->sfd->fd;
+         else {
++#ifdef ZYXEL_PATCH              //reject query when special domain query has no socket
++          if (type == SERV_HAS_DOMAIN
++              && hostname_isequal(domain, start->domain)) {
++            my_syslog(LOG_WARNING, _("Reject query for %s"), start->domain);
++            break;
++          }
++#endif
+ #ifdef HAVE_IPV6
+           if (start->addr.sa.sa_family == AF_INET6) {
+             if (!forward->rfd6 && !(forward->rfd6 = allocate_rfd(AF_INET6)))
+Index: dnsmasq-2.78/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.78.orig/src/dnsmasq.h	2018-10-30 21:27:08.356828356 +0800
++++ dnsmasq-2.78/src/dnsmasq.h	2018-10-30 21:27:08.392810356 +0800
+@@ -510,6 +510,9 @@
+ 
+ struct server {
+   union mysockaddr addr, source_addr;
++#ifdef ZYXEL_PATCH
++  unsigned long sock_mark;
++#endif
+   char interface[IF_NAMESIZE + 1];
+   struct serverfd *sfd;
+   char *domain;                 /* set if this server only handles a domain. */
+@@ -1254,8 +1257,14 @@
+ void set_option_bool(unsigned int opt);
+ void reset_option_bool(unsigned int opt);
+ struct hostsfile *expand_filelist(struct hostsfile *list);
++#ifdef ZYXEL_PATCH
++char *parse_server(char *arg, union mysockaddr *addr,
++                   union mysockaddr *source_addr, char *interface,
++                   int *flags, unsigned long *mark);
++#else
+ char *parse_server(char *arg, union mysockaddr *addr,
+                    union mysockaddr *source_addr, char *interface, int *flags);
++#endif
+ int option_read_dynfile(char *file, int flags);
+ 
+ /* forward.c */
+Index: dnsmasq-2.78/src/network.c
+===================================================================
+--- dnsmasq-2.78.orig/src/network.c	2018-10-30 21:27:08.264874357 +0800
++++ dnsmasq-2.78/src/network.c	2018-10-30 21:27:08.396808356 +0800
+@@ -1157,7 +1157,15 @@
+   return 1;
+ }
+ 
++#ifdef ZYXEL_PATCH
++#define allocate_sfd(a, i) do_allocate_sfd(a, i, 0)
++#define allocate_sfd_mark(a, i, m) do_allocate_sfd(a, i, m)
++
++static struct serverfd *do_allocate_sfd(union mysockaddr *addr,
++                                        char *intname, unsigned long mark)
++#else
+ static struct serverfd *allocate_sfd(union mysockaddr *addr, char *intname)
++#endif
+ {
+   struct serverfd *sfd;
+   unsigned int ifindex = 0;
+@@ -1198,6 +1206,11 @@
+     free(sfd);
+     return NULL;
+   }
++#ifdef ZYXEL_PATCH
++  if (mark != 0) {
++    setsockopt(sfd->fd, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
++  }
++#endif
+ 
+   if (!local_bind(sfd->fd, addr, intname, 0) || !fix_fd(sfd->fd)) {
+     errsave = errno;            /* save error from bind. */
+@@ -1248,9 +1261,13 @@
+     if (!
+         (srv->
+          flags & (SERV_LITERAL_ADDRESS | SERV_NO_ADDR | SERV_USE_RESOLV |
+-                  SERV_NO_REBIND))
+-        && !allocate_sfd(&srv->source_addr, srv->interface) && errno != 0
+-        && option_bool(OPT_NOWILD)) {
++                  SERV_NO_REBIND)) &&
++#ifdef ZYXEL_PATCH
++         !allocate_sfd_mark(&srv->source_addr, srv->interface, srv->sock_mark) &&
++#else
++         !allocate_sfd(&srv->source_addr, srv->interface) &&
++#endif
++         errno != 0 && option_bool(OPT_NOWILD)) {
+       prettyprint_addr(&srv->source_addr, daemon->namebuff);
+       if (srv->interface[0] != 0) {
+         strcat(daemon->namebuff, " ");
+@@ -1423,8 +1440,12 @@
+       /* 0.0.0.0 is nothing, the stack treats it like 127.0.0.1 */
+       if (serv->addr.sa.sa_family == AF_INET &&
+           serv->addr.in.sin_addr.s_addr == 0) {
++#ifdef ZYXEL_PATCH    // don't ignoring 0.0.0.0, for special reject query
++        goto SETTOLIST;
++#else
+         serv->flags |= SERV_MARK;
+         continue;
++#endif
+       }
+ 
+       for (iface = daemon->interfaces; iface; iface = iface->next)
+@@ -1439,19 +1460,29 @@
+ 
+       /* Do we need a socket set? */
+       if (!serv->sfd &&
++#ifdef ZYXEL_PATCH
++          !(serv->sfd = allocate_sfd_mark(&serv->source_addr, serv->interface, serv->sock_mark)) &&
++#else
+           !(serv->sfd = allocate_sfd(&serv->source_addr, serv->interface)) &&
++#endif
+           errno != 0) {
+         my_syslog(LOG_WARNING,
+                   _("ignoring nameserver %s - cannot make/bind socket: %s"),
+                   daemon->namebuff, strerror(errno));
++#ifndef ZYXEL_PATCH  //don't free special domain rule. for reject query
+         serv->flags |= SERV_MARK;
+         continue;
++#endif
+       }
+ 
+       if (serv->sfd)
+         serv->sfd->used = 1;
+     }
+ 
++#ifdef ZYXEL_PATCH
++  SETTOLIST:
++#endif
++
+     if (!(serv->flags & SERV_NO_REBIND)
+         && !(serv->flags & SERV_LITERAL_ADDRESS)) {
+       if (++count > SERVERS_LOGGED)
+Index: dnsmasq-2.78/src/option.c
+===================================================================
+--- dnsmasq-2.78.orig/src/option.c	2018-10-30 21:27:08.292860357 +0800
++++ dnsmasq-2.78/src/option.c	2018-10-30 21:27:56.147708600 +0800
+@@ -871,6 +871,24 @@
+   return ret;
+ }
+ 
++#ifdef ZYXEL_PATCH
++static int hextoul_check(char *a, unsigned long *res)
++{
++  char *p;
++
++  if (!a)
++    return 0;
++
++  unhide_metas(a);
++
++  for (p = a; *p; p++)
++    if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')))
++      return 0;
++
++  *res = strtoul(a, NULL, 16);
++  return 1;
++}
++#endif
+ static int atoi_check(char *a, int *res)
+ {
+   char *p;
+@@ -998,9 +1016,14 @@
+ 
+   return NULL;
+ }
+-
++#ifdef ZYXEL_PATCH
++char *parse_server(char *arg, union mysockaddr *addr,
++                   union mysockaddr *source_addr, char *interface,
++                   int *flags, unsigned long *mark)
++#else
+ char *parse_server(char *arg, union mysockaddr *addr,
+                    union mysockaddr *source_addr, char *interface, int *flags)
++#endif
+ {
+   int source_port = 0, serv_port = NAMESERVER_PORT;
+   char *portno, *source;
+@@ -1009,7 +1032,10 @@
+   int scope_index = 0;
+   char *scope_id;
+ #endif
+-
++#ifdef ZYXEL_PATCH
++  char *markPtr = NULL;
++  unsigned long sock_mark = 0;
++#endif
+   if (!arg || strlen(arg) == 0) {
+     *flags |= SERV_NO_ADDR;
+     *interface = 0;
+@@ -1019,7 +1045,11 @@
+   if ((source = split_chr(arg, '@')) && /* is there a source. */
+       (portno = split_chr(source, '#')) && !atoi_check16(portno, &source_port))
+     return _("bad port");
+-
++#ifdef ZYXEL_PATCH
++  if (source &&                 /* is there a source. */
++      (markPtr = split_chr(source, '$')) && !hextoul_check(markPtr, &sock_mark))
++    return _("bad mark");
++#endif
+   if ((portno = split_chr(arg, '#')) && /* is there a port no. */
+       !atoi_check16(portno, &serv_port))
+     return _("bad port");
+@@ -1050,6 +1080,11 @@
+     source_addr->in.sin_port = htons(daemon->query_port);
+ 
+     if (source) {
++#ifdef ZYXEL_PATCH
++      if (mark) {
++        *mark = sock_mark;
++      }
++#endif
+       if (flags)
+         *flags |= SERV_HAS_SOURCE;
+       source_addr->in.sin_port = htons(source_port);
+@@ -2498,9 +2533,15 @@
+         if (newlist->flags & SERV_LITERAL_ADDRESS)
+           ret_err(gen_err);
+       } else {
++#ifdef ZYXEL_PATCH
++        char *err =
++            parse_server(arg, &newlist->addr, &newlist->source_addr,
++                         newlist->interface, &newlist->flags, &newlist->sock_mark);
++#else
+         char *err =
+             parse_server(arg, &newlist->addr, &newlist->source_addr,
+                          newlist->interface, &newlist->flags);
++#endif
+         if (err)
+           ret_err(err);
+       }
+@@ -2545,10 +2586,15 @@
+       else
+         ret_err(gen_err);
+ 
++#ifdef ZYXEL_PATCH
++      string =
++          parse_server(comma, &serv->addr, &serv->source_addr, serv->interface,
++                       &serv->flags, &serv->sock_mark);
++#else
+       string =
+           parse_server(comma, &serv->addr, &serv->source_addr, serv->interface,
+                        &serv->flags);
+-
++#endif
+       if (string)
+         ret_err(string);
+ 
+Index: dnsmasq-2.78/src/dbus.c
+===================================================================
+--- dnsmasq-2.78.orig/src/dbus.c	2018-10-30 21:27:08.200906358 +0800
++++ dnsmasq-2.78/src/dbus.c	2018-10-30 21:27:08.400806356 +0800
+@@ -345,9 +345,15 @@
+     memset(&interface, 0, sizeof(interface));
+ 
+     /* parse the IP address */
++#ifdef ZYXEL_PATCH
++    if ((addr_err =
++         parse_server(str_addr, &addr, &source_addr, (char *) &interface,
++                      &flags, NULL))) {
++#else
+     if ((addr_err =
+          parse_server(str_addr, &addr, &source_addr, (char *) &interface,
+                       &flags))) {
++#endif
+       error =
+           dbus_message_new_error_printf(message, DBUS_ERROR_INVALID_ARGS,
+                                         "Invalid IP address '%s': %s", str,

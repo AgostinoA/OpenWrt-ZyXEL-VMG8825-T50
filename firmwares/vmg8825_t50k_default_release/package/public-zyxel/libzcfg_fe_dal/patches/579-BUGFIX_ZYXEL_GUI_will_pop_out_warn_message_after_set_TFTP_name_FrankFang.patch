@@ -1,0 +1,202 @@
+Index: libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/homeNetworking/zcfg_fe_dal_lanadv.c	2018-06-14 10:13:52.938530229 +0800
++++ libzcfg_fe_dal-1.0/network/homeNetworking/zcfg_fe_dal_lanadv.c	2018-06-14 14:49:14.717306395 +0800
+@@ -67,11 +67,56 @@
+ 
+ }
+ 
++/*!
++ *  Get NAT-T port mapping list from zupnp daemon.
++ *
++ *  @param [out] retObj         NAT-T port mapping list
++ *  @param [out] replyMsg       A preserved variable
++ *
++ *  @return ZCFG_SUCCESS                successfully send and get reply
++ *          others                      failed
++ *
++ *  @note
++ *          - retObj and replyMsg should both be initiated and freed by caller
++ *          - retObj format: {"list":[{"Enable":,"Protocol":,"Destination":,"ExternalPort":,"InternalPort":,"Description":}]}
++ */
++zcfgRet_t zcfgFeDal_NATTPortMap_GET(struct json_object *retObj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;
++	char *recv_str = NULL;
++	int payloadLen = 0;
++
++	sendMsgHdr = (zcfgMsg_t *)malloc(sizeof(zcfgMsg_t));
++	sendMsgHdr->type = ZCFG_MSG_UPNP_PORTMAP_GET;
++	sendMsgHdr->length = 0;
++	sendMsgHdr->srcEid = ZCFG_EID_ZHTTPD;
++	sendMsgHdr->dstEid = ZCFG_EID_ZUPNP;
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 2000);
++
++	if(ret == ZCFG_SUCCESS){
++		recvMsgHdr = (zcfgMsg_t*)recvBuf;
++		payloadLen = recvMsgHdr->length;
++		recv_str = (char *)malloc(payloadLen);
++		recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
++		obj = json_tokener_parse(recv_str);
++		json_object_object_add(retObj, "list", JSON_OBJ_COPY(obj));
++		free(recvBuf);
++	}
++
++	return ret;
++}
++
+ zcfgRet_t zcfgFeDal_LanAdv_GET(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfgRet_t ret_portmap = ZCFG_SUCCESS;
+ 	objIndex_t iid = {0};
+ 	struct json_object *obj = NULL, *obj1 = NULL;
+ 	struct json_object *upnpObj = NULL, *stbObj = NULL, *tftpObj = NULL;
++	struct json_object *portMapObj = NULL;
+ 
+ 	void *recvBuf = NULL;
+ 	zcfgMsg_t *sendMsgHdr = NULL;
+@@ -81,6 +126,7 @@
+ 
+ 	IID_INIT(iid);
+ 	obj = json_object_new_object();
++	portMapObj = json_object_new_object();
+ 	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &iid, &stbObj);
+ 	if(ret == ZCFG_SUCCESS){
+ 		json_object_object_add(obj, "STBVendorID1", JSON_OBJ_COPY(json_object_object_get(stbObj, "STBVendorID1")));
+@@ -100,26 +146,19 @@
+ 		json_object_object_add(obj, "UPnPEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "Enable")));
+ 		json_object_object_add(obj, "NATTEnable", JSON_OBJ_COPY(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable")));
+ 		if(json_object_get_boolean(json_object_object_get(upnpObj, "Enable")) && json_object_get_boolean(json_object_object_get(upnpObj, "X_ZYXEL_NATTEnable"))){
+-			sendMsgHdr = (zcfgMsg_t *)malloc(sizeof(zcfgMsg_t));
+-			sendMsgHdr->type = ZCFG_MSG_UPNP_PORTMAP_GET;
+-			sendMsgHdr->length = 0;
+-			sendMsgHdr->srcEid = ZCFG_EID_ZHTTPD;
+-			sendMsgHdr->dstEid = ZCFG_EID_ZUPNP;
+-			ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 2000);
+-			if(ret == ZCFG_SUCCESS){
+-				recvMsgHdr = (zcfgMsg_t*)recvBuf;
+-				payloadLen = recvMsgHdr->length;
+-				recv_str = (char *)malloc(payloadLen);
+-				recv_str = (char *)recvBuf+sizeof(zcfgMsg_t);
+-				obj1 = json_tokener_parse(recv_str);
++
++			ret_portmap = zcfgFeDal_NATTPortMap_GET(portMapObj,replyMsg);
++
++			/* Ignore error of acquiring NAT-T port mapping list. */
++			if (ret_portmap != ZCFG_SUCCESS){
++				dbg_printf("%s: Get NAT-T Port Mapping List fail. Please try again later.\n",__FUNCTION__);
+ 			}
+-			
++
+ 		}
+ 		zcfgFeJsonObjFree(upnpObj);
+ 	}
+ 	json_object_array_add(Jarray, obj);
+-	json_object_array_add(Jarray, obj1);
+-	
++	json_object_array_add(Jarray, json_object_object_get(portMapObj, "list"));
+ 	return ret;
+ }
+ 
+@@ -138,12 +177,8 @@
+ 	stb4 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID4"));
+ 	stb5 = json_object_get_string(json_object_object_get(Jobj, "STBVendorID5"));
+ 	thtpname = json_object_get_string(json_object_object_get(Jobj, "TFTPServerName"));
+-	upnpEnable = json_object_get_boolean(json_object_object_get(Jobj, "UPnPEnable"));
+-	natEnable = json_object_get_boolean(json_object_object_get(Jobj, "NATTEnable"));
+-	zcfgFeDal_LanAdv_GET(NULL, origArry,NULL);
++ 	zcfgFeDal_LanAdv_GET(NULL, origArry,NULL);
+ 	origObj = json_object_array_get_idx(origArry, 0);
+-	origupnpEnable = json_object_get_boolean(json_object_object_get(origObj, "UPnPEnable"));
+-	orignatEnable = json_object_get_boolean(json_object_object_get(origObj, "NATTEnable"));
+ 	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_S_T_B_VENDOR_I_D, &Iid, &stbObj);
+ 	if(ret == ZCFG_SUCCESS){
+ 		if(json_object_object_get(Jobj, "STBVendorID1"))
+@@ -168,42 +203,56 @@
+ 		ret = zcfgFeObjJsonSet(RDM_OID_T_F_T_P_SRV_NAME, &Iid, tftpObj, NULL);
+ 		zcfgFeJsonObjFree(tftpObj);
+ 	}
+-	ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &Iid, &upnpObj);
+-	if(ret == ZCFG_SUCCESS){
+-		if(json_object_object_get(Jobj, "UPnPEnable")){
+-			if(json_object_object_get(Jobj, "NATTEnable")){
+-				if(!upnpEnable && natEnable){
+-					if(replyMsg)
+-						strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
+-					return ZCFG_INVALID_PARAM_VALUE;
+-				}
+-			}
+-			else{
+-				if(!upnpEnable && orignatEnable){
+-					if(replyMsg)
+-						strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
+-					return ZCFG_INVALID_PARAM_VALUE;
+-				}
++
++	/* upnp */
++	if (json_object_object_get(Jobj, "UPnPEnable") || json_object_object_get(Jobj, "NATTEnable")) {
++
++		ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_UPNP_DEV, &Iid, &upnpObj);
++		if (ret != ZCFG_SUCCESS) {
++			if(replyMsg) {
++				strcpy(replyMsg, "Get UPnP object fail.");
+ 			}
++			return ret;
+ 		}
+-		else{
+-			if(json_object_object_get(Jobj, "NATTEnable")){
+-				if(natEnable && !origupnpEnable){
+-					if(replyMsg)
+-						strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
+-					return ZCFG_INVALID_PARAM_VALUE;
+-				}
++
++		// prepare input
++		origupnpEnable = json_object_get_boolean(json_object_object_get(origObj, "UPnPEnable"));
++		orignatEnable = json_object_get_boolean(json_object_object_get(origObj, "NATTEnable"));
++
++		if(json_object_object_get(Jobj, "UPnPEnable"))
++			upnpEnable = json_object_get_boolean(json_object_object_get(Jobj, "UPnPEnable"));
++		else
++			upnpEnable = json_object_get_boolean(json_object_object_get(origObj, "UPnPEnable"));
++
++		if(json_object_object_get(Jobj, "NATTEnable"))
++			natEnable = json_object_get_boolean(json_object_object_get(Jobj, "NATTEnable"));
++		else
++			natEnable = json_object_get_boolean(json_object_object_get(origObj, "NATTEnable"));
++
++		// validate input
++		if (!upnpEnable && natEnable) {
++			if(replyMsg) {
++				strcpy(replyMsg, "UPnP must be enabled before enabling UPnP NAT-T.");
+ 			}
++			zcfgFeJsonObjFree(upnpObj);
++			return ZCFG_REQUEST_REJECT;
+ 		}
+-		if(json_object_object_get(Jobj, "UPnPEnable"))
++
++		/* If new setting is the same with old, it should not be set to data model 
++		   because upnp daemon will restart and NAT-T port mapping rules will disapear */
++		if ( (upnpEnable == origupnpEnable) && (natEnable == orignatEnable) ) {
++			dbg_printf("%s: The current setting and new setting are the same. Do not set data model.\n",__FUNCTION__);
++		}
++		else {
+ 			json_object_object_add(upnpObj, "Enable", json_object_new_boolean(upnpEnable));
+-		if(json_object_object_get(Jobj, "NATTEnable"))
+ 			json_object_object_add(upnpObj, "X_ZYXEL_NATTEnable", json_object_new_boolean(natEnable));
+-		
+-		ret = zcfgFeObjJsonSet(RDM_OID_UPNP_DEV, &Iid, upnpObj, NULL);
++			ret = zcfgFeObjJsonSet(RDM_OID_UPNP_DEV, &Iid, upnpObj, NULL);
++		}
+ 		zcfgFeJsonObjFree(upnpObj);
++
+ 	}
+ 	
++	
+ 	return ret;
+ }
+ 

@@ -1,0 +1,84 @@
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2017-08-23 15:08:20.024454359 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2017-08-23 15:08:20.036454359 +0800
+@@ -56,8 +56,11 @@
+ 
+ #include <limits.h>
+ #include <unistd.h>
++#include "zyutil.h"
++#include "zcfg_system.h"
+ 
+ #define READBUF_LENGTH 4096
++#define MAX_PATITION_SIZE 56*1024*1024
+ 
+ BOOL bRemoveDaemonsWirelessModule = FALSE;
+ 
+@@ -898,8 +901,47 @@
+ 	return ret;
+ }
+ 
++BOOL isSizeExceedPatition(int bufLen){
++	int32_t compareSize = MAX_PATITION_SIZE; //the maximum partition size is 56M
++	char mtdDev[16];
++#ifdef ECONET_PLATFORM
++	if(ZCFG_SUCCESS == zyUtilMtdDevGetByName(TCLINUX_PARTITION_NAME, mtdDev))
++#else
++	if(ZCFG_SUCCESS == zyUtilMtdDevGetByName(IMAGE_PARTITION_NAME, mtdDev))
++#endif
++	{
++		if((compareSize = zyUtilMtdDevGetSize(mtdDev)) != ZCFG_INTERNAL_ERROR){
++			if( compareSize < bufLen ){
++				return TRUE;
++			}else{
++				return FALSE;
++			}
++		}else{
++			compareSize = MAX_PATITION_SIZE;
++			if( compareSize < bufLen ){
++				return TRUE;
++			}else{
++				return FALSE;
++			}
++		}
++	}else
++    {
++        compareSize = MAX_PATITION_SIZE;
++    	if( compareSize < bufLen ){
++    		return TRUE;
++    	}else{
++            return FALSE;
++        }
++    }
++    return FALSE;
++}
++
+ static int memory_check(int buflen, char *remoteIP){
+ 	int checkMemCnt=0;
++	if(isSizeExceedPatition(buflen)){
++		printf("\nexceed patition size\n");
++		return FALSE;
++	}
+ check_again:
+ 	if(buflen >= get_free_memory()){
+ 		system("echo 1 > /proc/sys/vm/drop_caches");
+Index: clinkc/Makefile
+===================================================================
+--- clinkc.orig/Makefile	2017-08-23 15:08:18.952454338 +0800
++++ clinkc/Makefile	2017-08-23 15:12:28.170025736 +0800
+@@ -25,6 +25,7 @@
+ SOURCES += $(wildcard $(UPNP_SRC_PATH)/ssdp/*.c)
+ SOURCES += $(wildcard $(SSL_SRC_PATH)/*.c)
+ 
++LIBS_ZCFG = -lzyutil
+ 
+ OBJS = $(patsubst %.c, %.o, $(SOURCES))
+ 
+@@ -70,6 +71,6 @@
+ # See Section 10.2 of Gnu Make manual
+ #
+ $(LIB): $(OBJS)
+-	$(CC) -shared -Wl,--whole-archive,-soname,$@ $(CFLAGS) -o $@ $(OBJS) $(CFLAGS) -Wl,--no-whole-archive
++	$(CC) -shared -Wl,--whole-archive,-soname,$@ $(CFLAGS) -o $@ $(OBJS) $(CFLAGS) $(LIBS_ZCFG) -Wl,--no-whole-archive
+ 
+ 

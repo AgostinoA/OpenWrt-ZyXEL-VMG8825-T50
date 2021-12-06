@@ -1,0 +1,274 @@
+Index: udhcp-0.9.8/Makefile
+===================================================================
+--- udhcp-0.9.8.orig/Makefile	2014-02-25 18:39:41.340090260 +0800
++++ udhcp-0.9.8/Makefile	2014-02-25 18:44:18.343352498 +0800
+@@ -67,6 +67,10 @@
+ STRIP=$(CROSS_COMPILE)strip
+ endif
+ 
++#Sunrise customization
++ifneq ($(strip $(SUNRISE_DHCP_FORCE_RENEW)),)
++CFLAGS += -DSUNRISE_DHCP_FORCE_RENEW
++endif
+ 
+ all: clean $(EXEC1) $(EXEC2) $(EXEC3)
+ 	$(STRIP) --remove-section=.note --remove-section=.comment $(EXEC1) $(EXEC2) $(EXEC3)
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2014-02-25 18:39:41.340090260 +0800
++++ udhcp-0.9.8/dhcpc.c	2014-02-25 18:47:30.601083125 +0800
+@@ -80,6 +80,10 @@
+ extern int last_option_index;
+ #endif
+ 
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++char Forecerenewkey[128]="";
++#endif
++
+ #define DEFAULT_SCRIPT	"/usr/share/udhcpc/default.script"
+ 
+ struct client_config_t client_config = {
+@@ -139,6 +143,9 @@
+ #if 1 /* vlan autohunt, ZyXEL, John */
+ "  -V, --vid				   	   vlan auto hunt\n"
+ #endif
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++"  -K, --renewkey				   Dhcp force renew key\n"
++#endif
+ 	);
+ 	exit(0);
+ }
+@@ -294,6 +301,18 @@
+ 	int max_fd;
+ 	int sig;
+ 
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++	char renewkey[128] = {0};
++	unsigned long replayDetectionNewh = 0 ;
++	unsigned long replayDetectionNewl = 0 ;
++	unsigned long replayDetectionOldh = 0 ;
++	unsigned long replayDetectionOldl = 0 ;
++	unsigned char authProtocol = 0;
++	unsigned char authAlgorithm = 0;
++	unsigned char authRDM = 0;
++	int isNew = FALSE;
++#endif
++
+ 	static struct option arg_options[] = {
+ #if 0 /* ZyXEL DHCP options support, ZyXEL, John */
+ 		{"clientid",	required_argument,	0, 'c'},
+@@ -314,6 +333,9 @@
+ #if 1 /* vlan autohunt, ZyXEL, John */
+ 		{"vid",	required_argument,	0, 'V'},
+ #endif
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew  
++		{"renewkey",	required_argument,	0, 'K'},
++#endif
+ 		{"help",	no_argument,		0, '?'},
+ 		{0, 0, 0, 0}
+ 	};
+@@ -323,7 +345,11 @@
+ 	/* get options */
+ 	while (1) {
+ 		int option_index = 0;
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++		c = getopt_long(argc, argv, "c:fbH:h:i:np:qr:s:vV:C:I:SW:K:", arg_options, &option_index);
++#else
+ 		c = getopt_long(argc, argv, "c:fbH:h:i:np:qr:s:vV:C:I:SW", arg_options, &option_index);
++#endif
+ 		if (c == -1) break;
+ 		
+ 		switch (c) {
+@@ -382,6 +408,11 @@
+ 			vlanId = atoi(optarg);
+ 			break;
+ #endif
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++		case 'K':
++			strcpy(Forecerenewkey, optarg);
++			break;
++#endif
+ 		default:
+ 			show_usage();
+ 		}
+@@ -572,11 +603,22 @@
+ 				DEBUG(LOG_ERR, "couldnt get option from packet -- ignoring");
+ 				continue;
+ 			}
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++			if (state != BOUND || *message != DHCPFORCERENEW)
++			{
++				if (packet.xid != xid) {
++					DEBUG(LOG_INFO, "Ignoring XID %lx (our xid is %lx)",
++						(unsigned long) packet.xid, xid);
++					continue;
++				}
++			}
++#else			
+ 			if (packet.xid != xid) {
+ 				DEBUG(LOG_INFO, "Ignoring XID %lx (our xid is %lx)",
+ 					(unsigned long) packet.xid, xid);
+ 				continue;
+ 			}
++#endif
+ 
+ 			switch (state) {
+ 			case INIT_SELECTING:
+@@ -629,7 +671,11 @@
+ 						   ((state == RENEWING || state == REBINDING) ? "renew" : "bound"));
+ 
+ 					state = BOUND;
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++					change_mode(LISTEN_KERNEL);
++#else
+ 					change_mode(LISTEN_NONE);
++#endif
+ 					if (client_config.quit_after_lease) 
+ 						exit_client(0);
+ 					if (!client_config.foreground)
+@@ -650,6 +696,83 @@
+ 				}
+ 				break;
+ 			case BOUND:
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++				if (*message == DHCPFORCERENEW)
++				{
++					printf("Receive DHCP_FORCE_RENEW\n");
++					if (!(temp = get_option(&packet, DHCP_AUTHENTICATION_INFO))) {
++						LOG(LOG_ERR, "No AUTHENTICATION INFO ");
++					} 
++					else 
++					{
++						memcpy(&authProtocol, temp, 1);
++						temp += 1;
++						memcpy(&authAlgorithm, temp, 1);
++						temp += 1;
++						memcpy(&authRDM, temp, 1);
++						temp += 1;
++						memcpy(&replayDetectionNewh, temp, 4);
++						replayDetectionNewh = ntohl(replayDetectionNewh);
++						temp += 4;
++						memcpy(&replayDetectionNewl, temp, 4);
++						replayDetectionNewl = ntohl(replayDetectionNewl);
++						temp += 4;
++
++						if ( authProtocol != 0 || authAlgorithm != 0 || authRDM != 0){ 
++							/*Should be Configuration token, RFC 3118 sec4*/
++							isNew = FALSE;
++							printf("Error ForceRenew packet (not Configuration token)\n");
++						}
++						else{
++							/*replay detection field MUST be a monotonically increasing value*/
++							if (replayDetectionOldh == 0 && replayDetectionOldl == 0)
++							{
++								isNew = TRUE;
++								replayDetectionOldh = replayDetectionNewh;
++								replayDetectionOldl = replayDetectionNewl;		
++							}
++							else if (replayDetectionNewh > replayDetectionOldh)
++							{
++								isNew = TRUE;
++								replayDetectionOldh = replayDetectionNewh;
++								replayDetectionOldl = replayDetectionNewl;	
++							}
++							else if (replayDetectionNewh == replayDetectionOldh && replayDetectionNewl > replayDetectionOldl)
++							{
++								isNew = TRUE;
++								replayDetectionOldh = replayDetectionNewh;
++								replayDetectionOldl = replayDetectionNewl;	
++							}
++							else{
++								isNew = FALSE;
++								printf("Replay ForceRenew packet\n");
++							}
++						}
++
++						memcpy(&renewkey, temp, 12);
++					}
++
++					if (isNew){
++						if( !strcmp(Forecerenewkey, "") || !strcmp(Forecerenewkey, renewkey)) /* authentification match */
++						{
++							printf ("Forecerenewkey=%s renewkey=%s\n", Forecerenewkey, renewkey);
++							state = RENEWING;
++							change_mode(LISTEN_RAW);
++							DEBUG(LOG_INFO, "Entering renew state");
++							/* fall right through */
++							timeout = timeout - t1;
++#if 0 //random_xid
++							xid = random_xid();
++#endif
++						}
++						else
++						{
++							printf("Renewkey don't match\n");
++						}
++						isNew = FALSE;
++					}
++				}
++#endif			
+ 				break;
+ 			case RELEASED:
+ 				/* case RELEASED: - ignore all packets */
+Index: udhcp-0.9.8/dhcpd.h
+===================================================================
+--- udhcp-0.9.8.orig/dhcpd.h	2014-02-25 18:39:41.340090260 +0800
++++ udhcp-0.9.8/dhcpd.h	2014-02-25 18:44:37.933494941 +0800
+@@ -66,6 +66,9 @@
+ #endif
+ #define DHCP_6RD_OPT        0xd4
+ #define DHCP_END            0xFF
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++#define DHCP_AUTHENTICATION_INFO 0x5a
++#endif
+ 
+ 
+ #define BOOTREQUEST		1
+@@ -82,6 +85,9 @@
+ #define DHCPNAK			6
+ #define DHCPRELEASE		7
+ #define DHCPINFORM		8
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++#define DHCPFORCERENEW 	9
++#endif
+ 
+ #define BROADCAST_FLAG		0x8000
+ 
+Index: udhcp-0.9.8/options.c
+===================================================================
+--- udhcp-0.9.8.orig/options.c	2014-02-25 18:39:41.340090260 +0800
++++ udhcp-0.9.8/options.c	2014-02-25 18:43:49.383754113 +0800
+@@ -49,6 +49,9 @@
+ 	{"tftp",	OPTION_STRING,				0x42},
+ 	{"bootfile",	OPTION_STRING,				0x43},
+ 	{"6rd", OPTION_STRING,          DHCP_6RD_OPT},
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++	{"forcerenew",	OPTION_FORCERENEW,	0x5a},
++#endif
+ #if 1 /* DHCP option 43, 121(must be last two options in this array for implementation concerns), ZyXEL, John */
+ 	{"acsinfo",	OPTION_STRING,				0x2b},
+ 	{"sroute",	OPTION_STRING | OPTION_LIST,				0x79},
+@@ -60,6 +63,9 @@
+ int option_lengths[] = {
+ 	[OPTION_IP] =		4,
+ 	[OPTION_IP_PAIR] =	8,
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++	[OPTION_FORCERENEW] = 23,
++#endif
+ 	[OPTION_BOOLEAN] =	1,
+ 	[OPTION_STRING] =	1,
+ 	[OPTION_U8] =		1,
+Index: udhcp-0.9.8/options.h
+===================================================================
+--- udhcp-0.9.8.orig/options.h	2014-02-25 18:39:41.340090260 +0800
++++ udhcp-0.9.8/options.h	2014-02-25 18:43:35.838311989 +0800
+@@ -9,6 +9,9 @@
+ enum {
+ 	OPTION_IP=1,
+ 	OPTION_IP_PAIR,
++#ifdef SUNRISE_DHCP_FORCE_RENEW //DHCP Force Renew
++	OPTION_FORCERENEW,
++#endif
+ 	OPTION_STRING,
+ 	OPTION_BOOLEAN,
+ 	OPTION_U8,

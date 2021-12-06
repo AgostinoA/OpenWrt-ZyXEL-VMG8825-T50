@@ -1,0 +1,183 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_portmirror.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_portmirror.c	2018-05-21 16:43:54.493240974 +0800
+@@ -0,0 +1,139 @@
++#include <ctype.h>
++#include <json/json.h>
++//#include <json/json_object.h>
++#include <time.h>
++
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++//#include "zcfg_eid.h"
++#include "zcfg_msg.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t PORT_MIRROR_param[]={		
++	{"Mirror_Interface", 	 dalType_string,	0,	0,	NULL},
++	{"Port_Mirror_Enable", 	 dalType_boolean,	0,	0,	NULL},
++	{"Log_Enable", 	 dalType_boolean,	0,	0,	NULL},
++	{NULL,					0,	0,	0,	NULL},
++
++};
++
++zcfgRet_t zcfgFeDal_PortMirror_Edit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL, *ethObj = NULL, *portMirrorObj = NULL, *log_obj = NULL, *logObj = NULL, *loginInfo = NULL;
++	objIndex_t ethIid = {0};
++	objIndex_t portMirrorIid = {0};
++	objIndex_t logIid = {0};
++	int len = 0, i;
++	const char *LanPort = NULL, *ethName = NULL;
++	char buff[5] = {0};
++	bool status = false, log_enable = false, *loginlevel = NULL;
++	loginInfo = obj = json_object_array_get_idx(Jobj, 0);
++	loginlevel = json_object_get_string(json_object_object_get(loginInfo, "DAL_LOGIN_LEVEL"));
++	if(strcmp(loginlevel, "high")){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.PortMirror.login_privilege_high"));
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++	len = json_object_array_length(Jobj);
++	for(i=0; i<len-1; i++) {
++		obj = json_object_array_get_idx(Jobj, i);
++		LanPort = json_object_get_string(json_object_object_get(obj, "LanPort"));
++		IID_INIT(ethIid);
++		while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &ethIid, &ethObj) == ZCFG_SUCCESS) {
++			if(!strcmp(LanPort, json_object_get_string(json_object_object_get(ethObj, "X_ZYXEL_LanPort")))) {
++				ethName = json_object_get_string(json_object_object_get(ethObj, "Name"));
++				strcpy(buff, ethName);
++				zcfgFeJsonObjFree(ethObj);
++				break;
++			}
++			zcfgFeJsonObjFree(ethObj);
++		}
++		status = json_object_get_boolean(json_object_object_get(obj, "Status"));
++		portMirrorIid.level = 1;
++		portMirrorIid.idx[0] = i + 1;
++		if(zcfgFeObjJsonGet(RDM_OID_PORT_MIRROR, &portMirrorIid, &portMirrorObj) == ZCFG_SUCCESS) {
++			json_object_object_add(portMirrorObj, "MirrorInterface", json_object_new_string(buff));
++			json_object_object_add(portMirrorObj, "Status", json_object_new_boolean(status));
++			zcfgFeObjJsonSet(RDM_OID_PORT_MIRROR, &portMirrorIid, portMirrorObj, NULL);
++            zcfgFeJsonObjFree(portMirrorObj);
++		}
++	}
++	log_obj = json_object_array_get_idx(Jobj, len-1);
++	log_enable = json_object_get_boolean(json_object_object_get(log_obj, "Log_Enable"));
++	if(zcfgFeObjJsonGet(RDM_OID_LOG_SETTING, &logIid, &logObj) == ZCFG_SUCCESS) {
++		json_object_object_add(logObj, "ZCFG_LOG_Enable", json_object_new_boolean(log_enable));
++
++		zcfgFeObjJsonSet(RDM_OID_LOG_SETTING, &logIid, logObj, NULL);
++        zcfgFeJsonObjFree(logObj);
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDal_PortMirror_Get(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *obj = NULL, *ethObj = NULL, *paramJobj = NULL, *port_mirror_array = NULL, *logObj = NULL, *tmp_array = NULL;
++	objIndex_t iid = {0};
++	objIndex_t ethIid = {0};
++	objIndex_t logIid = {0};
++	const char *mirrorIntf = NULL, *ethName = NULL, *LanPort = NULL, *loginlevel = NULL;
++	bool direction = false;
++
++	loginlevel = json_object_get_string(json_object_object_get(Jobj, "DAL_LOGIN_LEVEL"));
++	if(strcmp(loginlevel, "high")){
++		json_object_object_add(Jobj, "__multi_lang_replyMsg", json_object_new_string("zylang.PortMirror.login_privilege_high"));
++		return ZCFG_INVALID_PARAM_VALUE;
++	}
++	
++	port_mirror_array = json_object_new_array();
++	tmp_array = json_object_new_object();
++	json_object_array_add(Jarray, tmp_array);
++	while(zcfgFeObjJsonGetNext(RDM_OID_PORT_MIRROR, &iid, &obj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		mirrorIntf = json_object_get_string(json_object_object_get(obj, "MirrorInterface"));
++		IID_INIT(ethIid);
++		while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &ethIid, &ethObj) == ZCFG_SUCCESS){
++			ethName = json_object_get_string(json_object_object_get(ethObj, "Name"));
++			if(!strcmp(mirrorIntf, ethName)){
++				LanPort = json_object_get_string(json_object_object_get(ethObj, "X_ZYXEL_LanPort"));
++				Jadds(paramJobj, "LanPort", LanPort);
++				zcfgFeJsonObjFree(ethObj);
++				break;
++			}
++			zcfgFeJsonObjFree(ethObj);
++		}
++		json_object_object_add(paramJobj, "MonitorInterface", JSON_OBJ_COPY(json_object_object_get(obj, "MonitorInterface")));
++		direction = json_object_get_boolean(json_object_object_get(obj, "Direction"));
++		if(direction){
++			Jadds(paramJobj, "Direction", "OUT");
++		}
++		else{
++			Jadds(paramJobj, "Direction", "IN");
++		}
++		json_object_object_add(paramJobj, "Status", JSON_OBJ_COPY(json_object_object_get(obj, "Status")));
++		json_object_array_add(port_mirror_array, paramJobj);
++		zcfgFeJsonObjFree(obj);
++	}
++	if(zcfgFeObjJsonGet(RDM_OID_LOG_SETTING, &logIid, &logObj) == ZCFG_SUCCESS){
++		json_object_object_add(tmp_array, "logSetting", logObj);	
++	}
++	json_object_object_add(tmp_array, "portmirror", port_mirror_array);		
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPortMirror(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	if(!strcmp(method, "PUT")){
++		ret = zcfgFeDal_PortMirror_Edit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "GET")){
++		ret = zcfgFeDal_PortMirror_Get(Jobj, Jarray, NULL);
++	}
++	else
++		printf("Unknown method:%s\n", method);
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-05-21 16:39:04.313239571 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-05-21 16:43:06.952899585 +0800
+@@ -36,9 +36,7 @@
+ extern dal_param_t NAT_Application_param[];
+ extern dal_param_t IntfGrp_param[];
+ extern dal_param_t LANADV_param[];
+-
+ extern dal_param_t LANSETUP_param[];
+-
+ extern dal_param_t SUBNET_param[];
+ extern dal_param_t STATIC_DHCP_param[];
+ extern dal_param_t VLANGRP_param[];
+@@ -108,6 +106,8 @@
+ extern dal_param_t WIFI_CBT_param[];
+ extern dal_param_t WIFI_ADV_CBT_param[];
+ #endif
++extern dal_param_t PORT_MIRROR_param[];
++
+ extern zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsEntry(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+@@ -200,6 +200,7 @@
+ #endif
+ extern zcfgRet_t zcfgFeDalTrafficStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalVoIPStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalPortMirror(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ 
+ extern void zcfgFeDalShowStaticRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowRip(struct json_object *Jarray);
+@@ -356,6 +357,7 @@
+ //Monitor
+ {"Traffic_Status", Traffic_Status_param, zcfgFeDalTrafficStatus, 	NULL,						"get", 				""},
+ {"VOIP_Status", VOIP_Status_param, zcfgFeDalVoIPStatus, 	NULL,						"get", 				""},
++{"port_mirror", PORT_MIRROR_param, zcfgFeDalPortMirror, 	NULL,						"edit",				""},
+ //#ifdef CBT_CUSTOMIZATION // 20170711 Max Add
+ #ifdef ZYXEL_WEB_WIRELESS_NEW_VERSION_ONE
+ {"WIFI_CBT",		WIFI_CBT_param,		zcfgFeDalCbtWifi,		NULL,		"edit",		""},

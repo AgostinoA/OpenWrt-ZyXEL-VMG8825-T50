@@ -1,0 +1,62 @@
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2017-08-14 15:31:36.901675575 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2017-08-14 15:34:33.716547100 +0800
+@@ -476,8 +476,38 @@
+ 	/* Read chunk header */
+ 	readLen = cg_socket_readline(sock, lineBuf, lineBufSize);
+ 	
+-	conLen = cg_strhex2long(lineBuf);
+-	if (conLen < 1) return 0;
++	//printf("!!!!!! dbg: read a line before parse: %d/%d <%s>\n", readLen, lineBufSize, lineBuf);
++
++	//char size_line[16] = {0};
++	char *ptr = NULL;
++
++	if(!strcmp(lineBuf, "0\r\n"))
++	{
++		//End chunk
++		readLen = 0;
++		conLen = 0;
++	}
++	else if((ptr = strstr(lineBuf, "\r\n")) && readLen < 7)
++	{
++		//this line maybe a chunk header or need to append to the trail of last chunk reading
++		*ptr = 0;
++		//printf("check chunk size line <%s>\n", lineBuf);
++		conLen = cg_strhex2long(lineBuf);
++		readLen -= 2;
++	}
++	else
++		conLen = 0;
++
++	//printf("@@@@@@ dbg: chunk get line buf:%d-%d <%s>\n", conLen, readLen, lineBuf);
++
++	if (conLen < 1)
++	{
++		//the following strings are chunk content, not size header
++		if(readLen)
++			cg_http_packet_appendncontent(httpPkt, lineBuf, readLen);
++
++		goto exit;
++	}
+ 	
+ 	content = (char *)malloc(conLen+1);
+ 
+@@ -524,11 +554,15 @@
+ 		/* Read CRLF bytes */
+ 		cg_socket_readline(sock, lineBuf, lineBufSize);
+ 
+-#ifdef ZYXEL_PATCH /*fix the bug when chunk end line is double CRLF, the package parse will error, ZyXEL 2013*/
++		//Jack: ignore it!! it will make another chunk header disappear!!
++#if 0 //def ZYXEL_PATCH /*fix the bug when chunk end line is double CRLF, the package parse will error, ZyXEL 2013*/
+ 		cg_socket_readline(sock, lineBuf, lineBufSize);
+ #endif
++		//printf("Ending line check %d <%s>\n", lineBufSize, lineBuf);
+ 	}
+ 	
++exit:
++	//printf("###### dbg: done chunk read %d %d %d <%s>\n", readLen, conLen, httpPkt->content->valueSize, httpPkt->content->value);
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return readLen;

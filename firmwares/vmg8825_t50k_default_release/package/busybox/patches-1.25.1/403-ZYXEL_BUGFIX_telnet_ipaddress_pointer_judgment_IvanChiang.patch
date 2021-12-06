@@ -1,0 +1,82 @@
+Index: busybox-1.25.1/loginutils/login.c
+===================================================================
+--- busybox-1.25.1.orig/loginutils/login.c
++++ busybox-1.25.1/loginutils/login.c
+@@ -454,9 +454,10 @@ int login_main(int argc UNUSED_PARAM, ch
+ 		safe_strncpy(username, opt_user, sizeof(username));
+ 	}
+ 
+-        safe_strncpy(addr, argv[1], sizeof(addr));
+-        argv[1] = NULL;
+-
++        if(argv[1]){
++                safe_strncpy(addr, argv[1], sizeof(addr));
++                argv[1] = NULL;
++        }
+ 	argv += optind;
+ 	if (argv[0]) /* user from command line (getty) */
+ 		safe_strncpy(username, argv[0], sizeof(username));
+Index: busybox-1.25.1/networking/telnetd.c
+===================================================================
+--- busybox-1.25.1.orig/networking/telnetd.c
++++ busybox-1.25.1/networking/telnetd.c
+@@ -250,6 +250,7 @@ make_new_session(
+ 	enum { sock = 0 };
+ #endif
+ 	const char *login_argv[3];
++        char *address = NULL;
+ 	struct termios termbuf;
+ 	int fd, pid;
+ 	char tty_name[GETPTY_BUFSIZE];
+@@ -338,19 +339,29 @@ make_new_session(
+ 	pid = getpid();
+ 
+  
+-        len_and_sockaddr *lsa = get_peer_lsa(sock);
+-        char *address = NULL;
+-        if (lsa) {
+-                address = xmalloc_sockaddr2host_noport(&lsa->u.sa);
++        if (ENABLE_FEATURE_UTMP) {
++                len_and_sockaddr *lsa = get_peer_lsa(sock);
++                char *hostname = NULL;
++                if (lsa) {
++                        hostname = xmalloc_sockaddr2dotted(&lsa->u.sa);
++                        address = xmalloc_sockaddr2host_noport(&lsa->u.sa);
++                        free(lsa);
++                }
++                write_new_utmp(pid, LOGIN_PROCESS, tty_name, /*username:*/ "LOGIN", hostname);
++                free(hostname);
++        }
++ 
++        else{
++                len_and_sockaddr *lsa = get_peer_lsa(sock);
++                if (lsa) {
++                        address = xmalloc_sockaddr2host_noport(&lsa->u.sa);
++                        free(lsa);
++                }
++        }
++ 
++        if(address){
+                 if (strncmp(address, "::ffff:", sizeof("::ffff:") - 1) == 0)
+                         address = address + sizeof("::ffff:") - 1;
+- 
+-                if (ENABLE_FEATURE_UTMP) {
+-                        char *hostname = NULL;
+-			hostname = xmalloc_sockaddr2dotted(&lsa->u.sa);
+-                        write_new_utmp(pid, LOGIN_PROCESS, tty_name, /*username:*/ "LOGIN", hostname);
+-                        free(hostname);
+-		}
+ 	}
+ 
+ 	/* Make new session and process group */
+@@ -393,8 +404,8 @@ make_new_session(
+ 	 * fd has CLOEXEC set on it too. These two fds will be closed here.
+ 	 */
+ 	BB_EXECVP(G.loginpath, (char **)login_argv);
+-        free(lsa);
+-        free(address);
++        if(address)
++                free(address);
+ 	/* _exit is safer with vfork, and we shouldn't send message
+ 	 * to remote clients anyway */
+ 	_exit(EXIT_FAILURE); /*bb_perror_msg_and_die("execv %s", G.loginpath);*/

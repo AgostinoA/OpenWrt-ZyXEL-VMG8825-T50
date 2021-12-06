@@ -1,0 +1,1112 @@
+Index: libzcfg_msg-1.0/zcfg_msg.c
+===================================================================
+--- libzcfg_msg-1.0.orig/zcfg_msg.c	2017-10-11 14:22:46.000000000 +0800
++++ libzcfg_msg-1.0/zcfg_msg.c	2017-10-11 14:23:57.677187089 +0800
+@@ -1,3 +1,18 @@
++/*!
++ *  @file zcfg_msg.c
++ *      The library is for IPC communications per thread. Process is kind of thread.
++ *
++ *  @author     CP Wang
++ *  @date       2017-09-28 11:47:03
++ *  @copyright  Copyright ?2017 Zyxel Communications Corp. All Rights Reserved.
++ *
++ *  @note       The initialization sequence is very important because if it is wrong
++ *              then the functions will not work normally.
++ *              And, the sequence is as follows.
++ *              1. Main process calls zcfgEidInit().
++ *              2. After step 1 is done successfully, main process creates threads.
++ */
++//==============================================================================
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/socket.h>
+@@ -13,23 +28,99 @@
+ #include "zcfg_msg.h"
+ 
+ //==============================================================================
+-#define _DEBUG_MSG                  0
+-#define _INVALID_EID(_eid_)         ((_eid_) <= 0 || (_eid_) >= ZCFG_EID_MAX)
+-#define _MSG_TYPE(_t_)              (_t_ & (~ZCFG_NO_WAIT_REPLY))
+-#define _MSG_REPLY(_t_)             (!(_t_ & ZCFG_NO_WAIT_REPLY))
++#define _MAX_THREADS            3
+ 
+-#define _dbg_printf(_fmt_, ...)     \
+-    fprintf(stderr, "%s line %d, %s(), pid %ld, " _fmt_, __FILE__, __LINE__, __FUNCTION__, syscall(__NR_gettid), ##__VA_ARGS__)
++#define _DEBUG_MSG              0
++#define _MSG_TYPE(_t_)          (_t_ & (~ZCFG_NO_WAIT_REPLY))
++#define _MSG_REPLY(_t_)         (!(_t_ & ZCFG_NO_WAIT_REPLY))
+ 
+-//==============================================================================
+-
+-int myEid       = -1;
+-int myMsgfd     = -1;
++#define _MUTEX_LOCK()           pthread_mutex_lock(&_mutex)
++#define _MUTEX_UNLOCK()         pthread_mutex_unlock(&_mutex)
+ 
+ //==============================================================================
+ /*
+-    allocation is aligned with 1024 to avoid fragmentation.
++    1. if eid <= 0 then the entry is not in use.
++    2. pid is the index
+ */
++typedef struct
++{
++    zcfg_msg_eid_t      eid;
++    zcfg_msg_pid_t      pid;
++    int                 sck_id;
++} _msg_data_s;
++
++//==============================================================================
++static bool             _init  = false;
++static pthread_mutex_t  _mutex = PTHREAD_MUTEX_INITIALIZER;
++static _msg_data_s      _msg_data[_MAX_THREADS];
++
++static int32_t          _zcfg_msg_req_idx = 0;
++
++//==============================================================================
++/*!
++ *  find an entry that is free, i.e., not in use.
++ *
++ *  @return _msg_data_s*    pointer of free entry
++ *          NULL            no entry is free
++ */
++static _msg_data_s *_free_msg_data_get()
++{
++    int     i;
++
++    for (i = 0; i < _MAX_THREADS; ++i)
++    {
++        if (_msg_data[i].eid <= 0)
++        {
++            return(&_msg_data[i]);
++        }
++    }
++    return NULL;
++}
++
++/*!
++ *  find my entry.
++ *  if not found data for my own thread, then use the process one.
++ *
++ *  @return _msg_data_s*    pointer of my entry
++ *          NULL            no entry is free
++ */
++static _msg_data_s *_my_msg_data_get()
++{
++    int     i;
++
++    if (_init == false)
++    {
++    	zcfg_msg_dbg_printf("ERROR : not initialized yet\n");
++    	return NULL;
++    }
++
++    for (i = 0; i < _MAX_THREADS; ++i)
++    {
++        if (_msg_data[i].pid == zcfg_msg_pid_get())
++        {
++            return(&_msg_data[i]);
++        }
++    }
++
++    /*
++        If not found data for my own thread, then use the process one.
++    */
++    if (_msg_data[0].eid > 0)
++    {
++        return(&_msg_data[0]);
++    }
++
++    return NULL;
++}
++
++/*!
++ *  Allocate memory with size, which will be aligned with 1024 to avoid fragmentation.
++ *
++ *  @param [in] size    memory size to be allocated
++ *
++ *  @return char*   memory pointer allocated
++ *          NULL    fail to allocate memory due to memory insufficient
++ */
+ static char *_msg_alloc(
+     int     size
+ )
+@@ -44,18 +135,31 @@
+     ptr = (char *)calloc(1, (size / 1024 + 1) * 1024);
+     if (ptr == NULL)
+     {
+-        _dbg_printf("ERROR : memory insufficient\n");
++        zcfg_msg_dbg_printf("ERROR : memory insufficient\n");
+     }
+ 
+     return ptr;
+ }
+ 
+-/*
+- *  timeout_msec = 0, then wait forever
+- *  if successful, recvBuf will be allocated memory. Caller should free it after using it.
++/*!
++ *  receive message thru socket with timeout.
++ *
++ *  @param [in]  eid            EID of current thread
++ *  @param [in]  sck_id         socket ID to receive message
++ *  @param [in]  b_server       true if it is server socket
++ *  @param [out] recvBuf        if receiving successfully, recvBuf will be allocated to store the received message
++ *  @param [in]  timeout_msec   waiting time in milli-second, ZCFG_MSG_WAIT_FOREVER, ZCFG_MSG_WAIT_NONE
++ *
++ *  @return ZCFG_SUCCESS    successfully receive
++ *          ZCFG_TIMEOUT    time out
++ *          others          failed
++ *
++ *  @note   call should free recvBuf after using it.
+  */
+ static zcfgRet_t _msg_recv(
++    uint32_t    eid,
+     int         sck_id,
++    bool        b_server,
+     zcfgMsg_t   **recvBuf,
+     uint32_t    timeout_msec
+ )
+@@ -63,7 +167,7 @@
+ 	int                 result;
+ 	socklen_t           fromlen;
+ 	int                 rcvSize;
+-	int                 clientPid;
++	uint32_t            clientPid;
+ 	struct timeval      tmpTv;
+ 	struct timeval      *tv;
+ 	struct sockaddr_un  clientaddr;
+@@ -73,81 +177,80 @@
+ 
+ 	if (sck_id < 0)
+     {
+-    	_dbg_printf("ERROR : invalid sck_id = %d\n", sck_id);
++    	zcfg_msg_dbg_printf("ERROR : invalid sck_id = %d\n", sck_id);
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+     if (recvBuf == NULL)
+     {
+-    	_dbg_printf("ERROR : recvBuf == NULL\n");
++    	zcfg_msg_dbg_printf("ERROR : recvBuf == NULL\n");
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+-	if _INVALID_EID(myEid)
+-    {
+-    	_dbg_printf("ERROR : not initialized yet, invalid myEid == %d\n", myEid);
+-    	return ZCFG_INVALID_EID;
+-    }
+-
+-    do
++    // need to wait
++    if (timeout_msec != ZCFG_MSG_WAIT_NONE)
+     {
+-    	FD_ZERO(&fdR);
+-    	FD_SET(sck_id, &fdR);
+-
+-    	if (timeout_msec)
+-        {
+-        	tmpTv.tv_sec  = timeout_msec / 1000;
+-        	tmpTv.tv_usec = (timeout_msec % 1000) * 1000;
+-        }
+-        else
++        do
+         {
+-            // sleep 2 seconds to wait forever
+-        	tmpTv.tv_sec  = 2;
+-        	tmpTv.tv_usec = 0;
+-        }
++        	FD_ZERO(&fdR);
++        	FD_SET(sck_id, &fdR);
+ 
+-        // set tv
+-    	tv = &tmpTv;
+-
+-        // select and wait
+-    	result = select(sck_id + 1, &fdR, NULL, NULL, tv);
+-
+-        // timeout
+-    	if (result == 0)
+-        {
+-        	if (timeout_msec)
++        	if (timeout_msec == ZCFG_MSG_WAIT_FOREVER)
+             {
+-            	_dbg_printf("WARNING : myEid = %d, select() timeout, wait for %u milli-seconds\n", myEid, timeout_msec);
+-            	return ZCFG_TIMEOUT;
++                // sleep 2 seconds to wait forever
++            	tmpTv.tv_sec  = 2;
++            	tmpTv.tv_usec = 0;
+             }
+             else
+             {
+-            	if (sck_id != myMsgfd)
++            	tmpTv.tv_sec  = timeout_msec / 1000;
++            	tmpTv.tv_usec = (timeout_msec % 1000) * 1000;
++            }
++
++            // set tv
++        	tv = &tmpTv;
++
++            // select and wait
++        	result = select(sck_id + 1, &fdR, NULL, NULL, tv);
++
++            // timeout
++        	if (result == 0)
++            {
++            	if (timeout_msec == ZCFG_MSG_WAIT_FOREVER)
+                 {
+-                    _dbg_printf("WARNING : myEid = %d, select() timeout, wait forever\n", myEid);
++                	if (! b_server)
++                    {
++                        zcfg_msg_dbg_printf("WARNING : EID = %d, select() timeout, wait forever\n", eid);
++                    }
++                    continue;
++                }
++                else
++                {
++                	zcfg_msg_dbg_printf("WARNING : EID = %d, select() timeout, wait for %u milli-seconds\n", eid, timeout_msec);
++                	return ZCFG_TIMEOUT;
+                 }
+-                continue;
+             }
+-        }
+ 
+-        /* check the select result */
+-    	if (result < 0)
+-        {
+-            _dbg_printf("ERROR : fail to select, result = %d, errno = %d, %s\n", result, errno, strerror(errno));
+-        	return ZCFG_INTERNAL_ERROR;
+-        }
++            /* check the select result */
++        	if (result < 0)
++            {
++                zcfg_msg_dbg_printf("ERROR : fail to select, result = %d, errno = %d, %s\n", result, errno, strerror(errno));
++            	return ZCFG_INTERNAL_ERROR;
++            }
+ 
+-        // check if I am selected or not
+-    	if (! FD_ISSET(sck_id, &fdR))
+-    	{
+-        	_dbg_printf("ERROR : my socket is not set in read set\n");
+-        	return ZCFG_INTERNAL_ERROR;
+-        }
++            // check if I am selected or not
++        	if (! FD_ISSET(sck_id, &fdR))
++        	{
++            	zcfg_msg_dbg_printf("ERROR : my socket is not set in read set\n");
++            	return ZCFG_INTERNAL_ERROR;
++            }
+ 
+-        // yes, this is mine
+-        break;
++            // yes, this is mine
++            break;
++
++        } while(1);
+ 
+-    } while(1);
++    } // if (timeout_msec != ZCFG_MSG_WAIT_NONE)
+ 
+     /*
+         get message header first to get the total length
+@@ -159,16 +262,17 @@
+ 	fromlen = sizeof(clientaddr);
+ 	rcvSize = recvfrom(sck_id, (char *)(&rcvMsg), sizeof(zcfgMsg_t), MSG_PEEK | MSG_WAITALL,
+                        (struct sockaddr*)&clientaddr, &fromlen);
++
+ 	if (rcvSize != sizeof(zcfgMsg_t))
+     {
+-    	_dbg_printf("ERROR : fail to recvfrom(). rcvSize = %d, sizeof(zcfgMsg_t) = %d, errno = %d, %s\n",
++    	zcfg_msg_dbg_printf("ERROR : fail to recvfrom(). rcvSize = %d, sizeof(zcfgMsg_t) = %d, errno = %d, %s\n",
+     	    rcvSize, sizeof(zcfgMsg_t), errno, strerror(errno));
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+     // get client pid
+-    clientPid = -1;
+-    if (sck_id == myMsgfd)
++    clientPid = 0;
++    if (b_server)
+     {
+     	sscanf(clientaddr.sun_path, "%*[^-]-%u", &clientPid);
+     }
+@@ -178,7 +282,7 @@
+     *recvBuf = (zcfgMsg_t *)_msg_alloc(recv_len + 1);
+ 	if (*recvBuf == NULL)
+ 	{
+-    	_dbg_printf("ERROR : fail to allocate buffer, size = %d\n", rcvSize);
++    	zcfg_msg_dbg_printf("ERROR : fail to allocate buffer, size = %d\n", rcvSize);
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+@@ -191,14 +295,14 @@
+ 
+ 	if (rcvSize != recv_len)
+ 	{
+-    	_dbg_printf("ERROR : fail to recvfrom(). rcvSize = %d, expected recv_len = %d, errno = %d, %s\n",
++    	zcfg_msg_dbg_printf("ERROR : fail to recvfrom(). rcvSize = %d, expected recv_len = %d, errno = %d, %s\n",
+     	    rcvSize, recv_len, errno, strerror(errno));
+     	free(*recvBuf);
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+     // set clientPid
+-    if (sck_id == myMsgfd)
++    if (b_server)
+     {
+         (*recvBuf)->clientPid = clientPid;
+     }
+@@ -210,8 +314,22 @@
+ /*
+  *  sendMsg will be freed no matter it is successful or not
+  */
++
++/*!
++ *  send message thru socket till successful.
++ *
++ *  @param [in]  eid        EID of current thread
++ *  @param [in]  sck_id     socket ID to send message
++ *  @param [in]  b_server   true if it is server socket
++ *  @param [in]  sendMsg    message to be sent, the destination is sendMsg->dstEid
++ *
++ *  @return ZCFG_SUCCESS    successfully receive
++ *          others          failed
++ */
+ static zcfgRet_t _msg_send(
++    uint32_t    eid,
+     int         sck_id,
++    bool        b_server,
+     zcfgMsg_t   *sendMsg
+ )
+ {
+@@ -223,33 +341,26 @@
+ 
+     if (sendMsg == NULL)
+     {
+-    	_dbg_printf("ERROR : sendMsg == NULL\n");
++    	zcfg_msg_dbg_printf("ERROR : sendMsg == NULL\n");
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+ #if _DEBUG_MSG
+-    _dbg_printf("DEBUG : sendto(), srcEid = %d, dstEid = %d, type = %d, %s reply\n",
+-        sendMsg->srcEid, sendMsg->dstEid, _MSG_TYPE(sendMsg->type), _MSG_REPLY(sendMsg->type) ? "with" : "without");
++    zcfg_msg_dbg_printf("DEBUG : sendto(), srcEid = %d, dstEid = %d, type = %d, %s reply, oid = %d\n",
++        sendMsg->srcEid, sendMsg->dstEid, _MSG_TYPE(sendMsg->type), _MSG_REPLY(sendMsg->type) ? "with" : "without", sendMsg->oid);
+ #endif
+ 
+ 	if (sck_id < 0)
+     {
+-    	_dbg_printf("ERROR : invalid sck_id = %d\n", sck_id);
++    	zcfg_msg_dbg_printf("ERROR : invalid sck_id = %d\n", sck_id);
+     	free(sendMsg);
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+-	if _INVALID_EID(myEid)
+-	{
+-    	_dbg_printf("ERROR : not initialized yet, invalid myEid == %d\n", myEid);
+-    	free(sendMsg);
+-    	return ZCFG_INVALID_EID;
+-    }
+-
+-    sendMsg->srcEid = myEid;
++    sendMsg->srcEid = eid;
+ 
+ 	client_addr.sun_family = AF_UNIX;
+-    if (sck_id == myMsgfd)
++    if (b_server)
+     {
+     	sprintf(client_addr.sun_path, "%s%hhu-%u", ZCFG_ADDRESS_PREFIX, sendMsg->dstEid, sendMsg->clientPid);
+     }
+@@ -270,23 +381,23 @@
+         {
+             if (errno == EAGAIN || errno == EWOULDBLOCK)
+             {
+-                _dbg_printf("WARNING : send again, srcEid = %d, dstEid = %d, type = %d, %s reply\n",
+-                    sendMsg->srcEid, sendMsg->dstEid, _MSG_TYPE(sendMsg->type), _MSG_REPLY(sendMsg->type) ? "with" : "without");
++                zcfg_msg_dbg_printf("WARNING : send again, srcEid = %d, dstEid = %d, type = %d, %s reply, oid = %d\n",
++                    sendMsg->srcEid, sendMsg->dstEid, _MSG_TYPE(sendMsg->type), _MSG_REPLY(sendMsg->type) ? "with" : "without", sendMsg->oid);
+ 
+                 sleep(1); //wait 1 seconds
+                 continue;
+             }
+ 
+-            _dbg_printf("ERROR : errno = %d, %s\n", errno, strerror(errno));
+-            _dbg_printf("ERROR : fail to sendto(%s)\n", client_addr.sun_path);
+-            _dbg_printf("ERROR : srcEid = %d, dstEid = %d, type = %d, %s reply\n",
++            zcfg_msg_dbg_printf("ERROR : errno = %d, %s\n", errno, strerror(errno));
++            zcfg_msg_dbg_printf("ERROR : fail to sendto(%s)\n", client_addr.sun_path);
++            zcfg_msg_dbg_printf("ERROR : srcEid = %d, dstEid = %d, type = %d, %s reply\n",
+                 sendMsg->srcEid, sendMsg->dstEid, _MSG_TYPE(sendMsg->type), _MSG_REPLY(sendMsg->type) ? "with" : "without");
+ 
+ #if _DEBUG_MSG
+-            _dbg_printf("ERROR : sendMsg->oid       = %d\n", sendMsg->oid);
+-            _dbg_printf("ERROR : sendMsg->length    = %d\n", sendMsg->length);
+-            _dbg_printf("ERROR : sendMsg->clientPid = %d\n", sendMsg->clientPid);
+-            _dbg_printf("ERROR : sendMsg->statCode  = %d\n", sendMsg->statCode);
++            zcfg_msg_dbg_printf("ERROR : sendMsg->oid       = %d\n", sendMsg->oid);
++            zcfg_msg_dbg_printf("ERROR : sendMsg->length    = %d\n", sendMsg->length);
++            zcfg_msg_dbg_printf("ERROR : sendMsg->clientPid = %d\n", sendMsg->clientPid);
++            zcfg_msg_dbg_printf("ERROR : sendMsg->statCode  = %d\n", sendMsg->statCode);
+ #endif
+ 
+             free(sendMsg);
+@@ -295,7 +406,7 @@
+ 
+         if (n > total_len)
+         {
+-            _dbg_printf("ERROR : send more than expected, n(%d) > total_len(%d)\n", n, total_len);
++            zcfg_msg_dbg_printf("ERROR : send more than expected, n(%d) > total_len(%d)\n", n, total_len);
+ 
+             free(sendMsg);
+             return ZCFG_INTERNAL_ERROR;
+@@ -324,51 +435,111 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
+-//==============================================================================
++void _init_msg_data()
++{
++    int     i;
+ 
+-/*
+- *  Function Name: zcfgEidInit
+- *  Description: Used by process to register its entity id.
++    // already init-ed
++    if (_init)
++    {
++        return;
++    }
++
++    // initialize database
++    memset(_msg_data, 0, sizeof(_msg_data));
++
++    for (i = 0; i < _MAX_THREADS; ++i)
++    {
++        _msg_data[i].sck_id = -1;
++    }
++
++    _init = true;
++}
++
++//==============================================================================
++/*!
++ *  Initialize EID per thread.
++ *
++ *  @param [in]  eid            EID
++ *  @param [in]  module_name    module name for syslog
+  *
++ *  @return true    successful
++ *          false   fail
+  */
+-bool zcfgEidInit(
+-    zcfgEid_t   eid,
+-    char        *moduleName
++bool zcfg_msg_eidInit(
++    zcfg_msg_eid_t      eid,
++    char                *module_name
+ )
+ {
+-    if _INVALID_EID(eid)
++    _msg_data_s     *free_entry;
++
++    if (ZCFG_MSG_INVALID_EID(eid))
+     {
+-        _dbg_printf("ERROR : invalid eid = %d\n", eid);
++        zcfg_msg_dbg_printf("ERROR : invalid eid = %d\n", eid);
+         return false;
+     }
+ 
+-	if (moduleName != NULL)
++    _MUTEX_LOCK();
++
++    // initialize database
++    _init_msg_data();
++
++    // find free entry
++    free_entry = _free_msg_data_get();
++    if (free_entry == false)
++    {
++        _MUTEX_UNLOCK();
++        zcfg_msg_dbg_printf("NO free msg data\n");
++        return false;
++    }
++
++    // register into msg data
++    free_entry->eid = eid;
++    free_entry->pid = zcfg_msg_pid_get();
++
++    _MUTEX_UNLOCK();
++
++	if (module_name != NULL)
+     {
+         /* Open a connection to the syslog server */
+-    	openlog(moduleName, LOG_NOWAIT, LOG_USER);
++    	openlog(module_name, LOG_NOWAIT, LOG_USER);
+     }
+ 
+-    _dbg_printf("Register EID %d\n", eid);
++    zcfg_msg_dbg_printf("Register EID %d\n", eid);
+ 
+-	myEid = eid;
+ 	return true;
+-}
+ 
+-/*
+- *  Function Name: zcfgMsgServerInit
+- *  Description: If a process wants to be a message server, it can use this function
+- *               to initialize socket.
++} // zcfg_msg_eidInit
++
++/*!
++ *  Initialize a server socket per thread to wait for messages from others.
++ *
++ *  @return ZCFG_SUCCESS    successful
++ *          others          fail
+  */
+-zcfgRet_t zcfgMsgServerInit()
++zcfgRet_t zcfg_msg_serverInit()
+ {
+-	int                 len;
+-	struct sockaddr_un  saun;
+-	int                 flags;
++	int                     len;
++	struct sockaddr_un      saun;
++	int                     flags;
++	_msg_data_s             *my_entry;
+ 
+-	if _INVALID_EID(myEid)
++    if (_init == false)
+     {
+-    	_dbg_printf("ERROR : invalid myEid == %d\n", myEid);
+-    	return ZCFG_INVALID_EID;
++    	zcfg_msg_dbg_printf("ERROR : not initialized yet\n");
++    	return ZCFG_INTERNAL_ERROR;
++    }
++
++	_MUTEX_LOCK();
++
++	my_entry = _my_msg_data_get();
++
++    _MUTEX_UNLOCK();
++
++	if (my_entry == NULL)
++    {
++    	zcfg_msg_dbg_printf("ERROR : fail to get my entry\n");
++    	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+     /*
+@@ -376,73 +547,135 @@
+         if using SOCK_STREAM, then the message may be received in partial,
+         but not completely.
+     */
+-	myMsgfd = socket(AF_UNIX, SOCK_DGRAM, 0);
+-	if (myMsgfd < 0)
++	my_entry->sck_id = socket(AF_UNIX, SOCK_DGRAM, 0);
++	if (my_entry->sck_id < 0)
+     {
+-    	_dbg_printf("ERROR : create message socket error, myMsgfd = %d\n", myMsgfd);
+-    	perror("zcfgMsgServerInit: socket");
+-    	myMsgfd = -1;
++    	zcfg_msg_dbg_printf("ERROR : create message socket error, my_entry->sck_id = %d, errno = %d, %s\n",
++    	    my_entry->sck_id, errno, strerror(errno));
++    	my_entry->sck_id = -1;
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+-#if 1
+-    // nonblocking operation
+-	flags = fcntl(myMsgfd, F_GETFL, 0);
+-	fcntl(myMsgfd, F_SETFL, flags | O_NONBLOCK);
++#if _DEBUG_MSG
++    zcfg_msg_dbg_printf("INFO : get socket ID = %d\n", my_entry->sck_id);
+ #endif
+ 
++    // nonblocking operation
++	flags = fcntl(my_entry->sck_id, F_GETFL, 0);
++	fcntl(my_entry->sck_id, F_SETFL, flags | O_NONBLOCK);
++
++    // bind server address
+ 	saun.sun_family = AF_UNIX;
+-	sprintf(saun.sun_path, "%s%d", ZCFG_ADDRESS_PREFIX, myEid);
++	sprintf(saun.sun_path, "%s%u", ZCFG_ADDRESS_PREFIX, my_entry->eid);
+ 	unlink(saun.sun_path);
+ 	len = sizeof(saun);
+-	if (bind(myMsgfd, (struct sockaddr*)&saun, len) < 0)
++
++	if (bind(my_entry->sck_id, (struct sockaddr*)&saun, len) < 0)
+     {
+-    	_dbg_printf("ERROR : bind message socket error. errno = %d\n", errno);
+-    	perror("zcfgMsgServerInit: bind");
+-    	close(myMsgfd);
+-    	myMsgfd = -1;
++    	zcfg_msg_dbg_printf("ERROR : bind message socket error. errno = %d, %s\n", errno, strerror(errno));
++    	close(my_entry->sck_id);
++    	my_entry->sck_id = -1;
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
++    // allow access
+ 	chmod(saun.sun_path, 0777);
+ 
++    // successful
+ 	return ZCFG_SUCCESS;
+ 
+-} // zcfgMsgServerInit
++} // zcfg_msg_serverInit
+ 
+-/*
+- *  Function Name: zcfgMsgReqRecv
+- *  Description: Used by message server to receive a message from other processes.
+- *      timeout_msec = 0, then wait forever
+- *      if successful, recvBuf will be allocated memory. Caller should free it after using it.
++/*!
++ *  receive message with timeout.
++ *
++ *  @param [out] recvBuf        if receiving successfully, recvBuf will be allocated to store the received message
++ *  @param [in]  timeout_msec   waiting time in milli-second, ZCFG_MSG_WAIT_FOREVER, ZCFG_MSG_WAIT_NONE
++ *
++ *  @return ZCFG_SUCCESS    successfully receive
++ *          ZCFG_TIMEOUT    time out
++ *          others          failed
++ *
++ *  @note   call should free recvBuf after using it.
+  */
+-zcfgRet_t zcfgMsgReqRecv(
++zcfgRet_t zcfg_msg_serverRecv(
+     zcfgMsg_t   **recvBuf,
+     uint32_t    timeout_msec
+ )
+ {
+-    return _msg_recv(myMsgfd, recvBuf, timeout_msec);
++	_msg_data_s     *my_entry;
++
++    if (_init == false)
++    {
++    	zcfg_msg_dbg_printf("ERROR : not initialized yet\n");
++    	return ZCFG_INTERNAL_ERROR;
++    }
++
++	_MUTEX_LOCK();
++
++	my_entry = _my_msg_data_get();
++
++    _MUTEX_UNLOCK();
++
++	if (my_entry == NULL)
++    {
++    	zcfg_msg_dbg_printf("ERROR : fail to get my entry\n");
++    	return ZCFG_INTERNAL_ERROR;
++    }
++
++    return _msg_recv(my_entry->eid, my_entry->sck_id, true, recvBuf, timeout_msec);
+ }
+ 
+-/*
+- *  Function Name: zcfgMsgRepSend
+- *  Description: Used by message server to send a response back to the process.
++/*!
++ *  send message till successful.
++ *
++ *  @param [in]  sendMsg    message to be sent, the destination is sendMsg->dstEid
++ *
++ *  @return ZCFG_SUCCESS    successfully receive
++ *          others          failed
+  */
+-zcfgRet_t zcfgMsgRepSend(
++zcfgRet_t zcfg_msg_serverSend(
+     zcfgMsg_t   *sendMsg
+ )
+ {
+-    return _msg_send(myMsgfd, sendMsg);
++	_msg_data_s     *my_entry;
++
++    if (_init == false)
++    {
++    	zcfg_msg_dbg_printf("ERROR : not initialized yet\n");
++    	return ZCFG_INTERNAL_ERROR;
++    }
++
++	_MUTEX_LOCK();
++
++	my_entry = _my_msg_data_get();
++
++    _MUTEX_UNLOCK();
++
++	if (my_entry == NULL)
++    {
++    	zcfg_msg_dbg_printf("ERROR : fail to get my entry\n");
++    	return ZCFG_INTERNAL_ERROR;
++    }
++
++    return _msg_send(my_entry->eid, my_entry->sck_id, true, sendMsg);
+ }
+ 
+-/*
+- *  Function Name: zcfgMsgSendAndGetReply
+- *  Description: Used by client to send a message to the server process and get a response.
++/*!
++ *  send message and get reply in timeout.
++ *
++ *  @param [in]  sendMsg        message to send
++ *  @param [out] recvBuf        if receiving successfully, recvBuf will be allocated to store the received message
++ *  @param [in]  timeout_msec   waiting time in milli-second, where 0 means wait forever
++ *
++ *  @return ZCFG_SUCCESS                successfully send and get reply
++ *          ZCFG_SUCCESS_AND_NO_REPLY   successfully send without reply
++ *          ZCFG_TIMEOUT                time out
++ *          others                      failed
++ *
++ *  @note   call should free recvBuf after using it if ZCFG_SUCCESS.
+  */
+-static pthread_mutex_t __zcfg_msg_lock__ = PTHREAD_MUTEX_INITIALIZER;
+-static int32_t __zcfg_msg_req_idx__      = 0;
+-
+-zcfgRet_t zcfgMsgSendAndGetReply(
++zcfgRet_t zcfg_msg_sendAndGetReply(
+     zcfgMsg_t   *sendMsg,
+     zcfgMsg_t   **replyMsg,
+     uint32_t    timeout_msec
+@@ -455,24 +688,26 @@
+     int                 addrlen;
+ 	int32_t             seqid;
+     int32_t             sendtype;
++	zcfg_msg_eid_t      eid;
+ 
+-    if (sendMsg == NULL)
++	eid = zcfg_msg_eidGet();
++
++	if (eid == 0)
+     {
+-    	_dbg_printf("ERROR : sendMsg == NULL\n");
++    	zcfg_msg_dbg_printf("ERROR : fail to get my EID\n");
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+-	if _INVALID_EID(myEid)
+-	{
+-    	_dbg_printf("ERROR : not initialized yet, invalid myEid == %d\n", myEid);
+-    	free(sendMsg);
+-    	return ZCFG_INVALID_EID;
++    if (sendMsg == NULL)
++    {
++    	zcfg_msg_dbg_printf("ERROR : sendMsg == NULL\n");
++    	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+ #if 0 /* if msg type without reply, then replyMsg can be NULL */
+     if (replyMsg == NULL)
+     {
+-    	_dbg_printf("ERROR : replyMsg == NULL\n");
++    	zcfg_msg_dbg_printf("ERROR : replyMsg == NULL\n");
+     	free(sendMsg);
+     	return ZCFG_INTERNAL_ERROR;
+     }
+@@ -485,7 +720,7 @@
+ 	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+ 	if (fd < 0)
+ 	{
+-    	_dbg_printf("ERROR : fail to create socket. errno = %d, %s\n", errno, strerror(errno));
++    	zcfg_msg_dbg_printf("ERROR : fail to create socket. errno = %d, %s\n", errno, strerror(errno));
+     	free(sendMsg);
+         return ZCFG_INTERNAL_ERROR;
+     }
+@@ -494,17 +729,15 @@
+ 	flags = 1;
+ 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &flags, sizeof(flags)) < 0)
+ 	{
+-    	_dbg_printf("ERROR : fail to set socket option SO_REUSEADDR. errno = %d, %s\n", errno, strerror(errno));
++    	zcfg_msg_dbg_printf("ERROR : fail to set socket option SO_REUSEADDR. errno = %d, %s\n", errno, strerror(errno));
+     	free(sendMsg);
+     	close(fd);
+     	return ZCFG_INTERNAL_ERROR;
+     }
+ 
+-#if 1
+     // nonblocking operation
+ 	flags = fcntl(fd, F_GETFL, 0);
+ 	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+-#endif
+ 
+     /* get address for bind() */
+ 	clientaddr.sun_family = AF_UNIX;
+@@ -513,17 +746,17 @@
+     // get unique sequence ID
+ 	seqid = getpid();
+ 
+-	pthread_mutex_lock(&__zcfg_msg_lock__);
+-	__zcfg_msg_req_idx__ = ((__zcfg_msg_req_idx__) % 0xFFFF)+1;
+-	seqid |= (__zcfg_msg_req_idx__ << 16);
+-	pthread_mutex_unlock(&__zcfg_msg_lock__);
++	_MUTEX_LOCK();
++	_zcfg_msg_req_idx = ((_zcfg_msg_req_idx) % 0xFFFF)+1;
++	seqid |= (_zcfg_msg_req_idx << 16);
++	_MUTEX_UNLOCK();
+ 
+-	sprintf(clientaddr.sun_path, "%s%d-%u", ZCFG_ADDRESS_PREFIX, myEid, seqid);
++	sprintf(clientaddr.sun_path, "%s%u-%u", ZCFG_ADDRESS_PREFIX, eid, seqid);
+ 
+     // bind on address
+ 	if (bind(fd, (struct sockaddr*)&clientaddr, addrlen) < 0)
+     {
+-    	_dbg_printf("ERROR : fail to bind address. errno = %d, %s\n", errno, strerror(errno));
++    	zcfg_msg_dbg_printf("ERROR : fail to bind address. errno = %d, %s\n", errno, strerror(errno));
+     	free(sendMsg);
+     	close(fd);
+     	unlink(clientaddr.sun_path);
+@@ -534,10 +767,10 @@
+     /*
+         sendMsg will be freed in _msg_send no matter of result !!!
+     */
+-	ret = _msg_send(fd, sendMsg);
++	ret = _msg_send(eid, fd, false, sendMsg);
+     if (ret != ZCFG_SUCCESS)
+     {
+-        _dbg_printf("ERROR : fail to send message. ret = %d\n", ret);
++        zcfg_msg_dbg_printf("ERROR : fail to send message. ret = %d\n", ret);
+     	close(fd);
+     	unlink(clientaddr.sun_path);
+         return ret;
+@@ -552,15 +785,78 @@
+     }
+ 
+     // receive message
+-    ret = _msg_recv(fd, replyMsg, timeout_msec);
++    ret = _msg_recv(eid, fd, false, replyMsg, timeout_msec);
+ 
+     if (ret != ZCFG_SUCCESS)
+     {
+-        _dbg_printf("ERROR : fail to receive message. ret = %d\n", ret);
++        zcfg_msg_dbg_printf("ERROR : fail to receive message. ret = %d\n", ret);
+     }
+ 
+ 	close(fd);
+ 	unlink(clientaddr.sun_path);
+ 	return ret;
+ 
+-} // zcfgMsgSendAndGetReply
++} // zcfg_msg_sendAndGetReply
++
++/*!
++ *  get EID of current thread
++ *
++ *  @return > 0     successful, valid eid
++ *          0       fail
++ */
++zcfg_msg_eid_t zcfg_msg_eidGet()
++{
++	_msg_data_s     *my_entry;
++
++	_MUTEX_LOCK();
++
++	my_entry = _my_msg_data_get();
++
++    _MUTEX_UNLOCK();
++
++    /*
++        the thread does not register its own EID, then use the one of process
++    */
++	if (my_entry == NULL)
++    {
++    	zcfg_msg_dbg_printf("ERROR : fail to get my entry\n");
++    	return 0;
++    }
++
++    return my_entry->eid;
++}
++
++/*!
++ *  get socket ID of current thread
++ *
++ *  @return >= 0    successful, valid socket ID
++ *          <  0    fail
++ */
++int zcfg_msg_sckIdGet()
++{
++	_msg_data_s     *my_entry;
++
++	_MUTEX_LOCK();
++
++	my_entry = _my_msg_data_get();
++
++    _MUTEX_UNLOCK();
++
++	if (my_entry == NULL)
++    {
++    	zcfg_msg_dbg_printf("ERROR : fail to get my entry\n");
++    	return 0;
++    }
++
++    return my_entry->sck_id;
++}
++
++/*!
++ *  get my pid which is shown in top.
++ *
++ *  @return zcfg_msg_pid_t      my pid
++ */
++zcfg_msg_pid_t zcfg_msg_pid_get()
++{
++    return (zcfg_msg_pid_t)(syscall(__NR_gettid));
++}
+Index: libzcfg_msg-1.0/zcfg_msg.h
+===================================================================
+--- libzcfg_msg-1.0.orig/zcfg_msg.h	2017-10-11 14:22:46.000000000 +0800
++++ libzcfg_msg-1.0/zcfg_msg.h	2017-10-11 14:24:06.220562708 +0800
+@@ -248,23 +248,136 @@
+ #define ZCFG_ADDRESS_PREFIX "/var/lib/.sock/zcfg_sockaddr"
+ #define ZCFG_MSG_BACKLOG 5
+ 
++//==============================================================================
++typedef uint8_t     zcfg_msg_eid_t;
++typedef long int    zcfg_msg_pid_t;
++
++/*
++    Notice the alignment
++*/
+ typedef struct zcfgMsg_s
+ {
+-	uint32_t type;
+-	uint32_t oid;
+-	uint8_t srcEid;
+-	uint8_t dstEid;
+-	uint16_t length;
+-	int32_t clientPid;
+-	int32_t statCode;
+-	char reserve[28];
+-	objIndex_t objIid[1];
+-}zcfgMsg_t;
+-
+-bool      zcfgEidInit(zcfgEid_t eid, char *);
+-zcfgRet_t zcfgMsgServerInit();
+-zcfgRet_t zcfgMsgReqRecv(zcfgMsg_t **recvBuf, uint32_t timeout_msec);
+-zcfgRet_t zcfgMsgRepSend(zcfgMsg_t *sendMsg);
+-zcfgRet_t zcfgMsgSendAndGetReply(zcfgMsg_t *sendMsg, zcfgMsg_t **replyMsg, uint32_t timeout_msec);
++	uint32_t        type;
++	uint32_t        oid;
++	zcfg_msg_eid_t  srcEid;
++	zcfg_msg_eid_t  dstEid;
++	uint16_t        length;
++	uint32_t        clientPid;
++	int32_t         statCode;
++	char            reserve[28];
++	objIndex_t      objIid[1];      // 7 bytes
++
++} zcfgMsg_t;
++
++//==============================================================================
++/*!
++ *  Initialize EID per thread.
++ *
++ *  @param [in]  eid            EID
++ *  @param [in]  module_name    module name for syslog
++ *
++ *  @return true    successful
++ *          false   fail
++ */
++bool zcfg_msg_eidInit(
++    zcfg_msg_eid_t      eid,
++    char                *module_name
++);
++
++/*!
++ *  Initialize a server socket per thread to wait for messages from others.
++ *
++ *  @return ZCFG_SUCCESS    successful
++ *          others          fail
++ */
++zcfgRet_t zcfg_msg_serverInit();
++
++/*!
++ *  receive message with timeout.
++ *
++ *  @param [out] recvBuf        if receiving successfully, recvBuf will be allocated to store the received message
++ *  @param [in]  timeout_msec   waiting time in milli-second, ZCFG_MSG_WAIT_FOREVER, ZCFG_MSG_WAIT_NONE
++ *
++ *  @return ZCFG_SUCCESS    successfully receive
++ *          ZCFG_TIMEOUT    time out
++ *          others          failed
++ *
++ *  @note   call should free recvBuf after using it.
++ */
++zcfgRet_t zcfg_msg_serverRecv(
++    zcfgMsg_t   **recvBuf,
++    uint32_t    timeout_msec
++);
++
++/*!
++ *  send message till successful.
++ *
++ *  @param [in]  sendMsg    message to be sent, the destination is sendMsg->dstEid
++ *
++ *  @return ZCFG_SUCCESS    successfully receive
++ *          others          failed
++ */
++zcfgRet_t zcfg_msg_serverSend(
++    zcfgMsg_t   *sendMsg
++);
++
++/*!
++ *  send message and get reply in timeout.
++ *
++ *  @param [in]  sendMsg        message to send
++ *  @param [out] recvBuf        if receiving successfully, recvBuf will be allocated to store the received message
++ *  @param [in]  timeout_msec   waiting time in milli-second, where 0 means wait forever
++ *
++ *  @return ZCFG_SUCCESS                successfully send and get reply
++ *          ZCFG_SUCCESS_AND_NO_REPLY   successfully send without reply
++ *          ZCFG_TIMEOUT                time out
++ *          others                      failed
++ *
++ *  @note   call should free recvBuf after using it if ZCFG_SUCCESS.
++ */
++zcfgRet_t zcfg_msg_sendAndGetReply(
++    zcfgMsg_t   *sendMsg,
++    zcfgMsg_t   **replyMsg,
++    uint32_t    timeout_msec
++);
++
++/*!
++ *  get EID of current thread
++ *
++ *  @return > 0     successful, valid eid
++ *          0       fail
++ */
++zcfg_msg_eid_t zcfg_msg_eidGet();
++
++/*!
++ *  get socket ID of current thread
++ *
++ *  @return >= 0    successful, valid socket ID
++ *          <  0    fail
++ */
++int zcfg_msg_sckIdGet();
++
++/*!
++ *  get my pid which is shown in top.
++ *
++ *  @return zcfg_msg_pid_t      my pid
++ */
++zcfg_msg_pid_t zcfg_msg_pid_get();
++
++//==============================================================================
++#define ZCFG_MSG_INVALID_EID(_eid_)             ((_eid_) <= 0 || (_eid_) >= ZCFG_EID_MAX)
++
++#define ZCFG_MSG_WAIT_FOREVER                   0
++#define ZCFG_MSG_WAIT_NONE                      0xFFffFFff
++
++#define zcfgEidInit(_e_, _m_)                   zcfg_msg_eidInit(_e_, _m_)
++#define zcfgMsgServerInit()                     zcfg_msg_serverInit()
++#define zcfgMsgReqRecv(_r_, _t_)                zcfg_msg_serverRecv(_r_, _t_)
++#define zcfgMsgRepSend(_s_)                     zcfg_msg_serverSend(_s_)
++#define zcfgMsgSendAndGetReply(_s_, _r_, _t_)   zcfg_msg_sendAndGetReply(_s_, _r_, _t_)
++
++#define zcfg_msg_dbg_printf(_fmt_, ...) \
++    fprintf(stderr, "[PID %ld] %s line %d, %s(), " _fmt_, zcfg_msg_pid_get(), __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__)
+ 
++//==============================================================================
+ #endif // _ZCFG_MSG_H_

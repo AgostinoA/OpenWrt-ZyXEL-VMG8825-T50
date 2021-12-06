@@ -1,0 +1,855 @@
+Index: bridge-utils-1.2/brctl/brctl.c
+===================================================================
+--- bridge-utils-1.2.orig/brctl/brctl.c	2006-09-09 13:30:31.000000000 +0800
++++ bridge-utils-1.2/brctl/brctl.c	2015-11-16 17:10:22.060999735 +0800
+@@ -34,7 +34,13 @@
+ 	command_helpall();
+ }
+ 
++/* brcm begin */
++#if defined(PLATFORM_BROADCOM) && defined(BUILD_STATIC)
++int brctl_main(int argc, char *const *argv)
++#else
+ int main(int argc, char *const* argv)
++#endif
++/* brcm end */
+ {
+ 	const struct command *cmd;
+ 	int f;
+@@ -70,7 +76,11 @@
+ 	argv += optind;
+ 	if ((cmd = command_lookup(*argv)) == NULL) {
+ 		fprintf(stderr, "never heard of command [%s]\n", argv[1]);
++#if defined(PLATFORM_BROADCOM)
++		return 1;
++#else
+ 		goto help;
++#endif
+ 	}
+ 	
+ 	if (argc < cmd->nargs + 1) {
+Index: bridge-utils-1.2/brctl/brctl_cmd.c
+===================================================================
+--- bridge-utils-1.2.orig/brctl/brctl_cmd.c	2006-09-09 13:30:31.000000000 +0800
++++ bridge-utils-1.2/brctl/brctl_cmd.c	2015-11-16 17:10:22.060999735 +0800
+@@ -24,6 +24,9 @@
+ #include <asm/param.h>
+ #include "libbridge.h"
+ #include "brctl.h"
++#if defined(PLATFORM_BROADCOM)
++#include <linux/sockios.h>
++#endif
+ 
+ static int strtotimeval(struct timeval *tv, const char *time)
+ {
+@@ -280,6 +283,316 @@
+ 	return err != 0;
+ }
+ 
++#if defined(PLATFORM_BROADCOM)
++static int br_cmd_enableportsnooping(int argc, char*const* argv)
++{
++	int err;
++	int enable;
++
++        sscanf(argv[2], "%i", &enable);
++
++	if((enable < 0) || (enable > 2)) {
++		fprintf(stderr, "bad value\n");
++		return 1;
++        }
++
++	err = br_enable_port_snooping(argv[1], enable);
++	if (err)
++		fprintf(stderr, "enable port snooping failed: %s\n",
++			strerror(errno));
++
++	return err != 0;
++}
++
++static int br_cmd_enableproxymode(int argc, char *const* argv)
++{
++	int err;
++	int enable;
++
++        sscanf(argv[2], "%i", &enable);
++
++	if((enable != 0) && (enable != 1)) {
++		fprintf(stderr, "bad value\n");
++		return 1;
++	}
++
++	err = br_enable_proxy_mode(argv[1], enable);
++	if (err)
++		fprintf(stderr, "enable proxy mode failed: %s\n",
++			strerror(errno));
++
++	return err != 0;
++}
++
++static int br_cmd_igmp_enableLanToLanMcast(int argc, char*const* argv)
++{
++	int err;
++	char enable;
++
++	sscanf(argv[2], "%hhi", &enable);
++
++	if((enable != -1) && (enable != 0) && (enable != 1)) 
++	{
++		fprintf(stderr, "bad value %d\n", enable);
++		return 1;
++	}
++
++	err = br_igmp_enable_lan_to_lan_mcast(argv[1], enable);
++	if (err)
++	{
++		fprintf(stderr, "enable igmp lan to lan mcast failed: %s\n",
++			strerror(errno));
++	}
++
++	return err != 0;
++}
++
++static int br_cmd_mld_enableLanToLanMcast(int argc, char*const* argv)
++{
++	int err;
++	char enable;
++
++	sscanf(argv[2], "%hhi", &enable);
++
++	if((enable != -1) && (enable != 0) && (enable != 1)) 
++	{
++		fprintf(stderr, "bad value %d\n", enable);
++		return 1;
++	}
++
++	err = br_mld_enable_lan_to_lan_mcast(argv[1], enable);
++	if (err)
++	{
++		fprintf(stderr, "enable mld lan to lan mcast failed: %s\n",
++			strerror(errno));
++	}
++
++	return err != 0;
++
++}
++
++static int br_cmd_mld_enableportsnooping(int argc, char*const* argv)
++{
++	int err;
++	int enable;
++
++        sscanf(argv[2], "%i", &enable);
++
++	if((enable < 0) || (enable > 2)) {
++		fprintf(stderr, "bad value\n");
++		return 1;
++	}
++
++	err = br_mld_enable_port_snooping(argv[1], enable);
++	if (err)
++		fprintf(stderr, "enable mld port snooping failed: %s\n",
++			strerror(errno));
++
++	return err != 0;
++}
++
++static int br_cmd_mld_enableproxymode(int argc, char*const* argv)
++{
++	int err;
++	int enable;
++
++        sscanf(argv[2], "%i", &enable);
++
++	if((enable != 0) && (enable != 1)) {
++		fprintf(stderr, "bad value\n");
++		return 1;
++	}
++
++	err = br_mld_enable_proxy_mode(argv[1], enable);
++	if (err)
++		fprintf(stderr, "enable mld proxy mode failed: %s\n",
++			strerror(errno));
++
++	return err != 0;
++}
++
++static int br_cmd_enableigmpratelimit(int argc, char*const* argv)
++{
++	int err;
++	int limit;
++
++	sscanf(argv[2], "%i", &limit);
++
++	if( limit > 500 )
++	{
++		fprintf(stderr, "bad value\n");
++		return 1;
++	}
++
++	err = br_igmp_enable_rate_limit(argv[1], limit);
++	if (err)
++	{
++		fprintf(stderr, "enable igmp rate limit failed: %s\n",
++			strerror(errno));
++	}
++
++	return err != 0;
++}
++
++static int br_cmd_addmacs(int argc, char *const* argv)
++{
++	const char *brName;
++	const char *ifName;
++	int         err;
++
++	brName = *++argv;
++	ifName = *++argv;
++	argc  -= 3; /* skip past the command name and the first 2 arguments */
++
++	while (argc-- > 0)
++	{
++		const char *pMac = *++argv;
++		err = br_add_fdb(brName, ifName, pMac);
++
++		switch(err) {
++		case 0:
++			continue;
++
++		case ENODEV:
++			if (if_nametoindex(ifName) == 0)
++				fprintf(stderr, "interface %s does not exist!\n", ifName);
++			else
++				fprintf(stderr, "bridge %s does not exist!\n", brName);
++			break;
++
++		default:
++			fprintf(stderr, "can't add mac %s to bridge %s, port %s: %s\n",
++				pMac, brName, ifName, strerror(err));
++		}
++		return 1;
++	}
++
++	return 0;
++}
++
++
++static int br_cmd_delmacs(int argc, char *const* argv)
++{
++	const char *brName;
++	const char *ifName;
++	int         err;
++
++	brName = *++argv;
++	ifName = *++argv;
++	argc  -= 3; /* skip past the command name and the first 2 arguments */
++
++	while (argc-- > 0)
++	{
++		const char *pMac = *++argv;
++		err = br_del_fdb(brName, ifName, pMac);
++
++		switch(err) {
++		case 0:
++			continue;
++
++		case ENODEV:
++			if (if_nametoindex(ifName) == 0)
++				fprintf(stderr, "interface %s does not exist!\n", ifName);
++			else
++				fprintf(stderr, "bridge %s does not exist!\n", brName);
++			break;
++
++		default:
++			fprintf(stderr, "can't add mac %s to bridge %s, port %s: %s\n",
++				pMac, brName, ifName, strerror(err));
++		}
++		return 1;
++	}
++
++	return 0;
++}
++
++static int br_cmd_del_dyn_macs(int argc, char *const* argv)
++{
++	const char *brName;
++	const char *ifName;
++	int         err;
++
++	brName = *++argv;
++	ifName = *++argv;
++  
++	err = br_del_dyn_fdb(brName, ifName);
++
++	switch(err) {
++	case 0:
++		break;
++
++	case ENODEV:
++		if (if_nametoindex(ifName) == 0)
++			fprintf(stderr, "interface %s does not exist!\n", ifName);
++		else
++			fprintf(stderr, "bridge %s does not exist!\n", brName);
++		return 1;
++
++	default:
++		fprintf(stderr, "can't delete dynamic addrs from bridge %s, port %s: %s\n",
++			brName, ifName, strerror(err));
++		return 1;
++	}
++
++	return 0;
++}
++
++static int br_cmd_flows(int argc, char *const* argv)
++{
++	const char *brName;
++	const char *rxifName, *txifName;
++	int         err;
++
++	brName   = *++argv;
++	rxifName = *++argv;
++   txifName = *++argv;
++
++   err = br_set_flows(brName, rxifName, txifName);
++   if (err)
++   {
++		switch(err)
++      {
++		case ENODEV:
++			if (if_nametoindex(rxifName) == 0)
++				fprintf(stderr, "rx interface %s does not exist!\n", rxifName);
++			else if (if_nametoindex(txifName) == 0)
++				fprintf(stderr, "tx interface %s does not exist!\n", txifName);
++			else
++				fprintf(stderr, "bridge %s does not exist!\n", brName);
++			break;
++
++		default:
++			fprintf(stderr, "%s: can't set flows for path: bridge %s, rxif %s, txif %s\n",
++				     strerror(err), brName, rxifName, txifName);
++		}
++		return 1;
++	}
++
++	return 0;
++}
++
++static int br_cmd_uni_uni_ctrl(int argc, char*const* argv)
++{
++	int err;
++	int enable;
++
++    sscanf(argv[2], "%i", &enable);
++
++	if((enable < 0) || (enable > 2)) {
++		fprintf(stderr, "bad value\n");
++		return 1;
++        }
++
++	err = br_enable_uni_uni_ctrl(argv[1], enable);
++	if (err)
++		fprintf(stderr, "enable uni to uni ctrl failed: %s\n",
++			strerror(errno));
++
++	return err != 0;
++}
++#endif
++
+ static int br_cmd_stp(int argc, char *const* argv)
+ {
+ 	int stp, err;
+@@ -381,10 +694,17 @@
+ 
+ 	qsort(fdb, offset, sizeof(struct fdb_entry), compare_fdbs);
+ 
++#if defined(PLATFORM_BROADCOM) && defined(CONFIG_BCM_VLAN_AGGREGATION)
++	printf("port no\tvid\tmac addr\t\tis local?\tageing timer\n");
++#else
+ 	printf("port no\tmac addr\t\tis local?\tageing timer\n");
++#endif
+ 	for (i = 0; i < offset; i++) {
+ 		const struct fdb_entry *f = fdb + i;
+ 		printf("%3i\t", f->port_no);
++#if defined(PLATFORM_BROADCOM) && defined(CONFIG_BCM_VLAN_AGGREGATION)
++		printf("%4i\t", f->vid);
++#endif
+ 		printf("%.2x:%.2x:%.2x:%.2x:%.2x:%.2x\t",
+ 		       f->mac_addr[0], f->mac_addr[1], f->mac_addr[2],
+ 		       f->mac_addr[3], f->mac_addr[4], f->mac_addr[5]);
+@@ -395,6 +715,131 @@
+ 	return 0;
+ }
+ 
++#if defined(PLATFORM_BROADCOM)
++static int br_get_port_list(const char *brname, int *ifindices, int num)
++{
++	unsigned long args[4] = { BRCTL_GET_PORT_LIST,
++				  (unsigned long)ifindices, num, 0 };
++	struct ifreq ifr;
++    int br_socket_fd;   
++
++	memset(ifindices, 0, sizeof(*ifindices)*num);    
++    if ((br_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
++        printf("Could not open socket. err %d, %s\n", errno, strerror(errno));
++        return -1;
++    }    
++
++	strncpy(ifr.ifr_name, brname, IFNAMSIZ);
++	ifr.ifr_data = (char *) &args;
++
++	if (ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr) < 0) {
++		printf("br_get_port_list: get %s ports list failed: %s\n", 
++			brname, strerror(errno));
++		goto error;
++	}
++    else {
++        close(br_socket_fd);
++        return 0;
++    }
++
++ error:
++    close(br_socket_fd);
++	return -1;
++}
++
++static int br_cmd_show_mac_lmt(int argc, char *const* argv)
++{
++    const char *brname = argv[1];
++    int            fdb_lmt_min, fdb_lmt_max;
++    int            err;
++    int            i;    
++	int            ifindices[1024];
++    struct ifreq   ifr;
++    unsigned long  args[5] = { BRCTL_GET_BR_FDB_LIMIT, &fdb_lmt_min, 0, 0, 1};
++    int br_socket_fd;   
++    char ifname[10]={0};
++
++    if (br_get_port_list(brname, ifindices, 1024) != 0)
++        return -1;
++    
++    if ((br_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
++        printf("Could not open socket. err %d, %s\n", errno, strerror(errno));
++        return -1;
++    }    
++
++
++    strncpy(ifr.ifr_name, brname, IFNAMSIZ);
++    ifr.ifr_data = (char *) args;
++
++    /* read min */
++    err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++
++    if (err < 0) {
++        printf("Read bridge mac limit fail. err %d, %s\n", errno, strerror(errno));    
++        close(br_socket_fd);
++        return -1;
++    }
++
++    /* read max */
++    args[4] = 0;
++    args[1] = &fdb_lmt_max;
++    err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++
++    if (err < 0) {
++        printf("Read bridge mac limit fail. err %d, %s\n", errno, strerror(errno));    
++        close(br_socket_fd);
++        return -1;
++    }
++    
++	printf("bridge name\t used\t  max\n");
++
++    printf("%11s\t%5d\t%5d\n\n", brname, fdb_lmt_min, fdb_lmt_max);
++    
++    printf("interfaces\t\t  min\t  max\n");
++    /* read port limit */
++    args[2] = 1;
++    for (i = 0; i < 1024; i++) {
++        fdb_lmt_min = 0;
++        fdb_lmt_max = 0;
++        if (!ifindices[i])
++            continue;
++
++        if (if_indextoname(ifindices[i], ifname) == NULL)
++            continue;
++        
++        args[3] = if_nametoindex(ifname);
++        if (args[3] == 0) {
++            printf("Interface %s doesn't exist\n", ifname);    
++            close(br_socket_fd);
++            return -1;
++        }
++        /* read min */
++        args[4] = 1;
++        args[1] = &fdb_lmt_min;
++        err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++        if (err < 0) {
++            printf("Read port mac min limit fail. err %d, %s\n", errno, strerror(errno));    
++            close(br_socket_fd);
++            return -1;
++        }
++
++        /* read max */
++        args[4] = 0;
++        args[1] = &fdb_lmt_max;
++        err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++        if (err < 0) {
++            printf("Read port mac max limit fail. err %d, %s\n", errno, strerror(errno));    
++            close(br_socket_fd);
++            return -1;
++        }
++        printf("%10s\t\t%5d\t%5d", ifname, fdb_lmt_min, fdb_lmt_max);
++        printf("\n");
++    }
++    close(br_socket_fd);    
++    return 0;
++}
++#endif
++
+ static const struct command commands[] = {
+ 	{ 1, "addbr", br_cmd_addbr, "<bridge>\t\tadd bridge" },
+ 	{ 1, "delbr", br_cmd_delbr, "<bridge>\t\tdelete bridge" },
+@@ -416,13 +861,45 @@
+ 	  "<bridge> <port> <cost>\tset path cost" },
+ 	{ 3, "setportprio", br_cmd_setportprio,
+ 	  "<bridge> <port> <prio>\tset port priority" },
++#if defined(PLATFORM_BROADCOM)
++	{ 2, "enableportsnooping", br_cmd_enableportsnooping,
++	  "<bridge> <value>\t0-disable 1-standard 2-blocking" },
++	{ 2, "enableproxymode", br_cmd_enableproxymode,
++	  "<bridge> <value> \tTo enable 1 or disable 0" },
++#endif
+ 	{ 0, "show", br_cmd_show, "\t\t\tshow a list of bridges" },
+ 	{ 1, "showmacs", br_cmd_showmacs, 
+ 	  "<bridge>\t\tshow a list of mac addrs"},
++#if defined(PLATFORM_BROADCOM)
++	{ 3, "addmacs", br_cmd_addmacs, 
++	  "<bridge> <ifname> <mac>\t\tadd mac addresses to the bridge table"},
++	{ 3, "delmacs", br_cmd_delmacs, 
++	  "<bridge> <ifname> <mac>\t\tremove mac addresses from the bridge table"},
++	{ 2, "deldynmacs", br_cmd_del_dyn_macs,
++	  "<bridge> <ifname>\t\tremove all dynamic mac address from the bridge table"},
++#endif
+ 	{ 1, "showstp", br_cmd_showstp, 
+ 	  "<bridge>\t\tshow bridge stp info"},
+ 	{ 2, "stp", br_cmd_stp,
+ 	  "<bridge> {on|off}\tturn stp on/off" },
++#if defined(PLATFORM_BROADCOM)
++	{ 2, "mldenableportsnooping", br_cmd_mld_enableportsnooping,
++	  "<bridge> <value>\t0-disable 1-standard 2-blocking" },
++	{ 2, "mldenableproxymode", br_cmd_mld_enableproxymode,
++	  "<bridge> <value>\tTo enable 1 or disable 0" },
++	{ 2, "enableigmplan2lan", br_cmd_igmp_enableLanToLanMcast,
++		"<bridge> <value> \t0-disable 1-enable" },
++	{ 2, "enablemldlan2lan", br_cmd_mld_enableLanToLanMcast,
++		"<bridge> <value> \t0-disable 1-enable" },
++	{ 3, "flows", br_cmd_flows,
++	  "<bridge> <rxif> <txif>\tTo setup layer 2 flows to the path (rxif->txif)" },
++	{ 2, "enableigmpratelimit", br_cmd_enableigmpratelimit,
++	  "<bridge> <value>\t0-disable, 1..500-packet rate" },
++	{ 2, "eponuniunictrl", br_cmd_uni_uni_ctrl,
++	  "<bridge> <value>\t0-disable 1-enable" },
++    { 1, "showmaclmt", br_cmd_show_mac_lmt, 
++      "<bridge>\t\tshow a mac limit of bridge"},
++#endif
+ };
+ 
+ const struct command *command_lookup(const char *cmd)
+Index: bridge-utils-1.2/libbridge/libbridge_devif.c
+===================================================================
+--- bridge-utils-1.2.orig/libbridge/libbridge_devif.c	2006-09-09 13:30:31.000000000 +0800
++++ bridge-utils-1.2/libbridge/libbridge_devif.c	2015-11-16 17:10:22.060999735 +0800
+@@ -372,6 +372,231 @@
+ 	return port_set(bridge, port, "priority", priority, BRCTL_SET_PORT_PRIORITY);
+ }
+ 
++#if defined(PLATFORM_BROADCOM)
++int br_enable_port_snooping(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3] 
++			= { BRCTL_ENABLE_SNOOPING, (unsigned long) _br, 0};
++
++	strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++}
++
++int br_enable_uni_uni_ctrl(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3] 
++			= { BRCTL_SET_UNI_UNI_CTRL, (unsigned long) _br, 0};
++
++	strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++}
++
++int br_enable_proxy_mode(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3] 
++			= { BRCTL_ENABLE_PROXY_MODE, (unsigned long) _br, 0};
++
++        strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++
++}
++
++int br_mld_enable_port_snooping(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3] 
++			= { BRCTL_MLD_ENABLE_SNOOPING, (unsigned long) _br, 0};
++
++	strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++}
++
++int br_mld_enable_proxy_mode(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3] 
++			= { BRCTL_MLD_ENABLE_PROXY_MODE, (unsigned long) _br, 0};
++
++        strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++
++}
++
++int br_igmp_enable_lan_to_lan_mcast(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3]
++			= { BRCTL_ENABLE_IGMP_LAN2LAN_MC, (unsigned long) _br, 0};
++
++	strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++}
++
++int br_mld_enable_lan_to_lan_mcast(const char *br, int enable)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3]
++			= { BRCTL_ENABLE_MLD_LAN2LAN_MC, (unsigned long) _br, 0};
++
++	strncpy(_br, br, IFNAMSIZ);
++	arg[2] = enable;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++}
++
++int br_igmp_enable_rate_limit(const char *br, int limit)
++{
++	int ret;
++	char _br[IFNAMSIZ];
++	unsigned long arg[3] = { BRCTL_ENABLE_IGMP_RATE_LIMIT, 
++                            (unsigned long) _br, 0};
++
++	strncpy(_br, br, IFNAMSIZ);
++	arg[2] = limit;
++	ret = ioctl(br_socket_fd, SIOCSIFBR, arg);
++
++	return ret < 0 ? errno : 0;
++}
++
++int br_add_fdb(const char *bridge, const char *ifName, const char *pMac)
++{
++	int            err;
++	struct ifreq   ifr;
++	int            ifIndex = if_nametoindex(ifName);
++	unsigned char  macAddr[6];
++	unsigned long  args[4] = { BRCTL_ADD_FDB_ENTRIES, (unsigned long)&macAddr[0], 1, ifIndex };
++	char          *mac1;
++	const char    *mac = pMac;
++	int            i;
++
++	if (ifIndex == 0) 
++		return ENODEV;
++
++	for ( i = 0; i < 6; i++ ) 
++	{
++		macAddr[i] = (unsigned char)(strtol( mac, &mac1, 16) );
++		if ((i < 5) && (*mac1 != ':') && (*mac1 != '.'))
++			return EINVAL;
++		if (mac == mac1)
++			return EINVAL;
++ 
++		mac1++;
++		mac = mac1;
++	}
++
++	strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
++	ifr.ifr_data = (char *) args;
++
++	err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++   
++	return err < 0 ? errno : 0;
++
++}
++
++int br_del_fdb(const char *bridge, const char *ifName, const char *pMac)
++{
++	int            err;
++	struct ifreq   ifr;
++	int            ifIndex = if_nametoindex(ifName);
++	unsigned char  macAddr[6];
++	unsigned long  args[4] = { BRCTL_DEL_FDB_ENTRIES, (unsigned long)&macAddr[0], 1, ifIndex };
++	char          *mac1;
++	const char    *mac = pMac;
++	int            i;
++
++	if (ifIndex == 0) 
++		return ENODEV;
++
++	for ( i = 0; i < 6; i++ ) 
++	{
++		macAddr[i] = (unsigned char)(strtol( mac, &mac1, 16) );
++		if ((i < 5) && (*mac1 != ':') && (*mac1 != '.'))
++			return EINVAL;
++		if (mac == mac1)
++			return EINVAL;
++ 
++		mac1++;
++		mac = mac1;
++	}
++
++	strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
++	ifr.ifr_data = (char *) args;
++
++	err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++   
++	return err < 0 ? errno : 0;
++
++}
++
++int br_del_dyn_fdb(const char *bridge, const char *ifName)
++{
++	int            err;
++	struct ifreq   ifr;
++	int            ifIndex = if_nametoindex(ifName);
++	unsigned long  args[2] = { BRCTL_DEL_DYN_FDB_ENTRIES, ifIndex };
++
++	if (ifIndex == 0) 
++		return ENODEV;
++
++	strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
++	ifr.ifr_data = (char *) args;
++
++	err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++   
++	return err < 0 ? errno : 0;
++}
++
++
++int br_set_flows(const char *bridge, const char *rxifName, const char *txifName)
++{
++	int            err;
++	struct ifreq   ifr;
++	int            rxifIndex = if_nametoindex(rxifName);
++	int            txifIndex = if_nametoindex(txifName);
++	unsigned long  args[3] = { BRCTL_SET_FLOWS, rxifIndex, txifIndex };
++
++	if (rxifIndex == 0 || txifIndex == 0) 
++		return ENODEV;
++
++	strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
++	ifr.ifr_data = (char *) args;
++
++	err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++   
++	return err < 0 ? errno : 0;
++
++}
++#endif
++
+ int br_set_path_cost(const char *bridge, const char *port, int cost)
+ {
+ 	return port_set(bridge, port, "path_cost", cost, BRCTL_SET_PATH_COST);
+@@ -384,6 +609,9 @@
+ 	ent->port_no = f->port_no;
+ 	ent->is_local = f->is_local;
+ 	__jiffies_to_tv(&ent->ageing_timer_value, f->ageing_timer_value);
++#if defined(PLATFORM_BROADCOM) && defined(CONFIG_BCM_VLAN_AGGREGATION)
++    ent->vid = f->vid;
++#endif
+ }
+ 
+ int br_read_fdb(const char *bridge, struct fdb_entry *fdbs, 
+Index: bridge-utils-1.2/libbridge/libbridge.h
+===================================================================
+--- bridge-utils-1.2.orig/libbridge/libbridge.h	2006-09-09 13:30:31.000000000 +0800
++++ bridge-utils-1.2/libbridge/libbridge.h	2015-11-16 17:10:22.060999735 +0800
+@@ -56,6 +56,9 @@
+ 	u_int16_t port_no;
+ 	unsigned char is_local;
+ 	struct timeval ageing_timer_value;
++#if defined(PLATFORM_BROADCOM) && defined(CONFIG_BCM_VLAN_AGGREGATION)
++	u_int16_t vid;  
++#endif
+ };
+ 
+ struct port_info
+@@ -103,6 +106,24 @@
+ extern int br_set_bridge_priority(const char *br, int bridge_priority);
+ extern int br_set_port_priority(const char *br, const char *p, 
+ 				int port_priority);
++
++#if defined(PLATFORM_BROADCOM)
++extern int br_enable_port_snooping(const char *br, int enable);
++extern int br_enable_proxy_mode(const char *br, int enable);
++extern int br_igmp_enable_rate_limit(const char *br, int limit);
++extern int br_mld_enable_port_snooping(const char *br, int enable);
++extern int br_mld_enable_proxy_mode(const char *br, int enable);
++extern int br_igmp_enable_lan_to_lan_mcast(const char *br, int enable);
++extern int br_mld_enable_lan_to_lan_mcast(const char *br, int enable);
++extern int br_add_fdb(const char *bridge, const char *ifName,
++					const char *pMac);
++extern int br_del_fdb(const char *bridge, const char *ifName, 
++					const char *pMac);
++extern int br_del_dyn_fdb(const char *bridge, const char *ifName);
++
++extern int br_enable_uni_uni_ctrl(const char *br, int enable);
++#endif
++
+ extern int br_set_path_cost(const char *br, const char *p, 
+ 			    int path_cost);
+ extern int br_read_fdb(const char *br, struct fdb_entry *fdbs, 
+Index: bridge-utils-1.2/libbridge/Makefile.in
+===================================================================
+--- bridge-utils-1.2.orig/libbridge/Makefile.in	2006-09-09 13:30:31.000000000 +0800
++++ bridge-utils-1.2/libbridge/Makefile.in	2015-11-16 17:11:54.479665897 +0800
+@@ -5,7 +5,7 @@
+ RANLIB=@RANLIB@
+ 
+ CC=@CC@
+-CFLAGS = -Wall -g $(KERNEL_HEADERS)
++CFLAGS = -Wall -g $(KERNEL_HEADERS) @CFLAGS@
+ 
+ prefix=@prefix@
+ exec_prefix=@exec_prefix@

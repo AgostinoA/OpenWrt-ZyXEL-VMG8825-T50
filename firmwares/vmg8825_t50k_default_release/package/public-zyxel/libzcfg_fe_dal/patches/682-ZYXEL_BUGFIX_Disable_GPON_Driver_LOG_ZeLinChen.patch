@@ -1,0 +1,140 @@
+Index: libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_zlog_setting.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/maintenance/logsetting/zcfg_fe_dal_zlog_setting.c	2019-06-20 17:31:19.724017764 +0800
++++ libzcfg_fe_dal-1.0/maintenance/logsetting/zcfg_fe_dal_zlog_setting.c	2019-06-20 17:32:14.668914763 +0800
+@@ -16,10 +16,14 @@
+ #include "zcfg_fe_dal_common.h"
+ #include "zcfg_webgui_flag.h"
+ #include "zlog_api.h"
++#include <sys/stat.h>
+ 
+ dal_param_t ZLOG_SETTING_param[]=
+ {
+     {"Enable",                      dalType_boolean, 0, 0,  NULL},
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)
++    {"GPON_LOG_Enable",             dalType_boolean, 0, 0,  NULL},
++#endif
+     {"Severity",                    dalType_string,  0, 0,  NULL ,  "EMERG|ALERT|CRITICAL|ERROR|WARNING|NOTICE|INFO|DEBUG",  NULL},
+     {"Console",                     dalType_boolean, 0, 0,  NULL},
+     {"UsbFile",                     dalType_boolean, 0, 0,  NULL},
+@@ -291,7 +295,10 @@
+     objIndex_t      logSettingIid;
+     objIndex_t      categoryIid;
+     bool            enable;
+-
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)
++    bool            Gpon_enable;
++    struct          stat Stat;
++#endif
+     if (Jobj == NULL)
+     {
+         ZLOG_ERROR("Jobj == NULL");
+@@ -301,7 +308,7 @@
+     /*--for set dal cmd ---*/
+     if (json_object_get_type(Jobj) == json_type_object)
+     {
+-        if (!json_object_object_get(Jobj, "Enable") && !json_object_object_get(Jobj, "Index"))
++        if (!json_object_object_get(Jobj, "Enable") && !json_object_object_get(Jobj, "Index") && !json_object_object_get(Jobj, "GPON_LOG_Enable"))
+         {
+             if (replyMsg)
+             {
+@@ -370,7 +377,26 @@
+             zcfgFeJsonObjFree(logSettingJobj);
+             return ZCFG_INTERNAL_ERROR;
+         }
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)   
++        Gpon_enable = json_object_get_boolean(json_object_object_get(Jobj, "GPON_LOG_Enable"));
+ 
++        if (Gpon_enable)
++        {
++            if (stat("/data/ext/gpon_driver_log", &Stat) != 0)
++            {
++                system("mkdir /data/ext");
++                system("touch /data/gpon_driver_log");
++                system("mv /data/gpon_driver_log /data/ext/");
++            }
++        }
++        else
++        {
++            if (stat("/data/ext/gpon_driver_log", &Stat) == 0)
++            {
++                system("rm /data/ext/gpon_driver_log");
++            }
++        }
++#endif
+         zcfgFeJsonObjFree(logSettingJobj);
+         return ZCFG_SUCCESS;
+     }//if
+@@ -404,6 +430,26 @@
+         zcfgFeJsonObjFree(logSettingJobj);
+         return ZCFG_INTERNAL_ERROR;
+     }
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)
++    Gpon_enable = json_object_get_boolean(json_object_object_get(obj, "GPON_LOG_Enable"));
++
++    if (Gpon_enable)
++    {
++        if (stat("/data/ext/gpon_driver_log", &Stat) != 0)
++        {
++            system("mkdir /data/ext");
++            system("touch /data/gpon_driver_log");
++            system("mv /data/gpon_driver_log /data/ext/");
++        }
++    }
++    else
++    {
++        if (stat("/data/ext/gpon_driver_log", &Stat) == 0)
++        {
++            system("rm -r /data/ext/");
++        }
++    }
++#endif
+     zcfgFeJsonObjFree(logSettingJobj);
+     return ZCFG_SUCCESS;
+ }
+@@ -494,6 +540,9 @@
+     struct json_object *config          = NULL;
+     objIndex_t          LogIid          = {0};
+     objIndex_t          CategoryIid     = {0};
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)
++    struct stat         Stat;
++#endif
+ 
+     if (Jobj == NULL)
+     {
+@@ -514,7 +563,16 @@
+         ZLOG_ERROR("Fail to Get RDM_OID_ZLOG_CONFIG");
+         return ZCFG_INTERNAL_ERROR;
+     }
+-
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)
++    if (stat("/data/ext/gpon_driver_log", &Stat) == 0)
++    {
++        json_object_object_add(LogJobj, "GPON_LOG_Enable", json_object_new_boolean(true));
++    }
++    else
++    {
++        json_object_object_add(LogJobj, "GPON_LOG_Enable", json_object_new_boolean(false));
++    }
++#endif
+     json_object_array_add(Jarray, LogJobj);
+ 
+     IID_INIT(CategoryIid);
+@@ -534,6 +592,7 @@
+         json_object_array_add(Jarray, config);
+ 		zcfgFeJsonObjFree(categoryJobj);
+     }
++
+     return ZCFG_SUCCESS;
+ }
+ 
+@@ -576,6 +635,9 @@
+     printf("Zlog Setting \n");
+     printf("%-2s %-20s %-10s \n", "", "Syslog Logging:", json_object_get_string(json_object_object_get(obj, "Enable")));
+     printf("%-2s %-20s %-10s \n", "", "Status:", json_object_get_string(json_object_object_get(obj, "Status")));
++#if defined(MOS_SUPPORT) && (BROADCOM_PLATFORM)
++    printf("%-2s %-20s %-10s \n", "", "GPON_LOG_Enable:", json_object_get_string(json_object_object_get(obj, "GPON_LOG_Enable")));
++#endif
+     printf("\n");
+ 
+     /*-------------------------------

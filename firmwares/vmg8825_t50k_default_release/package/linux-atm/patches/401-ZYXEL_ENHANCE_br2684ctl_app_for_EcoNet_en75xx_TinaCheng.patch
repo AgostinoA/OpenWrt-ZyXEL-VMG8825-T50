@@ -1,0 +1,348 @@
+Index: linux-atm-2.5.2/src/br2684/br2684ctl.c
+===================================================================
+--- linux-atm-2.5.2.orig/src/br2684/br2684ctl.c	2008-01-01 08:14:49.000000000 +0800
++++ linux-atm-2.5.2/src/br2684/br2684ctl.c	2016-09-06 15:49:43.249887974 +0800
+@@ -14,6 +14,13 @@
+ #warning "Kernel missing routed support for br2684"
+ #define BR2684_FLAG_ROUTED    (1<<16) /* payload is routed, not bridged */
+ #endif
++#ifdef ECONET_PLATFORM
++#ifdef TCSUPPORT_FON_V2_MODEL_D_OTE
++#include "pidfile.h"
++#include <fcntl.h>
++#endif
++#define fetch __atmlib_fetch
++#endif
+ 
+ /* Written by Marcell GAL <cell@sch.bme.hu> to make use of the */
+ /* ioctls defined in the br2684... kernel patch */
+@@ -39,6 +46,12 @@
+   int payload;
+   char *astr; /* temporary */
+   struct atm_qos reqqos;
++#ifdef ECONET_PLATFORM
++  int qos_type;
++  int pcr;
++  int scr;
++  int mbs;
++#endif
+ };
+ 
+ 
+@@ -118,11 +131,42 @@
+   return 0;
+ }
+ 
++#ifdef ECONET_PLATFORM
++int get_type(const char *type)
++{
++  int result;
++  int item;
++
++  item = fetch(&type,"!none","ubr","cbr","rt-vbr", "nrt-vbr", NULL);
++  switch (item) {
++    case 1: /* ATM_UBR */
++      break;
++    case 2: /* ATM_CBR */
++      break;
++    case 3: /* ATM_VBR */
++      break;
++    case 4:
++	return ATM_nrtVBR;
++    default:
++      return ATM_UBR;
++  }
++
++  return result=item;
++}
++#endif
+ 
++#ifdef ECONET_PLATFORM
++int assign_vcc(char *astr, int encap, int payload,int bufsize,struct atm_qos qos,
++               int qos_type, int pcr, int scr, int mbs)
++#else
+ int assign_vcc(char *astr, int encap, int payload,
+                int bufsize, struct atm_qos qos)
++#endif
+ {
+     int err;
++#ifdef ECONET_PLATFORM
++	int errno;
++#endif
+     struct sockaddr_atmpvc addr;
+     int fd;
+     struct atm_backend_br2684 be;
+@@ -141,14 +185,30 @@
+     if ((fd = socket(PF_ATMPVC, SOCK_DGRAM, ATM_AAL5)) < 0)
+       syslog(LOG_ERR,"failed to create socket %d, reason: %s", 
+ 	     errno,strerror(errno));
+-    
++
++#ifdef ECONET_PLATFORM
++	memset(&qos, 0, sizeof(qos));
++#endif
+     if (qos.aal == 0) {
+       qos.aal                     = ATM_AAL5;
++#ifdef ECONET_PLATFORM
++      qos.txtp.traffic_class      = qos_type;
++#else
+       qos.txtp.traffic_class      = ATM_UBR;
++#endif
+       qos.txtp.max_sdu            = 1524;
++#ifdef ECONET_PLATFORM
++      qos.txtp.pcr                = pcr;
++      qos.txtp.scr                = scr;
++      qos.txtp.mbs                = mbs;
++#else
+       qos.txtp.pcr                = ATM_MAX_PCR;
++#endif
+       qos.rxtp = qos.txtp;
+     }
++#ifdef ECONET_PLATFORM
++	fprintf(stderr, "qos.txtp.traffic_class = %d\n", qos.txtp.traffic_class);
++#endif
+ 
+     if ( (err=setsockopt(fd,SOL_SOCKET,SO_SNDBUF, &bufsize ,sizeof(bufsize))) )
+       syslog(LOG_ERR,"setsockopt SO_SNDBUF: (%d) %s",err, strerror(err));
+@@ -159,8 +219,12 @@
+     err = connect(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_atmpvc));
+     
+     if (err < 0)
++#ifdef ECONET_PLATFORM
++      fatal("failed to connect on socket", err);
++#else
+       fatal("failed to connect on socket", errno);
+-    
++#endif
++
+     /* attach the vcc to device: */
+     
+     be.backend_num = ATM_BACKEND_BR2684;
+@@ -191,19 +255,48 @@
+   }
+ 
+   create_br(params->itfnum, params->payload);
++#ifdef ECONET_PLATFORM
++  assign_vcc(params->astr, params->encap, params->payload, params->sndbuf,
++	     params->reqqos, params->qos_type, params->pcr, params->scr, params->mbs);
++#else
+   assign_vcc(params->astr, params->encap, params->payload, params->sndbuf,
+ 	     params->reqqos);
++#endif
+ }
+ 
+ 
+ void usage(char *s)
+ {
++#ifdef ECONET_PLATFORM
++  printf("usage: %s [-b] [[-c number] [-e 0|1|2|3] [-t ubr|cbr|vbr] [-p pcr] [-q scr] [-m mbs] [-a [itf.]vpi.vci]*]*\n", s);
++  printf("  -e 0 = Bridged LLC encapsulation\n");
++  printf("  -e 1 = Bridged VC-Mux encapsulation\n");
++  printf("  -e 2 = Routed LLC encapsulation\n");
++  printf("  -e 3 = Routed VC-Mux encapsulation\n\n");
++#else
+   printf("usage: %s [-b] [[-c number] [-e 0|1] [-s sndbuf] [-q qos] [-p 0|1] "
+ 	 "[-a [itf.]vpi.vci]*]*\n", s);
+   printf("  encapsulations: 0=llc, 1=vcmux\n  payloads: 0=routed, 1=bridged\n");
++#endif
+   exit(1);
+ }
+ 
++#ifdef ECONET_PLATFORM
++#ifdef TCSUPPORT_FON_V2_MODEL_D_OTE
++void log_pid(int ifnum)
++{
++	int pid_fd;
++	char pidFile[32];
++
++	sprintf(pidFile, "/var/run/nas%d.pid", ifnum);
++
++	/* do some other misc startup stuff while we are here to save bytes */
++	pid_fd = pidfile_acquire(pidFile);
++	pidfile_write_release(pid_fd);
++	return;
++}
++#endif
++#endif
+ 
+ 
+ int main (int argc, char **argv)
+@@ -217,6 +310,12 @@
+   params.payload=1;
+   params.astr=NULL;
+   memset(&params.reqqos, 0, sizeof(params.reqqos));
++#ifdef ECONET_PLATFORM
++  params.qos_type=ATM_UBR;
++  params.pcr=0;
++  params.scr=0;
++  params.mbs=0;
++#endif
+   
+   lastsock=-1;
+   lastitf=0;
+@@ -225,9 +324,16 @@
+ 
+   openlog (LOG_NAME,LOG_OPTION,LOG_FACILITY);
+   if (argc>1)
++#ifdef ECONET_PLATFORM
++    while ((c = getopt(argc, argv,"q:a:bc:e:t:s:p:q:m:?h")) !=EOF)
++#else
+     while ((c = getopt(argc, argv,"q:a:bc:e:s:p:?h")) !=EOF)
++#endif
+       switch (c) {
+       case 'q':
++#ifdef ECONET_PLATFORM
++	params.scr=(atoi(optarg));
++#endif
+ 	printf ("optarg : %s",optarg);
+ 	if (text2qos(optarg,&params.reqqos,0))
+ 	  fprintf(stderr,"QOS parameter invalid\n");
+@@ -248,8 +354,21 @@
+ 	if(params.encap<0){
+ 	  syslog (LOG_ERR, "invalid encapsulation: %s:",optarg);
+ 	  params.encap=0;
++#ifdef ECONET_PLATFORM
++	} else if(params.encap >= 2) {
++	  params.encap -= 2;
++	  params.payload = 0;
++#endif
+ 	}
+ 	break;
++#ifdef ECONET_PLATFORM
++      case 't':
++	params.qos_type=get_type(optarg);
++	break;
++      case 'm':
++	params.mbs=(atoi(optarg));
++	break;
++#endif
+       case 's':
+ 	params.sndbuf=(atoi(optarg));
+ 	if(params.sndbuf<0){
+@@ -259,12 +378,18 @@
+ 	}
+ 	break;
+       case 'p':	/* payload type: routed (0) or bridged (1) */
++#ifdef ECONET_PLATFORM
++	/* EcoNet's payload has been set up by '-e' parameter */
++	params.pcr=(atoi(optarg));
++	break;
++#else
+ #ifdef BR2684_FLAG_ROUTED
+ 	params.payload = atoi(optarg);
+ 	break;
+ #else
+ 	syslog(LOG_ERR, "payload option not supported.");
+ #endif
++#endif
+       case '?':
+       case 'h':
+       default:
+@@ -275,6 +400,11 @@
+ 
+   if (argc != optind) usage(argv[0]);
+   
++#ifdef ECONET_PLATFORM
++#ifdef TCSUPPORT_FON_V2_MODEL_D_OTE
++  log_pid(params.itfnum);
++#endif
++#endif
+   start_interface(&params);  
+ 
+   if(lastsock>=0) close(lastsock);
+Index: linux-atm-2.5.2/src/br2684/pidfile.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-atm-2.5.2/src/br2684/pidfile.c	2016-09-06 15:38:53.782457868 +0800
+@@ -0,0 +1,62 @@
++/* pidfile.c
++ *
++ * Functions to assist in the writing and removing of pidfiles.
++ *
++ * Russ Dill <Russ.Dill@asu.edu> September 2001
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ */
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "pidfile.h"
++
++#include <syslog.h>
++
++
++int pidfile_acquire(const char *pidfile)
++{
++	int pid_fd;
++	if (!pidfile) return -1;
++
++	pid_fd = open(pidfile, O_CREAT | O_WRONLY, 0644);
++	if (pid_fd < 0) {
++		syslog(LOG_ERR, "Unable to open pidfile %s: %m\n", pidfile);
++	} else {
++		lockf(pid_fd, F_LOCK, 0);
++	}
++
++	return pid_fd;
++}
++
++void pidfile_write_release(int pid_fd)
++{
++	FILE *out;
++
++	if (pid_fd < 0) return;
++
++	if ((out = fdopen(pid_fd, "w")) != NULL) {
++		//spaces between %d and \n are for bug#10889
++		fprintf(out, "%d        \n", getpid());
++		fclose(out);
++	}
++	lockf(pid_fd, F_UNLCK, 0);
++	close(pid_fd);
++}
+Index: linux-atm-2.5.2/src/br2684/pidfile.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-atm-2.5.2/src/br2684/pidfile.h	2016-09-06 15:38:53.782457868 +0800
+@@ -0,0 +1,24 @@
++/* pidfile.h
++ *
++ * Functions to assist in the writing and removing of pidfiles.
++ *
++ * Russ Dill <Russ.Dill@asu.edu> September 2001
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ */
++
++
++int pidfile_acquire(const char *pidfile);
++void pidfile_write_release(int pid_fd);

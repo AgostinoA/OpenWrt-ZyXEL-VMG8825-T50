@@ -1,0 +1,142 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2018-01-09 17:33:31.562066106 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2018-01-09 17:39:11.121465593 +0800
+@@ -117,11 +117,11 @@
+  *           Jarray.i.X_ZYXEL_MainSSID : true|false
+  */
+ zcfgRet_t getWifiInfo(struct json_object **Jarray){
+-	objIndex_t iid;	
++	objIndex_t iid, secIid;	
+ 	struct json_object *ethIfaceObj = NULL;
+ 	struct json_object *Jobj = NULL;
+ 	struct json_object *wifiRadioJarray, *wifiRadioObj, *wifiRadioStObj, *wifiSsidJarray, *wifiSsidObj;
+-	struct json_object *wifiApJarray, *wifiApObj, *wifiApSecObj, *wifiApWpsObj;
++	struct json_object *wifiApJarray, *wifiApObj, *wifiApSecObj, *wifiApWpsObj, *wifiSecObj;
+ 	char intfPath[64] = {0}, brPortPath[64] = {0};
+ 	const char *LowerLayers, *X_ZYXEL_LanPort, *SSID, *SSIDReference;
+ 	unsigned char idx;
+@@ -143,6 +143,14 @@
+ 
+ 	len = json_object_array_length(wifiApJarray);
+ 	for(i=0;i<len;i++){
++		Jobj = json_object_new_object();
++		secIid.level = 1;
++		secIid.idx[0] = i + 1;
++		if(zcfgFeObjJsonGet(RDM_OID_WIFI_ACCESS_POINT_SEC, &secIid, &wifiSecObj) == ZCFG_SUCCESS){
++			json_object_object_add(Jobj, "wifiPassword", JSON_OBJ_COPY(json_object_object_get(wifiSecObj, "KeyPassphrase")));
++			zcfgFeJsonObjFree(wifiSecObj);
++		}
++		
+ 		wifiApObj = json_object_array_get_idx(wifiApJarray, i);
+ 		wifiApSecObj = Jget(wifiApObj, "Security");
+ 		wifiApWpsObj = Jget(wifiApObj, "WPS");
+@@ -163,7 +171,7 @@
+ 			BrPortPath = "";
+ #endif
+ 		
+-		Jobj = json_object_new_object();
++		//Jobj = json_object_new_object();
+ 		json_object_object_add(Jobj, "SSID", json_object_new_string(SSID));
+ 		//json_object_object_add(Jobj, "BrPortPath", json_object_new_string(BrPortPath));
+ 		json_object_object_add(Jobj, "IntfPath", json_object_new_string(intfPath));
+@@ -691,6 +699,58 @@
+ 
+ }
+ 
++zcfgRet_t zcfgFeDalCardPageStatusGet(struct json_object *Jobj, struct json_object *Jarray, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *statusJobj = NULL;
++	struct json_object *devInfoObj = NULL;
++	struct json_object *ethIfaceJarray = NULL, *ethIfaceObj = NULL;
++	struct json_object *ssidJarray = NULL;
++	struct json_object *dhcpv4SerObj = NULL;
++	struct json_object *partctlObj = NULL;
++	objIndex_t iid;
++	int count = 0;
++	
++	IID_INIT(iid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DEV_INFO, &iid, &devInfoObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalCardPageStatusGetFail;
++
++	ethIfaceJarray = json_object_new_array();
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_ETH_IFACE, &iid, &ethIfaceObj) == ZCFG_SUCCESS) {
++		json_object_array_add(ethIfaceJarray, ethIfaceObj);
++	}
++
++	IID_INIT(iid);
++	iid.level = 1;
++	iid.idx[0] = 1;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV4_SRV_POOL, &iid, &dhcpv4SerObj)) != ZCFG_SUCCESS)
++		goto zcfgFeDalCardPageStatusGetFail;
++
++	IID_INIT(iid);
++	while(zcfgFeObjJsonGetNext(RDM_OID_PAREN_CTL_PROF, &iid, &partctlObj) == ZCFG_SUCCESS){
++		count++;
++		zcfgFeJsonObjFree(partctlObj);		
++	}
++	getWifiInfo(&ssidJarray);
++	statusJobj = json_object_new_object();
++	json_object_array_add(Jarray, statusJobj);
++	json_object_object_add(statusJobj, "DeviceInfo", devInfoObj);
++	json_object_object_add(statusJobj, "LanPortInfo", ethIfaceJarray);
++	json_object_object_add(statusJobj, "WiFiInfo", ssidJarray);
++	json_object_object_add(statusJobj, "Dhcp4SerPoolInfo", dhcpv4SerObj);
++	Jaddi(statusJobj,"partctlNum",count);
++	
++	//printf("%s %s %d \n",json_object_to_json_string(Jarray),__func__,__LINE__);
++
++	return ZCFG_SUCCESS;
++	
++zcfgFeDalCardPageStatusGetFail:	
++	json_object_put(devInfoObj);
++	json_object_put(dhcpv4SerObj);
++
++	return ret;
++}
+ 
+ void zcfgFeDalShowNetworkMAP(struct json_object *Jarray){
+ 	int i, len = 0, len1 = 0;
+@@ -1112,6 +1172,20 @@
+ 	}
+ 
+ 	return ret;
++}
++
++zcfgRet_t zcfgFeDalCardPageStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray,char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "GET")){
++		ret = zcfgFeDalCardPageStatusGet(Jobj, Jarray, NULL);
++	}
++
++	return ret;
+ }
+ 
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-01-09 17:33:31.310066105 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-01-09 17:36:26.993114658 +0800
+@@ -186,6 +186,7 @@
+ extern zcfgRet_t zcfgFeDalUserAccount(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNetworkMAP(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
++extern zcfgRet_t zcfgFeDalCardPageStatus(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ //#ifdef CBT_CUSTOMIZATION // 20170711 Max Add
+ #ifdef ZYXEL_WEB_WIRELESS_NEW_VERSION_ONE
+ extern zcfgRet_t zcfgFeDalCbtWifi(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -341,6 +342,7 @@
+ {"user_account",	USER_ACCOUNT_param, zcfgFeDalUserAccount,	zcfgFeDalShowUserAccount,	"get|add|edit|delete",	"User_Account"}, //temporarily root_only //User_Account
+ {"lanhosts",		NETWORK_MAP_param, zcfgFeDalNetworkMAP,	zcfgFeDalShowNetworkMAP,		"get",				"Status"},
+ {"status",			NETWORK_MAP_param, zcfgFeDalStatus, 		NULL,						"",					""}, //temporarily GUI only
++{"cardpage_status", NETWORK_MAP_param, zcfgFeDalCardPageStatus, NULL,						"", 				""}, //temporarily cardpage only
+ //#ifdef CBT_CUSTOMIZATION // 20170711 Max Add
+ #ifdef ZYXEL_WEB_WIRELESS_NEW_VERSION_ONE
+ {"WIFI_CBT",		WIFI_CBT_param,		zcfgFeDalCbtWifi,		NULL,		"edit",		""},

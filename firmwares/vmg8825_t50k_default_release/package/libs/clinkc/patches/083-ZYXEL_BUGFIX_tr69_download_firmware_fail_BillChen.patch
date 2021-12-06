@@ -1,0 +1,101 @@
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2016-12-15 11:11:07.926720795 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2016-12-15 11:12:50.962022757 +0800
+@@ -55,6 +55,7 @@
+ #include <cybergarage/net/cinterface.h>
+ 
+ #include <limits.h>
++#include <unistd.h>
+ 
+ #define READBUF_LENGTH 4096
+ 
+@@ -780,38 +781,78 @@
+ 	return (size*1024);
+ }
+ 
+-void removeDaemonsWLModule(BOOL wifiHost)
++#define ISFROMWIFI 1
++#define ISFROMLAN 2
++#define ISFROMWAN 0
++
++void removeDaemonsWLModule(int clientSrc)
+ {
+ 	int i;
+ 	char cmd[64];
+ 
+ 	printf("killall processes to release memory\n");
+ 	bRemoveDaemonsWirelessModule = TRUE;
+-	system("killall -q smbd zupnp snmpd ramonitor zhotplugd wwanbackupd vcautohunt syslog-ng zybtnchk dropbear ztzu zebra bcmmserver acsd wps_monitor zstun ntpclient ntfs-3g mcpd telnetd pure-ftpd tty_log_echo lld2d eapd nas crond");
++	system("killall -q proftpd swmdk smbd zupnp.sh snmpd ramonitor zhotplugd wwanbackupd vcautohunt syslog-ng zybtnchk dropbear ztzu zebra bcmmserver acsd wps_monitor zstun ntpclient ntfs-3g mcpd telnetd pure-ftpd tty_log_echo lld2d eapd nas crond");
+ 	system("echo 1 > /proc/sys/vm/drop_caches");
+ 
++	if(clientSrc == ISFROMWIFI){
++		system("ethctl eth0 phy-power down");
++		system("ethctl eth1 phy-power down");
++		system("ethctl eth2 phy-power down");
++		system("ethctl eth3 phy-power down");
++		sleep(2);
++		system("adsl stop");
++		sleep(3);
++	}
++	else if(clientSrc == ISFROMLAN){
++		if(access("/proc/sys/net/ipv4/conf/eth3.0/", F_OK) != 0) {
++			printf("eth3 is WAN port\n");
++			system("ethctl eth3 phy-power down");
++			sleep(2);
++		}
++		system("adsl stop");
++		sleep(3);
+ #ifdef ZYPRJ_VMG1312
+-	if (wifiHost == FALSE) {
+ 		sprintf(cmd, "/tmp/shutDownWifi.sh\n");
+ 		system(cmd);
++#endif
+ 	}
++	else{//From WAN
++		if(access("/proc/sys/net/ipv4/conf/eth3.0/", F_OK) == 0) {
++			printf("eth3 is Lan port\n");
++			system("ethctl eth3 phy-power down");
++		}
++		system("ethctl eth0 phy-power down");
++		system("ethctl eth1 phy-power down");
++		system("ethctl eth2 phy-power down");
++#ifdef ZYPRJ_VMG1312
++		sprintf(cmd, "/tmp/shutDownWifi.sh\n");
++		system(cmd);
+ #endif
++	}
+ }
+ 
+-static BOOL ipComeFromWiFi(char *remoteIP)
++static int ipComeFromWiFi(char *remoteIP)
+ {
+ 	char cmd[256] = {0};
++	FILE *fp = NULL;
++	char *lst = calloc(16, sizeof(char));
+ 	int ret;
+ 
+ 	sprintf(cmd, "/tmp/searchIPFromWiFi.sh  %s\n", remoteIP);
++	system(cmd);
+ 
+-	ret = system(cmd);
+-	if (ret) {
+-		printf("%s comes from wifi (%d)\n",  remoteIP, ret);
+-			return TRUE;
++	fp = fopen("/tmp/result", "r");
++	if(fp != NULL){
++		while((fgets(lst, 16, fp)) != NULL) {
++			sscanf(lst, "%d", &ret);
+ 		}
+-	printf("%s does not come from wifi (%d)\n", remoteIP, ret);
+-	return FALSE;
++
++		fclose(fp);
++	}
++	free(lst);
++
++	return ret;
+ }
+ 
+ static int memory_check(int buflen, char *remoteIP){

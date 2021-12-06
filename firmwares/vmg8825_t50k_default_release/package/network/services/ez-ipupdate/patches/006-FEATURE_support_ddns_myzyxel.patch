@@ -1,0 +1,956 @@
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2014-10-23 09:32:29.280710241 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2014-10-23 09:42:11.963205709 +0800
+@@ -38,6 +38,21 @@
+ #  include <config.h>
+ #endif
+ 
++#include "md5.h"
++#include <time.h>
++
++#define PRESTIGE_PASSWORD_LEN 32
++void md5str(char *pass, char *PasswordMD5);
++
++char GnuDIPsalt[15] = {0};
++char GnuDIPtime[15] = {0};
++char GnuDIPsign[35] = {0};
++
++/*for log*/
++char success[1]={0};
++char address_log[17]="0.0.0.0";
++
++
+ // you man very well need to edit this, don't worry though, email is only sent
+ // if bad things happend and it has to exit when in daemon mode.
+ #define SEND_EMAIL_CMD "mail"
+@@ -74,6 +89,10 @@
+ #define GNUDIP_DEFAULT_PORT "3495"
+ #define GNUDIP_REQUEST "0"
+ 
++#define MYZYXEL_DEFAULT_SERVER "ns1.myzyxel.in.th"
++#define MYZYXEL_DEFAULT_PORT "80"
++#define MYZYXEL_REQUEST "0"
++
+ #define EASYDNS_DEFAULT_SERVER "members.easydns.com"
+ #define EASYDNS_DEFAULT_PORT "80"
+ #define EASYDNS_REQUEST "/dyn/ez-ipupdate.php"
+@@ -331,6 +350,11 @@
+ int GNUDIP_update_entry(void);
+ int GNUDIP_check_info(void);
+ static char *GNUDIP_fields_used[] = { "server", "user", "host", "address", NULL };
++
++int MYZYXEL_update_entry(void);
++int MYZYXEL_check_info(void);
++void MYZYXEL_UP();
++
+ #endif
+ 
+ int JUSTL_update_entry(void);
+@@ -484,6 +508,16 @@
+     GNUDIP_DEFAULT_PORT,
+     GNUDIP_REQUEST
+   },
++  { "myzyxel",
++    { "myzyxel", 0, 0, },
++    NULL,
++    MYZYXEL_update_entry,
++    MYZYXEL_check_info,
++    GNUDIP_fields_used,
++    MYZYXEL_DEFAULT_SERVER,
++    MYZYXEL_DEFAULT_PORT,
++    MYZYXEL_REQUEST
++  },
+ #endif
+   { "justlinux v2.0 (penguinpowered)",
+     { "justlinux", 0, 0, },
+@@ -1647,6 +1681,211 @@
+   return(bread);
+ }
+ 
++void DDNS_StatusLog(){
++  FILE *fp, *fplog;
++  time_t rawtime;
++  struct tm * timeinfo;
++
++  time(&rawtime);
++  timeinfo = localtime ( &rawtime );
++  if ((fp = fopen("/var/log/ddns_status.log", "w+")) != NULL ) /* Support DDNS status page, __MSTC__ */
++  {
++    if (success[0]=='0'){
++        printf("\nStart DDNS_StatusLog\n");
++        fprintf(fp,"%s",address_log);/*updated address*/
++        fprintf(fp,"/Accepted"); /*updated is success.*/
++        fprintf(fp,"/%s",asctime (timeinfo) );
++
++        if ((fplog = fopen("/var/log/ddns_status_time.log", "w+")) != NULL )
++        {
++            fprintf(fplog,"%s",asctime (timeinfo));
++            fclose(fplog);
++        }
++        fprintf(stderr,"save the DDNS status _time_ in ddns_status_time.log\n");
++    }
++    else{
++        fprintf(stderr, "Can not get IP Address in DDNS_StatusLog\n");
++        fprintf(fp,"%s",address_log);
++        fprintf(fp,"/Not Accepted"); /*updated is fail.*/
++        fprintf(fp,"/%s",asctime (timeinfo) );
++    }
++  }
++  else{
++    printf("Can't open ddns_status.log\n");
++  }
++  fclose(fp);
++}
++
++uint8 ZyXELParseHttpResponse( uint8 * bufferPtr, sint31 bufferSize )
++{
++  uint8 * startPtr = NULL;
++  uint16  responseLen = 0;
++  uint8 responseCode = 0;
++
++  startPtr = strstr(bufferPtr, "salt");
++  if(startPtr){
++    startPtr += 15;
++    strncpy(GnuDIPsalt, startPtr, 10);
++  }
++
++  startPtr = strstr(startPtr, "time");
++  if(startPtr){
++    startPtr += 15;
++    strncpy(GnuDIPtime, startPtr, 10);
++  }
++
++  startPtr = strstr(startPtr, "sign");
++  if(startPtr){
++    startPtr += 15;
++    strncpy(GnuDIPsign, startPtr, 32);
++  }
++  return 0;
++}
++
++char *innerText(char *inner, char *pText, char *beginMark, char *node, char *endMark) {
++
++    char *beginNode, *beginEnd;
++    char *beginStart = strstr(pText, beginMark);
++
++    if (beginStart == NULL)
++        return NULL;
++
++    if(node != NULL){
++        beginNode = strstr(beginStart, node);
++        beginEnd = beginNode + strlen(node);
++    }else{
++        beginEnd = beginStart + strlen(beginMark);
++    }
++
++    if (beginEnd == NULL)
++        return NULL;
++
++    char *endStart = strstr(beginEnd, endMark);
++
++    if (endStart < 0)
++        return NULL;
++    int len = endStart-beginEnd;
++    strncpy(inner, beginEnd, len);
++    inner[len] = '\0';
++
++}
++
++uint8 httppasreoforsuccess(uint8 * bufferPtr, sint31 bufferSize){
++
++    innerText(success, bufferPtr, "retc", "content=\"", "\"");
++    innerText(address_log, bufferPtr, "addr", "content=\"", "\"");
++
++    address_log[16]='\0';
++    return 0;
++}
++
++void md5str(char *pass, char *PasswordMD5)
++{
++  MD5_CTX_ezipupdate context;
++  int i;
++  char rootPasswordMD5[PRESTIGE_PASSWORD_LEN + 1];
++  uint8 src[PRESTIGE_PASSWORD_LEN+1];
++  uint8 dest[PRESTIGE_PASSWORD_LEN + 1];
++  uint8 src2[PRESTIGE_PASSWORD_LEN+12];
++  uint8 dest2[PRESTIGE_PASSWORD_LEN + 12];
++
++  strncpy((char*)src, pass, PRESTIGE_PASSWORD_LEN);
++  MD5Init_ezipupdate(&context);
++  MD5Update_ezipupdate(&context, src, strlen((char*)src));
++  MD5Final_ezipupdate(&context,dest);
++  //MD5Final(dest ,&context);
++
++  for(i = 0; i < 16; i++){
++    switch((*(dest + i)) / 16){
++      case 0: rootPasswordMD5[i * 2] = '0';break;
++      case 1: rootPasswordMD5[i * 2] = '1';break;
++      case 2: rootPasswordMD5[i * 2] = '2';break;
++      case 3: rootPasswordMD5[i * 2] = '3';break;
++      case 4: rootPasswordMD5[i * 2] = '4';break;
++      case 5: rootPasswordMD5[i * 2] = '5';break;
++      case 6: rootPasswordMD5[i * 2] = '6';break;
++      case 7: rootPasswordMD5[i * 2] = '7';break;
++      case 8: rootPasswordMD5[i * 2] = '8';break;
++      case 9: rootPasswordMD5[i * 2] = '9';break;
++      case 10: rootPasswordMD5[i * 2] = 'a';break;
++      case 11: rootPasswordMD5[i * 2] = 'b';break;
++      case 12: rootPasswordMD5[i * 2] = 'c';break;
++      case 13: rootPasswordMD5[i * 2] = 'd';break;
++      case 14: rootPasswordMD5[i * 2] = 'e';break;
++      case 15: rootPasswordMD5[i * 2] = 'f';break;
++    }
++    switch((*(dest + i)) % 16){
++      case 0: rootPasswordMD5[i * 2  + 1] = '0';break;
++      case 1: rootPasswordMD5[i * 2  + 1] = '1';break;
++      case 2: rootPasswordMD5[i * 2  + 1] = '2';break;
++      case 3: rootPasswordMD5[i * 2  + 1] = '3';break;
++      case 4: rootPasswordMD5[i * 2  + 1] = '4';break;
++      case 5: rootPasswordMD5[i * 2  + 1] = '5';break;
++      case 6: rootPasswordMD5[i * 2  + 1] = '6';break;
++      case 7: rootPasswordMD5[i * 2  + 1] = '7';break;
++      case 8: rootPasswordMD5[i * 2  + 1] = '8';break;
++      case 9: rootPasswordMD5[i * 2  + 1] = '9';break;
++      case 10: rootPasswordMD5[i * 2  + 1] = 'a';break;
++      case 11: rootPasswordMD5[i * 2  + 1] = 'b';break;
++      case 12: rootPasswordMD5[i * 2  + 1] = 'c';break;
++      case 13: rootPasswordMD5[i * 2  + 1] = 'd';break;
++      case 14: rootPasswordMD5[i * 2  + 1] = 'e';break;
++      case 15: rootPasswordMD5[i * 2  + 1] = 'f';break;
++    }
++  }
++  rootPasswordMD5[PRESTIGE_PASSWORD_LEN] = '\0';
++  printf("\nrootPasswordMD5=%s\n",rootPasswordMD5);
++
++  sprintf((char*)src2, "%s.%s", rootPasswordMD5, GnuDIPsalt);
++
++  MD5Init_ezipupdate(&context);
++  MD5Update_ezipupdate(&context, src2, strlen((char*)src2));
++  MD5Final_ezipupdate(&context,dest2);
++
++  for(i = 0; i < 16; i++){
++    switch((*(dest2 + i)) / 16){
++      case 0: PasswordMD5[i * 2] = '0';break;
++      case 1: PasswordMD5[i * 2] = '1';break;
++      case 2: PasswordMD5[i * 2] = '2';break;
++      case 3: PasswordMD5[i * 2] = '3';break;
++      case 4: PasswordMD5[i * 2] = '4';break;
++      case 5: PasswordMD5[i * 2] = '5';break;
++      case 6: PasswordMD5[i * 2] = '6';break;
++      case 7: PasswordMD5[i * 2] = '7';break;
++      case 8: PasswordMD5[i * 2] = '8';break;
++      case 9: PasswordMD5[i * 2] = '9';break;
++      case 10: PasswordMD5[i * 2] = 'a';break;
++      case 11: PasswordMD5[i * 2] = 'b';break;
++      case 12: PasswordMD5[i * 2] = 'c';break;
++      case 13: PasswordMD5[i * 2] = 'd';break;
++      case 14: PasswordMD5[i * 2] = 'e';break;
++      case 15: PasswordMD5[i * 2] = 'f';break;
++    }
++
++    switch((*(dest2 + i)) % 16){
++      case 0: PasswordMD5[i * 2  + 1] = '0';break;
++      case 1: PasswordMD5[i * 2  + 1] = '1';break;
++      case 2: PasswordMD5[i * 2  + 1] = '2';break;
++      case 3: PasswordMD5[i * 2  + 1] = '3';break;
++      case 4: PasswordMD5[i * 2  + 1] = '4';break;
++      case 5: PasswordMD5[i * 2  + 1] = '5';break;
++      case 6: PasswordMD5[i * 2  + 1] = '6';break;
++      case 7: PasswordMD5[i * 2  + 1] = '7';break;
++      case 8: PasswordMD5[i * 2  + 1] = '8';break;
++      case 9: PasswordMD5[i * 2  + 1] = '9';break;
++      case 10: PasswordMD5[i * 2+ 1] = 'a';break;
++      case 11: PasswordMD5[i * 2+ 1] = 'b';break;
++      case 12: PasswordMD5[i * 2+ 1] = 'c';break;
++      case 13: PasswordMD5[i * 2+ 1] = 'd';break;
++      case 14: PasswordMD5[i * 2+ 1] = 'e';break;
++      case 15: PasswordMD5[i * 2+ 1] = 'f';break;
++    }
++  }
++  PasswordMD5[PRESTIGE_PASSWORD_LEN] = '\0';
++  printf("\nPasswordMD5=%s\n",PasswordMD5);
++      return;
++}
++
+ int get_if_addr(int sock, char *name, struct sockaddr_in *sin)
+ {
+ #ifdef IF_LOOKUP
+@@ -1933,6 +2172,7 @@
+ int DYNDNS_update_entry(void)
+ {
+   char buf[BUFFER_SIZE+1];
++  char *tmpbuf;
+   char *bp = buf;
+   int bytes;
+   int btot;
+@@ -1966,11 +2206,11 @@
+ 
+   snprintf(buf, BUFFER_SIZE, "%s=%s&", "hostname", host);
+   output(buf);
+-  if(address != NULL)
+-  {
+-    snprintf(buf, BUFFER_SIZE, "%s=%s&", "myip", address);
+-    output(buf);
+-  }
++//  if(address != NULL)
++//  {
++//    snprintf(buf, BUFFER_SIZE, "%s=%s&", "myip", address);
++//    output(buf);
++//  }
+   snprintf(buf, BUFFER_SIZE, "%s=%s&", "wildcard", wildcard ? "ON" : "OFF");
+   output(buf);
+   if(mx != NULL && *mx != '\0')
+@@ -2027,11 +2267,15 @@
+       break;
+ 
+     case 200:
+-      if(strstr(buf, "\ngood ") != NULL)
++      if((tmpbuf = strstr(buf, "\ngood ")) != NULL)
+       {
+         if(!(options & OPT_QUIET))
+         {
++          sscanf(tmpbuf, "\ngood %s", address_log);
++		 success[0]='0';
++          address_log[16]='\0';
+           printf("request successful\n");
++		 retval = UPDATERES_OK;
+         }
+       }
+       else
+@@ -2056,7 +2300,7 @@
+           show_message("host \"%s\" has been blocked for abuse\n", host);
+           retval = UPDATERES_SHUTDOWN;
+         }
+-        else if(strstr(buf, "\nnochg") != NULL)
++        else if((tmpbuf = strstr(buf, "\nnochg")) != NULL)
+         {
+           show_message("%s says that your IP address has not changed since the last update\n", server);
+           // lets say that this counts as a successful update
+@@ -2065,6 +2309,9 @@
+           {
+             last_update = time(NULL) - max_interval/2;
+           }
++          sscanf(tmpbuf, "\nnochg %s", address_log);
++		 success[0]='0';
++          address_log[16]='\0';
+           retval = UPDATERES_OK;
+         }
+         else if(strstr(buf, "\nbadauth") != NULL)
+@@ -2178,6 +2425,10 @@
+       retval = UPDATERES_ERROR;
+       break;
+   }
++  if(retval != UPDATERES_OK){
++	success[0]='1';
++  }
++  DDNS_StatusLog();
+ 
+   return(retval);
+ }
+@@ -3553,6 +3804,198 @@
+ 
+   return(UPDATERES_OK);
+ }
++
++int MYZYXEL_check_info(void)
++{
++    char buf[BUFSIZ+1];
++
++    if((server == NULL) || (*server == '\0'))
++    {
++        if(options & OPT_DAEMON){
++            return(-1);
++        }
++        if(server) { free(server); }
++        printf("server: ");
++        *buf = '\0';
++        fgets(buf, BUFSIZ, stdin);
++        server = strdup(buf);
++        chomp(server);
++        }
++
++    if((host == NULL) || (*host == '\0'))
++    {
++        if(options & OPT_DAEMON){
++            return(-1);
++        }
++        if(host) { free(host); }
++        printf("host: ");
++        *buf = '\0';
++        fgets(buf, BUFSIZ, stdin);
++        host = strdup(buf);
++        chomp(host);
++    }
++
++    if((address) && (strcmp(address, "0.0.0.0") != 0)){
++        if(!(options & OPT_QUIET)){
++            fprintf(stderr, "warning: for GNUDIP the \"address\" parpameter is only used if set to \"0.0.0.0\" thus making an offline request.\n");
++        }
++    }
++
++    warn_fields(service->fields_used);
++    return 0;
++}
++
++int MYZYXEL_update_entry(void)
++{
++    unsigned char digestbuf[MD5_DIGEST_BYTES];
++    char buf[BUFFER_SIZE+1];
++    char *p;
++    int bytes;
++    int ret;
++    int i;
++    char cmd[256];
++    FILE *fp;
++
++    char *domainname;
++    char gnudip_request[2];
++
++    // send an offline request if address 0.0.0.0 is used
++    // otherwise, we ignore the address and send an update request
++    gnudip_request[0] = strcmp(address, "0.0.0.0") == 0 ? '1' : '0';
++    gnudip_request[1] = '\0';
++
++    // find domainname
++    for(p=host; *p != '\0' && *p != '.'; p++);
++
++    if(*p != '\0') { p++; }
++    if(*p == '\0') {
++        return(UPDATERES_ERROR);
++    }
++    domainname = p;
++
++    if(do_connect((int*)&client_sockfd, server, port) != 0){
++        if(!(options & OPT_QUIET)){
++            show_message("error connecting to %s:%s\n", server, port);
++        }
++        return(UPDATERES_ERROR);
++    }
++    fprintf(stderr,"server=%s",server);
++
++    snprintf(buf, BUFFER_SIZE, "GET /gnudip/cgi-bin/gdipupdt.cgi");
++    output(buf);
++    snprintf(buf, BUFFER_SIZE, " HTTP/1.0\015\012");
++    output(buf);
++
++    snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++    output(buf);
++
++    snprintf(buf, BUFFER_SIZE, "\015\012");
++    output(buf);
++
++    if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++        close(client_sockfd);
++        return(UPDATERES_ERROR);
++    }
++
++    buf[bytes] = '\0';
++    ZyXELParseHttpResponse(buf,BUFFER_SIZE);
++
++    // buf holds the shared secret
++    chomp(buf);
++    MYZYXEL_UP();
++    close(client_sockfd);
++
++    return(UPDATERES_OK);
++}
++
++void MYZYXEL_UP(){
++
++    char buf[BUFFER_SIZE+1];
++    char *p;
++    int bytes;
++    int ret;
++    int i;
++    char *domainname;
++    char passmd5[PRESTIGE_PASSWORD_LEN+1];
++    int reqc=2;
++
++    // find domainname
++    for(p=host; *p != '\0' && *p != '.'; p++);
++
++    if(*p != '\0') { p++; }
++    if(*p == '\0') {
++        return(UPDATERES_ERROR);
++    }
++    domainname = p;
++    if(do_connect((int*)&client_sockfd, server, port) != 0){
++        if(!(options & OPT_QUIET)){
++            show_message("error connecting to %s:%s\n", server, port);
++        }
++        return(UPDATERES_ERROR);
++    }
++    else{printf("\n connect return 0 \n");}
++
++    md5str(password, passmd5);
++
++    snprintf(buf, BUFFER_SIZE, "GET /gnudip/cgi-bin/gdipupdt.cgi?salt=%s&time=%s&sign=%s&user=%s&domn=%s&pass=%s&reqc=1",
++    GnuDIPsalt, GnuDIPtime, GnuDIPsign, user_name, domainname, passmd5);
++
++    output(buf);
++    snprintf(buf, BUFFER_SIZE, " HTTP/1.0\015\012");
++    output(buf);
++
++    snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++    output(buf);
++    snprintf(buf, BUFFER_SIZE, "\015\012");
++    output(buf);
++
++    if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++        close(client_sockfd);
++        return(UPDATERES_ERROR);
++    }
++
++    buf[bytes] = '\0';
++    httppasreoforsuccess(buf,BUFFER_SIZE);
++
++    close(client_sockfd);
++
++    if(do_connect((int*)&client_sockfd, server, port) != 0){
++        if(!(options & OPT_QUIET)){
++            show_message("error connecting to %s:%s\n", server, port);
++        }
++        return(UPDATERES_ERROR);
++    }
++  else{printf("\n connect return 0 \n");}
++
++    snprintf(buf, BUFFER_SIZE, "GET /gnudip/cgi-bin/gdipupdt.cgi?salt=%s&time=%s&sign=%s&user=%s&domn=%s&pass=%s&reqc=2",
++    GnuDIPsalt, GnuDIPtime, GnuDIPsign, user_name, domainname, passmd5);
++
++    output(buf);
++    snprintf(buf, BUFFER_SIZE, " HTTP/1.0\015\012");
++    output(buf);
++
++    snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++    output(buf);
++    snprintf(buf, BUFFER_SIZE, "\015\012");
++    output(buf);
++
++    if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++        close(client_sockfd);
++        return(UPDATERES_ERROR);
++    }
++
++    buf[bytes] = '\0';
++    httppasreoforsuccess(buf,BUFFER_SIZE);
++    printf("\n success = %s \n",success);
++    printf("\n addressw = %s \n",address_log);
++    DDNS_StatusLog();
++
++    chomp(buf);
++    close(client_sockfd);
++
++    return(UPDATERES_OK);
++}
++
+ #endif
+ 
+ int JUSTL_check_info(void)
+Index: ez-ipupdate-3.0.11b8/md5.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/md5.c	2014-10-23 09:32:29.284710241 +0800
++++ ez-ipupdate-3.0.11b8/md5.c	2014-10-23 09:42:47.068593334 +0800
+@@ -49,6 +49,67 @@
+ # define SWAP(n) (n)
+ #endif
+ 
++#if 1
++
++#define S11 7
++#define S12 12
++#define S13 17
++#define S14 22
++#define S21 5
++#define S22 9
++#define S23 14
++#define S24 20
++#define S31 4
++#define S32 11
++#define S33 16
++#define S34 23
++#define S41 6
++#define S42 10
++#define S43 15
++#define S44 21
++
++/* F, G, H and I are basic MD5 functions.
++ */
++#define ZYXEL_F(x, y, z) (((x) & (y)) | ((~x) & (z)))
++#define ZYXEL_G(x, y, z) (((x) & (z)) | ((y) & (~z)))
++#define ZYXEL_H(x, y, z) ((x) ^ (y) ^ (z))
++#define ZYXEL_I(x, y, z) ((y) ^ ((x) | (~z)))
++
++/* ROTATE_LEFT rotates x left n bits.
++ */
++#define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n))))
++
++/* FF, GG, HH, and II transformations for rounds 1, 2, 3, and 4.
++Rotation is separate from addition to prevent recomputation.
++ */
++#define ZYXEL_FF(a, b, c, d, x, s, ac) { \
++ (a) += ZYXEL_F ((b), (c), (d)) + (x) + (uint32)(ac); \
++ (a) = ROTATE_LEFT ((a), (s)); \
++ (a) += (b); \
++  }
++#define ZYXEL_GG(a, b, c, d, x, s, ac) { \
++ (a) += ZYXEL_G ((b), (c), (d)) + (x) + (uint32)(ac); \
++ (a) = ROTATE_LEFT ((a), (s)); \
++ (a) += (b); \
++  }
++#define ZYXEL_HH(a, b, c, d, x, s, ac) { \
++ (a) += ZYXEL_H ((b), (c), (d)) + (x) + (uint32)(ac); \
++ (a) = ROTATE_LEFT ((a), (s)); \
++ (a) += (b); \
++  }
++#define ZYXEL_II(a, b, c, d, x, s, ac) { \
++ (a) += ZYXEL_I ((b), (c), (d)) + (x) + (uint32)(ac); \
++ (a) = ROTATE_LEFT ((a), (s)); \
++ (a) += (b); \
++  }
++
++static unsigned char PADDING[64] = {
++  0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
++};
++
++#endif
+ 
+ /* This array contains the bytes used to pad the buffer to the next
+    64-byte boundary.  (RFC 1321, 3.1: Step 1)  */
+@@ -399,4 +460,241 @@
+   ctx->C = C;
+   ctx->D = D;
+ }
++
++#if 1
++void MD5Init_ezipupdate (
++	MD5_CTX_ezipupdate *context                              /* context */
++)
++{
++  context->count[0] = context->count[1] = 0;
++  /* Load magic initialization constants. */
++  context->state[0] = 0x67452301;
++  context->state[1] = 0xefcdab89;
++  context->state[2] = 0x98badcfe;
++  context->state[3] = 0x10325476;
++}
++
++void MD5Update_ezipupdate(
++	MD5_CTX_ezipupdate *context,                  /* context */
++	unsigned char *input,              /* input block */
++	unsigned int inputLen              /* length of input block */
++)
++{
++  unsigned int i, index, partLen;
++
++  /* Compute number of bytes mod 64 */
++  index = (unsigned int)((context->count[0] >> 3) & 0x3F);
++
++  /* Update number of bits */
++  if ((context->count[0] += ((uint32)inputLen << 3))
++   < ((uint32)inputLen << 3))
++    context->count[1]++;
++  context->count[1] += ((uint32)inputLen >> 29);
++
++  partLen = 64 - index;
++
++  /* Transform as many times as possible.
++*/
++  if (inputLen >= partLen) {
++    MD5_memcpy
++     ((POINTER)&context->buffer[index], (POINTER)input, partLen);
++    MD5Transform_ezipupdate(context->state, context->buffer);
++
++    for (i = partLen; i + 63 < inputLen; i += 64)
++      MD5Transform_ezipupdate (context->state, &input[i]);
++
++    index = 0;
++  }
++  else
++ i = 0;
++
++  /* Buffer remaining input */
++  MD5_memcpy
++ ((POINTER)&context->buffer[index], (POINTER)&input[i],
++  inputLen-i);
++}
++
++/* Decodes input (unsigned char) into output (uint32). Assumes len is
++  a multiple of 4.
++ */
++ void Decode_ezipupdate(
++	uint32 *output,
++	unsigned char *input,
++	unsigned int len
++)
++{
++  unsigned int i, j;
++
++  for (i = 0, j = 0; j < len; i++, j += 4)
++ output[i] = ((uint32)input[j]) | (((uint32)input[j+1]) << 8) |
++   (((uint32)input[j+2]) << 16) | (((uint32)input[j+3]) << 24);
++}
++
++/* Note: Replace "for loop" with standard memcpy if possible.
++ */
++
++void MD5_memcpy (
++POINTER output,
++POINTER input,
++unsigned int len)
++{
++  unsigned int i;
++
++  for (i = 0; i < len; i++)
++ output[i] = input[i];
++}
++
++/* Note: Replace "for loop" with standard memset if possible.
++ */
++void MD5_memset (
++POINTER output,
++int value,
++unsigned int len)
++{
++  unsigned int i;
++
++  for (i = 0; i < len; i++)
++ ((char *)output)[i] = (char)value;
++}
++
++/* MD5 basic transformation. Transforms state based on block.
++ */
++void MD5Transform_ezipupdate (
++	uint32 state[4],
++	unsigned char block[64]
++)
++{
++  uint32 a = state[0], b = state[1], c = state[2], d = state[3], x[16];
++
++  Decode_ezipupdate (x, block, 64);
++
++   /* Round 1 */
++  ZYXEL_FF (a, b, c, d, x[ 0], S11, 0xd76aa478); /* 1 */
++  ZYXEL_FF (d, a, b, c, x[ 1], S12, 0xe8c7b756); /* 2 */
++  ZYXEL_FF (c, d, a, b, x[ 2], S13, 0x242070db); /* 3 */
++  ZYXEL_FF (b, c, d, a, x[ 3], S14, 0xc1bdceee); /* 4 */
++  ZYXEL_FF (a, b, c, d, x[ 4], S11, 0xf57c0faf); /* 5 */
++  ZYXEL_FF (d, a, b, c, x[ 5], S12, 0x4787c62a); /* 6 */
++  ZYXEL_FF (c, d, a, b, x[ 6], S13, 0xa8304613); /* 7 */
++  ZYXEL_FF (b, c, d, a, x[ 7], S14, 0xfd469501); /* 8 */
++  ZYXEL_FF (a, b, c, d, x[ 8], S11, 0x698098d8); /* 9 */
++  ZYXEL_FF (d, a, b, c, x[ 9], S12, 0x8b44f7af); /* 10 */
++  ZYXEL_FF (c, d, a, b, x[10], S13, 0xffff5bb1); /* 11 */
++  ZYXEL_FF (b, c, d, a, x[11], S14, 0x895cd7be); /* 12 */
++  ZYXEL_FF (a, b, c, d, x[12], S11, 0x6b901122); /* 13 */
++  ZYXEL_FF (d, a, b, c, x[13], S12, 0xfd987193); /* 14 */
++  ZYXEL_FF (c, d, a, b, x[14], S13, 0xa679438e); /* 15 */
++  ZYXEL_FF (b, c, d, a, x[15], S14, 0x49b40821); /* 16 */
++
++ /* Round 2 */
++  ZYXEL_GG (a, b, c, d, x[ 1], S21, 0xf61e2562); /* 17 */
++  ZYXEL_GG (d, a, b, c, x[ 6], S22, 0xc040b340); /* 18 */
++  ZYXEL_GG (c, d, a, b, x[11], S23, 0x265e5a51); /* 19 */
++  ZYXEL_GG (b, c, d, a, x[ 0], S24, 0xe9b6c7aa); /* 20 */
++  ZYXEL_GG (a, b, c, d, x[ 5], S21, 0xd62f105d); /* 21 */
++  ZYXEL_GG (d, a, b, c, x[10], S22,  0x2441453); /* 22 */
++  ZYXEL_GG (c, d, a, b, x[15], S23, 0xd8a1e681); /* 23 */
++  ZYXEL_GG (b, c, d, a, x[ 4], S24, 0xe7d3fbc8); /* 24 */
++  ZYXEL_GG (a, b, c, d, x[ 9], S21, 0x21e1cde6); /* 25 */
++  ZYXEL_GG (d, a, b, c, x[14], S22, 0xc33707d6); /* 26 */
++  ZYXEL_GG (c, d, a, b, x[ 3], S23, 0xf4d50d87); /* 27 */
++  ZYXEL_GG (b, c, d, a, x[ 8], S24, 0x455a14ed); /* 28 */
++  ZYXEL_GG (a, b, c, d, x[13], S21, 0xa9e3e905); /* 29 */
++  ZYXEL_GG (d, a, b, c, x[ 2], S22, 0xfcefa3f8); /* 30 */
++  ZYXEL_GG (c, d, a, b, x[ 7], S23, 0x676f02d9); /* 31 */
++  ZYXEL_GG (b, c, d, a, x[12], S24, 0x8d2a4c8a); /* 32 */
++
++  /* Round 3 */
++  ZYXEL_HH (a, b, c, d, x[ 5], S31, 0xfffa3942); /* 33 */
++  ZYXEL_HH (d, a, b, c, x[ 8], S32, 0x8771f681); /* 34 */
++  ZYXEL_HH (c, d, a, b, x[11], S33, 0x6d9d6122); /* 35 */
++  ZYXEL_HH (b, c, d, a, x[14], S34, 0xfde5380c); /* 36 */
++  ZYXEL_HH (a, b, c, d, x[ 1], S31, 0xa4beea44); /* 37 */
++  ZYXEL_HH (d, a, b, c, x[ 4], S32, 0x4bdecfa9); /* 38 */
++  ZYXEL_HH (c, d, a, b, x[ 7], S33, 0xf6bb4b60); /* 39 */
++  ZYXEL_HH (b, c, d, a, x[10], S34, 0xbebfbc70); /* 40 */
++  ZYXEL_HH (a, b, c, d, x[13], S31, 0x289b7ec6); /* 41 */
++  ZYXEL_HH (d, a, b, c, x[ 0], S32, 0xeaa127fa); /* 42 */
++  ZYXEL_HH (c, d, a, b, x[ 3], S33, 0xd4ef3085); /* 43 */
++  ZYXEL_HH (b, c, d, a, x[ 6], S34,  0x4881d05); /* 44 */
++  ZYXEL_HH (a, b, c, d, x[ 9], S31, 0xd9d4d039); /* 45 */
++  ZYXEL_HH (d, a, b, c, x[12], S32, 0xe6db99e5); /* 46 */
++  ZYXEL_HH (c, d, a, b, x[15], S33, 0x1fa27cf8); /* 47 */
++  ZYXEL_HH (b, c, d, a, x[ 2], S34, 0xc4ac5665); /* 48 */
++
++  /* Round 4 */
++  ZYXEL_II (a, b, c, d, x[ 0], S41, 0xf4292244); /* 49 */
++  ZYXEL_II (d, a, b, c, x[ 7], S42, 0x432aff97); /* 50 */
++  ZYXEL_II (c, d, a, b, x[14], S43, 0xab9423a7); /* 51 */
++  ZYXEL_II (b, c, d, a, x[ 5], S44, 0xfc93a039); /* 52 */
++  ZYXEL_II (a, b, c, d, x[12], S41, 0x655b59c3); /* 53 */
++  ZYXEL_II (d, a, b, c, x[ 3], S42, 0x8f0ccc92); /* 54 */
++  ZYXEL_II (c, d, a, b, x[10], S43, 0xffeff47d); /* 55 */
++  ZYXEL_II (b, c, d, a, x[ 1], S44, 0x85845dd1); /* 56 */
++  ZYXEL_II (a, b, c, d, x[ 8], S41, 0x6fa87e4f); /* 57 */
++  ZYXEL_II (d, a, b, c, x[15], S42, 0xfe2ce6e0); /* 58 */
++  ZYXEL_II (c, d, a, b, x[ 6], S43, 0xa3014314); /* 59 */
++  ZYXEL_II (b, c, d, a, x[13], S44, 0x4e0811a1); /* 60 */
++  ZYXEL_II (a, b, c, d, x[ 4], S41, 0xf7537e82); /* 61 */
++  ZYXEL_II (d, a, b, c, x[11], S42, 0xbd3af235); /* 62 */
++  ZYXEL_II (c, d, a, b, x[ 2], S43, 0x2ad7d2bb); /* 63 */
++  ZYXEL_II (b, c, d, a, x[ 9], S44, 0xeb86d391); /* 64 */
++
++
++  state[0] += a;
++  state[1] += b;
++  state[2] += c;
++  state[3] += d;
++
++  /* Zeroize sensitive information.
++   */
++  MD5_memset ((POINTER)x, 0, sizeof (x));
++}
++
++void MD5Final_ezipupdate (
++	MD5_CTX_ezipupdate *context,                        /* context */
++	unsigned char digest[16]                 /* message digest */
++)
++{
++  unsigned char bits[8];
++  unsigned int index, padLen;
++
++  /* Save number of bits */
++  Encode_ezipupdate (bits, context->count, 8);
++
++  /* Pad out to 56 mod 64.*/
++  index = (unsigned int)((context->count[0] >> 3) & 0x3f);
++  padLen = (index < 56) ? (56 - index) : (120 - index);
++  MD5Update_ezipupdate(context, PADDING, padLen);
++
++  /* Append length (before padding) */
++  MD5Update_ezipupdate(context, bits, 8);
++
++  /* Store state in digest */
++  Encode_ezipupdate (digest, context->state, 16);
++
++  /* Zeroize sensitive information.   */
++  MD5_memset ((POINTER)context, 0, sizeof (*context));
++}
++
++/* Encodes input (uint32) into output (unsigned char). Assumes len is
++  a multiple of 4.  */
++void Encode_ezipupdate(
++	unsigned char *output,
++	uint32 *input,
++	unsigned int len
++)
++{
++  unsigned int i, j;
++
++  for (i = 0, j = 0; j < len; i++, j += 4) {
++ output[j] = (unsigned char)(input[i] & 0xff);
++ output[j+1] = (unsigned char)((input[i] >> 8) & 0xff);
++ output[j+2] = (unsigned char)((input[i] >> 16) & 0xff);
++ output[j+3] = (unsigned char)((input[i] >> 24) & 0xff);
++  }
++}
++
++#endif
++
+ #endif
+Index: ez-ipupdate-3.0.11b8/md5.h
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/md5.h	2000-08-08 15:09:48.000000000 +0800
++++ ez-ipupdate-3.0.11b8/md5.h	2014-10-23 09:36:14.854625658 +0800
+@@ -146,4 +146,88 @@
+ 				 void *resblock));
+ 
+ #endif
++
++#if 1
++
++#define LIST_CRITICAL_VALUE 265
++#define LIST_ITEM_LEN 3
++#define MD5_SIZE 16
++
++/* POINTER defines a generic pointer type */
++typedef unsigned char *POINTER;
++typedef unsigned char uint8;		/* 8-bit unsigned integer  */
++typedef unsigned short uint16;		/* 16-bit unsigned integer */
++typedef unsigned int uint32;
++typedef signed long sint31;
++
++#ifdef PT_WLAN_AUTO_GENERATE
++typedef signed char int8;
++#endif
++
++/* UINT2 defines a two byte word */
++typedef unsigned short int UINT2;
++
++/* UINT4 defines a four byte word */
++typedef unsigned long int UINT4;
++/* MD5 context. */
++
++static unsigned char ThreeLetterList[][4]={
++ "agn","aha","ake","aks","alm","alt","alv","and","ane","arm",
++ "ask","asp","att","bag","bak","bie","bil","bit","bla","ble",
++ "bli","bly","boa","bod","bok","bol","bom","bor","bra","bro",
++ "bru","bud","bue","dal","dam","deg","der","det","din","dis",
++ "dra","due","duk","dun","dyp","egg","eie","eik","elg","elv",
++ "emu","ene","eng","enn","ert","ess","ete","ett","fei","fem",
++ "fil","fin","flo","fly","for","fot","fra","fri","fus","fyr",
++ "gen","gir","gla","gre","gro","gry","gul","hai","ham","han",
++ "hav","hei","hel","her","hit","hiv","hos","hov","hue","huk",
++ "hun","hus","hva","ide","ild","ile","inn","ion","ise","jag",
++ "jeg","jet","jod","jus","juv","kai","kam","kan","kar","kle",
++ "kli","klo","kna","kne","kok","kor","kro","kry","kul","kun",
++ "kur","lad","lag","lam","lav","let","lim","lin","liv","lom",
++ "los","lov","lue","lun","lur","lut","lyd","lyn","lyr","lys",
++ "mai","mal","mat","med","meg","mel","men","mer","mil","min",
++ "mot","mur","mye","myk","myr","nam","ned","nes","nok","nye",
++ "nys","obo","obs","odd","ode","opp","ord","orm","ose","osp",
++ "oss","ost","ovn","pai","par","pek","pen","pep","per","pip",
++ "pop","rad","rak","ram","rar","ras","rem","ren","rev","rik",
++ "rim","rir","ris","riv","rom","rop","ror","ros","rov","rur",
++ "sag","sak","sal","sau","seg","sei","sel","sen","ses","sil",
++ "sin","siv","sju","sjy","ski","sko","sky","smi","sne","snu",
++ "sol","som","sot","spa","sti","sto","sum","sus","syd","syl",
++ "syn","syv","tak","tal","tam","tau","tid","tie","til","tja",
++ "tog","tom","tre","tue","tun","tur","uke","ull","ulv","ung",
++ "uro","urt","ute","var","ved","veg","vei","vel","vev","vid",
++ "vik","vis","vri","yre","yte"
++};
++
++typedef struct {
++  UINT4 state[4];                                   /* state (ABCD) */
++  UINT4 count[2];        /* number of bits, modulo 2^64 (lsb first) */
++  unsigned char buffer[64];                         /* input buffer */
++} MD5_CTX;
++
++/* MD5 context for ez_ipupdate. */
++typedef struct{
++  uint32 state[4];				     /* state (ABCD) */
++  uint32 count[2];	  /* number of bits, modulo 2^64 (lsb first) */
++  unsigned char buffer[64];                         /* input buffer */
++} MD5_CTX_ezipupdate;
++
++void MD5Init_ezipupdate (MD5_CTX_ezipupdate *);
++void MD5Update_ezipupdate (MD5_CTX_ezipupdate *, unsigned char *, unsigned int);
++void MD5Final_ezipupdate (MD5_CTX_ezipupdate *, unsigned char [MD5_SIZE] );
++void getMD5ExpectedContext_ezipupdate (char *input, char *expected );
++
++int md5cInit(void);
++
++void MD5Init  (MD5_CTX *);
++void MD5Update (MD5_CTX *, unsigned char *, unsigned int);
++void MD5Final  (unsigned char [16], MD5_CTX *);
++
++void getMD5ExpectedContext (unsigned char  *input, unsigned char  *expected );
++int dig2str( unsigned char 	*dig,unsigned char 	*str,uint16	dig_len);
++
++#endif
++
+ #endif

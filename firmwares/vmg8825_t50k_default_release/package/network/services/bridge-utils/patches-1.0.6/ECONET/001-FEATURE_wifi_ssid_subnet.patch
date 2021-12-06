@@ -1,0 +1,80 @@
+Index: bridge-utils-1.0.6/brctl/brctl_cmd.c
+===================================================================
+--- bridge-utils-1.0.6.orig/brctl/brctl_cmd.c	2015-11-16 20:11:00.000000000 +0800
++++ bridge-utils-1.0.6/brctl/brctl_cmd.c	2015-11-16 20:12:20.582594293 +0800
+@@ -379,8 +379,14 @@
+ 	}
+ 
+ 	qsort(fdb, offset, sizeof(struct fdb_entry), compare_fdbs);
+-
++#if defined(ZYXEL_PATCH)
++	printf("port no\tmac addr\t\tis local?\tageing timer\tifname\n");
++#else
+ 	printf("port no\tmac addr\t\tis local?\tageing timer\n");
++#endif
++#if defined(ZYXEL_PATCH)
++	char ifName[IFNAMSIZ];
++#endif
+ 	for (i = 0; i < offset; i++) {
+ 		const struct fdb_entry *f = fdb + i;
+ 		printf("%3i\t", f->port_no);
+@@ -389,6 +395,12 @@
+ 		       f->mac_addr[3], f->mac_addr[4], f->mac_addr[5]);
+ 		printf("%s\t\t", f->is_local?"yes":"no");
+ 		br_show_timer(&f->ageing_timer_value);
++#if defined(ZYXEL_PATCH)		
++		ifName[0] = 0;
++		if(!get_ifname(brname, f->port_no, ifName)){
++			printf("\t\t%s", ifName);
++		}
++#endif
+ 		printf("\n");
+ 	}
+ 	return 0;
+Index: bridge-utils-1.0.6/libbridge/libbridge.h
+===================================================================
+--- bridge-utils-1.0.6.orig/libbridge/libbridge.h	2015-11-16 20:11:00.000000000 +0800
++++ bridge-utils-1.0.6/libbridge/libbridge.h	2015-11-16 20:13:46.273072020 +0800
+@@ -165,4 +165,8 @@
+ #endif
+ #endif
+ 
++#if defined(ZYXEL_PATCH)
++extern int get_ifname(const char *brname, int portno, char *ifname);
++#endif
++
+ #endif
+Index: bridge-utils-1.0.6/libbridge/libbridge_devif.c
+===================================================================
+--- bridge-utils-1.0.6.orig/libbridge/libbridge_devif.c	2015-11-16 20:11:00.000000000 +0800
++++ bridge-utils-1.0.6/libbridge/libbridge_devif.c	2015-11-16 20:11:05.440550103 +0800
+@@ -162,6 +162,29 @@
+ 	return -1;
+ }
+ 
++#if defined(ZYXEL_PATCH)
++int get_ifname(const char *brname, int portno, char *ifname)
++{
++	int ifindices[MAX_PORTS];
++	unsigned long args[4] = { BRCTL_GET_PORT_LIST,
++				  (unsigned long)ifindices, MAX_PORTS, 0 };
++	struct ifreq ifr;
++
++	memset(ifindices, 0, sizeof(ifindices));
++	strncpy(ifr.ifr_name, brname, IFNAMSIZ);
++	ifr.ifr_data = (char *) &args;
++
++	if (ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr) < 0) {
++		dprintf("get_portno: get ports of %s failed: %s\n",
++			brname, strerror(errno));
++		return -1;
++	}
++
++	if_indextoname(ifindices[portno], ifname);
++	return 0;
++}
++#endif
++
+ /* get information via ioctl */
+ static int old_get_bridge_info(const char *bridge, struct bridge_info *info)
+ {

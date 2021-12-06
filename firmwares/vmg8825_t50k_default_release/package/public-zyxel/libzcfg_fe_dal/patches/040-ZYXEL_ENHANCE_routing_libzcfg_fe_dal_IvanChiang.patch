@@ -1,0 +1,839 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-11-14 10:25:30.651629829 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-11-14 10:25:30.663629829 +0800
+@@ -8,6 +8,7 @@
+ NETWORK_BR_PATH = ./network/broadband
+ NETWORK_DNS_PATH = ./network/dns
+ NETWORK_NAT_PATH = ./network/nat
++NETWORK_ROUTING_PATH = ./network/routing
+ NETWORK_INTF_GP_PATH = ./network/interfaceGrouping
+ NETWORK_VLANGRP_PATH = ./network/vlanGroup
+ NETWORK_IGMPMLD_PATH = ./network/igmp_mld
+@@ -19,6 +20,7 @@
+ SOURCES += $(wildcard $(FE_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_BR_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_DNS_PATH)/*.c)
++SOURCES += $(wildcard $(NETWORK_ROUTING_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_NAT_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_INTF_GP_PATH)/*.c)
+ SOURCES += $(wildcard $(NETWORK_VLANGRP_PATH)/*.c)
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_dns_route.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_dns_route.c	2016-11-14 10:25:30.663629829 +0800
+@@ -0,0 +1,167 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t DNSROUTE_param[] =
++{
++	{"Enable",								dalType_string,	0,	0,	NULL},
++	{"DomainName",							dalType_string,	0,	0,	NULL},
++	{"SubnetMask",							dalType_string,	0,	0,	NULL},
++	{"Interface",							dalType_string,	0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++};
++
++struct json_object *dnsRTObj;
++
++objIndex_t dnsRtIid = {0};
++
++
++bool Enable;
++const char* DomainName;
++const char* tempDomainName;
++const char* SubnetMask;
++const char* Interface;
++
++void initDnsRouteGlobalObjects(){
++	dnsRTObj = NULL;
++	return;
++}
++
++void freeAllDnsRouteObjects(){
++	if(dnsRTObj) json_object_put(dnsRTObj);
++
++	return;
++}
++
++void getDnsRouteBasicInfo(struct json_object *Jobj){
++	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	DomainName = json_object_get_string(json_object_object_get(Jobj, "DomainName"));
++	SubnetMask = json_object_get_string(json_object_object_get(Jobj, "SubnetMask"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++
++	return;
++}
++
++void zcfgFeDalDnsRouteObjIidGet(struct json_object *Jobj, char *type){
++	const char* path = NULL;
++	int dnsRouteNum;
++
++	path = json_object_get_string(json_object_object_get(Jobj, type));
++	//printf("%s(): Edit Dns route path : %s \n ",__FUNCTION__,path);
++
++	sscanf(path,"X_ZYXEL_EXT.DNSRouteEntry.%d",&dnsRouteNum);
++	//printf("del Dns route - dnsRouteNum: %d, line: %d \n ",dnsRouteNum);
++	IID_INIT(dnsRtIid);
++	dnsRtIid.level = 1;
++	dnsRtIid.idx[0] = dnsRouteNum;
++
++	return;
++}
++
++zcfgRet_t zcfgFeDalDnsRouteObjEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s():--- Edit DnsRoute Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, &dnsRTObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Dns route fail oid(%d)\n ",__FUNCTION__,RDM_OID_DNS_RT_ENTRY);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(dnsRTObj != NULL){
++		json_object_object_add(dnsRTObj, "Enable", json_object_new_boolean(Enable));
++		json_object_object_add(dnsRTObj, "DomainName", json_object_new_string(DomainName));
++		json_object_object_add(dnsRTObj, "SubnetMask", json_object_new_string(SubnetMask));
++		json_object_object_add(dnsRTObj, "Interface", json_object_new_string(Interface));
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalDnsRouteEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_offset_t targetOid;
++	//printf("%s():--- Edit DnsRoute Input --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initDnsRouteGlobalObjects();
++	getDnsRouteBasicInfo(Jobj);
++	zcfgFeDalDnsRouteObjIidGet(Jobj, "EditPath");
++
++	if((ret = zcfgFeDalDnsRouteObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit Dns Route \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, dnsRTObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_DNS_RT_ENTRY);
++	}
++
++exit:
++	freeAllDnsRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalDnsRouteAdd(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s():--- Add DnsRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initDnsRouteGlobalObjects();
++	getDnsRouteBasicInfo(Jobj);
++
++	IID_INIT(dnsRtIid);
++
++	if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonAdd add Dns Route \n ",__FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeDalDnsRouteObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit Dns route \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, dnsRTObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_DNS_RT_ENTRY);
++	}
++
++exit:
++	freeAllDnsRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalDnsRouteDelete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	initDnsRouteGlobalObjects();
++	//printf("%s():--- Del DnsRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	zcfgFeDalDnsRouteObjIidGet(Jobj, "DeletePath");
++
++	if((ret = zcfgFeObjJsonDel(RDM_OID_DNS_RT_ENTRY, &dnsRtIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s: delete dns route obj fail \n", __FUNCTION__);
++		goto exit;
++	}
++
++exit:
++	freeAllDnsRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalDnsRoute(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalDnsRouteEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalDnsRouteAdd(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalDnsRouteDelete(Jobj, NULL);
++	}
++
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_policy_route.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_policy_route.c	2016-11-14 10:25:30.663629829 +0800
+@@ -0,0 +1,195 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t POLICYROUTE_param[] =
++{
++	{"X_ZYXEL_PolicyRoute",					dalType_boolean,0,	0,	NULL},
++	{"Enable",								dalType_boolean,0,	0,	NULL},
++	{"X_ZYXEL_PolicyRouteName",				dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_SourceIpAddress",				dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_SourceSubnetMask",			dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_SourceMacAddress",			dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_SourceIfName",				dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_SourcePort",					dalType_string,	0,	0,	NULL},
++	{"X_ZYXEL_Protocol",					dalType_string,	0,	0,	NULL},
++	{"Interface",							dalType_string,	0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++};
++
++struct json_object *policyRTObj;
++
++objIndex_t policyRtIid = {0};
++
++bool X_ZYXEL_PolicyRoute;
++bool Enable;
++const char *X_ZYXEL_PolicyRouteName;
++const char *X_ZYXEL_SourceIpAddress;
++const char *X_ZYXEL_SourceSubnetMask;
++const char *X_ZYXEL_SourceMacAddress;
++const char *X_ZYXEL_SourceIfName;
++const char *X_ZYXEL_SourcePort;
++const char *X_ZYXEL_Protocol;
++const char *Interface;
++
++
++void initPolicyRouteGlobalObjects(){
++	policyRTObj = NULL;
++	return;
++}
++
++void freeAllPolicyRouteObjects(){
++	if(policyRTObj) json_object_put(policyRTObj);
++	return;
++}
++
++void getPolicyRouteBasicInfo(struct json_object *Jobj){
++	X_ZYXEL_PolicyRoute = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_PolicyRoute"));
++	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	X_ZYXEL_PolicyRouteName = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_PolicyRouteName"));
++	X_ZYXEL_SourceIpAddress = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_SourceIpAddress"));
++	X_ZYXEL_SourceSubnetMask = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_SourceSubnetMask"));
++	X_ZYXEL_SourceMacAddress = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_SourceMacAddress"));
++	X_ZYXEL_SourceIfName = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_SourceIfName"));
++	X_ZYXEL_SourcePort = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_SourcePort"));
++	X_ZYXEL_Protocol = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_Protocol"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++
++	return;
++}
++
++void zcfgFeDalPolicyRouteObjIidGet(struct json_object *Jobj, char *type){
++	const char* path = NULL;
++	int RouterNum, ipv4fwdNum;
++
++	path = json_object_get_string(json_object_object_get(Jobj, type));
++	//printf("%s(): Edit Policy route path : %s \n ",__FUNCTION__,path);
++
++	sscanf(path,"Routing.Router.%d.IPv4Forwarding.%d",&RouterNum,&ipv4fwdNum);
++	//printf("Policy route - Policy Route Num: %d ipv4fwdNum: %d\n ",RouterNum,ipv4fwdNum);
++	IID_INIT(policyRtIid);
++	policyRtIid.level = 2;
++	policyRtIid.idx[0] = RouterNum;
++	policyRtIid.idx[1] = ipv4fwdNum;
++
++	return;
++}
++
++zcfgRet_t zcfgFeDalPolicyRouteObjEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s():--- Edit PolicyRoute Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ROUTING_ROUTER_V4_FWD, &policyRtIid, &policyRTObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get Policy route fail oid(%d)\n ",__FUNCTION__,RDM_OID_ROUTING_ROUTER_V4_FWD);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(policyRTObj != NULL){
++		json_object_object_add(policyRTObj, "X_ZYXEL_PolicyRoute", json_object_new_boolean(X_ZYXEL_PolicyRoute));
++		json_object_object_add(policyRTObj, "Enable", json_object_new_boolean(Enable));
++		json_object_object_add(policyRTObj, "X_ZYXEL_PolicyRouteName", json_object_new_string(X_ZYXEL_PolicyRouteName));
++		json_object_object_add(policyRTObj, "X_ZYXEL_SourceIpAddress", json_object_new_string(X_ZYXEL_SourceIpAddress));
++		json_object_object_add(policyRTObj, "X_ZYXEL_SourceSubnetMask", json_object_new_string(X_ZYXEL_SourceSubnetMask));
++		json_object_object_add(policyRTObj, "X_ZYXEL_SourceMacAddress", json_object_new_string(X_ZYXEL_SourceMacAddress));
++		json_object_object_add(policyRTObj, "X_ZYXEL_SourceIfName", json_object_new_string(X_ZYXEL_SourceIfName));
++		json_object_object_add(policyRTObj, "X_ZYXEL_SourcePort", json_object_new_string(X_ZYXEL_SourcePort));
++		json_object_object_add(policyRTObj, "X_ZYXEL_Protocol", json_object_new_string(X_ZYXEL_Protocol));
++		json_object_object_add(policyRTObj, "Interface", json_object_new_string(Interface));
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPolicyRouteEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s():--- edit Policy Route Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initPolicyRouteGlobalObjects();
++	getPolicyRouteBasicInfo(Jobj);
++	zcfgFeDalPolicyRouteObjIidGet(Jobj, "EditPath");
++
++	if((ret = zcfgFeDalPolicyRouteObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit Policy Route \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER_V4_FWD, &policyRtIid, policyRTObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_ROUTER_V4_FWD);
++		goto exit;
++	}
++
++exit:
++	freeAllPolicyRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPolicyRouteDelete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s():--- delete Policy Route Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initPolicyRouteGlobalObjects();
++	zcfgFeDalPolicyRouteObjIidGet(Jobj, "DeletePath");
++
++	if((ret = zcfgFeObjJsonDel(RDM_OID_ROUTING_ROUTER_V4_FWD, &policyRtIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s: delete Policy route obj fail \n", __FUNCTION__);
++		goto exit;
++	}
++
++exit:
++	freeAllPolicyRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPolicyRouteAdd(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s():--- Add Policy Route Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initPolicyRouteGlobalObjects();
++	getPolicyRouteBasicInfo(Jobj);
++
++
++	IID_INIT(policyRtIid);
++	policyRtIid.level = 1;
++	policyRtIid.idx[0] = 1;
++
++	if((ret = zcfgFeObjJsonBlockedAdd(RDM_OID_ROUTING_ROUTER_V4_FWD, &policyRtIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonAdd add Policy Route \n ",__FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeDalPolicyRouteObjEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit Policy route \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER_V4_FWD, &policyRtIid, policyRTObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_ROUTER_V4_FWD);
++	}
++
++exit:
++	freeAllPolicyRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalPolicyRoute(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalPolicyRouteEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalPolicyRouteAdd(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalPolicyRouteDelete(Jobj, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_rip.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_rip.c	2016-11-11 17:50:11.097755300 +0800
+@@ -0,0 +1,178 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t RIP_param[] =
++{
++	{"Enable",								dalType_boolean,0,	0,	NULL},
++	{"Ripitf_Enable",						dalType_string,	0,	0,	NULL},
++	{"Version",								dalType_string,	0,	0,	NULL},
++	{"RipOpMode",							dalType_string,	0,	0,	NULL},
++	{"DisableDefaultGw",					dalType_string,	0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++};
++
++struct json_object *ripObj;
++struct json_object *ripItfObj;
++
++
++objIndex_t RipIid = {0};
++objIndex_t RipItfIid = {0};
++
++
++bool Enable;
++const char *Ripitf_Enable;
++const char *Version;
++const char *RipOpMode;
++const char *DisableDefaultGw;
++
++void initRipGlobalObjects(){
++	ripObj = NULL;
++	ripItfObj = NULL;
++	return;
++}
++
++void freeAllRipObjects(){
++	if(ripObj) json_object_put(ripObj);
++	if(ripItfObj) json_object_put(ripItfObj);
++	return;
++}
++
++void getRipBasicInfo(struct json_object *Jobj){
++	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	Ripitf_Enable = json_object_get_string(json_object_object_get(Jobj, "Ripitf_Enable"));
++	Version = json_object_get_string(json_object_object_get(Jobj, "Version"));
++	RipOpMode = json_object_get_string(json_object_object_get(Jobj, "RipOpMode"));
++	DisableDefaultGw = json_object_get_string(json_object_object_get(Jobj, "DisableDefaultGw"));
++
++	return;
++}
++
++static char *strsplit_getfirst(char **nStr, char *tok){
++	char *ret = *nStr;
++	if((nStr == NULL) || (*nStr == NULL)){
++		return NULL;
++	}
++	*nStr = strstr(ret, tok);
++	if(*nStr != NULL){
++		*nStr[0] = '\0';
++		*nStr = *nStr + 1;
++	}else{
++		*nStr = NULL;
++	}
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalRipItfEdit(struct json_object *Jobj){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	char *enable;
++	char *version;
++	char *ripOpMode;
++	char *disableDefaultGw;
++	//printf("%s():--- Edit RIP Itf Input --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++
++	IID_INIT(RipItfIid);
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_ROUTING_RIP_INTF_SET, &RipItfIid, &ripItfObj) == ZCFG_SUCCESS) {
++		if((enable = strsplit_getfirst(&Ripitf_Enable, ",")) != NULL){
++			//printf("Enable:%s\n" , enable);
++		}
++		if((version = strsplit_getfirst(&Version, ",")) != NULL){
++			//printf("Version:%s\n" , version);
++		}
++		if((ripOpMode = strsplit_getfirst(&RipOpMode, ",")) != NULL){
++			//printf("X_ZyXEL_RipOpMode:%s\n" , ripOpMode);
++		}
++		if((disableDefaultGw = strsplit_getfirst(&DisableDefaultGw, ",")) != NULL){
++			//printf("X_ZyXEL_DisableDefaultGw:%s\n" , disableDefaultGw);
++		}
++
++		if(strcmp(enable,"true") == 0){
++			json_object_object_add(ripItfObj, "Enable", json_object_new_boolean(true));
++		}else{
++			json_object_object_add(ripItfObj, "Enable", json_object_new_boolean(false));
++		}
++
++		json_object_object_add(ripItfObj, "X_ZYXEL_Version", json_object_new_string(version));
++
++		json_object_object_add(ripItfObj, "X_ZYXEL_RipOpMode", json_object_new_string(ripOpMode));
++
++		if(strcmp(disableDefaultGw,"true") == 0){
++			json_object_object_add(ripItfObj, "X_ZYXEL_DisableDefaultGw", json_object_new_boolean(true));
++		}else{
++			json_object_object_add(ripItfObj, "X_ZYXEL_DisableDefaultGw", json_object_new_boolean(false));
++		}
++		if((ret = zcfgFeObjJsonBlockedSet(RDM_OID_ROUTING_RIP_INTF_SET, &RipItfIid, ripItfObj, NULL)) != ZCFG_SUCCESS){
++			printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_RIP_INTF_SET);
++			return ZCFG_INTERNAL_ERROR;
++		}
++		zcfgFeJsonObjFree(ripItfObj);
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalRipEdit(struct json_object *Jobj){
++	//printf("%s(): Enter.. \n ",__FUNCTION__);
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	IID_INIT(RipIid);
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ROUTING_RIP, &RipIid, &ripObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get rip fail oid(%d)\n ",__FUNCTION__,RDM_OID_ROUTING_ROUTER_V4_FWD);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(ripObj != NULL){
++		json_object_object_add(ripObj, "Enable", json_object_new_boolean(Enable));
++
++	}
++
++	if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_RIP, &RipIid, ripObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_RIP);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalRoutingProtocolEdit(struct json_object *Jobj, char *replyMsg){
++	//printf("%s(): Enter.. \n ",__FUNCTION__);
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	initRipGlobalObjects();
++	getRipBasicInfo(Jobj);
++
++	if((ret = zcfgFeDalRipItfEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit Rip inf obj \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeDalRipEdit(Jobj)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit Rip obj \n", __FUNCTION__);
++		goto exit;
++	}
++
++exit:
++	freeAllRipObjects();
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalRip(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalRoutingProtocolEdit(Jobj, NULL);
++	}
++
++	return ret;
++}
++
+Index: libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzcfg_fe_dal-1.0/network/routing/zcfg_fe_dal_static_route.c	2016-11-14 10:25:30.663629829 +0800
+@@ -0,0 +1,222 @@
++
++#include <json/json.h>
++
++#include "zcfg_common.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_debug.h"
++#include "zcfg_fe_rdm_string.h"
++#include "zcfg_fe_dal_common.h"
++
++dal_param_t STATICROUTE_param[] =
++{
++	{"GatewayIPAddress",					dalType_string,	0,	0,	NULL},
++	{"NextHop",								dalType_string,	0,	0,	NULL},
++	{"DestIPPrefix",						dalType_string,	0,	0,	NULL},
++	{"ipver",								dalType_string,	0,	0,	NULL},
++	{"Enable",								dalType_boolean,0,	0,	NULL},
++	{"Alias",								dalType_string,	0,	0,	NULL},
++	{"DestIPAddress",						dalType_string,	0,	0,	NULL},
++	{"DestSubnetMask",						dalType_string,	0,	0,	NULL},
++	{"Interface",							dalType_string,	0,	0,	NULL},
++	{NULL,									0,				0,	0,	NULL},
++
++};
++
++objIndex_t fwdIid = {0};
++
++struct json_object *fwdObj;
++
++const char *GatewayIPAddress;
++bool Enable;
++const char *Alias;
++const char *tempAlias;
++const char *ipver;
++const char *DestIPAddress;
++const char *DestSubnetMask;
++const char *Interface;
++const char *targetName;
++const char *NextHop;
++const char *DestIPPrefix;
++
++void initIpv4FwdGlobalObjects(){
++	fwdObj = NULL;
++
++	return;
++}
++
++void freeAllStaticRouteObjects(){
++	if(fwdObj) json_object_put(fwdObj);
++
++	return;
++}
++
++void getStaticRouteBasicInfo(struct json_object *Jobj){
++	GatewayIPAddress = json_object_get_string(json_object_object_get(Jobj, "GatewayIPAddress"));
++	NextHop = json_object_get_string(json_object_object_get(Jobj, "NextHop"));
++	DestIPPrefix = json_object_get_string(json_object_object_get(Jobj, "DestIPPrefix"));
++	Enable = json_object_get_boolean(json_object_object_get(Jobj, "Enable"));
++	Alias = json_object_get_string(json_object_object_get(Jobj, "Alias"));
++	ipver= json_object_get_string(json_object_object_get(Jobj, "ipver"));
++	DestIPAddress = json_object_get_string(json_object_object_get(Jobj, "DestIPAddress"));
++	DestSubnetMask = json_object_get_string(json_object_object_get(Jobj, "DestSubnetMask"));
++	Interface = json_object_get_string(json_object_object_get(Jobj, "Interface"));
++	targetName = json_object_get_string(json_object_object_get(Jobj, "targetName"));
++}
++
++void zcfgFeDalStaticRouteObjEditIidGet(struct json_object *Jobj){
++	IID_INIT(fwdIid);
++	zcfg_offset_t targetOid;
++
++	if(strcmp(ipver,"IPv4") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++	}else if(strcmp(ipver,"IPv6") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++	}
++
++	while(zcfgFeObjJsonGetNextWithoutUpdate(targetOid, &fwdIid, &fwdObj) == ZCFG_SUCCESS) {
++		tempAlias = json_object_get_string(json_object_object_get(fwdObj, "Alias"));
++		//printf("%s() tempAlias : %s \n ",__FUNCTION__,tempAlias);
++		if(strcmp(targetName,tempAlias) == 0){
++			break;
++		}
++		zcfgFeJsonObjFree(fwdObj);
++	}
++
++	return;
++}
++
++zcfgRet_t zcfgFeDalStaticRouteIpfwdEdit(struct json_object *Jobj, zcfg_offset_t oid){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	//printf("%s() Enter \n ",__FUNCTION__);
++
++	if((ret = zcfgFeObjJsonGetWithoutUpdate(oid, &fwdIid, &fwdObj)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonGetWithoutUpdate get ipvfwd fail oid(%d)\n ",__FUNCTION__,oid);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	json_object_object_add(fwdObj, "GatewayIPAddress", json_object_new_string(GatewayIPAddress));
++	json_object_object_add(fwdObj, "Enable", json_object_new_boolean(Enable));
++	json_object_object_add(fwdObj, "Alias", json_object_new_string(Alias));
++	json_object_object_add(fwdObj, "ipver", json_object_new_string(ipver));
++	json_object_object_add(fwdObj, "Interface", json_object_new_string(Interface));
++	if(strcmp(ipver,"IPv4") == 0){
++		json_object_object_add(fwdObj, "DestIPAddress", json_object_new_string(DestIPAddress));
++		json_object_object_add(fwdObj, "DestSubnetMask", json_object_new_string(DestSubnetMask));
++	}else if(strcmp(ipver,"IPv6") == 0){
++		json_object_object_add(fwdObj, "DestIPPrefix", json_object_new_string(DestIPPrefix));
++		json_object_object_add(fwdObj, "NextHop", json_object_new_string(NextHop));
++	}
++
++	//printf("%s(): Add parameters to Jobj (%s) \n ",__FUNCTION__,json_object_to_json_string(fwdObj));
++	//printf("%s() exit \n ",__FUNCTION__);
++	return ret;
++}
++
++
++zcfgRet_t zcfgFeDalStaticRouteEdit(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_offset_t targetOid;
++	//printf("%s():--- Edit StaticRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initIpv4FwdGlobalObjects();
++	getStaticRouteBasicInfo(Jobj);
++	zcfgFeDalStaticRouteObjEditIidGet(Jobj);
++
++	if(strcmp(ipver,"IPv4") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++	}else if(strcmp(ipver,"IPv6") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++	}
++
++	if((ret = zcfgFeDalStaticRouteIpfwdEdit(Jobj, targetOid )) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit ipv6 static route \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeObjJsonSet(targetOid, &fwdIid, fwdObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_ROUTER_V4_FWD);
++	}
++
++exit:
++	freeAllStaticRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalStaticRouteAdd(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_offset_t targetOid;
++	//printf("%s():--- Add StaticRoute Input Json Object --- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initIpv4FwdGlobalObjects();
++	getStaticRouteBasicInfo(Jobj);
++
++	IID_INIT(fwdIid);
++	fwdIid.level = 1;
++	fwdIid.idx[0] = 1;
++
++	if(strcmp(ipver,"IPv4") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++	}else if(strcmp(ipver,"IPv6") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++	}
++
++	if((ret = zcfgFeObjJsonBlockedAdd(targetOid, &fwdIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s():(ERROR) zcfgFeObjJsonAdd add Static Route \n ",__FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if((ret = zcfgFeDalStaticRouteIpfwdEdit(Jobj, targetOid )) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to edit ipv4 static route \n", __FUNCTION__);
++		goto exit;
++	}
++
++	if((ret = zcfgFeObjJsonSet(targetOid, &fwdIid, fwdObj, NULL)) != ZCFG_SUCCESS){
++		printf("%s:(ERROR) fail to set object %d\n", __FUNCTION__, RDM_OID_ROUTING_ROUTER_V4_FWD);
++	}
++
++exit:
++	freeAllStaticRouteObjects();
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalStaticRouteDelete(struct json_object *Jobj, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_offset_t targetOid;
++	//printf("%s():--- Delete StaticRoute Input Json Object--- \n%s \n ",__FUNCTION__,json_object_to_json_string(Jobj));
++	initIpv4FwdGlobalObjects();
++	getStaticRouteBasicInfo(Jobj);
++	zcfgFeDalStaticRouteObjEditIidGet(Jobj);
++
++	if(strcmp(ipver,"IPv4") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V4_FWD;
++	}else if(strcmp(ipver,"IPv6") == 0){
++		targetOid = RDM_OID_ROUTING_ROUTER_V6_FWD;
++	}
++
++	if((ret = zcfgFeObjJsonDel(targetOid, &fwdIid, NULL)) != ZCFG_SUCCESS){
++		printf("%s: delete static route obj fail \n", __FUNCTION__);
++		return ret;
++	}
++
++	//printf("%s(): Exit.. \n ",__FUNCTION__);
++	return ret;
++}
++
++zcfgRet_t zcfgFeDalStaticRoute(const char *method, struct json_object *Jobj, char *replyMsg)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(!method || !Jobj)
++		return ZCFG_INTERNAL_ERROR;
++
++	if(!strcmp(method, "PUT")) {
++		ret = zcfgFeDalStaticRouteEdit(Jobj, NULL);
++	}
++	else if(!strcmp(method, "POST")) {
++		ret = zcfgFeDalStaticRouteAdd(Jobj, replyMsg);
++	}
++	else if(!strcmp(method, "DELETE")) {
++		ret = zcfgFeDalStaticRouteDelete(Jobj, NULL);
++	}
++
++	return ret;
++}
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2016-11-14 10:25:30.651629829 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2016-11-14 10:25:30.663629829 +0800
+@@ -11,6 +11,10 @@
+ extern dal_param_t MGMT_param[];
+ extern dal_param_t DNS_ENTRY_param[];
+ extern dal_param_t D_DNS_param[];
++extern dal_param_t STATICROUTE_param[];
++extern dal_param_t DNSROUTE_param[];
++extern dal_param_t POLICYROUTE_param[];
++extern dal_param_t RIP_param[];
+ extern dal_param_t NAT_PORT_MAPPING_param[];
+ extern dal_param_t NAT_PORT_TRIGGERING_param[];
+ extern dal_param_t NAT_DMZ_ALG_param[];
+@@ -35,6 +39,10 @@
+ extern zcfgRet_t zcfgFeDalMgmt(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDnsEntry(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalDDns(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalStaticRoute(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalDnsRoute(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalPolicyRoute(const char *method, struct json_object *Jobj, char *replyMsg);
++extern zcfgRet_t zcfgFeDalRip(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatPortMapping(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatPortTriggering(const char *method, struct json_object *Jobj, char *replyMsg);
+ extern zcfgRet_t zcfgFeDalNatDMZALG(const char *method, struct json_object *Jobj, char *replyMsg);
+@@ -68,6 +76,10 @@
+ {"MGMT",			MGMT_param,			zcfgFeDalMgmt},
+ {"DNS_ENTRY",		DNS_ENTRY_param,	zcfgFeDalDnsEntry},
+ {"D_DNS",			D_DNS_param,		zcfgFeDalDDns},
++{"STATICROUTE", 	STATICROUTE_param,	zcfgFeDalStaticRoute},
++{"DNSROUTE", 		DNSROUTE_param,		zcfgFeDalDnsRoute},
++{"POLICYROUTE", 	POLICYROUTE_param,	zcfgFeDalPolicyRoute},
++{"RIP", 			RIP_param,			zcfgFeDalRip},
+ {"NAT_PORT_MAPPING",NAT_PORT_MAPPING_param,	zcfgFeDalNatPortMapping},
+ {"NAT_PORT_TRIGGERING",NAT_PORT_TRIGGERING_param,	zcfgFeDalNatPortTriggering},
+ {"NAT_DMZ_ALG",		NAT_DMZ_ALG_param,	zcfgFeDalNatDMZALG},

@@ -1,0 +1,189 @@
+Index: libzcfg_fe_tr98-1.0/voice.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.c	2015-07-10 11:57:00.126368206 +0800
++++ libzcfg_fe_tr98-1.0/voice.c	2015-07-10 11:50:38.150364100 +0800
+@@ -691,16 +691,58 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t linecfIid;
+-
++	char *RDM_name = NULL;
++	
+ 	IID_INIT(linecfIid);
+ 	linecfIid.level = 3;
+ 	sscanf(tr98FullPathName, "InternetGatewayDevice.Services.VoiceService.%hhu.VoiceProfile.%hhu.Line.%hhu.CallingFeatures", 
+ 		&linecfIid.idx[0], &linecfIid.idx[1], &linecfIid.idx[2]);
+ 
+-	if((ret = getVoiceConfig(RDM_OID_VOICE_LINE_CALLING_FEATURE, &linecfIid, handler, tr98Jobj)) != ZCFG_SUCCESS){
+-		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get config from tr181 for object RDM_OID_VOICE_LINE_CALLING_FEATURE with ret=%d", __FUNCTION__, ret);
++	struct json_object *getObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_VOICE_LINE_CALLING_FEATURE, &linecfIid, &getObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get obj(oid %d) codec object ret=%d\n", __FUNCTION__, RDM_OID_VOICE_LINE_CALLING_FEATURE, ret);
+ 		return ret;
+ 	}
++	
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++
++	while(paramList->name){
++		/*Brady 20150709, follow TR104 to use AnonymousCalEnable*/
++		if(!strcmp(paramList->name, "AnonymousCalEnable")){
++				char *MapName = "AnonymousCallEnable";
++				RDM_name = MapName;
++		}else{
++				RDM_name = paramList->name;
++		}
++
++		/* get parameter value from tr181 */
++		paramValue = json_object_object_get(getObj, RDM_name);
++
++		/* write it to tr098 json object */
++		if(paramValue != NULL) {
++			struct json_object *cfObj = NULL;
++			/*Brady 20150709, follow TR104 to use AnonymousCalEnable*/
++			bool Enable;
++			if(!strcmp(RDM_name, "AnonymousCallEnable"))
++			{
++				Enable = json_object_get_boolean(paramValue);
++				json_object_object_add(*tr98Jobj,"AnonymousCalEnable",json_object_new_boolean(Enable));
++			}
++			else
++			{
++				json_object_object_add(*tr98Jobj, RDM_name, JSON_OBJ_COPY(paramValue));
++			}
++		}
++
++		paramList++;
++		continue;
++	}
++	zcfgFeJsonObjFree(getObj);
+ 
+ 	return ZCFG_SUCCESS;
+ }
+@@ -709,23 +751,105 @@
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	objIndex_t linecfIid;
++	char *RDM_name = NULL;
+ 
+ 	IID_INIT(linecfIid);
+ 	linecfIid.level = 3;
++
+ 	sscanf(tr98FullPathName, "InternetGatewayDevice.Services.VoiceService.%hhu.VoiceProfile.%hhu.Line.%hhu.CallingFeatures", 
+ 		&linecfIid.idx[0], &linecfIid.idx[1], &linecfIid.idx[2]);
+ 
+-	if((ret = setVoiceConfig(RDM_OID_VOICE_LINE_CALLING_FEATURE, &linecfIid, handler, tr98Jobj, multiJobj)) != ZCFG_SUCCESS){
+-		zcfgLog(ZCFG_LOG_ERR, "%s: fail to set config to tr181 for object RDM_OID_VOICE_LINE_CALLING_FEATURE with ret=%d", __FUNCTION__, ret);
++	struct json_object *obj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++	bool Enable;
++	
++	if((ret = zcfgFeObjJsonGet(RDM_OID_VOICE_LINE_CALLING_FEATURE, &linecfIid, &obj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s: fail to get object(oid %d) with ret=%d\n", __FUNCTION__, RDM_OID_VOICE_LINE_CALLING_FEATURE, ret);
+ 		return ret;
+ 	}
++	
++	/* if multiple set is required, just appended JSON to multiJobj */
++	if(multiJobj){
++		tmpObj = obj;
++		obj = NULL;
++		obj = zcfgFeJsonMultiObjAppend(RDM_OID_VOICE_LINE_CALLING_FEATURE, &linecfIid, multiJobj, tmpObj);
++	}
++
++	if(obj){
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name){
++			paramValue = json_object_object_get(tr98Jobj, paramList->name);
++
++			/* write it to tr181 json object */
++			if(paramValue != NULL) {
++				/*Brady 20150709, follow TR104 to use AnonymousCalEnable*/
++				if(!strcmp(paramList->name, "AnonymousCalEnable")){
++					Enable = json_object_get_boolean(paramValue);
++					json_object_object_del(obj, "AnonymousCallEnable");
++					json_object_object_add(obj, "AnonymousCallEnable", json_object_new_boolean(Enable));
++				}else{					
++					json_object_object_add(obj, paramList->name, JSON_OBJ_COPY(paramValue));
++				}
++
++			}
++
++			paramList++;
++			continue;
++		}
++
++		if(!multiJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_VOICE_LINE_CALLING_FEATURE, &linecfIid, obj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set object(oid %d) Fail with ret=%d\n", __FUNCTION__, RDM_OID_VOICE_LINE_CALLING_FEATURE, ret);
++			}
++			zcfgFeJsonObjFree(obj);
++			return ret;
++		}
++		zcfgFeJsonObjFree(tmpObj);
++	
++	}
+ 
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ int voiceLineCallingFeatureAttrGet(char *tr98FullPathName, int handler, char *paramName)
+ {
+-	return getVoiceAttrGet(RDM_OID_VOICE_LINE_CALLING_FEATURE, handler, paramName);
++	/*Brady 20150709 ,follow TR104 to use AnonymousCalEnable*/
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "AnonymousCalEnable")){
++			char *newname ="AnonymousCallEnable";
++			paramList->name = newname;
++		}
++
++		attrValue = zcfgFeParamAttrGetByName(RDM_OID_VOICE_LINE_CALLING_FEATURE, paramList->name);
++		if(attrValue < 0 ) {
++			attrValue = 0;
++			break;
++		}
++
++		if(!strcmp(paramList->name, "AnonymousCallEnable")){
++			char *newname ="AnonymousCalEnable";
++			paramList->name = newname;
++		}
++
++		break;
++	}
++
++	return attrValue;
++	/*Brady end, 20150709 */
++	//return getVoiceAttrGet(RDM_OID_VOICE_LINE_CALLING_FEATURE, handler, paramName);
+ }
+ 
+ int voiceLineCallingFeatureAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
+Index: libzcfg_fe_tr98-1.0/voice.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/voice.h	2015-07-10 11:57:00.086368205 +0800
++++ libzcfg_fe_tr98-1.0/voice.h	2015-07-10 10:34:22.472537000 +0800
+@@ -384,7 +384,8 @@
+ 	{ "MessageWaiting", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
+ 	{ "AnonymousCallBlockEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	//{ "X_ZyXEL_COM_AnonymousCallBlockStart", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+-	{ "AnonymousCallEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	{ "AnonymousCalEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
++	//{ "AnonymousCallEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	//{ "X_ZyXEL_COM_AnonymousCallStart", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "DoNotDisturbEnable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	//{ "X_ZyXEL_COM_DoNotDisturbStart", PARAMETER_ATTR_WRITE, 0, json_type_boolean},

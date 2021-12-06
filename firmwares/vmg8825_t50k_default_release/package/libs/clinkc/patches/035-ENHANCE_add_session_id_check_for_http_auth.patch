@@ -1,0 +1,138 @@
+Index: clinkc/include/cybergarage/http/chttp_cookie.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp_cookie.h	2014-08-11 20:33:10.894949560 +0800
++++ clinkc/include/cybergarage/http/chttp_cookie.h	2014-08-11 20:36:23.262555528 +0800
+@@ -34,6 +34,8 @@
+ #define SIZE_COOKIE_PORT	512
+ #define SIZE_COOKIE_VERSION	16
+ #define SIZE_COOKIE_EXPIRES	32
++#define SIZE_COOKIE_SESSIONID 32
++#define SIZE_COOKIE_AUTH 64
+ 
+ #define CG_HTTP_COOKIE_COMMENT	"Comment"
+ #define CG_HTTP_COOKIE_URL		"CommentURL"
+@@ -44,6 +46,8 @@
+ #define CG_HTTP_COOKIE_PORT		"Port"
+ #define CG_HTTP_COOKIE_SECURE	"Secure"
+ #define CG_HTTP_COOKIE_VERSION	"Version"
++#define CG_HTTP_COOKIE_SESSIONID "Session"
++#define CG_HTTP_COOKIE_AUTH "Authentication"
+ /*set-cookie set-cookie2*/
+ 
+ typedef struct _CgHttpCookieData
+@@ -60,6 +64,8 @@
+ 	char			port[SIZE_COOKIE_PORT+1];
+ 	BOOL			secure;
+ 	char			version[SIZE_COOKIE_VERSION+1];
++	char			sessionid[SIZE_COOKIE_SESSIONID+1];
++	char			authentication[SIZE_COOKIE_AUTH+1];
+ 	/* <-RFC2965 set-cookie2 ->*/
+ } CgHttpCookieData;
+ 
+@@ -77,5 +83,7 @@
+ #define cg_http_response_getcookie2(httpRes) cg_http_packet_getheadervalue((CgHttpPacket*)httpRes,CG_HTTP_SETCOOKIE2)
+ 
+ void cg_http_cookie_header_parse(char * cookie,CgHttpCookieData * cookiedata);
++void cg_http_cookie_content_parse(CgHttpRequest *httpReq, CgHttpCookieData *cookiedata);
++CgHttpCookieData *cg_http_cookie_new();
+ 
+ #endif /*_CG_HTTP_COOKIE_H_*/
+Index: clinkc/src/cybergarage/http/chttp_authentication.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_authentication.c	2014-08-11 20:33:10.950949560 +0800
++++ clinkc/src/cybergarage/http/chttp_authentication.c	2014-08-11 20:36:14.211491251 +0800
+@@ -899,7 +899,7 @@
+ 
+ authRet_t cg_http_request_check_basic_auth(CgHttpRequest *httpReq, char *user, char *passwd, BOOL cookieAuthentication)
+ {
+-	char *headerLine, *authMethod, *passphrase = NULL;
++	char *headerLine, *authMethod, *passphrase = NULL, *tmpPassphrase = NULL;
+ 	char *base64Encode = NULL;
+ 	char *base64EncodeStr = NULL;
+ 	char *decodePhrase = NULL;
+@@ -952,15 +952,15 @@
+ 			if((ptr = strstr(cookie, "Authentication")) == NULL){
+ 				return HTTP_AUTH_ERROR;
+ 			}
+-			passphrase = ptr + strlen("Authentication=");
+-
++			tmpPassphrase = ptr + strlen("Authentication=");
++			passphrase = strtok(tmpPassphrase, ";");
+ 			if(passphrase){
+ 				base64EncodeStr = cg_http_url_decode(passphrase);
+ 				decodePhrase = cg_http_base64decode(base64EncodeStr);
+ 				if(!strcmp(decodePhrase, ":"))
+ 					return HTTP_AUTH_NOT_EXIST;
+ 				decodeUser = strtok(decodePhrase, ":");
+-				decodePasswd= strtok(NULL, " ");
++				decodePasswd = strtok(NULL, " ");
+ 
+ 				if(strcmp(decodeUser, user) != 0){
+ 					free(base64EncodeStr);
+@@ -974,8 +974,9 @@
+ 					free(cookie);
+ 					return HTTP_AUTH_SUCCESS;
+ 				}
+-				else
++				else{
+ 					return HTTP_AUTH_INVALID_PASSWORD;
++				}
+ 			}
+ 
+ 			free(cookie);
+Index: clinkc/src/cybergarage/http/chttp_cookie.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_cookie.c	2014-08-11 20:33:10.910949560 +0800
++++ clinkc/src/cybergarage/http/chttp_cookie.c	2014-08-11 20:36:18.692887522 +0800
+@@ -60,6 +60,12 @@
+ 	else if(strcasecmp(name, CG_HTTP_COOKIE_VERSION)==0 && strlen(value)>0 ){
+ 		strncpy(cookiedata->version, value, SIZE_COOKIE_VERSION);
+ 	}
++	else if(strcasecmp(name, CG_HTTP_COOKIE_SESSIONID)==0 && strlen(value)>0 ){
++		strncpy(cookiedata->sessionid, value, SIZE_COOKIE_SESSIONID);
++	}
++	else if(strcasecmp(name, CG_HTTP_COOKIE_AUTH)==0 && strlen(value)>0 ){
++		strncpy(cookiedata->authentication, value, SIZE_COOKIE_AUTH);
++	}
+ 	else{
+ 		/*The NAME=VALUE attribute-value pair MUST come first in each cookie.*/
+ 		if(strlen(value)>0 && strlen(cookiedata->name)==0){
+@@ -88,3 +94,37 @@
+ 	}
+ }
+ 
++/*************************
++* Function 	: cg_http_cookie_content_parse()
++* Description  :  parse the cookie content
++* Output 	: content value
++*************************/
++void cg_http_cookie_content_parse(CgHttpRequest *httpReq, CgHttpCookieData *cookiedata){
++	char *cookie = NULL;
++	int cookieLen = 0;
++
++	cookieLen = cg_strlen(cg_http_request_getcookie(httpReq));
++	if(cookieLen != 0){
++		cookie = (char *)malloc((cookieLen+1)*sizeof(char));
++		if(cookie == NULL){
++			printf("error: out of memory, %s,%d\n", __FUNCTION__, __LINE__);
++		}
++		else{
++			/*the authentication cookie should be "Authentication=XXX", XXX means passphrase */
++			strcpy(cookie, cg_http_request_getcookie(httpReq));
++			cg_http_cookie_header_parse(cookie, cookiedata);
++		}
++	}
++
++	free(cookie);
++}
++
++CgHttpCookieData *cg_http_cookie_new()
++{
++	CgHttpCookieData *cookiedata;
++
++	cookiedata = (CgHttpCookieData *)malloc(sizeof(CgHttpCookieData));
++	memset(cookiedata, '\0', sizeof(CgHttpCookieData));
++
++	return cookiedata;
++}
+\ No newline at end of file

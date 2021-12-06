@@ -1,0 +1,249 @@
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2018-01-23 10:59:03.704664604 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2018-01-23 10:59:03.912664605 +0800
+@@ -9,6 +9,7 @@
+ #include <pwd.h>
+ 
+ #define isdigit(c) ((c >= 0x30) && (c < 0x3A))
++#define isEmptyIns(obj) json_object_get_boolean(json_object_object_get(obj, "emptyIns"))
+ 
+ #define DAL_LOGIN_LEVEL "DAL_LOGIN_LEVEL"
+ #define DAL_LOGIN_USERNAME "DAL_LOGIN_USERNAME"
+@@ -506,6 +507,25 @@
+ {NULL,	NULL,	NULL}
+ };
+ 
++bool findInList(char *list, char *target, char *separator){
++	char *buf, *ptr, *tmp_ptr = NULL;
++
++	if(list == NULL || target == NULL || separator == NULL)
++		return false;
++
++	buf = strdup(list);
++	ptr = strtok_r(buf, separator, &tmp_ptr);
++	while(ptr != NULL){
++		if(!strcmp(ptr, target)){
++			free(buf);
++			return true;
++		}
++		ptr = strtok_r(NULL, separator, &tmp_ptr);
++	}
++	free(buf);
++	return false;
++}
++
+ bool getSpecificObj(zcfg_offset_t oid, char *key, json_type type, void *value, objIndex_t *outIid, struct json_object **outJobj)
+ {
+ 	objIndex_t iid;
+@@ -813,22 +833,29 @@
+  * return WAN and LAN list in Jason Array.
+  * Format:Jarray.i.NAME = Name
+  *           Jarray.i.IpIfacePath = IP.Interface.i
++ *           Jarray.i.PppIfacePath = PPP.Interface.i  (For PPPoE, PPPoA only)
+  *           Jarray.i.Type : LAN|WAN
+  *           Jarray.i.LinkType = ATM|PTM|ETH|PON|USB (For WAN only)
+  *           Jarray.i.ConnectionType = IP_Routed|IP_Bridged (For WAN only)
+  *           Jarray.i.Encapsulation = IPoE|IPoA|PPPoE|PPPoA (For WAN only, NUL if LinkType is USB))
+  *           Jarray.i.BindToIntfGrp = true|false (For WAN only)
++ *           Jarray.i.LowerLayerUp = true|false (For  IPoE, PPPoE only, other WAN LowerLayerUp value may not correct)
++ *           Jarray.i.WANConnectionReady = true|false (For  WAN only)
++ *           Jarray.i.DefaultGateway = true|false (For  WAN only)
+  *           Jarray.i.Group_WAN_IpIface = IP.Interface.i,IP.Interface.i,IP.Interface.i,... (For LAN only)
+  *           Jarray.i.BridgingBrPath = Bridging.Bridge.i (For LAN only)
+  */
+ zcfgRet_t getWanLanList(struct json_object **Jarray){
+ 	struct json_object *ipIfaceJarray, *pppIfaceJarray, *vlanTermJarray, *ethLinkJarray, *bridgeBrJarray;
+-	struct json_object *ipIfaceObj, *pppIfaceObj, *vlanTermObj, *ethLinkObj, *bridgeBrObj;
++	struct json_object *ipIfaceObj, *pppIfaceObj, *vlanTermObj, *ethLinkObj, *bridgeBrObj, *routerObj;
++	struct json_object *v4AddrJarray, *v6AddrJarray, *v4AddrObj, *v6AddrObj;
+ 	struct json_object *Jobj = NULL;
+ 	char ifacePath[32] = {0}, BridgingBrPath[32] = {0};
+-	int len, i;
++	int len, len2, i, j;
+ 	unsigned char idx;
+ 	const char *X_ZYXEL_BridgeName, *X_ZYXEL_SrvName, *X_ZYXEL_ConnectionType, *X_ZYXEL_IfName, *X_ZYXEL_Group_WAN_IpIface, *LowerLayers;
++	const char *Status, *ipIfaceStatus, *IPAddress, *X_ZYXEL_ActiveDefaultGateway;
++	const char *Username, Password;
+ 	char intfGrpWANList[256] = {0};
+ 	char *intf = NULL, *tmp_ptr = NULL;
+ 	const char *IpIfacePath = NULL;
+@@ -838,6 +865,9 @@
+ 	zcfgFeWholeObjJsonGet("Device.Ethernet.VLANTermination.", &vlanTermJarray);
+ 	zcfgFeWholeObjJsonGet("Device.Ethernet.Link.", &ethLinkJarray);
+ 	zcfgFeWholeObjJsonGet("Device.Bridging.Bridge.", &bridgeBrJarray);
++	zcfgFeWholeObjJsonGet("Device.Routing.Router.1.", &routerObj);
++
++	X_ZYXEL_ActiveDefaultGateway = Jgets(routerObj, "X_ZYXEL_ActiveDefaultGateway");
+ 
+ 	if(ipIfaceJarray==NULL||pppIfaceJarray==NULL||vlanTermJarray==NULL||ethLinkJarray==NULL||bridgeBrJarray==NULL)
+ 		return ZCFG_INTERNAL_ERROR;
+@@ -863,6 +893,54 @@
+ 		json_object_object_add(Jobj, "Type", json_object_new_string("WAN"));
+ 		json_object_object_add(Jobj, "ConnectionType", json_object_new_string(X_ZYXEL_ConnectionType));
+ 		json_object_object_add(Jobj, "BindToIntfGrp", json_object_new_boolean(false));
++		json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(false));
++		json_object_object_add(Jobj, "WANConnectionReady", json_object_new_boolean(false));
++		Jadds(Jobj, "PppIfacePath", "");
++		//json_object_object_add(Jobj, "pppUsername", json_object_new_string(""));
++		//json_object_object_add(Jobj, "pppPassword", json_object_new_string(""));
++		
++		if(findInList(X_ZYXEL_ActiveDefaultGateway, ifacePath, ","))
++			json_object_object_add(Jobj, "DefaultGateway", json_object_new_boolean(true));
++		else
++			json_object_object_add(Jobj, "DefaultGateway", json_object_new_boolean(false));
++
++		ipIfaceStatus = json_object_get_string(json_object_object_get(ipIfaceObj, "Status"));
++		if(ipIfaceStatus != NULL && !strcmp(ipIfaceStatus, "Up")){  //|| !strcmp(ipIfaceStatus, "LowerLayerDown")
++			v4AddrJarray = Jget(ipIfaceObj, "IPv4Address");
++			if(v4AddrJarray != NULL){
++				len2 = json_object_array_length(v4AddrJarray);
++				for(j=0;j<len2;j++){
++					v4AddrObj = json_object_array_get_idx(v4AddrJarray, j);
++					if(isEmptyIns(v4AddrObj))
++						continue;
++					IPAddress = json_object_get_string(json_object_object_get(v4AddrObj,"IPAddress"));
++					Status = json_object_get_string(json_object_object_get(v4AddrObj, "Status"));
++					if(IPAddress != NULL && Status != NULL && strcmp(IPAddress, "") && !strcmp(Status, "Enabled")){
++						json_object_object_add(Jobj, "WANConnectionReady", json_object_new_boolean(true));
++						break;
++					}
++				}
++			}
++			if(!Jgetb(Jobj, "WANConnectionReady")){
++			v6AddrJarray = Jget(ipIfaceObj, "IPv6Address");
++			if(v6AddrJarray != NULL){
++				len2 = json_object_array_length(v6AddrJarray);
++				for(j=0;j<len2;j++){
++					v6AddrObj = json_object_array_get_idx(v6AddrJarray, j);
++					if(isEmptyIns(v6AddrObj))
++						continue;
++					IPAddress = json_object_get_string(json_object_object_get(v6AddrObj,"IPAddress"));
++					Status = json_object_get_string(json_object_object_get(v6AddrObj, "Status"));
++					if(IPAddress != NULL && Status != NULL && strcmp(IPAddress, "") && !strcmp(Status, "Enabled")){
++						json_object_object_add(Jobj, "WANConnectionReady", json_object_new_boolean(true));
++						break;
++					}
++				}
++			}
++			}
++		}
++
++		
+ 		int count = 0;
+ 		const char *HigherLayer = "IP.Interface.";
+ 		while(count < 4){
+@@ -905,6 +983,10 @@
+ 				}
+ 			}
+ 			else if(!strncmp(HigherLayer, "PPP.Interface.", 14)){
++				Jadds(Jobj, "PppIfacePath", HigherLayer);
++				//replaceParam(Jobj, "pppUsername", pppIfaceObj, "Username");
++				//replaceParam(Jobj, "pppPassword", pppIfaceObj, "Password");
++						
+ 				if(!strncmp("Ethernet.VLANTermination.", LowerLayers, 25)){
+ 					sscanf(LowerLayers, "Ethernet.VLANTermination.%hhu", &idx);
+ 					vlanTermObj = json_object_array_get_idx(vlanTermJarray, idx-1);
+@@ -915,10 +997,16 @@
+ 				else if(!strncmp("ATM.Link.", LowerLayers, 9)){
+ 					json_object_object_add(Jobj, "Encapsulation", json_object_new_string("PPPoA"));
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("ATM"));
++					Status = json_object_get_string(json_object_object_get(pppIfaceObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else if(!strncmp("USB.Interface.", LowerLayers, 14)){
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("USB"));
++					Status = json_object_get_string(json_object_object_get(pppIfaceObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else{
+@@ -943,22 +1031,37 @@
+ 			else if(!strncmp("Ethernet.Link.", HigherLayer, 14)){
+ 				if(!strncmp("ATM.Link.", LowerLayers, 9)){
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("ATM"));
++					Status = json_object_get_string(json_object_object_get(ethLinkObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else if(!strncmp("PTM.Link.", LowerLayers, 9)){
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("PTM"));
++					Status = json_object_get_string(json_object_object_get(ethLinkObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else if(!strncmp("Ethernet.Interface.", LowerLayers, 19)){
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("ETH"));
++					Status = json_object_get_string(json_object_object_get(ethLinkObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else if(!strncmp("Optical.Interface.", LowerLayers, 18)){
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("PON"));
++					Status = json_object_get_string(json_object_object_get(ethLinkObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else if(!strncmp("USB.Interface.", LowerLayers, 14)){
+ 					json_object_object_add(Jobj, "LinkType", json_object_new_string("USB"));
++					Status = json_object_get_string(json_object_object_get(ethLinkObj, "Status"));
++					if(Status != NULL && strstr(Status, "Up"))
++						json_object_object_add(Jobj, "LowerLayerUp", json_object_new_boolean(true));
+ 					break;
+ 				}
+ 				else if(!strncmp("Bridging.Bridge.", LowerLayers, 16)){
+@@ -1439,25 +1542,6 @@
+ 	}
+ }
+ 
+-bool findInList(char *list, char *target, char *separator){
+-	char *buf, *ptr, *tmp_ptr = NULL;
+-
+-	if(list == NULL || target == NULL || separator == NULL)
+-		return false;
+-
+-	buf = strdup(list);
+-	ptr = strtok_r(buf, separator, &tmp_ptr);
+-	while(ptr != NULL){
+-		if(!strcmp(ptr, target)){
+-			free(buf);
+-			return true;
+-		}
+-		ptr = strtok_r(NULL, separator, &tmp_ptr);
+-	}
+-	free(buf);
+-	return false;
+-}
+-
+ 
+ /*
+  * only used for dalcmd, cant be used by httpd, since the httpd user is root.
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2018-01-23 10:59:03.236664600 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2018-01-23 10:59:03.912664605 +0800
+@@ -1891,6 +1891,8 @@
+ 	pramJobj = json_object_object_get(Jobj, "ipStatic");
+ 	if(pramJobj)
+ 		dhcpEnable = !json_object_get_boolean(pramJobj);
++	else if(strstr(CurrEncapsulation, "PPP") != NULL && !strcmp(Encapsulation, "IPoE")) //PPPoX to IPoE and not set static IP
++		dhcpEnable = true;
+ 	else
+ 		dhcpEnable = CrrrDhcpEnable;
+ 
+@@ -2383,7 +2385,7 @@
+ 	
+ 	//set ppp parameter
+ 	if(!replaceParam(pppIfaceObj, "Enable", Jobj, "Enable"))
+-		json_object_object_add(ipIfaceObj, "Enable", json_object_new_boolean(CurrEnable));
++		json_object_object_add(pppIfaceObj, "Enable", json_object_new_boolean(CurrEnable));
+ 		
+ 	replaceParam(pppIfaceObj, "Username", Jobj, "pppUsername");
+ 	replaceParam(pppIfaceObj, "Password", Jobj, "pppPassword");

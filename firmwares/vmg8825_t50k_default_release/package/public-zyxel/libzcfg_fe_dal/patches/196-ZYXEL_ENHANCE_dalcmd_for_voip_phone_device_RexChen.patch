@@ -1,0 +1,191 @@
+Index: libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_phone_device.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/voip/phone/zcfg_fe_dal_phone_phone_device.c	2017-05-24 21:10:53.006025865 +0800
++++ libzcfg_fe_dal-1.0/voip/phone/zcfg_fe_dal_phone_phone_device.c	2017-05-24 21:13:25.688041500 +0800
+@@ -15,10 +15,11 @@
+ #define ISDECTBINDING	1
+ 
+ dal_param_t VOIP_PHONEDEVICE_param[]={
+-	{"X_ZYXEL_LineSelect",						dalType_string,	0,	0,	NULL},
+-	{"DectLineSelect",							dalType_string,	0,	0,	NULL},
+-	{"phoneBoundingList",						dalType_string,	0,	0,	NULL},
+-	{"X_ZYXEL_Pound",							dalType_boolean,0,	0,	NULL},
++	{"Index",									dalType_int,	0,	0,	NULL},
++	{"LineSelect",								dalType_VoipLine,	0,	0,	NULL},
++	{"DectLineSelect",							dalType_string,	0,	0,	NULL,	NULL,	dalcmd_Forbid},	
++	{"phoneBoundingList",						dalType_MultiVoipLine,	0,	0,	NULL},
++	{"DialEnable",								dalType_boolean,0,	0,	NULL},
+ 	{NULL,										0,				0,	0,	NULL},
+ };
+ 
+@@ -45,6 +46,26 @@
+ objIndex_t phyIid = {0};
+ objIndex_t dectIid = {0};
+ 
++void zcfgFeDalShowVoipPhoneDevice(struct json_object *Jarray){
++	int i, len = 0;
++	struct json_object *obj = NULL;
++	if(json_object_get_type(Jarray) != json_type_array){
++		printf("wrong Jobj format!\n");
++		return;
++	}
++	printf("%-5s %-10s %-20s %-35s %-10s \n","Index","PHONE ID","Internal Number","Incoming SIP Number","Outgoing SIP Number");
++	len = json_object_array_length(Jarray);
++	for(i=0;i<len;i++){
++		obj = json_object_array_get_idx(Jarray, i);
++		printf("%-5s %-10s %-20s %-35s %-10s \n",
++			json_object_get_string(json_object_object_get(obj, "Index")),
++			json_object_get_string(json_object_object_get(obj, "PhoneID")),
++			json_object_get_string(json_object_object_get(obj, "InterNum")),
++			json_object_get_string(json_object_object_get(obj, "IncomingSIP")),
++			json_object_get_string(json_object_object_get(obj, "LineSelect")));
++	}
++}
++
+ void initPhyInterfaceGlobalObjects(){
+ 	phyIntfObj = NULL;
+ 	multiJobj = NULL;
+@@ -69,9 +90,9 @@
+ 
+ void getPhyIntfBasicInfo(struct json_object *Jobj){
+ 		if(!(VOIP_SIP_PHONE_MAPPING_BY_STD_PHY_REFERENCE_LIST & flag1)){
+-			X_ZYXEL_LineSelect = json_object_get_string(json_object_object_get(Jobj, "X_ZYXEL_LineSelect"));
++			X_ZYXEL_LineSelect = json_object_get_string(json_object_object_get(Jobj, "LineSelect"));
+ 			phoneBoundingList = json_object_get_string(json_object_object_get(Jobj, "phoneBoundingList"));
+-			X_ZYXEL_Pound = json_object_get_boolean(json_object_object_get(Jobj, "X_ZYXEL_Pound"));
++			X_ZYXEL_Pound = json_object_get_boolean(json_object_object_get(Jobj, "DialEnable"));
+ 		}
+ 		if(!(HIDE_DECT & flag1)){
+ 			LineSelect = json_object_get_string(json_object_object_get(Jobj, "DectLineSelect"));
+@@ -96,15 +117,15 @@
+ 	const char* path = NULL;
+ 	IID_INIT(phyIid);
+ 
+-	path = json_object_get_string(json_object_object_get(Jobj, "PhyItfpath"));
+-	if(path == NULL){
+-		return;
+-	}
++	phyIntfNum = json_object_get_int(json_object_object_get(Jobj, "Index"));
++	//if(path == NULL){
++	//	return;
++	//}
+ 	//printf("%s(): Edit Phyitf path : %s \n ",__FUNCTION__,path);
+ 
+ 	phonePortBinding = ISFXSBINDING;
+ 
+-	sscanf(path,"Device.Services.VoiceService.1.PhyInterface.%d",&phyIntfNum);
++	//sscanf(path,"Device.Services.VoiceService.1.PhyInterface.%d",&phyIntfNum);
+ 	//printf(" phyIntfNum: %d \n ",phyIntfNum);
+ 
+ 	phyIid.level = 2;
+@@ -217,7 +238,7 @@
+ 			strcpy(boundList, phoneBoundingList);
+ 			linePath = strtok(boundList,",");
+ 			while (linePath != NULL){
+-				sscanf(linePath,"1.VoiceProfile.%d.Line.%d", &profileNum, &lineNum);
++				sscanf(linePath,"VoiceProfile.%d.Line.%d", &profileNum, &lineNum);
+ 
+ 				if((profileNum == lineIid.idx[1])&&(lineNum == lineIid.idx[2])){
+ 					X_ZYXEL_PhyReferenceFXSList |= 1 << (portNum+phoneBindingBase-1);
+@@ -325,6 +346,67 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t zcfgFeDalVoipPhoneDeviceGet(struct json_object *Jarray, char *replyMsg){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *paramJobj = NULL;
++	struct json_object *InSIPJobj = NULL;
++	struct json_object *voipdeviceObj = NULL;
++	struct json_object *voipvoicelineObj = NULL;
++	objIndex_t voipdeviceIid = {0};
++	objIndex_t voipvoicelineIid = {0};
++	InSIPJobj = json_object_new_object();
++	int count = 1, PhyReferenceFXSList = 0, lenSIP1 = 0, lenSIP2 = 0;
++	char internum[8] = {0}, phoneId[8] = {0}, incomingSIP1[512] = {0}, incomingSIP2[512] = {0}, incomingSIP[16] = {0};
++	const char *directoryNumber = NULL;
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_LINE, &voipvoicelineIid, &voipvoicelineObj) == ZCFG_SUCCESS){
++		PhyReferenceFXSList = json_object_get_int(json_object_object_get(voipvoicelineObj, "X_ZYXEL_PhyReferenceFXSList"));
++		directoryNumber = json_object_get_string(json_object_object_get(voipvoicelineObj, "DirectoryNumber"));
++		if(PhyReferenceFXSList == 1){
++			strcat(incomingSIP1,directoryNumber);
++			strcat(incomingSIP1,",");
++		}
++		else if(PhyReferenceFXSList == 2){
++			strcat(incomingSIP2,directoryNumber);
++			strcat(incomingSIP2,",");
++		}
++		else if(PhyReferenceFXSList == 3){
++			strcat(incomingSIP1,directoryNumber);
++			strcat(incomingSIP1,",");
++			strcat(incomingSIP2,directoryNumber);
++			strcat(incomingSIP2,",");
++		}
++		zcfgFeJsonObjFree(voipvoicelineObj);
++	}
++	lenSIP1 = strlen(incomingSIP1);
++	lenSIP2 = strlen(incomingSIP2);
++	if(lenSIP1>0){
++		if(incomingSIP1[lenSIP1-1] == ',')
++			incomingSIP1[lenSIP1-1] = '\0';
++	}
++	if(lenSIP2>0){
++		if(incomingSIP2[lenSIP2-1] == ',')
++			incomingSIP2[lenSIP2-1] = '\0';
++	}
++	json_object_object_add(InSIPJobj, "incomingSIP1", json_object_new_string(incomingSIP1));
++	json_object_object_add(InSIPJobj, "incomingSIP2", json_object_new_string(incomingSIP2));
++	while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_VOICE_PHY_INTF, &voipdeviceIid, &voipdeviceObj) == ZCFG_SUCCESS){
++		paramJobj = json_object_new_object();
++		json_object_object_add(paramJobj, "Index", json_object_new_int(count));
++		sprintf(phoneId,"PHONE%d",count);
++		json_object_object_add(paramJobj, "PhoneID", json_object_new_string(phoneId));
++		sprintf(internum,"**%d%d",voipdeviceIid.idx[0],voipdeviceIid.idx[1]);
++		json_object_object_add(paramJobj, "InterNum", json_object_new_string(internum));
++		sprintf(incomingSIP,"incomingSIP%d",count);
++		json_object_object_add(paramJobj, "IncomingSIP", JSON_OBJ_COPY(json_object_object_get(InSIPJobj, incomingSIP)));
++		json_object_object_add(paramJobj, "LineSelect", JSON_OBJ_COPY(json_object_object_get(voipdeviceObj, "X_ZYXEL_LineSelect")));
++		count++;
++		json_object_array_add(Jarray, paramJobj);
++		zcfgFeJsonObjFree(voipdeviceObj);
++	}
++	return ret;
++}
++
++
+ zcfgRet_t zcfgFeDalVoipPhoneDevice(const char *method, struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -340,8 +422,11 @@
+ 		}
+ 	}
+ 	else if(!strcmp(method, "GET")){
+-		ret = zcfgFeDalPhyItfGet(Jobj, NULL);
++		ret = zcfgFeDalVoipPhoneDeviceGet(Jobj, NULL);
+ 	}
++	/*else if(!strcmp(method, "GET")){
++		ret = zcfgFeDalPhyItfGet(Jobj, NULL);
++	}*/
+ 
+ 	return ret;
+ }
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2017-05-24 21:10:54.378025841 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2017-05-24 21:13:58.238041500 +0800
+@@ -193,6 +193,7 @@
+ extern void zcfgFeDalShowDnsRoute(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipCallRule(struct json_object *Jarray);
+ extern void zcfgFeDalShowVoipRegion(struct json_object *Jarray);
++extern void zcfgFeDalShowVoipPhoneDevice(struct json_object *Jarray);
+ extern void zcfgFeDalShowFirewallProtocol(struct json_object *Jarray);
+ 
+ dal_handler_t dalHandler[] = {
+@@ -249,7 +250,7 @@
+ {"VOIPLINE",		VOIP_LINE_param,	zcfgFeDalVoipLine,		NULL,						"get|add|edit|delete", ""},//SIP
+ {"VOIPPROFILE",		VOIP_PROFILE_param,	zcfgFeDalVoipProfile,	NULL,						"get|add|edit|delete", ""},//SIP
+ {"PHONEREGION",		VOIP_REGION_param,	zcfgFeDalVoipPhoneRegion,zcfgFeDalShowVoipRegion,	"get|edit",				"Phone"},//Phone
+-{"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice,NULL,					"get|edit",			""},//Phone
++{"PHONEDEVICE",		VOIP_PHONEDEVICE_param,	zcfgFeDalVoipPhoneDevice,zcfgFeDalShowVoipPhoneDevice,					"get|edit",			"Phone"},//Phone
+ {"PHONEDECT",		VOIP_PHONEDECT_param,zcfgFeDalVoipPhoneDECT,NULL,						"edit",				""},//Phone
+ {"CALLRULE",		VOIP_CALLRULE_param,zcfgFeDalVoipCallRule,	zcfgFeDalShowVoipCallRule,	"get|edit",			"Call_Rule"},//Call_Rule
+ {"CALLBLOCK",		VOIP_CALLBLOCK_param,zcfgFeDalVoipCallBlock,NULL,						"edit",				""},//Call_Rule

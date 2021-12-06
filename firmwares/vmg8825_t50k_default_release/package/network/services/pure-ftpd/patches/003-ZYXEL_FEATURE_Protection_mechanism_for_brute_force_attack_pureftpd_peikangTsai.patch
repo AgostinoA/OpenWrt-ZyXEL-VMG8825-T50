@@ -1,0 +1,183 @@
+Index: pure-ftpd-1.0.30/src/ftpd.c
+===================================================================
+--- pure-ftpd-1.0.30.orig/src/ftpd.c	2017-05-24 13:33:52.546593843 +0800
++++ pure-ftpd-1.0.30/src/ftpd.c	2017-05-24 13:34:50.234594320 +0800
+@@ -37,6 +37,21 @@
+ # include <dmalloc.h>
+ #endif
+ 
++#include "zcfg_common.h"
++#include "zcfg_rdm_obj.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_fe_rdm_struct.h"
++
++enum{		
++	GROUP_IID=0,
++	ACCOUNT_IID=1,
++	SIZE_OF_INTEGER = sizeof("2147483648")-1,
++	SIZE_OF_PATH = sizeof("/tmp/login_tmp_")+ SIZE_OF_INTEGER + SIZE_OF_INTEGER -1,
++	SIZE_OF_VALUE = 64 // maximum supported username length is 64
++};
++
++
++
+ int free_memory_size;
+ 
+ void disablesignals(void)
+@@ -1533,6 +1548,57 @@
+ #endif
+ }
+ 
++void add_authorize_fail_cnt(int *cur_user_idx, int login_fail_cnt){
++
++	FILE *fd = NULL;
++	char path[SIZE_OF_PATH+1] = {0};
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	sprintf(path, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]);
++	fd = fopen(path, "w");
++	if(fd == NULL){
++		return;
++	}
++	fprintf(fd, "%d:%d", login_fail_cnt, ts.tv_sec);
++	fclose(fd);
++}
++
++void reset_authorize_fail_cnt(int *cur_user_idx){
++	char path[SIZE_OF_PATH+1] = {0};
++	sprintf(path, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]);
++	remove(path);
++}
++
++int chk_account_is_locked(int *cur_user_idx, int *login_fail_cnt, int last_login_time, int retry_times, int lock_period){
++
++	FILE* fd = NULL;
++	char value[SIZE_OF_VALUE+1] = {0};
++	struct timespec ts;		
++	sprintf(value, "/tmp/login_tmp%d_%d", cur_user_idx[GROUP_IID], cur_user_idx[ACCOUNT_IID]);
++	fd = fopen(value, "r");
++	if(fd == NULL || fscanf(fd, "%d:%d", login_fail_cnt, &last_login_time) != 2){
++		// not in monitoring period or incorrect format
++		return 0;
++	}
++	fclose(fd);
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	if((ts.tv_sec - last_login_time) < lock_period){ // in monitoring period
++		if((*login_fail_cnt < retry_times) || retry_times == 0){
++			return 0; // unlock stat
++		}
++		else{	
++			return 1; // lock stat
++		}
++	}
++	else{ // out of monitoring period, reset cnt and remove tmp file
++		*login_fail_cnt = 0;
++		reset_authorize_fail_cnt(cur_user_idx);
++		return 0;
++	}
++	return 0;
++}
++
++
+ static AuthResult pw_check(const char *account, const char *password,
+                            const struct sockaddr_storage * const sa,
+                            const struct sockaddr_storage * const peer)
+@@ -1605,8 +1671,7 @@
+ #ifdef NON_ROOT_FTP
+             result.uid = geteuid();
+             result.gid = getegid();
+-#endif      
+-            
++#endif               
+             return result;
+         }
+         auth_scan = auth_scan->next;
+@@ -1730,6 +1795,12 @@
+     gid_t *groups = NULL;
+     char *hd;
+     int ngroups;
++	int retry_times = 0;
++	int lock_period = 0;
++	int cur_user_idx[2] = {-1};
++	int login_fail_cnt = 0; 
++	int last_login_time = 0;
++
+ #if defined(NGROUPS_MAX) && NGROUPS_MAX > 0
+     int ngroups_max = NGROUPS_MAX; /* Use the compile time value */
+ #else
+@@ -1754,6 +1825,25 @@
+         addreply_noformat(530, MSG_WHOAREYOU);
+         return;
+     }
++
++	objIndex_t logAccountObjIid;
++	rdm_ZyLogCfgGpAccount_t *accountObj = NULL;
++	IID_INIT(logAccountObjIid);	
++	while(zcfgFeObjStructGetNext(RDM_OID_ZY_LOG_CFG_GP_ACCOUNT, &logAccountObjIid, (void **) &accountObj) == ZCFG_SUCCESS) {
++		if (!strcmp(accountObj->Username, account)){	
++			retry_times = accountObj->AccountRetryTime;
++			lock_period = accountObj->AccountLockTime;
++			cur_user_idx[GROUP_IID] = logAccountObjIid.idx[GROUP_IID] ;
++			cur_user_idx[ACCOUNT_IID] = logAccountObjIid.idx[ACCOUNT_IID] ;
++		}
++		free(accountObj);
++	}
++
++	if(chk_account_is_locked(cur_user_idx, &login_fail_cnt, last_login_time, retry_times, lock_period)){
++		puts("Account has been blocked temporarily, please try later!");
++		logfile(LOG_WARNING, "Account has been blocked temporarily, please try later!");
++		return;
++	}
+     authresult = pw_check(account, password, &ctrlconn, &peer);
+     {
+         /* Clear password from memory, paranoia */        
+@@ -1765,6 +1855,10 @@
+     }
+     if (authresult.auth_ok != 1) {
+         tapping++;
++		if (authresult.auth_ok == -1){
++			login_fail_cnt++;
++			add_authorize_fail_cnt(cur_user_idx, login_fail_cnt);
++		}
+         randomsleep(tapping);
+         addreply_noformat(530, MSG_AUTH_FAILED);
+         doreply();
+@@ -1787,7 +1881,7 @@
+         doreply();
+         return;
+     }
+-    
++    reset_authorize_fail_cnt(cur_user_idx);
+ #ifdef PER_USER_LIMITS
+     if (per_user_max > 0U && ftpwho_read_count(account) >= per_user_max) {
+         addreply(421, MSG_PERUSER_MAX, (unsigned long) per_user_max);
+Index: pure-ftpd-1.0.30/src/main.c
+===================================================================
+--- pure-ftpd-1.0.30.orig/src/main.c	2014-01-15 13:20:12.000000000 +0800
++++ pure-ftpd-1.0.30/src/main.c	2017-05-24 13:33:52.562593843 +0800
+@@ -1,7 +1,12 @@
+ #include <config.h>
+ #include "ftpd.h"
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++
+ 
+ int main(int argc, char *argv[])
+ {
++	zcfgEidInit(ZCFG_EID_TELNETD, NULL);
+     return pureftpd_start(argc, argv, NULL);
+ }
+Index: pure-ftpd-1.0.30/configure.ac
+===================================================================
+--- pure-ftpd-1.0.30.orig/configure.ac	2014-01-15 13:20:12.000000000 +0800
++++ pure-ftpd-1.0.30/configure.ac	2017-05-24 13:33:52.562593843 +0800
+@@ -169,7 +169,7 @@
+     AC_MSG_RESULT([success])
+   fi
+ fi
+-
++LIBS="$LIBS -ljson -lzcfg_msg -lzcmd_tool -lzcfg_fe_rdm_access -lzcfg_fe_rdm_struct"
+ AC_CHECK_LIB(sendfile, sendfile)
+ 
+ dnl Types - continued

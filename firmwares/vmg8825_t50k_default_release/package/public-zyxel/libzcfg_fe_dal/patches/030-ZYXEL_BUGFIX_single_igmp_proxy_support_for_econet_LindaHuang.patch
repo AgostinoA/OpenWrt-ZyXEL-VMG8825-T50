@@ -1,0 +1,287 @@
+Index: libzcfg_fe_dal-1.0/Makefile
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/Makefile	2016-09-29 15:24:23.067743931 +0800
++++ libzcfg_fe_dal-1.0/Makefile	2016-09-29 15:24:23.075743930 +0800
+@@ -23,6 +23,10 @@
+ CFLAGS += -DZYXEL_WAN_MAC
+ endif
+ 
++ifeq ($(CONFIG_ZyXEL_WEB_GUI_SINGLE_IGMP_MLD),y)
++CFLAGS += -DZyXEL_WEB_GUI_SINGLE_IGMP_MLD
++endif
++
+ LDFLAGS += $(LIB_PATH) $(LINK_LIB)
+ CFLAGS += $(INC_PATH) -std=gnu99
+ 
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2016-09-29 15:24:23.063743931 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2016-09-30 15:04:30.822946117 +0800
+@@ -1684,9 +1684,17 @@
+ 		}
+ 	}
+ 	else if(!CurrIgmpEnable && igmpEnable){ //disable to enable
++#ifndef ZyXEL_WEB_GUI_SINGLE_IGMP_MLD
+ 		if(genNewInterface(",", newInterface, Interface, ipIfacePath, true)){
+ 			json_object_object_add(igmpObj, "Interface", json_object_new_string(newInterface));
+ 		}
++#else
++		char IgmpIntf[321] = {0};
++		DisableSameWanTypeIgmpMld(IgmpIntf, Interface, ipIfacePath, 0);
++		if(genNewInterface(",", newInterface, IgmpIntf, ipIfacePath, true)){
++			json_object_object_add(igmpObj, "Interface", json_object_new_string(newInterface));
++		}
++#endif	
+ 		else{
+ 			if(igmpObj) {zcfgFeJsonObjFree(igmpObj);}
+ 		}
+@@ -1695,7 +1703,6 @@
+ 		if(igmpObj) {zcfgFeJsonObjFree(igmpObj);}
+ 	}
+ 
+-
+ 	/* MLD */
+ 	Interface = json_object_get_string(json_object_object_get(mldObj, "Interface"));
+ 	if(CurrMldEnable && mldEnable){ //enable to enable
+@@ -1710,9 +1717,17 @@
+ 		}
+ 	}
+ 	else if(!CurrMldEnable && mldEnable){ //disable to enable
++#ifndef ZyXEL_WEB_GUI_SINGLE_IGMP_MLD
+ 		if(genNewInterface(",", newInterface, Interface, ipIfacePath, true)){
+ 			json_object_object_add(mldObj, "Interface", json_object_new_string(newInterface));
+ 		}
++#else
++		char MldIntf[321] = {0};
++		DisableSameWanTypeIgmpMld(MldIntf, Interface, ipIfacePath, 0);	
++		if(genNewInterface(",", newInterface, MldIntf, ipIfacePath, true)){
++			json_object_object_add(mldObj, "Interface", json_object_new_string(newInterface));
++		}
++#endif
+ 		else{
+ 			if(mldObj) {zcfgFeJsonObjFree(mldObj);}
+ 		}
+@@ -1724,6 +1739,223 @@
+ 	return ret;
+ }
+ 
++zcfgRet_t DisableSameWanTypeIgmpMld(char *newInterface, const char *oldInterface, char *Ifname, int IgmpMld)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	struct json_object *pramJobj = NULL;
++	char buff[321] = {0}, *intf = NULL, *tmp_ptr = NULL;
++	char ipWanType[16] = {0}, otherWanType[16] = {0};	
++
++	memset(ipWanType, 0, sizeof(ipWanType));
++
++	IpIfaceWanTypeGet(ipIfacePath, ipWanType);
++	
++	if(strcmp(ipWanType,"") == 0)
++		strncpy(ipWanType, Type, sizeof(ipWanType)-1);	
++	
++	//disable other same wan type igmp and mld proxy
++	strcpy(buff, oldInterface);
++	intf = strtok_r(buff, ",", &tmp_ptr);
++	while(intf != NULL)
++	{
++		memset(otherWanType, 0, sizeof(otherWanType));
++		IpIfaceWanTypeGet(intf, otherWanType);;
++			
++		if(strcmp(ipWanType,otherWanType) == 0)
++		{			
++			if(IgmpMld)
++				genNewInterface(",", newInterface, oldInterface, intf, false);
++			else
++				genNewInterface(",", newInterface, oldInterface, intf, false);			
++	
++			return ret;
++		}
++		
++		intf = strtok_r(NULL, ",", &tmp_ptr);
++	}
++
++	strcpy(newInterface, oldInterface);
++	return ret;
++}
++
++zcfgRet_t IpIfaceWanTypeGet(char *Ifname, char *WanType){
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	const char *HigherLayer;
++	const char *LowerLayer;
++	int count = 0;	
++	
++	memset(WanType, 0, sizeof(WanType));
++	
++	struct json_object *atmObj = NULL;
++	struct json_object *ptmObj = NULL;
++	struct json_object *ethObj = NULL;
++	struct json_object *optObj = NULL;
++	struct json_object *ethlink = NULL;
++	struct json_object *vlanterm = NULL;
++	struct json_object *pppObj = NULL;
++	struct json_object *ipObj = NULL;
++
++	objIndex_t atmIid = {0};
++	objIndex_t ptmIid = {0};
++	objIndex_t ethIid = {0};
++	objIndex_t optIid = {0};
++	objIndex_t ethlinkIid = {0};
++	objIndex_t vlantermIid = {0};
++	objIndex_t pppIid = {0};	
++	objIndex_t ipIid = {0};	
++	
++	IID_INIT(ipIid);
++	ipIid.level = 1;
++	sscanf(Ifname, "IP.Interface.%hhu", &ipIid.idx[0]);
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_IP_IFACE, &ipIid, &ipObj) != ZCFG_SUCCESS)
++		return ZCFG_REQUEST_REJECT;		
++
++	LowerLayer = json_object_get_string(json_object_object_get(ipObj, "LowerLayers"));		
++	HigherLayer = "IP.Interface.";
++	strcpy(CurrMode, json_object_get_string(json_object_object_get(ipObj, "X_ZYXEL_ConnectionType")));
++	
++	while(count < 4)
++	{
++		count++;
++		if(!strncmp(HigherLayer, "IP.Interface.", 13))
++		{
++			if(!strncmp(LowerLayer, "PPP.Interface.", 14))
++			{
++				IID_INIT(pppIid);
++				pppIid.level = 1;
++				sscanf(LowerLayer, "PPP.Interface.%hhu", &pppIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PPP_IFACE, &pppIid, &pppObj);
++				HigherLayer = LowerLayer;
++				LowerLayer = json_object_get_string(json_object_object_get(pppObj, "LowerLayers"));
++			}
++			else if(!strncmp("Ethernet.VLANTermination.", LowerLayer, 25))
++			{
++				IID_INIT(vlantermIid);
++				vlantermIid.level = 1;
++				sscanf(LowerLayer, "Ethernet.VLANTermination.%hhu", &vlantermIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_VLAN_TERM, &vlantermIid, &vlanterm);
++				HigherLayer = LowerLayer;
++				LowerLayer = json_object_get_string(json_object_object_get(vlanterm, "LowerLayers"));
++			}
++			else if(!strncmp("ATM.Link.", LowerLayer, 9) && !strcmp("IP_Routed", CurrMode))
++			{
++				IID_INIT(atmIid);
++				atmIid.level = 1;
++				sscanf(LowerLayer, "ATM.Link.%hhu", &atmIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ATM_LINK, &atmIid, &atmObj);		
++				strcpy(WanType, "ATM");
++				break;
++			}
++			else
++			{
++				return ZCFG_REQUEST_REJECT;
++			}
++		}
++		else if(!strncmp(HigherLayer, "PPP.Interface.", 14))
++		{
++			if(!strncmp("Ethernet.VLANTermination.", LowerLayer, 25))
++			{
++				IID_INIT(vlantermIid);
++				vlantermIid.level = 1;
++				sscanf(LowerLayer, "Ethernet.VLANTermination.%hhu", &vlantermIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_VLAN_TERM, &vlantermIid, &vlanterm);
++				HigherLayer = LowerLayer;
++				LowerLayer = json_object_get_string(json_object_object_get(vlanterm, "LowerLayers"));		
++			}
++			else if(!strncmp("ATM.Link.", LowerLayer, 9))
++			{
++				IID_INIT(atmIid);
++				atmIid.level = 1;
++				sscanf(LowerLayer, "ATM.Link.%hhu", &atmIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ATM_LINK, &atmIid, &atmObj);
++				strcpy(WanType, "ATM");		
++				break;
++			}
++			else
++			{
++				return ZCFG_REQUEST_REJECT;
++			}
++		}
++		else if(!strncmp("Ethernet.VLANTermination.", HigherLayer, 25))
++		{
++			if(!strncmp("Ethernet.Link.", LowerLayer, 14))
++			{
++				IID_INIT(ethlinkIid);
++				ethlinkIid.level = 1;
++				sscanf(LowerLayer, "Ethernet.Link.%hhu", &ethlinkIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_LINK, &ethlinkIid, &ethlink);
++				HigherLayer = LowerLayer;
++				LowerLayer = json_object_get_string(json_object_object_get(ethlink, "LowerLayers"));
++			}
++			else
++			{
++				return ZCFG_REQUEST_REJECT;
++			}
++		}
++		else if(!strncmp("Ethernet.Link.", HigherLayer, 14))
++		{
++			if(!strncmp("ATM.Link.", LowerLayer, 9))
++			{
++				IID_INIT(atmIid);
++				atmIid.level = 1;
++				sscanf(LowerLayer, "ATM.Link.%hhu", &atmIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ATM_LINK, &atmIid, &atmObj);
++				strcpy(WanType, "ATM");		
++				break;
++			}
++			else if(!strncmp("PTM.Link.", LowerLayer, 9))
++			{
++				IID_INIT(ptmIid);
++				ptmIid.level = 1;
++				sscanf(LowerLayer, "PTM.Link.%hhu", &ptmIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_PTM_LINK, &ptmIid, &ptmObj);
++				strcpy(WanType, "PTM");
++				break;
++			}
++			else if(!strncmp("Ethernet.Interface.", LowerLayer, 19))
++			{
++				IID_INIT(ethIid);
++				ethIid.level = 1;
++				sscanf(LowerLayer, "Ethernet.Interface.%hhu", &ethIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_ETH_IFACE, &ethIid, &ethObj);
++				strcpy(WanType, "ETH");
++				break;
++			}
++			else if(!strncmp("Optical.Interface.", LowerLayer, 18))
++			{
++				IID_INIT(optIid);
++				optIid.level = 1;
++				sscanf(LowerLayer, "Optical.Interface.%hhu", &optIid.idx[0]);
++				zcfgFeObjJsonGetWithoutUpdate(RDM_OID_OPT_INTF, &optIid, &optObj);				
++				strcpy(WanType, "GPON");
++				break;
++			}
++			else if(!strcmp("", LowerLayer)){
++				if(json_object_get_boolean(json_object_object_get(ethlink, "X_ZYXEL_OrigEthWAN")) == false)
++				{
++					return ZCFG_REQUEST_REJECT;
++				}
++			}
++			else{
++				return ZCFG_REQUEST_REJECT;
++			}
++		}
++	}
++
++	//release	
++	if(atmObj) json_object_put(atmObj);
++	if(ptmObj) json_object_put(ptmObj);
++	if(ethObj) json_object_put(ethObj);
++	if(optObj) json_object_put(optObj);
++	if(ethlink) json_object_put(ethlink);
++	if(vlanterm) json_object_put(vlanterm);
++	if(pppObj) json_object_put(pppObj);
++	if(ipObj) json_object_put(ipObj);
++	
++	return ret;
++}
++
++
+ zcfgRet_t editDefaultGwSetting(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	//objIndex_t iid;

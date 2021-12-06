@@ -1,0 +1,433 @@
+Index: libzyutil-1.0/Makefile
+===================================================================
+--- libzyutil-1.0.orig/Makefile	2015-04-27 10:02:23.543790750 +0800
++++ libzyutil-1.0/Makefile	2015-04-27 10:05:45.771725652 +0800
+@@ -1,14 +1,15 @@
+ CURRENT_DIR = $(shell pwd)
+ COMMON_ZCFG_INCLUDE_DIR = $(CURRENT_DIR)/../../../private/apps/zcfg/include
+ 
+-PLATFORM=broadcom
++#PLATFORM=broadcom
++
+ 
+ LIBS_PATH = -L.
+ LINK_LIBS = -ljson
+ 
+ INC_PATH = -I$(TOOLCHAIN)/include -I. -I$(COMMON_ZCFG_INCLUDE_DIR)
+ 
+-ifeq ($(PLATFORM),broadcom)
++ifeq ($(ZCFG_PLATFORM),BROADCOM)
+ ZCFLAGS += -DBRCM_PLATFORM -DBCMTAG_EXE_USE
+ 
+ ALLOWED_INCLUDE_PATHS += -I$(INC_BRCMDRIVER_PUB_PATH)/$(BRCM_BOARD)  \
+@@ -23,13 +24,20 @@
+ ZCFLAGS += -DZYXEL=1 -std=gnu99
+ LIB_OBJS = common.o flash.o skconn.o
+ 
++ifeq ($(ZCFG_PLATFORM),BROADCOM)
++LIB_OBJS += libzyutil_brcm_wrapper.o
++else ifeq ($(ZCFG_PLATFORM),ECONET)
++ZCFLAGS += -DECONET_PLATFORM
++LIB_OBJS += libzyutil_econet_wrapper.o
++endif
++
+ .PHONY : libzyutil
+ 
+ all: clean libzyutil
+ 
+ ### Implicit rules ###
+ .c.o:
+-	$(CC) -c $(CFLAGS) $(LIBS_PATH) $(INC_PATH) $< -o $@
++	$(CC) -c -fPIC $(CFLAGS) $(LIBS_PATH) $(INC_PATH) $< -o $@
+ 
+ libzyutil : $(LIB_OBJS)
+ 	@echo $(CFLAGS) 
+@@ -49,7 +57,9 @@
+ BUILD_DIR:=$(subst /userspace, /userspace,$(CURR_DIR))
+ BUILD_DIR:=$(word 1, $(BUILD_DIR))
+ 
++ifeq ($(ZCFG_PLATFORM),BROADCOM)
+ include $(BUILD_DIR)/make.common
++endif
+ 
+ CFLAGS+= $(ZCFLAGS) $(EXTRA_CFLAGS)
+ 
+Index: libzyutil-1.0/common.c
+===================================================================
+--- libzyutil-1.0.orig/common.c	2015-04-27 10:02:23.483760747 +0800
++++ libzyutil-1.0/common.c	2015-04-27 10:02:23.615826750 +0800
+@@ -18,14 +18,16 @@
+ 
+ #include "zyutil.h"
+ 
+-#ifdef BRCM_PLATFORM
++#include "libzyutil_wrapper.h"
+ 
++#if 0	//move to libzyutil_brcm_wrapper.c
++#ifdef BRCM_PLATFORM
+ #include "board.h"
+ #include "bcm_hwdefs.h"
+ #include "bcmTag.h"
+ 
+ #define BOARD_DEVICE_NAME  "/dev/brcmboard"
+-
++#endif
+ #endif
+ 
+ /*
+@@ -300,6 +302,8 @@
+    return ZCFG_SUCCESS;
+ }
+ 
++
++#if 0	//move to libzyutil_brcm_wrapper.c
+ #ifdef BRCM_PLATFORM
+ #ifdef SUPPORT_LANVLAN
+ zcfgRet_t zyUtilISetIfState(char *ifName, bool up)
+@@ -513,6 +517,7 @@
+ 	return ZCFG_SUCCESS;
+ }
+ #endif
++#endif
+ 
+ 
+ /**
+Index: libzyutil-1.0/libzyutil_brcm_wrapper.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzyutil-1.0/libzyutil_brcm_wrapper.c	2015-04-27 10:02:23.643840751 +0800
+@@ -0,0 +1,226 @@
++#ifdef BRCM_PLATFORM
++
++#include "libzyutil_brcm_wrapper.h"
++
++/*from common.c*/
++#include "board.h"
++#include "bcm_hwdefs.h"
++#include "bcmTag.h"
++
++#define BOARD_DEVICE_NAME  "/dev/brcmboard"
++
++#ifdef SUPPORT_LANVLAN
++zcfgRet_t zyUtilISetIfState(char *ifName, bool up)
++{
++	int sockfd = 0;
++	struct ifreq ifr;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++
++	if(ifName == NULL) {
++        zcfgLog(ZCFG_LOG_ERR, "%s : Cannot bring up NULL interface\n", __FUNCTION__);
++		ret = ZCFG_INTERNAL_ERROR;
++	}
++	else {
++		/* Create a channel to the NET kernel. */
++		if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
++            zcfgLog(ZCFG_LOG_ERR, "%s : Cannot create socket to the NET kernel\n", __FUNCTION__);
++			ret = ZCFG_INTERNAL_ERROR;
++		}
++		else {
++			strncpy(ifr.ifr_name, ifName, IFNAMSIZ);
++            // get interface flags
++			if(ioctl(sockfd, SIOCGIFFLAGS, &ifr) != -1) {
++				if(up)
++					ifr.ifr_flags |= IFF_UP;
++				else
++					ifr.ifr_flags &= (~IFF_UP);
++
++				if(ioctl(sockfd, SIOCSIFFLAGS, &ifr) < 0) {
++					zcfgLog(ZCFG_LOG_ERR, "%s : Cannot ioctl SIOCSIFFLAGS on the socket\n", __FUNCTION__);
++					ret = ZCFG_INTERNAL_ERROR;
++				}
++			}
++			else {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Cannot ioctl SIOCGIFFLAGS on the socket\n", __FUNCTION__);
++				ret = ZCFG_INTERNAL_ERROR;
++			}
++
++			close(sockfd);
++		}
++	}
++
++	return ret;
++}
++#endif
++
++static uint32_t getCrc32(unsigned char *pdata, uint32_t size, uint32_t crc)
++{
++	while (size-- > 0)
++		crc = (crc >> 8) ^ Crc32_table[(crc ^ *pdata++) & 0xff];
++
++	return crc;
++}
++
++int nvramDataWrite(NVRAM_DATA *nvramData)
++{
++	int boardFd = 0;
++	int rc = 0;
++	unsigned int offset = 0;
++	BOARD_IOCTL_PARMS ioctlParms;
++	uint32_t crc = CRC32_INIT_VALUE;
++
++	nvramData->ulCheckSum = 0;
++	crc = getCrc32((unsigned char *)nvramData, sizeof(NVRAM_DATA), crc);
++	nvramData->ulCheckSum = crc;
++
++	boardFd = open(BOARD_DEVICE_NAME, O_RDWR);
++
++	if(boardFd != -1) {
++		ioctlParms.string = nvramData;
++		ioctlParms.strLen = sizeof(NVRAM_DATA);
++		ioctlParms.offset = offset;
++		ioctlParms.action = NVRAM;
++		ioctlParms.buf    = NULL;
++		ioctlParms.result = -1;
++
++		rc = ioctl(boardFd, BOARD_IOCTL_FLASH_WRITE, &ioctlParms);
++		close(boardFd);
++
++		if(rc < 0) {
++			printf("%s Set NVRAM Failure\n", __FUNCTION__);
++			return -1;
++		}
++	}
++	else {
++		return -1;
++	}
++
++	return 0;
++}
++
++int nvramDataGet(NVRAM_DATA *nvramData)
++{
++	int boardFd = 0;
++	int rc = 0;
++	unsigned int offset = 0;
++	BOARD_IOCTL_PARMS ioctlParms;
++
++	boardFd = open(BOARD_DEVICE_NAME, O_RDWR);
++
++	if(boardFd != -1) {
++		ioctlParms.string = nvramData;
++		ioctlParms.strLen = sizeof(NVRAM_DATA);
++		ioctlParms.offset = offset;
++		ioctlParms.action = NVRAM;
++		ioctlParms.buf    = NULL;
++		ioctlParms.result = -1;
++
++		rc = ioctl(boardFd, BOARD_IOCTL_FLASH_READ, &ioctlParms);
++		close(boardFd);
++
++		if(rc < 0) {
++			printf("%s Get NVRAM Failure\n", __FUNCTION__);
++			return -1;
++		}
++	}
++	else {
++		return -1;
++	}
++
++	return 0;
++}
++
++zcfgRet_t zyUtilIGetSerailNum(char *sn)
++{
++	NVRAM_DATA nvramData;
++
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++
++	strcpy(sn, nvramData.SerialNumber);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetBaseMAC(char *mac)
++{
++	NVRAM_DATA nvramData;
++
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++
++        sprintf(mac ,"%02X%02X%02X%02X%02X%02X",
++			nvramData.ucaBaseMacAddr[0],
++			nvramData.ucaBaseMacAddr[1],
++        	nvramData.ucaBaseMacAddr[2],
++        	nvramData.ucaBaseMacAddr[3],
++        	nvramData.ucaBaseMacAddr[4],
++        	nvramData.ucaBaseMacAddr[5]
++	);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetNumberOfMAC(int *num)
++{
++	NVRAM_DATA nvramData;
++
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++
++    if(num) *num =  nvramData.ulNumMacAddrs;
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetProductName(char *pdname)
++{
++	NVRAM_DATA nvramData;
++
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++
++	strcpy(pdname, nvramData.ProductName);
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion)
++{
++	NVRAM_DATA nvramData;
++#ifdef ELISA_CUSTOMIZATION
++	char fwId[60] = "VMG3926-B10A_Elisa3_";
++#endif
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++#ifdef ELISA_CUSTOMIZATION
++	strcat(fwId, nvramData.FirmwareVersion);
++	strcpy(fwversion, fwId);
++#else
++	strcpy(fwversion, nvramData.FirmwareVersion);
++#endif
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetSerialNumber(char *serianumber)
++{
++	NVRAM_DATA nvramData;
++
++	memset(&nvramData, 0, sizeof(NVRAM_DATA));
++
++	if(nvramDataGet(&nvramData) < 0)
++		return ZCFG_INTERNAL_ERROR;
++
++	strcpy(serianumber, nvramData.SerialNumber);
++	return ZCFG_SUCCESS;
++}
++
++
++
++#endif
+Index: libzyutil-1.0/libzyutil_brcm_wrapper.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzyutil-1.0/libzyutil_brcm_wrapper.h	2015-04-27 10:02:23.643840751 +0800
+@@ -0,0 +1,13 @@
++#ifdef BRCM_PLATFORM
++#include <sys/socket.h>
++#include <sys/ioctl.h>
++#include <net/if.h>
++#include <fcntl.h>
++
++#include <ctype.h>
++#include <unistd.h>
++#include "zcfg_common.h"
++#include "zcfg_debug.h"
++
++
++#endif
+\ No newline at end of file
+Index: libzyutil-1.0/libzyutil_econet_wrapper.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzyutil-1.0/libzyutil_econet_wrapper.c	2015-04-27 10:04:37.169761664 +0800
+@@ -0,0 +1,41 @@
++#if ECONET_PLATFORM
++
++#include "libzyutil_econet_wrapper.h"
++
++#ifdef SUPPORT_LANVLAN
++zcfgRet_t zyUtilISetIfState(char *ifName, bool up)
++{
++	return ZCFG_SUCCESS;
++}
++#endif
++
++zcfgRet_t zyUtilIGetSerailNum(char *sn)
++{
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetBaseMAC(char *mac)
++{
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetNumberOfMAC(int *num)
++{
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetProductName(char *pdname)
++{
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion)
++{
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zyUtilIGetSerialNumber(char *serianumber)
++{
++	return ZCFG_SUCCESS;
++}
++#endif
+\ No newline at end of file
+Index: libzyutil-1.0/libzyutil_econet_wrapper.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzyutil-1.0/libzyutil_econet_wrapper.h	2015-04-27 10:04:57.028402358 +0800
+@@ -0,0 +1,5 @@
++#if ECONET_PLATFORM
++#include <ctype.h>
++#include <unistd.h>
++#include "zcfg_common.h"
++#endif
+\ No newline at end of file
+Index: libzyutil-1.0/libzyutil_wrapper.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ libzyutil-1.0/libzyutil_wrapper.h	2015-04-27 10:05:39.396942042 +0800
+@@ -0,0 +1,13 @@
++#include <ctype.h>
++#include <unistd.h>
++#include "zcfg_common.h"
++
++#ifdef SUPPORT_LANVLAN
++zcfgRet_t zyUtilISetIfState(char *ifName, bool up);
++#endif
++zcfgRet_t zyUtilIGetSerailNum(char *sn);
++zcfgRet_t zyUtilIGetBaseMAC(char *mac);
++zcfgRet_t zyUtilIGetNumberOfMAC(int *num);
++zcfgRet_t zyUtilIGetProductName(char *pdname);
++zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion);
++zcfgRet_t zyUtilIGetSerialNumber(char *serianumber);
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2015-04-27 10:02:23.587812749 +0800
++++ libzyutil-1.0/zyutil.h	2015-04-27 16:43:57.036285697 +0800
+@@ -1,6 +1,8 @@
+ #ifndef _ZCFG_UTIL_H
+ #define _ZCFG_UTIL_H
+ 
++#include "libzyutil_wrapper.h"
++
+ #define MAC_STR_LEN     17
+ #define MAC_ADDR_LEN    6
+ 

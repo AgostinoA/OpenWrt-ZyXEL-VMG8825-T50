@@ -1,0 +1,442 @@
+Index: libzcfg_fe_tr98-1.0/diag.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag.c	2016-10-07 10:51:52.798906735 +0800
++++ libzcfg_fe_tr98-1.0/diag.c	2016-10-07 10:51:53.234906744 +0800
+@@ -1037,3 +1037,189 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*
++ *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_UDPEchoDiagnostics
++ *
++ *   Related object in TR181:
++ *   Device.IP.Diagnostics.UDPEchoDiagnostics
++ */
++zcfgRet_t udpEchoDiagObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *udpEchoDiagObj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	char devIpIface[48] = {0};
++	char iface[40] = {0};
++	char lowerLayer[32] = {0};
++	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_IP_DIAG_UDP_ECHO_DIAG, &objIid, &udpEchoDiagObj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*special case*/
++		if(!strcmp(paramList->name, "Interface")) {
++			paramValue = json_object_object_get(udpEchoDiagObj, paramList->name);
++			strcpy(devIpIface, json_object_get_string(paramValue));
++			if(!strcmp(devIpIface, "")) {
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(""));
++			}
++			else {
++				strcpy(iface, devIpIface);
++				if((zcfgFeTr181IfaceStackLowerLayerGet(iface, lowerLayer)) != ZCFG_SUCCESS) {
++					json_object_put(udpEchoDiagObj);
++					return ZCFG_NO_SUCH_OBJECT;
++				}
++				if(strstr(lowerLayer, "PPP.Interface") != NULL) {
++					memset(iface, 0, sizeof(iface));
++					strcpy(iface, lowerLayer);
++				}
++				if((zcfgFe181To98MappingNameGet(iface, tr98ObjName)) != ZCFG_SUCCESS) {
++					json_object_put(udpEchoDiagObj);
++					return ZCFG_NO_SUCH_OBJECT;
++				}
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tr98ObjName));
++			}
++			paramList++;
++			continue;
++		}
++		
++		paramValue = json_object_object_get(udpEchoDiagObj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;
++	}
++
++	json_object_put(udpEchoDiagObj);
++
++	return ZCFG_SUCCESS;
++}
++/*
++ *   TR98 Object Name : InternetGatewayDevice.X_ZYXEL_UDPEchoDiagnostics
++ *
++ *   Related object in TR181:
++ *   Device.IP.Diagnostics.UDPEchoDiagnostics
++ */
++zcfgRet_t udpEchoDiagObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *udpEchoDiagObj = NULL;
++	struct json_object *tmpObj = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	char iface[40] = {0};
++	char tr98ConnObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char higherLayer[32] = {0};
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_DIAG_UDP_ECHO_DIAG, &objIid, &udpEchoDiagObj)) != ZCFG_SUCCESS)
++		return ret;
++
++	if(multiJobj){
++		tmpObj = udpEchoDiagObj;
++		udpEchoDiagObj = NULL;
++		udpEchoDiagObj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_DIAG_UDP_ECHO_DIAG, &objIid, multiJobj, tmpObj);
++		json_object_put(tmpObj);
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/		
++		if(!strcmp(paramList->name, "Interface")) {
++			paramValue = json_object_object_get(tr98Jobj, paramList->name);
++			if(paramValue != NULL && json_object_get_string(paramValue)) {
++				bool emptyIface = false;
++				strcpy(tr98ConnObjName, json_object_get_string(paramValue));
++				if(!strcmp(tr98ConnObjName, ""))
++					emptyIface = true;
++				else if(strcmp(tr98ConnObjName, "") && (zcfgFe98To181MappingNameGet(tr98ConnObjName, iface) != ZCFG_SUCCESS)) {
++					json_object_object_add(udpEchoDiagObj, paramList->name, json_object_new_string(""));
++					if(!multiJobj)
++					json_object_put(udpEchoDiagObj);
++					return ZCFG_NO_SUCH_OBJECT;
++				}
++
++				if(strstr(iface, "PPP.Interface") != NULL) {
++					if((zcfgFeTr181IfaceStackHigherLayerGet(iface, higherLayer)) != ZCFG_SUCCESS) {
++						if(!multiJobj)
++							json_object_put(udpEchoDiagObj);
++						return ZCFG_NO_SUCH_OBJECT;
++					}
++					memset(iface, 0, sizeof(iface));
++					strcpy(iface, higherLayer);
++					
++					if(!strstr(iface, "IP.Interface")) {
++						if(!multiJobj)
++							json_object_put(udpEchoDiagObj);
++						return ZCFG_NO_SUCH_OBJECT;
++					}
++				}
++					
++				if(strstr(iface, "IP.Interface") != NULL) {
++					json_object_object_add(udpEchoDiagObj, paramList->name, json_object_new_string(iface));
++				}
++				else if(emptyIface)
++					json_object_object_add(udpEchoDiagObj, paramList->name, json_object_new_string(""));
++			}
++			paramList++;
++			continue;
++		}
++
++		if(!strcmp(paramList->name, "DiagnosticsState")) {
++			paramValue = json_object_object_get(tr98Jobj, "DiagnosticsState");
++			if(paramValue != NULL) {
++				if(!strcmp(json_object_get_string(paramValue), "Requested")){
++					if(myEid == ZCFG_EID_TR69){
++						json_object_object_add(udpEchoDiagObj, "X_ZYXEL_Creator", json_object_new_string(CREATOR_ACS));
++					}
++				}
++			}
++		}
++
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL) {
++			tr181ParamValue = json_object_object_get(udpEchoDiagObj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(udpEchoDiagObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}
++		}
++
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++
++		paramList++;	
++	}
++
++	/*Set Device.Routing.Router.1.IPv4Forwarding.i*/
++	if(multiJobj){
++		//json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_DIAG_UDP_ECHO_DIAG, &objIid, udpEchoDiagObj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(udpEchoDiagObj);
++			return ret;
++		}
++		json_object_put(udpEchoDiagObj);
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++
+Index: libzcfg_fe_tr98-1.0/diag.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag.h	2016-10-07 10:51:49.494906672 +0800
++++ libzcfg_fe_tr98-1.0/diag.h	2016-10-07 10:51:53.234906744 +0800
+@@ -6,6 +6,7 @@
+ extern tr98Parameter_t para_DlDiag[];
+ extern tr98Parameter_t para_UlDiag[];
+ extern tr98Parameter_t para_UdpEchoCfg[];
++extern tr98Parameter_t para_UdpEchoDiag[];
+ /*Handler Function*/
+ 
+ /* InternetGatewayDevice.IPPingDiagnostics */
+@@ -29,3 +30,7 @@
+ /* InternetGatewayDevice.UDPEchoConfig */
+ extern zcfgRet_t udpEchoCfgObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t udpEchoCfgObjSet(char *, int, struct json_object *, struct json_object *);
++/* InternetGatewayDevice.X_ZYXEL_UDPEchoDiagnostics */
++extern zcfgRet_t udpEchoDiagObjGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t udpEchoDiagObjSet(char *, int, struct json_object *, struct json_object *);
++
+Index: libzcfg_fe_tr98-1.0/diag_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/diag_parameter.h	2016-10-07 10:51:53.042906740 +0800
++++ libzcfg_fe_tr98-1.0/diag_parameter.h	2016-10-07 10:51:53.234906744 +0800
+@@ -97,3 +97,24 @@
+ 	{ "TimeLastPacketReceived", PARAMETER_ATTR_READONLY, 27, json_type_time},
+ 	{ NULL, 0, 0}
+ };
++
++tr98Parameter_t para_UdpEchoDiag[] = {
++	{ "DiagnosticsState", PARAMETER_ATTR_WRITE, 29, json_type_string},
++	{ "Interface", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Host", PARAMETER_ATTR_WRITE, 257, json_type_string},
++	{ "Port", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "NumberOfRepetitions", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "Timeout", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "DataBlockSize", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "DSCP", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "InterTransmissionTime", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "ProtocolVersion", PARAMETER_ATTR_WRITE, 9, json_type_string},
++	{ "IPAddressUsed", PARAMETER_ATTR_WRITE, 46, json_type_string},
++	{ "SuccessCount", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "FailureCount", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "AverageResponseTime", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "MinimumResponseTime", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "MaximumResponseTime", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2016-10-07 10:51:53.138906742 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2016-10-07 11:01:59.031419539 +0800
+@@ -91,6 +91,8 @@
+ {e_TR98_PERF_DIAG               , &tr98Obj[e_TR98_PERF_DIAG               -e_TR98_START]},
+ {e_TR98_DEV_INFO                , &tr98Obj[e_TR98_DEV_INFO                -e_TR98_START]},
+ //{e_TR98_VEND_CONF_FILE          , &tr98Obj[e_TR98_VEND_CONF_FILE          -e_TR98_START]},
++{e_TR98_DEV_INFO_PS_STAT		, &tr98Obj[e_TR98_DEV_INFO_PS_STAT		  -e_TR98_START]},
++{e_TR98_DEV_INFO_PS_STAT_PS		, &tr98Obj[e_TR98_DEV_INFO_PS_STAT_PS	  -e_TR98_START]},
+ //{e_TR98_DEV_CONF                , &tr98Obj[e_TR98_DEV_CONF                -e_TR98_START]},
+ {e_TR98_MGMT_SRV                , &tr98Obj[e_TR98_MGMT_SRV                -e_TR98_START]},
+ {e_TR98_MGAB_DEV                , &tr98Obj[e_TR98_MGAB_DEV                -e_TR98_START]},
+@@ -121,6 +123,7 @@
+ {e_TR98_DL_DIAG                 , &tr98Obj[e_TR98_DL_DIAG                 -e_TR98_START]},
+ {e_TR98_UL_DIAG                 , &tr98Obj[e_TR98_UL_DIAG                 -e_TR98_START]},
+ {e_TR98_UDP_ECHO_CONF           , &tr98Obj[e_TR98_UDP_ECHO_CONF           -e_TR98_START]},
++{e_TR98_UDP_ECHO_DIAG			, &tr98Obj[e_TR98_UDP_ECHO_DIAG 		  -e_TR98_START]},
+ {e_TR98_LAN_DEV                 , &tr98Obj[e_TR98_LAN_DEV                 -e_TR98_START]},
+ {e_TR98_LAN_HOST_CONF_MGMT      , &tr98Obj[e_TR98_LAN_HOST_CONF_MGMT      -e_TR98_START]},
+ {e_TR98_IP_INTF                 , &tr98Obj[e_TR98_IP_INTF                 -e_TR98_START]},
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2016-10-07 10:51:53.174906742 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2016-10-07 11:17:07.792350252 +0800
+@@ -46,6 +46,8 @@
+ #define TR98_PERF_DIAG                "InternetGatewayDevice.Capabilities.PerformanceDiagnostic"
+ #define TR98_DEV_INFO                 "InternetGatewayDevice.DeviceInfo"
+ #define TR98_VEND_CONF_FILE           "InternetGatewayDevice.DeviceInfo.VendorConfigFile.i"
++#define TR98_PROC_ST                  "InternetGatewayDevice.DeviceInfo.ProcessStatus"
++#define TR98_PROC_ST_PS               "InternetGatewayDevice.DeviceInfo.ProcessStatus.Process.i"
+ #define TR98_DEV_CONF                 "InternetGatewayDevice.DeviceConfig"
+ #define TR98_MGMT_SRV                 "InternetGatewayDevice.ManagementServer"
+ #define TR98_MGAB_DEV                 "InternetGatewayDevice.ManagementServer.ManageableDevice.i"
+@@ -76,6 +78,7 @@
+ #define TR98_DL_DIAG                  "InternetGatewayDevice.DownloadDiagnostics"
+ #define TR98_UL_DIAG                  "InternetGatewayDevice.UploadDiagnostics"
+ #define TR98_UDP_ECHO_CONF            "InternetGatewayDevice.UDPEchoConfig"
++#define TR98_UDP_ECHO_DIAG            "InternetGatewayDevice.X_ZYXEL_UDPEchoDiagnostics"
+ #define TR98_LAN_DEV                  "InternetGatewayDevice.LANDevice.i"
+ #define TR98_LAN_HOST_CONF_MGMT       "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement"
+ #define TR98_IP_INTF                  "InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.IPInterface.i"
+@@ -308,8 +311,10 @@
+ {TR98_PERF_DIAG,                0,              para_PerpDiag,          perfDiagObjGet,          NULL,                   NULL,             NULL,            NULL},
+ {TR98_DEV_INFO,                 0,              para_DevInfo,           devInfoObjGet,           devInfoObjSet,          NULL,             NULL,            devInfoObjNotify, devInfoObjAttrGet, devInfoObjAttrSet},
+ //{TR98_VEND_CONF_FILE,           ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_PROC_ST, 				0,				    para_ProcSt,			devProcStGet,			 NULL, 		 NULL,			   NULL,			NULL},
++{TR98_PROC_ST_PS,           ATTR_INDEXNODE,     para_ProcStPs,          devProcStPsGet,           NULL,          NULL,             NULL,        NULL},
+ //{TR98_DEV_CONF,                 0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_MGMT_SRV,                 0,              para_MgmtSrv,           mgmtSrvObjGet,           mgmtSrvObjSet,          NULL,             NULL,            mgmtSrvObjNotify, mgmtSrvObjAttrGet, mgmtSrvObjAttrSet},
++{TR98_MGMT_SRV,                 0,              para_MgmtSrv,           mgmtSrvObjGet,           mgmtSrvObjSet,          NULL,             NULL,            NULL, mgmtSrvObjAttrGet, mgmtSrvObjAttrSet},
+ {TR98_MGAB_DEV,                 ATTR_INDEXNODE, para_MgabDev,           mgabDevObjGet,           NULL,                   NULL,             NULL,            NULL},
+ {TR98_TIME,                     0,              para_Time,              timeObjGet,              timeObjSet,             NULL,             NULL,            NULL},
+ //{TR98_USR_INTF,                 0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+@@ -338,6 +343,7 @@
+ {TR98_DL_DIAG,                  0,              para_DlDiag,			dlDiagObjGet,            dlDiagObjSet,           NULL,             NULL,            NULL},
+ {TR98_UL_DIAG,                  0,              para_UlDiag,			ulDiagObjGet,            ulDiagObjSet,           NULL,             NULL,            NULL},
+ {TR98_UDP_ECHO_CONF,            0,              para_UdpEchoCfg,        udpEchoCfgObjGet,        udpEchoCfgObjSet,       NULL,             NULL,            NULL},
++{TR98_UDP_ECHO_DIAG,			0,				para_UdpEchoDiag,		udpEchoDiagObjGet,		 udpEchoDiagObjSet,		 NULL,			   NULL,			NULL},
+ {TR98_LAN_DEV,                  ATTR_INDEX_CREA,para_LanDev,            lanDevObjGet,            NULL,                   lanDevObjAdd,     lanDevObjDel,    NULL},
+ {TR98_LAN_HOST_CONF_MGMT,       0,              para_LanHostConfMgmt,   lanHostConfMgmtObjGet,   lanHostConfMgmtObjSet,  NULL,             NULL,            NULL},
+ {TR98_IP_INTF,                  ATTR_INDEX_CREA,para_IpIntf,		    lanIpIntfObjGet,         lanIpIntfObjSet,        lanIpIntfObjAdd,  lanIpIntfObjDel,	NULL},
+Index: libzcfg_fe_tr98-1.0/devInfo.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo.c	2016-10-07 10:51:52.302906726 +0800
++++ libzcfg_fe_tr98-1.0/devInfo.c	2016-10-07 11:42:34.824163119 +0800
+@@ -446,3 +446,87 @@
+ 	
+ 	return ret;
+ }
++
++
++zcfgRet_t devProcStGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *Jobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	printf("%s : Enter\n", __FUNCTION__);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	if((ret = feObjJsonGet(RDM_OID_DEV_INFO_PS_STAT, &objIid, &Jobj, updateFlag)) != ZCFG_SUCCESS)
++		return ret;	
++
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(Jobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(Jobj);
++
++	return ZCFG_SUCCESS;
++}
++
++
++zcfgRet_t devProcStPsGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	objIndex_t objIid;
++	struct json_object *Jobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++	char psStatPsFormate[128] = "InternetGatewayDevice.DeviceInfo.ProcessStatus.Process.%hhu";
++
++	printf("%s : Enter\n", __FUNCTION__);
++	printf("tr98FullPathName: %s\n", tr98FullPathName);
++
++	/*Get related tr181 objects*/
++	IID_INIT(objIid);
++	objIid.level = 1;
++	if(sscanf(tr98FullPathName, psStatPsFormate, &(objIid.idx[0])) != 1)
++		return ZCFG_INVALID_OBJECT;
++	if((ret = feObjJsonGet(RDM_OID_DEV_INFO_PS_STAT_PS, &objIid, &Jobj, updateFlag)) != ZCFG_SUCCESS){
++		printf("ret=%d\n", ret);
++		return ret;	
++	}
++	printf("2222222222222\n");
++	/*fill up tr98 object from related tr181 objects*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write parameter value from tr181 objects to tr98 object*/		
++		paramValue = json_object_object_get(Jobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++
++		/*Not defined in tr181, give it a default value*/
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++		paramList++;	
++	}
++
++	json_object_put(Jobj);
++
++	return ZCFG_SUCCESS;
++}
++
+Index: libzcfg_fe_tr98-1.0/devInfo.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo.h	2016-10-07 10:51:49.618906674 +0800
++++ libzcfg_fe_tr98-1.0/devInfo.h	2016-10-07 10:51:53.238906744 +0800
+@@ -1,5 +1,7 @@
+ /*Parameter*/
+ extern tr98Parameter_t para_DevInfo[];
++extern tr98Parameter_t para_ProcSt[];
++extern tr98Parameter_t para_ProcStPs[];
+ 
+ /*Handler Function*/
+ extern zcfgRet_t devInfoObjGet(char *, int, struct json_object **, bool);
+@@ -7,4 +9,6 @@
+ extern zcfgRet_t devInfoObjNotify(char *, char *, struct json_object *, int, struct json_object **);
+ extern int devInfoObjAttrGet(char *, int , char *);
+ extern zcfgRet_t devInfoObjAttrSet(char *, int , char *, int , struct json_object *);
++extern zcfgRet_t devProcStGet(char *, int, struct json_object **, bool);
++extern zcfgRet_t devProcStPsGet(char *, int, struct json_object **, bool);
+ 
+Index: libzcfg_fe_tr98-1.0/devInfo_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/devInfo_parameter.h	2016-10-07 10:51:52.326906726 +0800
++++ libzcfg_fe_tr98-1.0/devInfo_parameter.h	2016-10-07 10:51:53.238906744 +0800
+@@ -19,3 +19,21 @@
+ 	{ "VendorConfigFileNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
+ 	{ NULL, 0, 0, 0}
+ };
++
++tr98Parameter_t para_ProcSt[] = {
++	{ "CPUUsage", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ProcessNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
++tr98Parameter_t para_ProcStPs[] = {
++	{ "PID", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "Command", PARAMETER_ATTR_READONLY, 257, json_type_string},
++	{ "Size", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "Priority", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CPUTime", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "State", PARAMETER_ATTR_READONLY, 27, json_type_string},
++	{ NULL, 0, 0, 0}
++};
++
++

@@ -1,0 +1,67 @@
+Index: libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/wireless/zcfg_fe_dal_wifi_general.c	2019-03-18 00:37:53.251535064 +0800
++++ libzcfg_fe_dal-1.0/network/wireless/zcfg_fe_dal_wifi_general.c	2019-03-18 18:34:10.560270994 +0800
+@@ -789,10 +789,52 @@
+ zcfgRet_t editWifiApObject(struct json_object *Jobj){
+ 
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	struct json_object *iidArray = NULL;	
+-	uint8_t iidIdx =0;
++	struct json_object *wlSt = NULL, *wifiSsidObj = NULL;;
++	char *iface, *tmp, *sendBuf = NULL, *recvBuf = NULL;
++	struct json_object *chObject = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	objIndex_t wifiSsidIid;
++	int tmpInt, Maxclientnum, ssidIndex;
++
++	ssidIndex = json_object_get_int(json_object_object_get(Jobj,"Index"));
++
++	IID_INIT(wifiSsidIid);
++	wifiSsidIid.level = 1;
++	wifiSsidIid.idx[0] = ssidIndex;
++
++	if(zcfgFeObjJsonGetWithoutUpdate(RDM_OID_WIFI_SSID, &wifiSsidIid, &wifiSsidObj) == ZCFG_SUCCESS){
++		iface = json_object_get_string(json_object_object_get(wifiSsidObj, "Name"));
++		chObject = json_object_new_array();
++		json_object_array_add(chObject, json_object_new_string("SupportMaxClients"));
++		tmp = json_object_to_json_string(chObject);
++		if ((sendBuf = calloc(1, (sizeof(zcfgMsg_t)+ strlen(tmp) +1)))) {
++			sendMsgHdr = (zcfgMsg_t *)sendBuf;
++			sendMsgHdr->type = ZCFG_MSG_WIFI_ST_UPDATE;
++			sendMsgHdr->srcEid = ZCFG_EID_DALCMD;
++			sendMsgHdr->dstEid = ZCFG_EID_WIFID;
++			strcpy(sendMsgHdr->reserve, iface);
++			sendMsgHdr->length = strlen(tmp)+1;
++			strcpy(sendBuf+sizeof(zcfgMsg_t), tmp);
++
++			if(zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 30000) == ZCFG_SUCCESS){
++				if(((zcfgMsg_t *)recvBuf)->statCode == ZCFG_SUCCESS && ((zcfgMsg_t *)recvBuf)->length > 0 &&
++					(wlSt = json_tokener_parse(recvBuf+sizeof(zcfgMsg_t))) > 0){
++					if((Jobj = json_object_object_get(wlSt, "SupportMaxClients")) && (tmpInt = json_object_get_int(Jobj))){
++						Maxclientnum = tmpInt;
++						if(MaxAssociatedDevices  >  Maxclientnum || MaxAssociatedDevices< 1){
++							printf("\nAvailable Max values are %d\n",Maxclientnum);
++							return ZCFG_INTERNAL_ERROR;
++						}
++					}
++				}
++			free(recvBuf);
++			recvBuf = NULL;
++			}
++		}
++	}
+ 
+ 	json_object_object_add(wifiApObj, "MaxAssociatedDevices", json_object_new_int(MaxAssociatedDevices));
++
+ 	if(wlHide)
+ 		json_object_object_add(wifiApObj, "SSIDAdvertisementEnabled", json_object_new_boolean(false));
+ 	else
+@@ -1334,6 +1376,7 @@
+ 			json_object_put(tmpSSIDObj);
+ 		}
+ 	}
++
+ 	if((ret = getWlObj(Jobj,NULL)) != ZCFG_SUCCESS)
+ 		goto dalwlan_edit_fail;
+ 

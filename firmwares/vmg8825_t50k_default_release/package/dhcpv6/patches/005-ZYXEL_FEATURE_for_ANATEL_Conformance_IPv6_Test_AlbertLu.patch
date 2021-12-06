@@ -1,0 +1,2318 @@
+Index: wide-dhcpv6-20080615/Makefile.in
+===================================================================
+--- wide-dhcpv6-20080615.orig/Makefile.in	2017-03-09 23:26:01.209994393 +0800
++++ wide-dhcpv6-20080615/Makefile.in	2017-03-09 23:32:58.378257700 +0800
+@@ -55,7 +55,7 @@
+ LIBOBJS=@LIBOBJS@
+ LIBS=	@LIBS@ @LEXLIB@
+ CC=	@CC@
+-TARGET=	dhcp6c dhcp6s
++TARGET=	dhcp6c dhcp6s dhcp6relay
+ 
+ INSTALL=@INSTALL@
+ INSTALL_PROGRAM=@INSTALL_PROGRAM@
+@@ -69,6 +69,7 @@
+ GENSRCS=cfparse.c cftoken.c
+ CLIENTOBJS=	dhcp6c.o common.o config.o prefixconf.o dhcp6c_ia.o timer.o \
+ 	dhcp6c_script.o dhcp6s_ifaddrs.o if.o base64.o auth.o dhcp6_ctl.o addrconf.o lease.o \
++	netlink_route.o \
+ 	$(GENSRCS:%.c=%.o)
+ SERVOBJS=	dhcp6s.o common.o dhcp6s_ifaddrs.o if.o config.o timer.o lease.o \
+ 	base64.o auth.o dhcp6_ctl.o $(GENSRCS:%.c=%.o)
+Index: wide-dhcpv6-20080615/addrconf.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/addrconf.c	2017-03-09 23:26:01.257994631 +0800
++++ wide-dhcpv6-20080615/addrconf.c	2017-03-09 23:35:20.119935888 +0800
+@@ -60,6 +60,10 @@
+ #include "dhcp6c_ia.h"
+ #include "prefixconf.h"
+ 
++#if defined(CLIENT_DECLINE_SUPPORT) || defined(CLIENT_CONFIRM_SUPPORT)
++#include "addrconf.h"
++#include "dhcp6c.h"
++#else
+ TAILQ_HEAD(statefuladdr_list, statefuladdr);
+ struct iactl_na {
+ 	struct iactl common;
+@@ -84,6 +88,7 @@
+ 	struct iactl_na *ctl;
+ 	struct dhcp6_if *dhcpif;
+ };
++#endif
+ 
+ static struct statefuladdr *find_addr __P((struct statefuladdr_list *,
+     struct dhcp6_statefuladdr *));
+@@ -113,6 +118,9 @@
+ 	struct statefuladdr *sa;
+ 	int sacreate = 0;
+ 	struct timeval timo;
++#ifdef CLIENT_DECLINE_SUPPORT
++	struct dhcp6_event *ev;
++#endif
+ 
+ 	/*
+ 	 * A client discards any addresses for which the preferred
+@@ -173,7 +181,7 @@
+ 	    sacreate ? "create" : "update",
+ 	    in6addr2str(&addr->addr, 0), addr->pltime, addr->vltime);
+ 
+-	if (sa->addr.vltime != 0)
++	if (sa->addr.vltime != 0 && sacreate)
+ 		if (na_ifaddrconf(IFADDRCONF_ADD, sa) < 0)
+ 			return (-1);
+ 
+@@ -200,6 +208,23 @@
+ 				return (-1);
+ 			}
+ 		}
++
++
++		// Set LTs while receiving a renew-reply WAN Global IP.WenHsien.2016.0520.
++		int count, set_count;
++		struct in6_addr iana_addr[64];
++		count = get_tentative_addr(iana_addr);
++
++		if (count == 0) { // no one is in DAD.
++			set_count = set_plt_vlt_of_wan_ip(dhcpifp);
++		}
++
++
++		/* set vlt plt of WAN Global IP */
++//		char str[200]="";
++//		sprintf(str, "ip -6 addr change %s dev %s preferred_lft %lu valid_lft %lu", in6addr2str(&addr.addr, 0), sa->dhcpif->ifname, addr.pltime, addr.vltime);
++//		system(str);
++
+ 		/* update the timer */
+ 		timo.tv_sec = sa->addr.vltime;
+ 		timo.tv_usec = 0;
+@@ -208,6 +233,30 @@
+ 		break;
+ 	}
+ 
++#ifdef CLIENT_DECLINE_SUPPORT
++	ev = sa->dhcpif->current_ev;
++	if (ev && ev->state == DHCP6S_REQUEST) {
++		if (ev->dadtimer == NULL) {
++			ev->dadtimer = dhcp6_add_timer(client6_dad_check, ev);
++			if (ev->dadtimer == NULL) {
++				dprintf(LOG_NOTICE, FNAME,
++					"failed to add stateful addr dad timer");
++				remove_addr(sa); /* XXX */
++				return (-1);
++			}
++		}
++		/* update the timer */
++		timo.tv_sec = 5;
++		timo.tv_usec = 0;
++
++		dhcp6_set_timer(&timo, ev->dadtimer);
++		ev->state = DHCP6S_DECLINE;
++
++		/* Remove "Request" message timer */
++		dhcp6_remove_timer(&ev->timer);
++	}
++#endif
++
+ 	return (0);
+ }
+ 
+@@ -374,7 +423,6 @@
+ 	remove_addr(sa);
+ 
+ 	(*callback)(ia);
+-	dhcp6_lifetime_timeout();
+ 
+ 	return (NULL);
+ }
+Index: wide-dhcpv6-20080615/addrconf.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/addrconf.h	2007-03-21 17:52:57.000000000 +0800
++++ wide-dhcpv6-20080615/addrconf.h	2017-03-09 23:35:10.387464042 +0800
+@@ -31,5 +31,35 @@
+ 
+ typedef enum { ADDR6S_ACTIVE, ADDR6S_RENEW, ADDR6S_REBIND} addr6state_t;
+ 
++#if defined(CLIENT_DECLINE_SUPPORT) || defined(CLIENT_CONFIRM_SUPPORT)
++TAILQ_HEAD(statefuladdr_list, statefuladdr);
++struct iactl_na {
++        struct iactl common;
++        struct statefuladdr_list statefuladdr_head;
++};
++#define iacna_ia common.iactl_ia
++#define iacna_callback common.callback
++#define iacna_isvalid common.isvalid
++#define iacna_duration common.duration
++#define iacna_renew_data common.renew_data
++#define iacna_rebind_data common.rebind_data
++#define iacna_reestablish_data common.reestablish_data
++#define iacna_release_data common.release_data
++#define iacna_cleanup common.cleanup
++
++struct statefuladdr {
++        TAILQ_ENTRY (statefuladdr) link;
++
++        struct dhcp6_statefuladdr addr;
++        time_t updatetime;
++        struct dhcp6_timer *timer;
++        struct iactl_na *ctl;
++        struct dhcp6_if *dhcpif;
++#ifdef CLIENT_CONFIRM_SUPPORT
++	time_t starts;
++#endif
++};
++#endif
++
+ extern int update_address __P((struct ia *, struct dhcp6_statefuladdr *,
+     struct dhcp6_if *, struct iactl **, void (*)__P((struct ia *))));
+Index: wide-dhcpv6-20080615/common.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.c	2017-03-09 23:26:01.225994472 +0800
++++ wide-dhcpv6-20080615/common.c	2017-03-09 23:35:03.724596927 +0800
+@@ -1110,10 +1110,12 @@
+ 			    "failed to open DUID file for save");
+ 			goto fail;
+ 		}
++/* This format do not match RFC3315 sec. 9.1 .
+ 		if ((fwrite(&len, sizeof(len), 1, fp)) != 1) {
+ 			dprintf(LOG_ERR, FNAME, "failed to save DUID");
+ 			goto fail;
+ 		}
++*/
+ 		if ((fwrite(duid->duid_id, len, 1, fp)) != 1) {
+ 			dprintf(LOG_ERR, FNAME, "failed to save DUID");
+ 			goto fail;
+@@ -1444,6 +1446,7 @@
+ 	if (duidcpy(&dst->serverID, &src->serverID))
+ 		goto fail;
+ 	dst->rapidcommit = src->rapidcommit;
++	dst->reconfigureAccept = src->reconfigureAccept;
+ 
+ 	if (dhcp6_copy_list(&dst->iapd_list, &src->iapd_list))
+ 		goto fail;
+@@ -1679,6 +1682,20 @@
+ 			memcpy(optinfo->relaymsg_msg, cp, optlen);
+ 			optinfo->relaymsg_len = optlen;
+ 			break;
++		case DH6OPT_SOL_MAX_RT:
++			/*Kerker 2016/02/04
++			 *	SOL_MAX_RT
++			 */
++			if (optlen != 4)
++				goto malformed;
++			memcpy(&val32, cp, sizeof(val32));
++			val32 = ntohs(val32);
++			if(val32<60||val32>86400){
++				optinfo->max_rt=(SOL_MAX_RT / 1000);
++			}else{
++				optinfo->max_rt = val32;
++			}
++			break;
+ 		case DH6OPT_AUTH:
+ 			if (optlen < sizeof(struct dhcp6opt_auth) - 4)
+ 				goto malformed;
+@@ -1745,10 +1762,22 @@
+ 				    optinfo->delayedauth_offset,
+ 				    optinfo->delayedauth_realmlen);
+ 				break;
+-#ifdef notyet
++//#ifdef notyet
+ 			case DHCP6_AUTHPROTO_RECONFIG:
++				if (authinfolen == 0) {
++					optinfo->authflags |=
++						DHCP6OPT_AUTHFLAG_NOINFO;
+ 				break;
+-#endif
++				}
++
++				optinfo->reconfigauth_type = *cp++;
++				optinfo->reconfigauth_offset = cp - bp;
++				struct dhcp6 *dh6;
++				//memcpy(optinfo->reconfigauth_val, cp, optinfo->reconfigauth_offset);
++				memcpy(optinfo->reconfigauth_val, cp, sizeof(optinfo->reconfigauth_val));
++				cp += sizeof(optinfo->reconfigauth_val);
++				break;
++//#endif
+ 			default:
+ 				dprintf(LOG_INFO, FNAME,
+ 				    "unsupported authentication protocol: %d",
+@@ -1767,6 +1796,14 @@
+ 			memcpy(optinfo->ifidopt_id, cp, optlen);
+ 			optinfo->ifidopt_len = optlen;
+ 			break;
++		case DH6OPT_RECONF_MSG:
++			optinfo->reconfigureMsgType = *cp++;
++			break;
++		case DH6OPT_RECONF_ACCEPT:
++			if (optlen != 0)
++				goto malformed;
++			optinfo->reconfigureAccept = 1;
++			break;
+ 		case DH6OPT_SIP_SERVER_D:
+ 			if (dhcp6_get_domain(optlen, cp, opt,
+ 			    &optinfo->sipname_list) == -1)
+@@ -2315,6 +2352,13 @@
+ 		}
+ 	}
+ 
++	if (optinfo->reconfigureAccept) {
++		if (copy_option(DH6OPT_RECONF_ACCEPT, 0, NULL, &p,
++		    optep, &len) != 0) {
++			goto fail;
++		}
++	}
++
+ 	for (op = TAILQ_FIRST(&optinfo->iana_list); op;
+ 	    op = TAILQ_NEXT(op, link)) {
+ 		int optlen;
+@@ -2537,15 +2581,16 @@
+ 				authlen += optinfo->delayedauth_realmlen +
+ 				    sizeof(optinfo->delayedauth_keyid) + 16;
+ 				break;
+-#ifdef notyet
++//#ifdef notyet
+ 			case DHCP6_AUTHPROTO_RECONFIG:
+ 				/* type + key-or-HAMC */
+-				authlen += 17;
++				authlen += sizeof(optinfo->reconfigauth_type) +
++					sizeof(optinfo->reconfigauth_val);
+ 				break;
+-#endif
++//#endif
+ 			default:
+ 				dprintf(LOG_ERR, FNAME,
+-				    "unexpected authentication protocol");
++				    "unexpected authentication protocol_countAuthLen");
+ 				goto fail;
+ 			}
+ 		}
+@@ -2591,12 +2636,15 @@
+ 				    optinfo->delayedauth_keyid,
+ 				    optinfo->delayedauth_offset); 
+ 				break;
+-#ifdef notyet
++//#ifdef notyet
+ 			case DHCP6_AUTHPROTO_RECONFIG:
+-#endif
++				optinfo->reconfigauth_offset = ((char *)p - (char *)optbp) +
++					authlen - sizeof(optinfo->reconfigauth_val);
++				break;
++//#endif
+ 			default:
+ 				dprintf(LOG_ERR, FNAME,
+-				    "unexpected authentication protocol");
++				    "unexpected authentication protocol_countAuthOffset");
+ 				free(auth);
+ 				goto fail;
+ 			}
+@@ -2863,6 +2911,12 @@
+ 		ev->init_retrans = REL_TIMEOUT;
+ 		ev->max_retrans_cnt = REL_MAX_RC;
+ 		break;
++#ifdef CLIENT_DECLINE_SUPPORT
++	case DHCP6S_DECLINE:
++		ev->init_retrans = DEC_TIMEOUT;
++		ev->max_retrans_cnt = DEC_MAX_RC;
++		break;
++#endif
+ 	default:
+ 		dprintf(LOG_ERR, FNAME, "unexpected event state %d on %s",
+ 		    ev->state, ev->ifp->ifname);
+@@ -2916,8 +2970,8 @@
+ 		break;
+ 	}
+ 
+-	interval.tv_sec = (ev->retrans * 1000) / 1000000;
+-	interval.tv_usec = (ev->retrans * 1000) % 1000000;
++	interval.tv_sec = (ev->retrans) / 1000;
++	interval.tv_usec = ((ev->retrans) % 1000) * 1000;
+ 	dhcp6_set_timer(&interval, ev->timer);
+ 
+ 	statestr = dhcp6_event_statestr(ev);
+@@ -3104,6 +3158,8 @@
+ 		return ("subscriber ID");
+ 	case DH6OPT_CLIENT_FQDN:
+ 		return ("client FQDN");
++	case DH6OPT_SOL_MAX_RT:
++		return ("SOL_MAX_RT");
+ 	default:
+ 		snprintf(genstr, sizeof(genstr), "opt_%d", type);
+ 		return (genstr);
+@@ -3223,6 +3279,10 @@
+ 		return ("REBIND");
+ 	case DHCP6S_RELEASE:
+ 		return ("RELEASE");
++#ifdef CLIENT_DECLINE_SUPPORT
++	case DHCP6S_DECLINE:
++		return ("DECLINE");
++#endif
+ 	case DHCP6S_IDLE:
+ 		return ("IDLE");
+ 	default:
+@@ -3301,6 +3361,16 @@
+ 	int pltime;
+ 	int vltime;
+ {
++#ifdef __KAME__
++	struct in6_aliasreq req;
++#endif
++#ifdef __linux__
++	struct in6_ifreq req;
++	struct ifreq ifr;
++#endif
++#ifdef __sun__
++	struct lifreq req;
++#endif
+ 	unsigned long ioctl_cmd;
+ 	char *cmdstr;
+ 	int s;			/* XXX overhead */
+@@ -3309,18 +3379,91 @@
+ 	switch(cmd) {
+ 	case IFADDRCONF_ADD:
+ 		cmdstr = "add";
++#ifdef __KAME__
++		ioctl_cmd = SIOCAIFADDR_IN6;
++#endif
++#ifdef __linux__
++		ioctl_cmd = SIOCSIFADDR;
++#endif
++#ifdef __sun__
++		ioctl_cmd = SIOCLIFADDIF;
++#endif
+ 		break;
+ 	case IFADDRCONF_REMOVE:
+ 		cmdstr = "remove";
++#ifdef __KAME__
++		ioctl_cmd = SIOCDIFADDR_IN6;
++#endif
++#ifdef __linux__
++		ioctl_cmd = SIOCDIFADDR;
++#endif
++#ifdef __sun__
++		ioctl_cmd = SIOCLIFREMOVEIF;
++#endif
+ 		break;
+ 	default:
+ 		return (-1);
+ 	}
+ 
++#if 1//use zcfg
+ 	snprintf(extAddr, sizeof(extAddr), "%s/%d", addr2str((struct sockaddr *)addr), plen);
+ 	addAddrToMsg(cmd, ifname, extAddr, pltime, vltime);
++	/*if ((s = socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
++		dprintf(LOG_ERR, FNAME, "can't open a temporary socket: %s",
++		    strerror(errno));
++		return (-1);
++	}
+ 
++	close(s);*/
++#else
++	memset(&req, 0, sizeof(req));
++#ifdef __KAME__
++	req.ifra_addr = *addr;
++	memcpy(req.ifra_name, ifname, sizeof(req.ifra_name));
++	(void)sa6_plen2mask(&req.ifra_prefixmask, plen);
++	/* XXX: should lifetimes be calculated based on the lease duration? */
++	req.ifra_lifetime.ia6t_vltime = vltime;
++	req.ifra_lifetime.ia6t_pltime = pltime;
++#endif
++#ifdef __linux__
++	memset(&ifr, 0, sizeof(ifr));
++	strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
++	if (ioctl(s, SIOGIFINDEX, &ifr) < 0) {
++		dprintf(LOG_NOTICE, FNAME, "failed to get the index of %s: %s",
++		    ifname, strerror(errno));
+ 	close(s);
++		return (-1); 
++	}
++	memcpy(&req.ifr6_addr, &addr->sin6_addr, sizeof(struct in6_addr));
++	req.ifr6_prefixlen = plen;
++	req.ifr6_ifindex = ifr.ifr_ifindex;
++#endif
++#ifdef __sun__
++	strncpy(req.lifr_name, ifname, sizeof (req.lifr_name));
++#endif
++
++	if (ioctl(s, ioctl_cmd, &req)) {
++		dprintf(LOG_NOTICE, FNAME, "failed to %s an address on %s: %s",
++		    cmdstr, ifname, strerror(errno));
++		close(s);
++		return (-1);
++	}
++
++#ifdef __sun__
++	memcpy(&req.lifr_addr, addr, sizeof (*addr));
++	if (ioctl(s, SIOCSLIFADDR, &req) == -1) {
++		dprintf(LOG_NOTICE, FNAME, "failed to %s new address on %s: %s",
++		    cmdstr, ifname, strerror(errno));
++		close(s);
++		return (-1);
++	}
++#endif
++
++#endif
++
++	/*dprintf(LOG_DEBUG, FNAME, "%s an address %s/%d on %s", cmdstr,
++	    addr2str((struct sockaddr *)addr), plen, ifname);*/
++
+ 	return (0);
+ }
+ 
+Index: wide-dhcpv6-20080615/common.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.h	2017-03-09 23:26:01.225994472 +0800
++++ wide-dhcpv6-20080615/common.h	2017-03-09 23:34:39.151092223 +0800
+@@ -208,3 +208,34 @@
+ #ifndef HAVE_STRLCPY
+ extern size_t strlcpy __P((char *, const char *, size_t));
+ #endif
++
++/*
++ * compat hacks in case libc and kernel get out of sync:
++ *
++ * glibc 2.4 and uClibc 0.9.29 introduce IPV6_RECVPKTINFO etc. and change IPV6_PKTINFO
++ * This is only supported in Linux kernel >= 2.6.14
++ *
++ * This is only an approximation because the kernel version that libc was compiled against
++ * could be older or newer than the one being run.  But this should not be a problem --
++ * we just keep using the old kernel interface.
++ *
++ * these are placed here because they're needed in all of socket.c, recv.c and send.c
++ */
++#ifdef __linux__
++#  if defined IPV6_RECVHOPLIMIT || defined IPV6_RECVPKTINFO
++#    include <linux/version.h>
++#    if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,14)
++#      if defined IPV6_RECVHOPLIMIT && defined IPV6_2292HOPLIMIT
++#        undef IPV6_RECVHOPLIMIT
++#        define IPV6_RECVHOPLIMIT IPV6_2292HOPLIMIT
++#      endif
++#      if defined IPV6_RECVPKTINFO && defined IPV6_2292PKTINFO
++#        undef IPV6_RECVPKTINFO
++#        undef IPV6_PKTINFO
++#        define IPV6_RECVPKTINFO IPV6_2292PKTINFO
++#        define IPV6_PKTINFO IPV6_2292PKTINFO
++#      endif
++#    endif
++#  endif
++#endif
++
+Index: wide-dhcpv6-20080615/config.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/config.h	2008-06-15 15:48:41.000000000 +0800
++++ wide-dhcpv6-20080615/config.h	2017-03-09 23:34:33.280308306 +0800
+@@ -88,6 +88,10 @@
+ 	/* the followings are valid only if authproto is not UNDEF */
+ 	int authalgorithm;	/* algorithm */
+ 	int authrdm;		/* replay attack detection method */
++
++#ifdef CLIENT_DECLINE_SUPPORT
++	struct dhcp6_event *current_ev;
++#endif
+ };
+ 
+ /* run-time authentication parameters */
+@@ -107,6 +111,9 @@
+ 
+ 	struct dhcp6_if *ifp;
+ 	struct dhcp6_timer *timer;
++#ifdef CLIENT_DECLINE_SUPPORT
++	struct dhcp6_timer *dadtimer;
++#endif
+ 
+ 	struct duid serverid;
+ 
+@@ -162,7 +169,11 @@
+ 
+ /* client status code */
+ enum {DHCP6S_INIT, DHCP6S_SOLICIT, DHCP6S_INFOREQ, DHCP6S_REQUEST,
+-      DHCP6S_RENEW, DHCP6S_REBIND, DHCP6S_RELEASE, DHCP6S_IDLE};
++      DHCP6S_RENEW, DHCP6S_REBIND, DHCP6S_RELEASE, 
++#ifdef CLIENT_DECLINE_SUPPORT
++      DHCP6S_DECLINE,
++#endif
++      DHCP6S_IDLE};
+ 
+ struct prefix_ifconf {
+ 	TAILQ_ENTRY(prefix_ifconf) link;
+Index: wide-dhcpv6-20080615/dhcp6.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6.h	2007-03-21 17:52:53.000000000 +0800
++++ wide-dhcpv6-20080615/dhcp6.h	2017-03-09 23:34:23.871697476 +0800
+@@ -31,6 +31,8 @@
+ #ifndef __DHCP6_H_DEFINED
+ #define __DHCP6_H_DEFINED
+ 
++#define CLIENT_DECLINE_SUPPORT 1
++
+ #ifdef __sun__
+ #define	__P(x)	x
+ typedef uint8_t u_int8_t;
+@@ -86,9 +88,9 @@
+ /* timer parameters (msec, unless explicitly commented) */
+ #define SOL_MAX_DELAY	1000
+ #define SOL_TIMEOUT	1000
+-#define SOL_MAX_RT	120000
++#define SOL_MAX_RT	3600000	/* According to RFC7083 */
+ #define INF_TIMEOUT	1000
+-#define INF_MAX_RT	120000
++#define INF_MAX_RT	3600000	/* According to RFC7083 */
+ #define REQ_TIMEOUT	1000
+ #define REQ_MAX_RT	30000
+ #define REQ_MAX_RC	10	/* Max Request retry attempts */
+@@ -98,6 +100,10 @@
+ #define REB_MAX_RT	600000	/* 600secs */
+ #define REL_TIMEOUT	1000	/* 1 sec */
+ #define REL_MAX_RC	5
++#ifdef CLIENT_DECLINE_SUPPORT
++#define DEC_TIMEOUT	1000	/* 1 sec */
++#define DEC_MAX_RC	5
++#endif
+ 
+ #define DHCP6_DURATION_INFINITE 0xffffffff
+ #define DHCP6_DURATION_MIN 30
+@@ -176,10 +182,13 @@
+ 	struct duid clientID;	/* DUID */
+ 	struct duid serverID;	/* DUID */
+ 
++	int reconfigureAccept;
++	int reconfigureMsgType;
+ 	int rapidcommit;	/* bool */
+ 	int pref;		/* server preference */
+ 	int32_t elapsed_time;	/* elapsed time (from client to server only) */
+ 	int64_t refreshtime;	/* info refresh time for stateless options */
++	int32_t max_rt;
+ 
+ 	struct dhcp6_list iapd_list; /* list of IA_PD */
+ 	struct dhcp6_list iana_list; /* list of IA_NA */
+@@ -220,7 +229,8 @@
+ 			int offset; /* offset to the HMAC field */
+ 		} aiu_delayed;
+ 		struct {
+-			int type;
++//			int type;
++			u_int8_t type; // By RFC3315 21.5.1
+ 			int offset; /* offset to the HMAC field */
+ 			char val[16]; /* key value */
+ 		} aiu_reconfig;
+@@ -289,7 +299,7 @@
+ #define DH6OPT_VENDOR_OPTS 17
+ #define DH6OPT_INTERFACE_ID 18
+ #define DH6OPT_RECONF_MSG 19
+-
++#define DH6OPT_RECONF_ACCEPT 20
+ #define DH6OPT_SIP_SERVER_D 21
+ #define DH6OPT_SIP_SERVER_A 22
+ #define DH6OPT_DNS 23
+@@ -309,7 +319,7 @@
+ #define DH6OPT_REMOTE_ID 37
+ #define DH6OPT_SUBSCRIBER_ID 38
+ #define DH6OPT_CLIENT_FQDN 39
+-
++#define DH6OPT_SOL_MAX_RT 82
+ /* The followings are KAME specific. */
+ 
+ struct dhcp6opt {
+Index: wide-dhcpv6-20080615/dhcp6c.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c.c	2017-03-09 23:26:01.257994631 +0800
++++ wide-dhcpv6-20080615/dhcp6c.c	2017-03-09 23:34:09.870527285 +0800
+@@ -77,6 +77,13 @@
+ #include <dhcp6c_ia.h>
+ #include <prefixconf.h>
+ #include <auth.h>
++#if defined(CLIENT_DECLINE_SUPPORT) || defined(CLIENT_CONFIRM_SUPPORT)
++#include <addrconf.h>
++#include "netlink_route.h"
++#endif
++
++#include <inttypes.h>
++#include <math.h>
+ 
+ /*zyxel*/
+ #include "zcfg_common.h"
+@@ -118,6 +125,9 @@
+ static int ctldigestlen;
+ 
+ static int infreq_mode = 0;
++static int reconfigure_accept = 1;
++static int reconfigure_accept_reply = 0;
++static int recv_reconfigure_message = 0;
+ 
+ static inline int get_val32 __P((char **, int *, u_int32_t *));
+ static inline int get_ifname __P((char **, int *, char *, int));
+@@ -138,6 +148,8 @@
+ static void client6_recv __P((void));
+ static int client6_recvadvert __P((struct dhcp6_if *, struct dhcp6 *,
+ 				   ssize_t, struct dhcp6_optinfo *));
++static int client6_recvreconfigure __P((struct dhcp6_if *, struct dhcp6 *,
++				   ssize_t, struct dhcp6_optinfo *));
+ static int client6_recvreply __P((struct dhcp6_if *, struct dhcp6 *,
+ 				  ssize_t, struct dhcp6_optinfo *));
+ static void client6_signal __P((int));
+@@ -161,6 +173,8 @@
+ 
+ #define MAX_ELAPSED_TIME 0xffff
+ 
++static struct authparam *authparam = NULL, reconfig_auth;/*authparam for reconfigure*/
++
+ int
+ main(argc, argv)
+ 	int argc;
+@@ -398,13 +412,14 @@
+ 	/* set up control socket */
+ 	if (ctlkey == NULL)
+ 		dprintf(LOG_NOTICE, FNAME, "skip opening control port");
++/*
+ 	else if (dhcp6_ctl_init(ctladdr, ctlport,
+ 	    DHCP6CTL_DEF_COMMANDQUEUELEN, &ctlsock)) {
+ 		dprintf(LOG_ERR, FNAME,
+ 		    "failed to initialize control channel");
+ 		exit(1);
+ 	}
+-
++*/
+ 	if (signal(SIGHUP, client6_signal) == SIG_ERR) {
+ 		dprintf(LOG_WARNING, FNAME, "failed to set signal: %s",
+ 		    strerror(errno));
+@@ -809,6 +824,12 @@
+ 
+ 	switch(command) {
+ 	case DHCP6CTL_COMMAND_START:
++/* the ifid might have changed, so reset it before releasing the lease */
++		if (ifreset(ifp)) {
++			dprintf(LOG_NOTICE, FNAME, "failed to reset %s",
++				ifname);
++			return (-1);
++		}
+ 		free_resources(ifp);
+ 		if (client6_start(ifp)) {
+ 			dprintf(LOG_NOTICE, FNAME, "failed to restart %s",
+@@ -890,6 +911,9 @@
+ 	case DHCP6S_REQUEST:
+ 	case DHCP6S_RELEASE:
+ 	case DHCP6S_INFOREQ:
++#ifdef CLIENT_DECLINE_SUPPORT
++	case DHCP6S_DECLINE:
++#endif
+ 		client6_send(ev);
+ 		break;
+ 	case DHCP6S_RENEW:
+@@ -951,6 +975,218 @@
+ 	return (ev->timer);
+ }
+ 
++#ifdef CLIENT_DECLINE_SUPPORT
++static void
++remove_reachable_addr_from_ev(ev, dad_fail_addr, dad_fail_count)
++	struct dhcp6_event *ev;
++	struct in6_addr *dad_fail_addr;
++	int dad_fail_count;
++{
++	struct dhcp6_eventdata *evd;
++	struct dhcp6_listval *ent, *nent;
++	struct dhcp6_statefuladdr *addr;
++	int i;
++
++	for (evd = TAILQ_FIRST(&ev->data_list); evd; evd = TAILQ_NEXT(evd, link)) {
++		if (evd->type != DHCP6_EVDATA_IANA){
++			continue;
++		}
++		ent = TAILQ_FIRST((struct dhcp6_list *)evd->data);
++		while (ent) {
++			nent = TAILQ_NEXT(ent, link);
++			if (ent->type != DHCP6_LISTVAL_STATEFULADDR6) {
++				ent = nent;
++				continue;
++			}
++			for (i = 0; i < dad_fail_count; i++) {
++				addr = (struct dhcp6_statefuladdr *)&ent->uv;
++				if (IN6_ARE_ADDR_EQUAL(&addr->addr, &dad_fail_addr[i])) {
++					break;
++				}
++			}
++			if (i == dad_fail_count) {
++				/* This stateful addr in the ent is valid. Remove it */
++				TAILQ_REMOVE((struct dhcp6_list *)evd->data, ent, link);
++			}
++			ent = nent;
++		}
++	}
++	return;
++}
++
++static int
++dad_check(ifp, iana_addr, dad_fail_addr, count)
++	struct dhcp6_if *ifp;
++	struct in6_addr *iana_addr;
++	struct in6_addr *dad_fail_addr;
++	int count;
++{
++	struct ia_conf *iac;
++	struct ia *ia;
++	struct iactl_na *iac_na;
++	struct statefuladdr *sa;
++	int dad_fail_count = 0, i;
++
++	for (iac = TAILQ_FIRST(&ifp->iaconf_list);
++		iac;
++		iac = TAILQ_NEXT(iac, link))
++	{
++		if (TAILQ_EMPTY(&iac->iadata)) {
++			/* we dont like non-current IA */
++			continue;
++		}
++		for (ia = TAILQ_FIRST(&iac->iadata); ia; ia = TAILQ_NEXT(ia, link)) {
++			if (ia->conf->type != IATYPE_NA)
++				continue;
++
++			iac_na = (struct iactl_na *)ia->ctl;
++			for (sa = TAILQ_FIRST(&iac_na->statefuladdr_head);
++				sa;
++				sa = TAILQ_NEXT(sa, link))
++			{
++				if (sa->dhcpif != ifp)
++					continue;
++				for (i = 0 ; i < count; i++) {
++					if (IN6_ARE_ADDR_EQUAL(&sa->addr.addr, &iana_addr[i])) {
++						memcpy(&dad_fail_addr[dad_fail_count],
++								&sa->addr.addr, sizeof(struct in6_addr));
++						dad_fail_count++;
++						break;
++					}
++				}
++			}
++		}
++	}
++	return dad_fail_count;
++}
++
++
++int
++set_plt_vlt_of_wan_ip(ifp)
++	struct dhcp6_if *ifp;
++{
++	struct ia_conf *iac;
++	struct ia *ia;
++	struct iactl_na *iac_na;
++	struct statefuladdr *sa;
++	int set_count = 0, i;
++
++	for (iac = TAILQ_FIRST(&ifp->iaconf_list);
++		iac;
++		iac = TAILQ_NEXT(iac, link))
++	{
++		if (TAILQ_EMPTY(&iac->iadata)) {
++			/* we dont like non-current IA */
++			continue;
++		}
++		for (ia = TAILQ_FIRST(&iac->iadata); ia; ia = TAILQ_NEXT(ia, link)) {
++			if (ia->conf->type != IATYPE_NA)
++				continue;
++
++			iac_na = (struct iactl_na *)ia->ctl;
++			for (sa = TAILQ_FIRST(&iac_na->statefuladdr_head);
++				sa;
++				sa = TAILQ_NEXT(sa, link))
++			{
++				if (sa->dhcpif != ifp)
++					continue;
++
++				/* set vlt plt of WAN Global IP */
++				char str[200]="";
++				sprintf(str, "ip -6 addr change %s dev %s preferred_lft %lu valid_lft %lu",
++						in6addr2str(&sa->addr.addr, 0), sa->dhcpif->ifname,
++						sa->addr.pltime, sa->addr.vltime);
++				system(str);
++				set_count++;
++			}
++		}
++	}
++	return set_count;
++}
++
++
++struct dhcp6_timer *
++client6_dad_check(arg)
++	void *arg;
++{
++	struct dhcp6_event *ev = (struct dhcp6_event *)arg;
++	struct dhcp6_if *ifp = NULL;
++	int dad_fail_count, count, set_count;
++	struct in6_addr iana_addr[64];
++	struct in6_addr dad_fail_addr[64];
++
++	if (ev == NULL) {
++		return (NULL);
++	}
++	if ((ifp = ev->ifp) == NULL) {
++		return (NULL);
++	}
++
++	count = get_tentative_addr(iana_addr);
++	if (count < 0) {
++		return (NULL);
++	}
++	else if (count == 0) {
++		dad_fail_count = 0;
++	}
++	else {
++		dad_fail_count = dad_check(ifp, iana_addr, dad_fail_addr, count);
++	}
++
++	if (dad_fail_count) {
++		/* DAD fail: prepare to send "decline" message */
++		ev->timeouts = 0;
++		remove_reachable_addr_from_ev(ev, dad_fail_addr, dad_fail_count);
++		client6_send(ev);
++		dhcp6_set_timeoparam(ev);
++		if ((ev->timer = dhcp6_add_timer(client6_timo, ev)) == NULL) {
++			dhcp6_remove_event(ev);
++			return (NULL);
++		}
++		dhcp6_reset_timer(ev);
++	}
++	else {
++		set_count = set_plt_vlt_of_wan_ip(ifp);
++
++		/* Pass DAD: restore to request state */
++		ev->state = DHCP6S_REQUEST;
++		dhcp6_remove_event(ev);
++	}
++	if (ev->dadtimer)
++		dhcp6_remove_timer(&ev->dadtimer);
++
++	return (NULL);
++}
++#endif
++
++/* WenHsien: to get MAC addr. */
++#include <stdio.h>    //printf
++#include <string.h>   //strncpy
++#include <sys/socket.h>
++#include <sys/ioctl.h>
++#include <net/if.h>   //ifreq
++#include <unistd.h>   //close
++unsigned char * getmacaddr(ifname)
++    unsigned char *ifname;
++{
++    int fd;
++    struct ifreq ifr;
++    char *iface = ifname;
++    unsigned char *mac;
++
++    fd = socket(AF_INET, SOCK_DGRAM, 0);
++
++    ifr.ifr_addr.sa_family = AF_INET;
++    strncpy(ifr.ifr_name , iface , IFNAMSIZ-1);
++
++    ioctl(fd, SIOCGIFHWADDR, &ifr);
++
++    close(fd);
++
++    mac = (unsigned char *)ifr.ifr_hwaddr.sa_data;
++    return mac;
++}
++
+ static int
+ construct_confdata(ifp, ev)
+ 	struct dhcp6_if *ifp;
+@@ -978,6 +1214,56 @@
+ 		memset(evd, 0, sizeof(evd));
+ 
+ 		memset(&iaparam, 0, sizeof(iaparam));
++		
++		// WenHsien: According to RFC3315 Ch.10 Sec.3 ...
++		//  The IAID uniquely identifies the IA and must be chosen to be unique
++        //  among the IAIDs on the client.  The IAID is chosen by the client.
++        //  For any given use of an IA by the client, the IAID for that IA MUST
++        //  be consistent across restarts of the DHCP client.  The client may
++        //  maintain consistency either by storing the IAID in non-volatile
++        //  storage or by using an algorithm that will consistently produce the
++        //  same IAID as long as the configuration of the client has not changed.
++        //  There may be no way for a client to maintain consistency of the IAIDs
++        //  if it does not have non-volatile storage and the client's hardware
++        //  configuration changes.
++        
++        // WenHsien: and according to RFC3633 Ch.6 Sec.3 ...
++        //  The IAID uniquely identifies the IA_PD and must be chosen to be
++        //  unique among the IA_PD IAIDs on the requesting router.  The IAID is
++        //  chosen by the requesting router.  For any given use of an IA_PD by
++        //  the requesting router, the IAID for that IA_PD MUST be consistent
++        //  across restarts of the requesting router.  The requesting router may
++        //  maintain consistency either by storing the IAID in non-volatile
++        //  storage or by using an algorithm that will consistently produce the
++        //  same IAID as long as the configuration of the requesting router has
++        //  not changed.  If the requesting router uses only one IAID, it can use
++        //  a well-known value, e.g., zero.
++        
++		// WenHsien: Here get MAC address, merge opt. type to generate unique IAID.
++		unsigned char *mac=NULL;
++		unsigned char *ifname=NULL;
++   		unsigned int type = 0;
++		// get mac
++		if (ifp->ifname) {
++			ifname = ifp->ifname;
++		} else {
++			ifname = "eth0";
++		}
++   		mac = getmacaddr(ifname);
++		// get type
++   		if (IATYPE_PD == iac->type) {
++   			type = 25;
++   		} else if (IATYPE_NA == iac->type) {
++   			type = 3;
++   		}
++   		// merge
++		iac->iaid += mac[2] << 24;
++		iac->iaid += mac[3] << 16;
++		iac->iaid += mac[4] << 8;
++		iac->iaid += mac[5];
++		iac->iaid += type;
++		
++		
+ 		iaparam.iaid = iac->iaid;
+ 		switch (iac->type) {
+ 		case IATYPE_PD:
+@@ -1226,6 +1512,11 @@
+ 	case DHCP6S_INFOREQ:
+ 		dh6->dh6_msgtype = DH6_INFORM_REQ;
+ 		break;
++#ifdef CLIENT_DECLINE_SUPPORT
++	case DHCP6S_DECLINE:
++		dh6->dh6_msgtype = DH6_DECLINE;
++		break;
++#endif
+ 	default:
+ 		dprintf(LOG_ERR, FNAME, "unexpected state");
+ 		exit(1);	/* XXX */
+@@ -1262,6 +1553,9 @@
+ 	case DHCP6S_REQUEST:
+ 	case DHCP6S_RENEW:
+ 	case DHCP6S_RELEASE:
++#ifdef CLIENT_DECLINE_SUPPORT
++	case DHCP6S_DECLINE:
++#endif
+ 		if (duidcpy(&optinfo.serverID, &ev->serverid)) {
+ 			dprintf(LOG_ERR, FNAME, "failed to copy server ID");
+ 			goto end;
+@@ -1275,6 +1569,11 @@
+ 		goto end;
+ 	}
+ 
++	/* reconfigure accept */
++	if (reconfigure_accept) {
++		optinfo.reconfigureAccept = 1;
++	}
++
+ 	/* rapid commit (in Solicit only) */
+ 	if (ev->state == DHCP6S_SOLICIT &&
+ 	    (ifp->send_flags & DHCIFF_RAPID_COMMIT)) {
+@@ -1323,6 +1622,18 @@
+ 		dprintf(LOG_ERR, FNAME, "failed to copy requested options");
+ 		goto end;
+ 	}
++	/*Kerker 2016/02/04
++	 *	SOL_MAX_RT
++	 */
++	if(dh6->dh6_msgtype == DH6_SOLICIT){
++		u_int16_t *RT_TEST=DH6OPT_SOL_MAX_RT;
++		if (dhcp6_add_listval(&optinfo.reqopt_list, DHCP6_LISTVAL_NUM,
++	    	&RT_TEST, NULL) == NULL) {
++			dprintf(LOG_NOTICE, FNAME, "failed to make SOL_MAX_RT");
++			return (-1);
++		}
++	}
++
+ 
+ 	/* configuration information specified as event data */
+ 	for (evd = TAILQ_FIRST(&ev->data_list); evd;
+@@ -1379,7 +1690,20 @@
+ 			    optinfo.delayedauth_offset + sizeof(*dh6),
+ 			    ev->authparam->key)) {
+ 				dprintf(LOG_WARNING, FNAME,
+-				    "failed to calculate MAC");
++				    "failed to calculate MAC_DELAYED");
++				goto end;
++			}
++			break;
++		case DHCP6_AUTHPROTO_RECONFIG:
++			if (ev->authparam->key == NULL)
++				break;
++
++			if (dhcp6_calc_mac((char *)dh6, len,
++			    optinfo.authproto, optinfo.authalgorithm,
++			    optinfo.reconfigauth_offset + sizeof(*dh6),
++			    ev->authparam->key)) {
++				dprintf(LOG_WARNING, FNAME,
++				    "failed to calculate MAC_RECONFIG");
+ 				goto end;
+ 			}
+ 			break;
+@@ -1515,6 +1839,9 @@
+ 	case DH6_REPLY:
+ 		(void)client6_recvreply(ifp, dh6, len, &optinfo);
+ 		break;
++	case DH6_RECONFIGURE:
++		(void)client6_recvreconfigure(ifp, dh6, len, &optinfo);
++		break;
+ 	default:
+ 		dprintf(LOG_INFO, FNAME, "received an unexpected message (%s) "
+ 		    "from %s", dhcp6msgstr(dh6->dh6_msgtype),
+@@ -1564,13 +1891,26 @@
+ 		return (-1);
+ 	}
+ 
++#if 0 /*Default dhcp6c send reconfigureAccept*/
++	if (optinfo->reconfigureAccept==1) {
++		reconfigure_accept = 1;
++	}
++#else /*Ignore the authentication if server does not send the reconfigure_accept*/
++	if (optinfo->reconfigureAccept==1) {
++		reconfigure_accept_reply = 1;
++	}
++#endif
++
+ 	/* validate authentication */
+ 	authparam0 = *ev->authparam;
+ 	if (process_auth(&authparam0, dh6, len, optinfo)) {
+ 		dprintf(LOG_INFO, FNAME, "failed to process authentication");
+ 		return (-1);
+ 	}
+-
++	/*SOL_MAX_RT*/
++	if(optinfo->max_rt){
++		ev->max_retrans_time=optinfo->max_rt*1000;
++	}
+ 	/*
+ 	 * The requesting router MUST ignore any Advertise message that
+ 	 * includes a Status Code option containing the value NoPrefixAvail
+@@ -1585,6 +1925,9 @@
+ 	    evd = TAILQ_NEXT(evd, link)) {
+ 		u_int16_t stcode;
+ 		char *stcodestr;
++		struct dhcp6_listval *iav=NULL, *siav=NULL;
++		struct ia_conf *iac;
++		struct dhcp6_ia iaparam;
+ 
+ 		switch (evd->type) {
+ 		case DHCP6_EVDATA_IAPD:
+@@ -1604,6 +1947,74 @@
+ 			    "advertise contains %s status", stcodestr);
+ 			return (-1);
+ 		}
++
++		/*
++		 * Peter: ReadyLogo
++		 * RFC3315
++		 *   17.1.3. Receipt of Advertise Messages
++		 *
++		 * The client MUST ignore any Advertise message that includes a Status
++		 * Code option containing the value NoAddrsAvail.
++  		 */
++		if (evd->type == DHCP6_EVDATA_IANA) {
++			iaparam.iaid = 0;
++			for (iac = TAILQ_FIRST(&ifp->iaconf_list); 
++				iac; iac = TAILQ_NEXT(iac, link)) 
++			{
++				if (iac->type == IATYPE_NA) {
++					iaparam.iaid = iac->iaid;
++					break;
++				} 
++			}
++
++			if ( 	(iaparam.iaid)
++				&&
++				(iav = dhcp6_find_listval(&optinfo->iana_list, 
++				DHCP6_LISTVAL_IANA, &iaparam, 0)) ) 
++			{ 
++				for (siav = TAILQ_FIRST(&iav->sublist); siav; 
++					siav = TAILQ_NEXT(siav, link)) 
++				{
++					if ( 	(siav->type == DHCP6_LISTVAL_STCODE) 
++						&& 
++						(siav->val_num16 == DH6OPT_STCODE_NOADDRSAVAIL) ) 
++					{
++					    dprintf(LOG_INFO, FNAME, "DH6OPT_STCODE_NOADDRSAVAIL");
++						return (-1);
++					}
++				}	
++			}	
++		}
++		else if (evd->type == DHCP6_EVDATA_IAPD) {
++			//Peter: need to be added in the future....
++			//WenHsien: here I am....
++			iaparam.iaid = 0;
++			for (iac = TAILQ_FIRST(&ifp->iaconf_list);
++				iac; iac = TAILQ_NEXT(iac, link))
++			{
++				if (iac->type == IATYPE_PD) {
++					iaparam.iaid = iac->iaid;
++					break;
++				}
++			}
++			if ( 	(iaparam.iaid)
++				&&
++				(iav = dhcp6_find_listval(&optinfo->iapd_list,
++						DHCP6_LISTVAL_IAPD, &iaparam, 0)) )
++			{
++				for (siav = TAILQ_FIRST(&iav->sublist); siav;
++					siav = TAILQ_NEXT(siav, link))
++				{
++					if ( 	(siav->type == DHCP6_LISTVAL_STCODE)
++						&&
++						(siav->val_num16 == DH6OPT_STCODE_NOPREFIXAVAIL) )
++					{
++						dprintf(LOG_INFO, FNAME, "DH6OPT_STCODE_NOPREFIXAVAIL");
++						return (-1);
++					}
++				}
++			}
++		}
+ 	}
+ 
+ 	if (ev->state != DHCP6S_SOLICIT ||
+@@ -1746,15 +2157,136 @@
+ }
+ 
+ static int
++client6_recvreconfigure(ifp, dh6, len, optinfo)
++	struct dhcp6_if *ifp;
++	struct dhcp6 *dh6;
++	ssize_t len;
++	struct dhcp6_optinfo *optinfo;
++{
++	recv_reconfigure_message = 1;
++
++	/* find the corresponding event based on the received xid */
++	if ((ntohl(dh6->dh6_xid) & DH6_XIDMASK) != 0) {
++		dprintf(LOG_INFO, FNAME, "XID not zero");
++		return (-1);
++	}
++
++	/* A Reply message must contain a Server ID option */
++	if (optinfo->serverID.duid_len == 0) {
++		dprintf(LOG_INFO, FNAME, "no server ID option");
++		return (-1);
++	}
++
++	/*
++	 * DUID in the Client ID option (which must be contained for our
++	 * client implementation) must match ours.
++	 */
++	if (optinfo->clientID.duid_len == 0) {
++		dprintf(LOG_INFO, FNAME, "no client ID option");
++		return (-1);
++	}
++	if (duidcmp(&optinfo->clientID, &client_duid)) {
++		dprintf(LOG_INFO, FNAME, "client DUID mismatch");
++		return (-1);
++	}
++
++	/*
++	 *Kerker WAN_7084 Check reconfigure auth
++	 */
++	if(optinfo->authproto==DHCP6_AUTHPROTO_UNDEF){
++		dprintf(LOG_INFO, FNAME, "failed to process authentication authproto undef");
++		return (-1);
++	}
++	else if (process_auth(&reconfig_auth, dh6, len, optinfo)) {
++		dprintf(LOG_INFO, FNAME, "failed to process authentication");
++		return (-1);
++	}
++
++	/*reconfigureAccept reconfigureAccept reconfigureAccept
++	 * If the client included a Rapid Commit option in the Solicit message,
++	 * the client discards any Reply messages it receives that do not
++	 * include a Rapid Commit option.
++	 * (should we keep the server otherwise?)
++	 * [RFC3315 Section 17.1.4]
++	 reconfigureAccept reconfigureAccept reconfigureAccept*/
++	if (!reconfigure_accept_reply) {
++		dprintf(LOG_INFO, FNAME, "no reconfigure accept");
++		return (-1);
++	}
++
++	/* Get IA data from ifp */
++	struct ia_conf *iac;
++	struct ia *ia;
++	int donePD = 0;
++	int doneNA = 0;
++
++    for (iac = TAILQ_FIRST(&ifp->iaconf_list); iac; iac = TAILQ_NEXT(iac, link))
++	{
++		if (iac->type == IATYPE_PD) {
++			for (ia = TAILQ_FIRST(&iac->iadata); ia;
++				ia = TAILQ_NEXT(ia, link)) {
++
++				if (ia->conf->type == IATYPE_PD) {
++					struct timeval timo;
++					timo.tv_sec = 0;
++					timo.tv_usec = 0;
++
++#if 1 //JACKYU: forget to change this event to renew
++					if(ia->timer->expire_data)
++					{
++						struct dhcp6_event *ev = (struct dhcp6_event *)ia->timer->expire_data;
++						ev->state = DHCP6S_RENEW;
++					}
++#endif
++					dhcp6_set_timer(&timo, ia->timer);
++
++					break;
++				}
++			}
++			donePD = 1;
++		}
++		else if (iac->type == IATYPE_NA) {
++
++			for (ia = TAILQ_FIRST(&iac->iadata); ia;
++				ia = TAILQ_NEXT(ia, link)) {
++
++				if (ia->conf->type == IATYPE_NA) {
++					//ia->t1 = 50;
++					//ia->t2 = 80;
++
++					//struct timeval timo;
++					//timo.tv_sec = 0;
++					//timo.tv_usec = 0;
++					//dhcp6_set_timer(&timo, ia->timer);// will lead crash even give t1 t2 values.2015.0820#.
++
++					break;
++				}
++			}
++			doneNA = 1;
++		}
++
++		if (donePD==1 && doneNA==1) {
++			break;
++		}
++		else {
++			continue;
++		}
++	}
++	return (0);
++}
++
++static int
+ client6_recvreply(ifp, dh6, len, optinfo)
+ 	struct dhcp6_if *ifp;
+ 	struct dhcp6 *dh6;
+ 	ssize_t len;
+ 	struct dhcp6_optinfo *optinfo;
+ {
+-	struct dhcp6_listval *lv;
++	struct dhcp6_listval *lv, *iav, *siav;
+ 	struct dhcp6_event *ev;
+ 	int state;
++	struct ia_conf *iac;
++	struct dhcp6_ia iaparam;
+ /*zyxel*/
+ 	char *msg = NULL;
+ 	int msgLen = 0;
+@@ -1773,6 +2305,9 @@
+ 	    state != DHCP6S_RENEW &&
+ 	    state != DHCP6S_REBIND &&
+ 	    state != DHCP6S_RELEASE &&
++#ifdef CLIENT_DECLINE_SUPPORT
++	    state != DHCP6S_DECLINE &&
++#endif
+ 	    (state != DHCP6S_SOLICIT ||
+ 	     !(ifp->send_flags & DHCIFF_RAPID_COMMIT))) {
+ 		dprintf(LOG_INFO, FNAME, "unexpected reply");
+@@ -1818,8 +2353,75 @@
+ 		return (-1);
+ 	}
+ 
+-	/*zyxel*/
+-	//dhcp6cMsg = json_object_new_object();
++	/*
++	 * Peter: ReadyLogo
++	 * RFC3315
++	 *   18.1.8. Receipt of Reply Messages
++	 *
++	 * When the client receives a Reply message in response to Renew/Rebind
++	 * message, the client examines each IA independently.  For each
++	 * IA in the original Renew/Rebind message, the client sends a Renew/Rebind
++	 * if the IA is not in the Reply message.
++	 */
++	struct dhcp6_eventdata *evd;
++	if ( (state == DHCP6S_RENEW) || (state == DHCP6S_REBIND) ) {
++		for (evd = TAILQ_FIRST(&ev->data_list); evd;
++		    evd = TAILQ_NEXT(evd, link)) {
++			if (evd->type == DHCP6_EVDATA_IANA) {
++				for (iac = TAILQ_FIRST(&ifp->iaconf_list); iac; iac = TAILQ_NEXT(iac, link)) {
++					// 2015.0610 Why here have NA? renew do not have NA, then here should not have NA, too.
++					if (iac->type == IATYPE_NA) {
++						iaparam.iaid = iac->iaid;
++					}
++				}
++				iav = dhcp6_find_listval(&optinfo->iana_list,
++					DHCP6_LISTVAL_IANA, &iaparam, 0);
++				if (!iav) {
++					ev->timeouts++;
++					client6_send(ev);
++
++					//dhcp6_set_timeoparam(ev);
++					dhcp6_reset_timer(ev);					
++					dprintf(LOG_INFO, FNAME, "no IA_NA option after sending RENEW or REBIND packet");
++					return (0);
++				}
++				siav = TAILQ_FIRST(&iav->sublist);
++				if(!siav){
++					ev->timeouts++;
++					client6_send(ev);
++					dhcp6_reset_timer(ev);					
++					dprintf(LOG_INFO, FNAME, "no prefix option in IA_NA option ");
++					return (0);
++				}
++			}
++			else if (evd->type == DHCP6_EVDATA_IAPD) {
++				for (iac = TAILQ_FIRST(&ifp->iaconf_list); iac; iac = TAILQ_NEXT(iac, link)) {
++					if (iac->type == IATYPE_PD) {
++						iaparam.iaid = iac->iaid;
++					}
++				}
++				iav = dhcp6_find_listval(&optinfo->iapd_list,
++					DHCP6_LISTVAL_IAPD, &iaparam, 0);
++				if (!iav) {
++					ev->timeouts++;
++					client6_send(ev);
++
++					//dhcp6_set_timeoparam(ev);
++					dhcp6_reset_timer(ev);
++					dprintf(LOG_INFO, FNAME, "no IA_PD option after sending RENEW or REBIND packet");
++					return (0);
++				}
++				siav = TAILQ_FIRST(&iav->sublist);
++				if(!siav){
++					ev->timeouts++;
++					client6_send(ev);
++					dhcp6_reset_timer(ev);					
++					dprintf(LOG_INFO, FNAME, "no prefix option in IA_PD option ");
++					return (0);
++				}
++			}
++		}
++	}
+ 
+ 	/*
+ 	 * The client MAY choose to report any status code or message from the
+@@ -1830,6 +2432,60 @@
+ 	     lv = TAILQ_NEXT(lv, link)) {
+ 		dprintf(LOG_INFO, FNAME, "status code: %s",
+ 		    dhcp6_stcodestr(lv->val_num16));
++
++		if (state == DHCP6S_REQUEST) {
++			/*
++			 * Peter: ReadyLogo
++			 * RFC3315
++			 *   18.1.8. Receipt of Reply Messages
++			 *
++ 			 * If the client receives a Reply message with a Status Code containing
++		 	 * UnspecFail, the server is indicating that it was unable to process
++ 			 * the message due to an unspecified failure condition. 
++	 		 * The client retransmits the original message.
++	  		 */
++			if (lv->val_num16 == DH6OPT_STCODE_UNSPECFAIL) { 
++				ev->timeouts++;
++				client6_send(ev);
++
++				//dhcp6_set_timeoparam(ev);
++				dhcp6_reset_timer(ev);
++				dprintf(LOG_INFO, FNAME, "DH6OPT_STCODE_UNSPECFAIL");
++				return (0);
++			}
++			/*Kerker 
++			 *Receipt reply with status code->notonlink
++			 */	
++			if (lv->val_num16 == DH6OPT_STCODE_NOTONLINK){
++				dhcp6_remove_event(ev);
++
++				if (state == DHCP6S_RELEASE)
++					check_exit();
++				if (client6_start(ifp))
++				exit(1); /* initialization failure. */
++				return (0);
++			}
++			/*
++			 * Peter: ReadyLogo
++			 * RFC3315
++			 *   18.1.8. Receipt of Reply Messages
++			 *
++			 * When the client receives a Reply message with a Status Code option
++			 * with the value UseMulticast, the client records the receipt of the
++			 * message and sends subsequent messages to the server through the
++			 * interface on which the message was received using multicast.  The
++			 * client resends the original message using multicast.
++	  		 */
++			if (lv->val_num16 == DH6OPT_STCODE_USEMULTICAST) {
++				ev->timeouts++;
++				client6_send(ev);
++
++				//dhcp6_set_timeoparam(ev);
++				dhcp6_reset_timer(ev);
++				dprintf(LOG_INFO, FNAME, "DH6OPT_STCODE_USEMULTICAST");
++				return (0);
++			}
++		}
+ 	}
+ 
+ 	if (!TAILQ_EMPTY(&optinfo->dns_list)) {
+@@ -1944,8 +2600,12 @@
+ 	}
+ 
+ 	/* update stateful configuration information */
++	int rtnVal = 0;
+ 	if (state != DHCP6S_RELEASE) {
+-		update_ia(IATYPE_PD, &optinfo->iapd_list, ifp,
++#ifdef CLIENT_DECLINE_SUPPORT
++		ifp->current_ev = ev;
++#endif
++		rtnVal = update_ia(IATYPE_PD, &optinfo->iapd_list, ifp,
+ 		    &optinfo->serverID, ev->authparam);
+ 		update_ia(IATYPE_NA, &optinfo->iana_list, ifp,
+ 		    &optinfo->serverID, ev->authparam);
+@@ -1965,6 +2625,20 @@
+ 	memset(&dhcp6cMsg, 0, sizeof(dhcp6cMsg));
+ 	json_object_put(dhcp6cJsonMsg);
+ 
++#ifdef CLIENT_DECLINE_SUPPORT
++	if (ev->state == DHCP6S_DECLINE) {
++		if (state == DHCP6S_DECLINE) {
++			/* client sends decline to server and got server's reply */
++			ev->state = DHCP6S_REQUEST;
++			dhcp6_remove_event(ev);
++		}
++		else {
++			/* state should be DHCP6S_REQUEST. before DAD start */
++			;
++		}
++	}
++	else
++#endif
+ 	dhcp6_remove_event(ev);
+ 
+ 	if (state == DHCP6S_RELEASE) {
+@@ -2014,6 +2688,11 @@
+ {
+ 	struct keyinfo *key = NULL;
+ 	int authenticated = 0;
++	int authenticated_reconf = 0;
++
++	authparam->authproto = optinfo->authproto;
++	authparam->authalgorithm = optinfo->authalgorithm;
++	authparam->authrdm = optinfo->authrdm;
+ 
+ 	switch (optinfo->authproto) {
+ 	case DHCP6_AUTHPROTO_UNDEF:
+@@ -2105,16 +2784,103 @@
+ 		}
+ 
+ 		break;
++	case DHCP6_AUTHPROTO_RECONFIG:
++		if ((optinfo->authflags & DHCP6OPT_AUTHFLAG_NOINFO)) {
++			dprintf(LOG_INFO, FNAME, "server did not include "
++			    "authentication information");
++			break;
++		}
++
++		if (optinfo->authalgorithm != DHCP6_AUTHALG_HMACMD5) {
++			dprintf(LOG_INFO, FNAME, "unknown authentication "
++			    "algorithm (%d)", optinfo->authalgorithm);
++			break;
++		}
++
++		if (optinfo->authrdm != DHCP6_AUTHRDM_MONOCOUNTER) {
++			dprintf(LOG_INFO, FNAME,"unknown RDM (%d)",
++			    optinfo->authrdm);
++			break;
++		}
++
++		/*
++		 * Replay protection.  If we do not know the previous RD value,
++		 * we accept the message anyway (XXX).
++		 */
++		if ((authparam->flags & AUTHPARAM_FLAGS_NOPREVRD)) {
++			dprintf(LOG_WARNING, FNAME, "previous RD value is "
++			    "unknown (accept it)");
++		} else {
++			if (dhcp6_auth_replaycheck(optinfo->authrdm,
++			    authparam->prevrd, optinfo->authrd)) {
++				dprintf(LOG_INFO, FNAME,
++				    "possible replay attack detected");
++				break;
++			}
++		}
++
++		// see if here we need to SAVE_KEY or USE_KEY.
++		if (optinfo->reconfigauth_type == 1) {
++
++			if ((key = malloc(sizeof(*key))) == NULL) {
++				return (-1);
++			}
++			key->secretlen = 16;
++			key->secret = malloc(key->secretlen);
++			memset(key->secret, 0, sizeof(key->secretlen));
++
++			if (key->secret == NULL) {
++				dprintf(LOG_WARNING, FNAME, "failed "
++					"allocate memory for auth realm");
++				return (-1);
++			}
++
++			if (! optinfo->reconfigauth_val) {
++				return (-1);
++			}
++			memcpy(key->secret, optinfo->reconfigauth_val, key->secretlen);
++
++			authparam->key = key;
++			authenticated_reconf = 1;
++
++		} else if (optinfo->reconfigauth_type == 2) {
++			key = authparam->key;
++
++			/* validate MAC */
++			if (dhcp6_verify_mac((char *)dh6, len, optinfo->authproto,
++			    optinfo->authalgorithm,
++			    optinfo->reconfigauth_offset + sizeof(*dh6), key) == 0) {
++				dprintf(LOG_DEBUG, FNAME, "message_RECONFIG authentication "
++				    "validated");
++				authenticated_reconf = 1;
++			} else {
++				dprintf(LOG_INFO, FNAME, "invalid message_RECONFIG "
++				    "authentication");
++			}
++		}
++		break;
+ 	default:
+ 		dprintf(LOG_INFO, FNAME, "server sent unsupported "
+ 		    "authentication protocol (%d)", optinfo->authproto);
+ 		break;
+ 	}
+ 
+-	if (authenticated == 0) {
++	if (optinfo->authproto == DHCP6_AUTHPROTO_DELAYED && authenticated == 0) {
++		if (authparam->authproto != DHCP6_AUTHPROTO_UNDEF) {
++			dprintf(LOG_INFO, FNAME, "message not authenticated "
++			    "while authentication_DELAYED required");
++
++			/*
++			 * Right now, we simply discard unauthenticated
++			 * messages.
++			 */
++			return (-1);
++		}
++		/*Ignore the authentication if server does not send the reconfigure_accept*/
++	} else if ((optinfo->authproto == DHCP6_AUTHPROTO_RECONFIG && reconfigure_accept_reply == 1) && authenticated_reconf == 0) {
+ 		if (authparam->authproto != DHCP6_AUTHPROTO_UNDEF) {
+ 			dprintf(LOG_INFO, FNAME, "message not authenticated "
+-			    "while authentication required");
++			    "while authentication_RECONFIG required");
+ 
+ 			/*
+ 			 * Right now, we simply discard unauthenticated
+@@ -2128,6 +2894,17 @@
+ 		authparam->flags &= ~AUTHPARAM_FLAGS_NOPREVRD;
+ 	}
+ 
++	/*
++	 *Kerker
++	 *	set authparam for reconfigure  **can use new event to improve it**
++	 */
++	reconfig_auth.authproto=authparam->authproto;
++	reconfig_auth.authalgorithm=authparam->authalgorithm;
++	reconfig_auth.authrdm=authparam->authrdm;
++	reconfig_auth.key=authparam->key;
++	reconfig_auth.flags=authparam->flags;
++	reconfig_auth.prevrd=authparam->prevrd;
++
+ 	return (0);
+ }
+ 
+@@ -2141,6 +2918,11 @@
+ 	if (authparam == NULL)
+ 		return (0);
+ 
++	/*Ignore the authentication if server does not send the reconfigure_accept*/
++	if (authparam->authproto == DHCP6_AUTHPROTO_RECONFIG && reconfigure_accept_reply != 1){
++		return (0);
++	}
++
+ 	optinfo->authproto = authparam->authproto;
+ 	optinfo->authalgorithm = authparam->authalgorithm;
+ 	optinfo->authrdm = authparam->authrdm;
+@@ -2199,6 +2981,40 @@
+ 		    optinfo->delayedauth_realmlen);
+ 
+ 		break;
++
++	case DHCP6_AUTHPROTO_RECONFIG:
++		if (authparam->key == NULL) {
++			dprintf(LOG_INFO, FNAME,
++			    "no authentication key_RECONFIG for %s",
++			    dhcp6_event_statestr(ev));
++			return (-1);
++		}
++
++		if (dhcp6_validate_key(authparam->key)) {
++			dprintf(LOG_INFO, FNAME, "key_RECONFIG %s is invalid",
++			    authparam->key->name);
++			return (-1);
++		}
++
++		if (get_rdvalue(optinfo->authrdm, &optinfo->authrd,
++		    sizeof(optinfo->authrd))) {
++			dprintf(LOG_ERR, FNAME, "failed to get a replay "
++			    "detection value_RECONFIG");
++			return (-1);
++		}
++
++		/* RFC3315 Ch21.5.1
++		 * Type of data in Value field carried in this option:
++         *       1   Reconfigure Key value (used in Reply message).
++         *       2   HMAC-MD5 digest of the message (used in Reconfigure
++         *           message).
++		 */
++		optinfo->reconfigauth_type = 2;
++		// count and set reconfigauth_offset in set_opt()
++		memcpy(optinfo->reconfigauth_val, authparam->key->secret,
++				authparam->key->secretlen);
++		break;
++
+ 	default:
+ 		dprintf(LOG_ERR, FNAME, "unsupported authentication protocol "
+ 		    "%d", authparam->authproto);
+Index: wide-dhcpv6-20080615/dhcp6c.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c.h	2017-03-09 23:26:01.257994631 +0800
++++ wide-dhcpv6-20080615/dhcp6c.h	2017-03-09 23:33:35.165843259 +0800
+@@ -35,4 +35,8 @@
+ extern struct dhcp6_timer *client6_timo __P((void *));
+ extern int client6_start __P((struct dhcp6_if *));
+ extern void client6_send __P((struct dhcp6_event *));
+-void dhcp6_lifetime_timeout();
++
++#ifdef CLIENT_DECLINE_SUPPORT
++extern struct dhcp6_timer *client6_dad_check __P((void *));
++extern int set_plt_vlt_of_wan_ip(struct dhcp6_if *);
++#endif
+Index: wide-dhcpv6-20080615/dhcp6c_ia.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c_ia.c	2007-03-21 17:52:55.000000000 +0800
++++ wide-dhcpv6-20080615/dhcp6c_ia.c	2017-03-09 23:33:28.413176038 +0800
+@@ -49,6 +49,9 @@
+ #include "prefixconf.h"
+ #include "addrconf.h"
+ 
++#if defined(CLIENT_DECLINE_SUPPORT) || defined(CLIENT_CONFIRM_SUPPORT)
++
++#else
+ typedef enum {IAS_ACTIVE, IAS_RENEW, IAS_REBIND} iastate_t;
+ 
+ struct ia {
+@@ -76,6 +79,7 @@
+ 	/* authentication parameters for transaction with servers on this IA */
+ 	struct authparam *authparam;
+ };
++#endif
+ 
+ static int update_authparam __P((struct ia *, struct authparam *));
+ static void reestablish_ia __P((struct ia *));
+@@ -90,7 +94,7 @@
+ static char *iastr __P((iatype_t));
+ static char *statestr __P((iastate_t));
+ 
+-void
++int
+ update_ia(iatype, ialist, ifp, serverid, authparam)
+ 	iatype_t iatype;
+ 	struct dhcp6_list *ialist;
+@@ -104,6 +108,7 @@
+ 	struct iana_conf *ianac;
+ 	struct dhcp6_listval *iav, *siav;
+ 	struct timeval timo;
++	int rtnVal=0;
+ 
+ 	for (iav = TAILQ_FIRST(ialist); iav; iav = TAILQ_NEXT(iav, link)) {
+ 		/* if we're not interested in this IA, ignore it. */
+@@ -152,9 +157,10 @@
+ 			case DHCP6_LISTVAL_PREFIX6:
+ 				/* add or update the prefix */
+ 				iapdc = (struct iapd_conf *)iac;
+-				if (update_prefix(ia, &siav->val_prefix6,
++				rtnVal = update_prefix(ia, &siav->val_prefix6,
+ 				    &iapdc->iapd_pif_list, ifp, &ia->ctl,
+-				    callback)) {
++						callback);
++				if (rtnVal < 0) {
+ 					dprintf(LOG_NOTICE, FNAME,
+ 					    "failed to update a prefix %s/%d",
+ 					    in6addr2str(&siav->val_prefix6.addr, 0),
+@@ -277,6 +283,8 @@
+ 	  nextia:
+ 		;
+ 	}
++
++	return rtnVal;
+ }
+ 
+ static int
+Index: wide-dhcpv6-20080615/dhcp6c_ia.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6c_ia.h	2007-03-21 17:52:55.000000000 +0800
++++ wide-dhcpv6-20080615/dhcp6c_ia.h	2017-03-09 23:33:18.941971634 +0800
+@@ -29,7 +29,37 @@
+  * SUCH DAMAGE.
+  */
+ 
++#if defined(CLIENT_DECLINE_SUPPORT) || defined(CLIENT_CONFIRM_SUPPORT)
++typedef enum {IAS_ACTIVE, IAS_RENEW, IAS_REBIND} iastate_t;
++
++struct ia {
++        TAILQ_ENTRY(ia) link;
++
++        /* back pointer to configuration */
++        struct ia_conf *conf;
++
++        /* common parameters of IA */
++        u_int32_t t1;           /* duration for renewal */
++        u_int32_t t2;           /* duration for rebind  */
++
++        /* internal parameters for renewal/rebinding */
++        iastate_t state;
++        struct dhcp6_timer *timer;
++        struct dhcp6_eventdata *evdata;
++
++        /* DHCP related parameters */
++        struct dhcp6_if *ifp;   /* DHCP interface */
++        struct duid serverid;   /* the server ID that provided this IA */
++
++        /* control information shared with each particular config routine */
++        struct iactl *ctl;
++
++        /* authentication parameters for transaction with servers on this IA */
++        struct authparam *authparam;
++};
++#else
+ struct ia;			/* this is an opaque type */
++#endif
+ 
+ struct iactl {
+ 	struct ia *iactl_ia;	/* back pointer to IA */
+@@ -51,6 +81,7 @@
+ 	void (*cleanup) __P((struct iactl *));
+ };
+ 
+-extern void update_ia __P((iatype_t, struct dhcp6_list *,
++
++extern int update_ia __P((iatype_t, struct dhcp6_list *,
+     struct dhcp6_if *, struct duid *, struct authparam *));
+ extern void release_all_ia __P((struct dhcp6_if *));
+Index: wide-dhcpv6-20080615/dhcp6s.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6s.c	2017-03-09 23:26:01.213994413 +0800
++++ wide-dhcpv6-20080615/dhcp6s.c	2017-03-09 23:33:07.908533233 +0800
+@@ -78,7 +78,7 @@
+ #include <lease.h>
+ 
+ #define DUID_FILE LOCALDBDIR "/dhcp6s_duid"
+-#define DHCP6S_CONF SYSCONFDIR "/dhcp6s.conf"
++#define DHCP6S_CONF LOCALDBDIR "/dhcp6s.conf"
+ #define DEFAULT_KEYFILE SYSCONFDIR "/dhcp6sctlkey"
+ #define DHCP6S_PIDFILE "/var/run/dhcp6s.pid"
+ 
+@@ -1628,6 +1628,29 @@
+ 					goto fail;
+ 				}
+ 			}
++			else{
++				struct dhcp6_listval *iaddr,*riana,*raddr;
++				if (iaddr = TAILQ_FIRST(&iana->sublist)) {
++					if (riana = TAILQ_FIRST(&roptinfo.iana_list)){
++		    			if (raddr = TAILQ_FIRST(&riana->sublist)){
++							if (memcmp(&raddr->val_prefix6.addr, &iaddr->val_prefix6.addr, 8) != 0){
++								dhcp6_clear_list(&roptinfo.iana_list);
++								if (make_ia_stcode(DHCP6_LISTVAL_IANA,
++				  				  iana->val_ia.iaid,
++							    DH6OPT_STCODE_NOTONLINK,
++							    &roptinfo.iana_list)) {
++								dprintf(LOG_NOTICE, FNAME,
++							    "failed to make an option list");
++								dhcp6_clear_list(&conflist);
++								goto fail;
++								}
++							}
++		    			}
++		    		}
++				}
++			}/*Kerker 2016/01/25
++			  *	reply Notonlink when receive request with invalid IA_NA
++			  */
+ 		}
+ 
+ 		dhcp6_clear_list(&conflist);
+@@ -2293,8 +2316,9 @@
+ 	 * even when the given address seems to be on the appropriate link,
+ 	 * the confirm should be ignore if there's no corrensponding IA-NA
+ 	 * configuration.
++	 * 2016/01/19 Kerker reply confirm should not contain IANA option
+ 	 */
+-	for (iana = TAILQ_FIRST(&optinfo->iana_list); iana;
++/*	for (iana = TAILQ_FIRST(&optinfo->iana_list); iana;
+ 	    iana = TAILQ_NEXT(iana, link)) {
+ 		if (make_ia(iana, &conflist, &roptinfo.iana_list,
+ 		    client_conf, 1) == 0) {
+@@ -2302,7 +2326,7 @@
+ 			    "IA-NA configuration not found");
+ 			goto fail;
+ 		}
+-	}
++	}*/
+ 
+ send_reply:
+ 	if (dhcp6_add_listval(&roptinfo.stcode_list,
+Index: wide-dhcpv6-20080615/netlink_route.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ wide-dhcpv6-20080615/netlink_route.c	2016-12-29 10:23:51.390596200 +0800
+@@ -0,0 +1,325 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <string.h>
++#include <asm/types.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <net/if.h>
++#include <errno.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++
++struct nlmsg_list
++{
++	struct nlmsg_list *next;
++	struct nlmsghdr h;
++};
++
++struct rtnl_handle
++{
++        int                     fd;
++        struct sockaddr_nl      local;
++        struct sockaddr_nl      peer;
++        __u32                   seq;
++        __u32                   dump;
++};
++
++typedef int (*rtnl_filter_t)(const struct sockaddr_nl *, struct nlmsghdr *n, void *);
++struct rtnl_dump_filter_arg
++{
++	rtnl_filter_t filter;
++	void *arg1;
++	rtnl_filter_t junk;
++	void *arg2;
++};
++
++static void rtnl_close(struct rtnl_handle *rth)
++{
++	close(rth->fd);
++}
++
++static int rtnl_open(struct rtnl_handle *rth, unsigned subscriptions)
++{
++	socklen_t addr_len;
++	int sndbuf = 32768;
++	int rcvbuf = 32768;
++
++	memset(rth, 0, sizeof(rth));
++
++	rth->fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
++	if (rth->fd < 0) {
++		return -1;
++	}	
++	if (setsockopt(rth->fd,SOL_SOCKET,SO_SNDBUF,&sndbuf,sizeof(sndbuf)) < 0) {
++		return -1;
++	}
++	if (setsockopt(rth->fd,SOL_SOCKET,SO_RCVBUF,&rcvbuf,sizeof(rcvbuf)) < 0) {
++		return -1;
++	}
++	
++	memset(&rth->local, 0, sizeof(rth->local));
++	rth->local.nl_family = AF_NETLINK;
++	rth->local.nl_groups = subscriptions;
++
++	if (bind(rth->fd, (struct sockaddr*)&rth->local, sizeof(rth->local)) < 0) {
++		return -1;
++	}
++	addr_len = sizeof(rth->local);
++	if (getsockname(rth->fd, (struct sockaddr*)&rth->local, &addr_len) <0 ) {
++		return -1;
++	}
++	if (addr_len != sizeof(rth->local)) {
++		return -1;
++	}
++	if (rth->local.nl_family != AF_NETLINK) {
++		return -1;
++	}
++	rth->seq = time(NULL);
++
++	return 0;
++}
++
++static int rtnl_wilddump_request(struct rtnl_handle *rth, int family, int type)
++{
++	struct {
++		struct nlmsghdr nlh;
++		struct rtgenmsg g;
++	} req;
++
++	memset(&req, 0, sizeof(req));
++	req.nlh.nlmsg_len = sizeof(req);
++	req.nlh.nlmsg_type = type;
++	req.nlh.nlmsg_flags = NLM_F_ROOT|NLM_F_MATCH|NLM_F_REQUEST;
++	req.nlh.nlmsg_pid = 0;
++	req.nlh.nlmsg_seq = rth->dump = ++rth->seq;
++	req.g.rtgen_family = family;
++
++	return send(rth->fd, (void*)&req, sizeof(req), 0);
++}
++
++static int rtnl_dump_filter_l(struct rtnl_handle *rth, const struct rtnl_dump_filter_arg *arg)
++{
++	struct sockaddr_nl nladdr;
++	char buf[16384];
++	struct iovec iov = {
++		.iov_base = buf,
++		.iov_len = sizeof(buf),
++	};
++	struct msghdr msg = {
++		.msg_name = &nladdr,
++		.msg_namelen = sizeof(nladdr),
++		.msg_iov = &iov,
++		.msg_iovlen = 1,
++	};
++	int status;
++	const struct rtnl_dump_filter_arg *a;
++
++	while (1) {
++		status = recvmsg(rth->fd, &msg, 0);
++		
++		if (status < 0) {
++			if (errno == EINTR || errno == EAGAIN)
++				continue;
++			return -1;
++		}
++		if (status == 0) {
++			return -1;
++		}
++	
++		for (a = arg; a->filter; a++) {
++			struct nlmsghdr *h = (struct nlmsghdr*)buf;
++
++			while (NLMSG_OK(h, status)) {
++				int err;
++				if (nladdr.nl_pid != 0 
++					|| h->nlmsg_pid != rth->local.nl_pid
++					|| h->nlmsg_seq != rth->dump) 
++				{
++					goto skip_it;
++				}
++			
++				if (h->nlmsg_type == NLMSG_DONE)
++					return 0;
++				if (h->nlmsg_type == NLMSG_ERROR) {
++					return -1;
++				}
++				err = a->filter(&nladdr, h, a->arg1);
++				if (err < 0)
++					return err;
++skip_it:
++				h = NLMSG_NEXT(h, status);
++			}
++		} while(0);	
++		if (msg.msg_flags & MSG_TRUNC)
++			continue;
++		if (status)
++			exit(1);
++	}
++}
++
++static int rtnl_dump_filter(struct rtnl_handle *rth, rtnl_filter_t filter, void *arg1, 
++			rtnl_filter_t junk, void *arg2)
++{
++	const struct rtnl_dump_filter_arg a[2] = {
++		{.filter=filter, .arg1=arg1, .junk=junk, .arg2=arg2},
++		{.filter=NULL, .arg1=NULL, .junk=NULL, .arg2=NULL}
++	};
++
++	return rtnl_dump_filter_l(rth, a);
++}
++
++static int parse_rtattr(struct rtattr *tb[], int max, struct rtattr *rta, int len)
++{
++	memset(tb, 0, sizeof(struct rtattr *) * (max+1));
++	while (RTA_OK(rta, len)) {
++		if (rta->rta_type <= max)
++			tb[rta->rta_type] = rta;
++		rta = RTA_NEXT(rta, len);
++	}
++	return 0;	
++}
++
++static int store_addr(const struct sockaddr_nl *who, struct nlmsghdr *n, void *arg)
++{
++	struct nlmsg_list **linfo = (struct nlmsg_list**)arg;
++	struct nlmsg_list *h;
++	struct nlmsg_list **lp;
++
++	h = malloc(n->nlmsg_len+sizeof(void*));
++	if (h == NULL)
++		return -1;
++	memcpy(&h->h, n, n->nlmsg_len);
++	h->next = NULL;
++
++	for (lp = linfo; *lp; lp = &(*lp)->next);
++	*lp = h;
++
++	return 0;
++}
++
++int get_tentative_addr(struct in6_addr *iana)
++{
++	struct rtnl_handle rth;
++	struct rtattr *rta_tb[IFA_MAX+1];
++	struct nlmsg_list *ainfo = NULL, *tmp;
++	int len;
++	int iana_index = 0;
++
++	rtnl_open(&rth,0);
++	if (rtnl_wilddump_request(&rth, AF_INET6, RTM_GETADDR) < 0 ) {
++		return (-1);
++	}
++	if (rtnl_dump_filter(&rth, store_addr, &ainfo, NULL, NULL) < 0) {
++		return (-1);
++	}
++
++	tmp = ainfo;
++	for (; ainfo; ainfo = ainfo->next) {
++		struct nlmsghdr *n = &ainfo->h;
++		struct ifaddrmsg *ifa = NLMSG_DATA(n);
++		
++		if ((n->nlmsg_type != RTM_NEWADDR) || (ifa->ifa_family != AF_INET6))
++			continue;
++		if (n->nlmsg_len < NLMSG_LENGTH(sizeof(ifa))) {
++			iana_index = -1;
++			goto free_resource;
++		}
++		len = n->nlmsg_len - NLMSG_LENGTH(sizeof(*ifa));
++		if (len < 0) {
++			iana_index = -1;
++			goto free_resource;
++		}
++		parse_rtattr(rta_tb, IFA_MAX, IFA_RTA(ifa), len);
++
++		if (!rta_tb[IFA_LOCAL])
++			rta_tb[IFA_LOCAL] = rta_tb[IFA_ADDRESS];
++		if (!rta_tb[IFA_ADDRESS])
++			rta_tb[IFA_ADDRESS] = rta_tb[IFA_LOCAL];
++		
++		if (ifa->ifa_flags & IFA_F_TENTATIVE) {
++			memcpy(&iana[iana_index], RTA_DATA(rta_tb[IFA_LOCAL]), 
++					sizeof(struct in6_addr));
++			iana_index++;
++		}
++	}
++
++free_resource:
++	ainfo = tmp;	
++	while (ainfo) {
++		tmp = ainfo->next;
++		free(ainfo);
++		ainfo = tmp;
++	}
++
++	rtnl_close(&rth);
++
++	return (iana_index);
++}
++
++char* link_detect_main(int fd)
++{
++	struct sockaddr_nl nladdr;
++	char buf[2048];
++	struct iovec iov = {
++		.iov_base = buf,
++		.iov_len = sizeof(buf),
++	};
++	struct msghdr msg = {
++		.msg_name = &nladdr,
++		.msg_namelen = sizeof(nladdr),
++		.msg_iov = &iov,
++		.msg_iovlen = 1,
++	};
++	int status, ifilen;
++	struct nlmsghdr *h = NULL;
++	struct ifinfomsg *ifi;
++	struct rtattr *rta_tb[IFLA_MAX+1];
++	static char ifname[20];
++
++	status = recvmsg(fd, &msg, 0);
++	h = (struct nlmsghdr*)buf;
++	for(; NLMSG_OK(h, status); h = NLMSG_NEXT(h, status)) {
++		if (h->nlmsg_type == NLMSG_DONE) {
++			return NULL;
++		}
++		else if (h->nlmsg_type == NLMSG_ERROR) {
++			return NULL;
++		}
++		else if (h->nlmsg_type == RTM_NEWLINK) {
++			ifi = NLMSG_DATA(h);
++			ifilen = h->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
++			if (ifilen < 0) {
++				return NULL;
++			}
++			parse_rtattr(rta_tb, IFLA_MAX, IFLA_RTA(ifi), ifilen);
++			if (rta_tb[IFLA_IFNAME]) {
++				if (ifi->ifi_flags & (IFF_UP|IFF_RUNNING)) {
++					/* link up */
++					strcpy(ifname, (char*)RTA_DATA(rta_tb[IFLA_IFNAME]));
++					return ifname;
++				}
++			}
++		}
++	}
++	return NULL;
++}
++
++int link_detect_init()
++{
++	struct sockaddr_nl sa = {
++		.nl_family = AF_NETLINK,
++		.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
++	};
++	int fd;
++	
++	if ((fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) == -1) {
++		return -1;
++	}
++	if (bind(fd, (struct sockaddr*)&sa, sizeof(sa)) == -1) {
++		return -1;
++	}
++	return fd;
++}
++
++
+Index: wide-dhcpv6-20080615/netlink_route.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ wide-dhcpv6-20080615/netlink_route.h	2016-12-29 10:23:51.390596200 +0800
+@@ -0,0 +1,4 @@
++int get_tentative_addr(struct in6_addr *iana);
++char* link_detect_main(int fd);
++int link_detect_init();
++
+Index: wide-dhcpv6-20080615/prefixconf.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/prefixconf.c	2017-03-09 23:26:01.229994492 +0800
++++ wide-dhcpv6-20080615/prefixconf.c	2017-03-09 23:32:50.306110118 +0800
+@@ -126,6 +126,9 @@
+ extern struct dhcp6_timer *client6_timo __P((void *));
+ static int pd_ifaddrconf __P((ifaddrconf_cmd_t, struct dhcp6_ifprefix *ifpfx));
+ 
++
++struct in6_addr g_lastPrefix;
++
+ int
+ update_prefix(ia, pinfo, pifc, dhcpifp, ctlp, callback)
+ 	struct ia *ia;
+@@ -140,7 +143,8 @@
+ 	struct prefix_ifconf *pif;
+ 	int spcreate = 0;
+ 	struct timeval timo;
+-
++	char str[200];
++	int rtnVal = 0; // 1: Need to call radvd to reload real-time configuration.
+ 	/*
+ 	 * A client discards any addresses for which the preferred
+          * lifetime is greater than the valid lifetime.
+@@ -155,6 +159,11 @@
+ 		    pinfo->pltime, pinfo->vltime);
+ 		return (-1);
+ 	}
++#if 0 //JACKYU: need replace with zconfig API
++	snprintf(str, sizeof(str), "uci set radvd.prefix.AdvPreferredLifetime=%lu",pinfo->pltime);system(str);
++	snprintf(str, sizeof(str), "uci set radvd.prefix.AdvValidLifetime=%lu",pinfo->vltime);system(str);
++	snprintf(str, sizeof(str), "uci commit radvd");system(str);
++#endif
+ 
+ 	if (iac_pd == NULL) {
+ 		if ((iac_pd = malloc(sizeof(*iac_pd))) == NULL) {
+@@ -206,7 +215,7 @@
+ 	    pinfo->pltime, pinfo->vltime);
+ 
+ 	/* update prefix interfaces if necessary */
+-	if (sp->prefix.vltime != 0 && spcreate) {
++	if (sp->prefix.vltime != 0) {
+ 		for (pif = TAILQ_FIRST(iac_pd->pifc_head); pif;
+ 		    pif = TAILQ_NEXT(pif, link)) {
+ 			/*
+@@ -223,8 +232,42 @@
+ 				continue;
+ 			}
+ 
++			if (spcreate) {
+ 			add_ifprefix(sp, pinfo, pif);
+ 		}
++
++			/*
++			 * Set LAN global IP lifetimes.
++			 * Original wide-dhcpv6 source code only set global IP, but not lifeitmes.
++			 */
++			if (!spcreate && pinfo->pltime==0) { // Only expire the old prefix.
++				snprintf(str, sizeof(str)
++						, "./etc/init.d/dhcp6c_set_lifetimes_on_lan %s %s %d %d"
++						,in6addr2str(&g_lastPrefix, 0)
++						,pif->ifname ,1 ,1
++						);system(str);
++				sleep(1); // Waiting for this IP be expired.
++			}
++			else { // Just make a new prefix.
++				snprintf(str, sizeof(str)
++						, "./etc/init.d/dhcp6c_set_lifetimes_on_lan %s %s %d %d"
++						,in6addr2str(&pinfo->addr, 0)
++						,pif->ifname ,pinfo->pltime ,pinfo->vltime
++						);system(str);
++			}
++			rtnVal = 1;
++		}
++		g_lastPrefix = pinfo->addr;
++
++		// note lastprefix to radvd.uci
++#if 0 //JACKYU: need replace with zconfig API
++		char cmd[200]="";
++		snprintf(cmd, sizeof(cmd), "uci set radvd.route.prefix=%s/%d"
++				, in6addr2str(&g_lastPrefix, 0)
++				, pinfo->plen
++				);system(cmd);
++		snprintf(cmd, sizeof(cmd), "uci commit radvd");system(cmd);
++#endif
+ 	}
+ 
+ 	/*
+@@ -233,6 +276,8 @@
+ 	 */
+ 	switch (sp->prefix.vltime) {
+ 	case 0:
++		//reload radvd to set rf= 0
++		rtnVal = 1;
+ 		remove_siteprefix(sp);
+ 		break;
+ 	case DHCP6_DURATION_INFINITE:
+@@ -259,7 +304,7 @@
+ 
+ 	addPrefixInfoToMsg(IFADDRCONF_ADD, sp);
+ 
+-	return (0);
++	return (rtnVal);
+ }
+ 
+ static struct siteprefix *

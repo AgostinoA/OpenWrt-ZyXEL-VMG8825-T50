@@ -1,0 +1,331 @@
+Index: libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_econet_wrapper.h	2015-07-14 17:54:52.713869389 +0800
++++ libzyutil-1.0/ECONET/libzyutil_econet_wrapper.h	2015-07-14 17:54:52.749869390 +0800
+@@ -2,4 +2,105 @@
+ #include <ctype.h>
+ #include <unistd.h>
+ #include "zcfg_common.h"
++
++#if 1//defined(ZYXEL)
++#define CHIP_ID_LEN 		8
++#define BOARD_ID_LEN 		16
++#define SW_VERSION_LEN 		32
++#define MODEL_ID_LEN		4
++
++#define ZY_MODELID_PREFIX 		0x5a590000 /* prefix must be ZY */
++#endif
++
++#define MRD_SERIAL_NUM_LEN              14
++#define MRD_VENDOR_NAME_LEN             32
++#define MRD_PRODUCT_NAME_LEN            32
++#define MRD_MAC_ADDR_LEN                6
++#define MRD_FEATUREBITS_LEN             30
++
++/*-------------------------------------------------------------------
++ * MRD structdure for Econet SDK/MT7505 platform
++ */
++typedef struct mrd {
++    unsigned char SDRAM_CONF_array[4];
++    unsigned char VENDOR_NAME[MRD_VENDOR_NAME_LEN];
++    unsigned char PRODUCT_NAME[MRD_PRODUCT_NAME_LEN];
++    unsigned char FUNC_BYTE[4];
++    unsigned char ETHER_ADDR[MRD_MAC_ADDR_LEN];
++    unsigned char SNMP_SYSOBJID_array[22];
++    unsigned char COUNTRY_array;
++    unsigned char ether_gpio;
++    unsigned char power_gpio[2];
++    unsigned char restore_flag;
++    unsigned char unused1[32];
++    unsigned char dsl_gpio;
++    unsigned char internet_gpio;
++    unsigned char multi_upgrade_gpio[16];
++    unsigned char id_75xx;
++    unsigned char onu_type; //byte 0~156
++    unsigned char SN[18];
++/* --- ZyXEL related --- start --- */
++    unsigned char SerialNumber[MRD_SERIAL_NUM_LEN];
++    unsigned char NumMacAddrs;
++    unsigned char MrdVer;
++    unsigned char EngDebugFlag;
++    unsigned char MainFeatureBit;
++    unsigned char FeatureBits[MRD_FEATUREBITS_LEN];
++    unsigned char HTP_Switch;
++    unsigned char WpaPskKey[16];
++    // bootloader related information
++    unsigned char BM_VER_MAJ;
++    unsigned char BM_VER_MIN;
++    unsigned char BM_VER_ECO;
++    unsigned char builddate[4];
++    unsigned char buildtime[3]; //byte 0~72
++/* --- ZyXEL related --- end --- */
++#ifdef BOOTROM_LARGE_SIZE
++    // mic.conf will located at the end of block 0.
++    // tcboot_crc32 will located at the last 4 bytes of block 1.
++    unsigned char unused2[6]; // let total structure have 256 bytes.
++#else
++    // if MRD structure locate at the end of tcboot.bin, need reserve 4 bytes for crc.
++    unsigned char unused[2]; // let total structure have 256 bytes.
++    unsigned char tcboot_crc32[4]; //filled by trx.c
++#endif
++} __attribute__((packed)) MRD_DATA, *PMRD_DATA;
++
++struct trx_header {
++	unsigned int magic;			/* "HDR0" */
++	unsigned int header_len;    /*Length of trx header*/
++	unsigned int len;			/* Length of file including header */
++	unsigned int crc32;			/* 32-bit CRC from flag_version to end of file */
++	unsigned char version[32];  /*firmware version number*/
++	unsigned char customerversion[32];  /*firmware version number*/
++//	unsigned int flag_version;	/* 0:15 flags, 16:31 version */
++#if 0
++	unsigned int reserved[44];	/* Reserved field of header */
++#else
++	unsigned int kernel_len;	//kernel length
++	unsigned int rootfs_len;	//rootfs length
++	unsigned int romfile_len;	//romfile length
++	#if 0
++	unsigned int reserved[42];  /* Reserved field of header */
++	#else
++	unsigned char Model[32];
++	unsigned int decompAddr;//kernel decompress address
++	unsigned int reserved[32];  /* Reserved field of header */
++	#endif
++#endif
++#if 1//defined(ZYXEL)
++	unsigned char chipId[CHIP_ID_LEN];		/* Provided by Makefile */
++	unsigned char boardId[BOARD_ID_LEN];		/* Provided by Makefile */
++	unsigned char modelId[MODEL_ID_LEN];			/* Provided by Makefile */
++	unsigned int defcfg_len;	//default config length
++	unsigned int imageSequence;
++	unsigned char swVersionInt[SW_VERSION_LEN];	/* Provided by Makefile */
++	unsigned char swVersionExt[SW_VERSION_LEN];	/* Provided by Makefile */
++ 	unsigned int rootfsChksum;
++	unsigned int kernelChksum;
++	unsigned int defcfgChksum;
++    unsigned int headerChksum;
++#endif
++};
++
+ #endif
+\ No newline at end of file
+Index: libzyutil-1.0/ECONET/libzyutil_wrapper.c
+===================================================================
+--- libzyutil-1.0.orig/ECONET/libzyutil_wrapper.c	2015-07-14 17:54:52.713869389 +0800
++++ libzyutil-1.0/ECONET/libzyutil_wrapper.c	2015-07-14 17:57:34.488044028 +0800
+@@ -1,47 +1,186 @@
+ #ifdef ECONET_PLATFORM
+ 
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <fcntl.h>
++
+ #include "libzyutil_wrapper.h"
+ #include "libzyutil_econet_wrapper.h"
+ 
++#define BOOTLOADER "bootloader"
++#define TCLINUX "tclinux"
++
++int mtd_open(const char *mtd, int flags)
++{
++	FILE *fp;
++	char dev[256];
++	int i;
++
++	if ((fp = fopen("/proc/mtd", "r"))) {
++		while (fgets(dev, sizeof(dev), fp)) {
++			if (sscanf(dev, "mtd%d:", &i) && strstr(dev, mtd)) {
++				snprintf(dev, sizeof(dev), "/dev/mtd%d", i);
++				fclose(fp);
++				return open(dev, flags);
++			}
++		}
++		fclose(fp);
++	}
++
++	return open(mtd, flags);
++}
++
++int read_mtd_info(const char *mtd, struct trx_header *p_trx_header)
++{
++	int mtd_fd = -1;
++	int trx_header_len = sizeof(struct trx_header);
++	
++	if(-1 == (mtd_fd = mtd_open(mtd,O_RDONLY)))
++	{
++		printf("ERROR!Open mtd %s fail",mtd);
++		return -1;
++	}
++
++	memset(p_trx_header,0,trx_header_len);
++	
++	if(trx_header_len != read(mtd_fd,p_trx_header,trx_header_len))
++	{
++		printf("ERROR!Read mtd %s fail",mtd);
++		close(mtd_fd);
++		return -1;
++	}
++
++	close(mtd_fd);
++	return 0;
++}
++
++int read_mrd_info(PMRD_DATA mrd)
++{
++	FILE *fp;
++	int mrd_len = sizeof(struct mrd);
++	
++    /* Read bootloader from flash */
++    system("cat /dev/mtd0 > /tmp/boot.bin");
++    
++    fp = fopen("/tmp/boot.bin", "r+b");
++    if( fp == NULL ){
++        printf("open file error!!\n");
++        system("rm /tmp/boot.bin");        
++        return -1;
++    }
++
++	/*mrd offset 0xff00*/
++    fseek(fp, 0x0000ff00L, SEEK_SET);
++    fread(mrd, mrd_len, 1, fp);
++    fflush(fp);
++    fclose(fp);
++
++	return 0;
++}
++
+ #ifdef SUPPORT_LANVLAN
+ zcfgRet_t zyUtilISetIfState(char *ifName, bool up)
+ {
++	/*Todo*/
+ 	return ZCFG_SUCCESS;
+ }
+ #endif
+ 
+ zcfgRet_t zyUtilIGetSerailNum(char *sn)
+ {
++	struct mrd mrd_buff;
++
++	if(0 != read_mrd_info(&mrd_buff))
++		return -1;
++
++	strcpy(sn, mrd_buff.SerialNumber);
++
++	//printf("SerialNumber:%s\n",sn);
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t zyUtilIGetBaseMAC(char *mac)
+ {
++	struct mrd mrd_buff;
++
++	if(0 != read_mrd_info(&mrd_buff))
++		return -1;
++
++	sprintf(mac ,"%02X%02X%02X%02X%02X%02X",
++		mrd_buff.ETHER_ADDR[0],
++		mrd_buff.ETHER_ADDR[1],
++        	mrd_buff.ETHER_ADDR[2],
++        	mrd_buff.ETHER_ADDR[3],
++        	mrd_buff.ETHER_ADDR[4],
++        	mrd_buff.ETHER_ADDR[5]
++	);
++
++	//printf("mac:%s\n",mac);
++	
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t zyUtilIGetNumberOfMAC(int *num)
+ {
++	struct mrd mrd_buff;
++
++	if(0 != read_mrd_info(&mrd_buff))
++		return -1;
++
++	if(num) *num =  mrd_buff.NumMacAddrs;
++
++	//printf("NumMacAddrs:%d\n",num);
++	
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t zyUtilIGetProductName(char *pdname)
+ {
++	struct mrd mrd_buff;
++
++	if(0 != read_mrd_info(&mrd_buff))
++		return -1;
++
++	strcpy(pdname, mrd_buff.PRODUCT_NAME);
++
++	//printf("ProductName:%s\n",pdname);
++	
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion)
+ {
++	struct trx_header trx_header_buff;
++
++	if(0 != read_mtd_info(TCLINUX,&trx_header_buff))
++		return -1;
++
++	strcpy(fwversion, trx_header_buff.swVersionInt);
++	
++	//printf("FirmwareVersion:%s\n",fwversion);
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t zyUtilIGetSerialNumber(char *serianumber)
+ {
++	struct mrd mrd_buff;
++
++	if(0 != read_mrd_info(&mrd_buff))
++		return -1;
++
++	strcpy(serianumber, mrd_buff.SerialNumber);
++
++	//printf("SerialNumber:%s\n",serianumber);
++
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ int zyUtilGetGPIO(int gpioNum)
+ {
++	/*This function is only used to check VMG3926-B10A and VMG8924-B10B, so Cross Platform is not need*/
+ 	return 0;
+ }
+ 
+Index: libzyutil-1.0/libzyutil_wrapper.h
+===================================================================
+--- libzyutil-1.0.orig/libzyutil_wrapper.h	2015-07-14 17:54:52.701869388 +0800
++++ libzyutil-1.0/libzyutil_wrapper.h	2015-07-14 17:54:52.749869390 +0800
+@@ -11,3 +11,4 @@
+ zcfgRet_t zyUtilIGetProductName(char *pdname);
+ zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion);
+ zcfgRet_t zyUtilIGetSerialNumber(char *serianumber);
++int zyUtilGetGPIO(int gpioNum);
+\ No newline at end of file
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2015-07-14 17:54:52.701869388 +0800
++++ libzyutil-1.0/zyutil.h	2015-07-14 17:54:52.749869390 +0800
+@@ -33,14 +33,6 @@
+ #endif
+ zcfgRet_t zyUtilAppStopByPidfile(char *);
+ 
+-#ifdef SUPPORT_LANVLAN
+-zcfgRet_t zyUtilISetIfState(char *, bool);
+-#endif
+-zcfgRet_t zyUtilIGetSerailNum(char *);
+-zcfgRet_t zyUtilIGetProductName(char *pdname);
+-zcfgRet_t zyUtilIGetFirmwareVersion(char *fwversion);
+-zcfgRet_t zyUtilIGetSerialNumber(char *serianumber);
+-zcfgRet_t zyUtilIGetNumberOfMAC(int *num);
+ zcfgRet_t zyUtilMailSend(const char *msg);
+ 
+ /* skconn */

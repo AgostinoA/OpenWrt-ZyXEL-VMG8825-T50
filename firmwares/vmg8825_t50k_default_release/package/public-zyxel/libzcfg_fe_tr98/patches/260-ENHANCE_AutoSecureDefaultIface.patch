@@ -1,0 +1,96 @@
+Index: libzcfg_fe_tr98-1.0/l3fwd.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.c	2015-11-26 17:37:25.899726104 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.c	2015-11-26 17:35:24.153014800 +0800
+@@ -58,11 +58,53 @@
+ 	*tr98Jobj = json_object_new_object();
+ 	json_object_object_add(*tr98Jobj, "DefaultConnectionService", json_object_new_string(tr98ObjName));
+ 	json_object_object_add(*tr98Jobj, "ForwardNumberOfEntries", json_object_new_int(routerObj->IPv4ForwardingNumberOfEntries));
++	json_object_object_add(*tr98Jobj, "X_ZYXEL_AutoSecureDefaultIface", json_object_new_boolean(routerObj->X_ZYXEL_AutoSecureDefaultIface));
+ 
+ 	zcfgFeObjStructFree(routerObj);
+ 
+ 	return ZCFG_SUCCESS;
+ }
++
++/*
++ *   TR98 Object Name : InternetGatewayDevice.Layer3Forwarding
++ *
++ *   Related object in TR181:
++ *   Device.Routing.Router.1
++ */
++zcfgRet_t l3fwdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t objIid;
++	char defaultIfaceName[MAX_TR181_PATHNAME] = {0};
++	struct json_object *routerObj = NULL, *paramValue = NULL;
++
++	printf("%s\n", __FUNCTION__);
++
++	/*mapping InternetGatewayDevice.Layer3Forwarding to Device.Routing.Router.1*/
++	IID_INIT(objIid);
++	objIid.level = 1;
++	objIid.idx[0] = 1;
++	if(zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER, &objIid, (void **)&routerObj) != ZCFG_SUCCESS ) {
++		printf("%s : Get Routing.Router.1 Fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if(paramValue = json_object_object_get(tr98Jobj, "X_ZYXEL_AutoSecureDefaultIface"))
++		json_object_object_add(routerObj, "X_ZYXEL_AutoSecureDefaultIface", JSON_OBJ_COPY(paramValue));
++
++	if(multiJobj) {
++		zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER, &objIid, multiJobj, routerObj);
++	}
++	else {
++		if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER, &objIid, routerObj, NULL)) != ZCFG_SUCCESS ) {
++			json_object_put(routerObj);
++			return ret;
++		}
++	}
++	json_object_put(routerObj);
++
++	return ZCFG_SUCCESS;
++}
+ 
+ #define MAX_IFACE_LENGTH (256+1)
+ /*
+Index: libzcfg_fe_tr98-1.0/l3fwd.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd.h	2015-11-26 17:37:25.551726093 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd.h	2015-11-26 17:35:30.430094200 +0800
+@@ -4,7 +4,7 @@
+ 
+ /*Handler Function*/
+ extern zcfgRet_t l3fwdObjGet(char *, int, struct json_object **, bool);
+-
++extern zcfgRet_t l3fwdObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault);
+ 
+ extern zcfgRet_t l3fwdFwdTbObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t l3fwdFwdTbObjSet(char *, int, struct json_object *, struct json_object *);
+Index: libzcfg_fe_tr98-1.0/l3fwd_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l3fwd_parameter.h	2015-11-26 17:37:25.555726093 +0800
++++ libzcfg_fe_tr98-1.0/l3fwd_parameter.h	2015-11-26 17:35:35.861789800 +0800
+@@ -1,6 +1,7 @@
+ tr98Parameter_t para_L3Fwd[] = {
+ 	{ "DefaultConnectionService", PARAMETER_ATTR_WRITE, 257, json_type_string},
+ 	{ "ForwardNumberOfEntries", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "X_ZYXEL_AutoSecureDefaultIface", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ NULL, 0, 0, 0}
+ };
+ 	
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-11-26 17:37:28.399726182 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-11-26 17:35:48.248951600 +0800
+@@ -292,7 +292,7 @@
+ {TR98_TIME,                     0,              para_Time,              timeObjGet,              timeObjSet,             NULL,             NULL,            NULL},
+ //{TR98_USR_INTF,                 0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_CAPT_PORTAL,              0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_L3_FWD,                   0,              para_L3Fwd,             l3fwdObjGet,             NULL,                   NULL,             NULL,            NULL, NULL, NULL},
++{TR98_L3_FWD,                   0,              para_L3Fwd,             l3fwdObjGet,             l3fwdObjSet,                   NULL,             NULL,            NULL, NULL, NULL},
+ {TR98_FWD,                      ATTR_INDEX_CREA,para_Fwd,               l3fwdFwdTbObjGet,        l3fwdFwdTbObjSet,       l3fwdFwdTbObjAdd, l3fwdFwdTbObjDel,  NULL, NULL, l3fwdFwdTbObjAttrSet},
+ {TR98_L2_BR,                    0,               para_L2Br,              l2BridingObjGet,         NULL,                   NULL,             NULL,            l2BridingObjNotify, l2BridingObjAttrGet, l2BridingObjAttrSet},
+ {TR98_BR,                       ATTR_INDEX_CREA, para_Br,                l2BrObjGet,              l2BrObjSet,             l2BrObjAdd,       l2BrObjDel,      l2BrObjNotify, l2BrObjAttrGet, l2BrObjAttrSet},

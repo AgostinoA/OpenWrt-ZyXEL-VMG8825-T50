@@ -1,0 +1,293 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-11-20 16:35:37.915506990 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-11-20 16:35:11.593330100 +0800
+@@ -2134,7 +2134,7 @@
+ 	tr98Parameter_t *paramList = NULL;
+ 	int numOfEntries = 0;
+ 	const char *connStatus = NULL;
+-	char *lowerLayer = NULL;
++	const char *lowerLayer = NULL;
+ #if 0
+ 	int i;
+ 	char pmPath[256] = {0};
+@@ -2586,7 +2586,7 @@
+ 	objIndex_t rtIid;
+ 	struct json_object *rtJobj = NULL;
+ 	bool defaultRtModify = false;
+-	char *lowerLayer = NULL;
++	const char *lowerLayer = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -2781,6 +2781,22 @@
+ 				tr181ParamValue = json_object_object_get(ipIfaceJobj, paramList->name);
+ 			}
+ 			if(tr181ParamValue != NULL) {
++				if(!strcmp(paramList->name, "X_ZYXEL_DefaultGatewayIface")){
++					bool tr98SetDefaultIface = json_object_get_boolean(paramValue);
++					bool tr181SetDefaultIface = json_object_get_boolean(tr181ParamValue);
++					const char *activeDefaultGt = json_object_get_string(json_object_object_get(rtJobj, "X_ZYXEL_ActiveDefaultGateway"));
++
++					if(tr98SetDefaultIface && !tr181SetDefaultIface)
++						new_activeDefaultGt = activeDefaultGt_Add(activeDefaultGt, ipIface);
++
++					if(!tr98SetDefaultIface && tr181SetDefaultIface)
++						new_activeDefaultGt = activeDefaultGt_Strip(activeDefaultGt, ipIface);
++
++					if(new_activeDefaultGt) {
++						json_object_object_add(rtJobj, "X_ZYXEL_ActiveDefaultGateway", json_object_new_string(new_activeDefaultGt));
++					}
++				}
++
+ 				if(!strcmp(paramList->name, "Name")){
+ 					json_object_object_add(ipIfaceJobj, "X_ZYXEL_SrvName", JSON_OBJ_COPY(paramValue));
+ 				}
+@@ -2811,24 +2827,18 @@
+ 			else if(!strcmp(paramList->name, "DefaultGateway")){
+ 				const char *defaultRt = json_object_get_string(paramValue);
+ 				const char *defaultRtAddr = json_object_get_string(json_object_object_get(rtIpJobj, "GatewayIPAddress"));
+-				const char *activeDefaultGt = json_object_get_string(json_object_object_get(rtJobj, "X_ZYXEL_ActiveDefaultGateway"));
+ 				if(!strcmp(defaultRt, "") && strcmp(defaultRtAddr, "")) {
+-					new_activeDefaultGt = activeDefaultGt_Strip(activeDefaultGt, ipIface);
+ 					json_object_object_add(rtIpJobj, "GatewayIPAddress", json_object_new_string(""));
+ 					json_object_object_add(rtIpJobj, "Enable", json_object_new_boolean(false));
+ 					defaultRtModify = true;
+ 				}
+ 				else if(strcmp(defaultRt, defaultRtAddr)) {
+-					new_activeDefaultGt = activeDefaultGt_Add(activeDefaultGt, ipIface);
+ 					json_object_object_add(rtIpJobj, "DestIPAddress", json_object_new_string(""));
+ 					json_object_object_add(rtIpJobj, "DestSubnetMask", json_object_new_string(""));
+ 					json_object_object_add(rtIpJobj, "GatewayIPAddress", json_object_new_string(defaultRt));
+ 					json_object_object_add(rtIpJobj, "Enable", json_object_new_boolean(true));
+ 					defaultRtModify = true;
+ 				}
+-				if(new_activeDefaultGt) {
+-					json_object_object_add(rtJobj, "X_ZYXEL_ActiveDefaultGateway", json_object_new_string(new_activeDefaultGt));
+-				}
+ 				paramList++;
+ 				continue;
+ 			}
+@@ -4701,7 +4711,7 @@
+ 	struct json_object *dnsV6SrvJobj = NULL;
+ #endif
+ 	int numOfEntries = 0;
+-	char *lowerLayer = NULL;
++	const char *lowerLayer = NULL;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
+ 
+@@ -4883,6 +4893,12 @@
+ 			paramList++;
+ 			continue;
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DefaultGatewayIface")){
++			paramValue = json_object_object_get(ipIfaceJobj, paramList->name);
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
+        	else if(!strcmp(paramList->name, "DNSEnabled")) {
+ 			if(dnsSrvJobj != NULL) {
+ 				paramValue = json_object_object_get(dnsSrvJobj, "Enable");
+@@ -5104,7 +5120,9 @@
+ 	struct json_object *natIntfJobj = NULL;
+ 	struct json_object *natJobj = NULL;
+ 	struct json_object *natSessionJobj = NULL;
+-	char *lowerLayer = NULL;
++	const char *lowerLayer = NULL;
++	struct json_object *rtJobj = NULL;
++	objIndex_t rtIid;
+ 
+ 	zcfgLog(ZCFG_LOG_INFO,"%s : Enter\n", __FUNCTION__);
+ 
+@@ -5131,36 +5149,67 @@
+ 		IID_INIT(vlanTermIid);
+ 		sscanf(lowerLayer, "Ethernet.VLANTermination.%hhu", &vlanTermIid.idx[0]);
+ 		vlanTermIid.level = 1;
+-		if((ret = zcfgFeObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj)) != ZCFG_SUCCESS)
++		if((ret = zcfgFeObjJsonGet(RDM_OID_ETH_VLAN_TERM, &vlanTermIid, &vlanTermJobj)) != ZCFG_SUCCESS) {
++			json_object_put(pppIfaceJobj);
+ 			return ret;
++		}
+ 	}
+ 
+ 	/*Get IP.Interface.i above PPP.Interface.i*/
+-	if(zcfgFeTr181IfaceStackHigherLayerGet(pppIface, ipIface) != ZCFG_SUCCESS)
++	if(zcfgFeTr181IfaceStackHigherLayerGet(pppIface, ipIface) != ZCFG_SUCCESS) {
++		json_object_put(vlanTermJobj);
++		json_object_put(pppIfaceJobj);
+ 		return ret;
++	}
+ 
+ 	IID_INIT(ipIfaceIid);
+ 	ipIfaceIid.level = 1;
+ 	sscanf(ipIface, "IP.Interface.%hhu", &ipIfaceIid.idx[0]);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceJobj)) != ZCFG_SUCCESS) {
+ 		printf("%s : Get IP.Interface fail\n", __FUNCTION__);
++		json_object_put(vlanTermJobj);
+ 		json_object_put(pppIfaceJobj);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 	
+ 	IID_INIT(natIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &natIid, &natJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT, &natIid, &natJobj)) != ZCFG_SUCCESS) {
++		json_object_put(vlanTermJobj);
++		json_object_put(pppIfaceJobj);
++		json_object_put(ipIfaceJobj);
+ 		return ret;
++	}
+ 	
+ 	IID_INIT(natSessionIid);
+-	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj)) != ZCFG_SUCCESS)
++	if((ret = zcfgFeObjJsonGet(RDM_OID_NAT_SESSION_CTL, &natSessionIid, &natSessionJobj)) != ZCFG_SUCCESS) {
++		json_object_put(vlanTermJobj);
++		json_object_put(pppIfaceJobj);
++		json_object_put(ipIfaceJobj);
++		json_object_put(natJobj);
+ 		return ret;
++	}
++
++	IID_INIT(rtIid);
++	rtIid.level = 1;
++	rtIid.idx[0] = 1;
++	if((ret = zcfgFeObjJsonGet(RDM_OID_ROUTING_ROUTER, &rtIid, &rtJobj)) != ZCFG_SUCCESS) {
++		json_object_put(vlanTermJobj);
++		json_object_put(pppIfaceJobj);
++		json_object_put(ipIfaceJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
++		return ZCFG_INTERNAL_ERROR;
++	}
+ 
+ 	IID_INIT(natIntfIid);
+ 	if(natIntfGetJobj((const char *)ipIface, &natIntfIid, (struct json_object **)&natIntfJobj) != ZCFG_SUCCESS) {
+ 		printf("%s : Retrieve NAT interface setting fail\n", __FUNCTION__);
++		json_object_put(vlanTermJobj);
++		json_object_put(rtJobj);
+ 		json_object_put(pppIfaceJobj);
+ 		json_object_put(ipIfaceJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
+ 		return ZCFG_INTERNAL_ERROR;
+ 	}
+ 	
+@@ -5176,8 +5225,12 @@
+ 		IID_INIT(dnsIid);
+ 		zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj);
+ 		if((ret = zcfgFeObjJsonGet(RDM_OID_DNS, &dnsIid, &dnsJobj)) != ZCFG_SUCCESS) {
++			json_object_put(vlanTermJobj);
++			json_object_put(rtJobj);
+ 			json_object_put(pppIfaceJobj);
+ 			json_object_put(ipIfaceJobj);
++			json_object_put(natJobj);
++			json_object_put(natSessionJobj);
+ 			json_object_put(natIntfJobj);
+ 			json_object_put(dnsSrvJobj);
+ 			return ret;
+@@ -5186,8 +5239,12 @@
+ 
+ 	IID_INIT(igmpIid);
+ 	if((ret = zcfgFeObjJsonGet(RDM_OID_ZY_IGMP, &igmpIid, &igmpJobj)) != ZCFG_SUCCESS) {
++		json_object_put(vlanTermJobj);
++		json_object_put(rtJobj);
+ 		json_object_put(pppIfaceJobj);
+ 		json_object_put(ipIfaceJobj);
++		json_object_put(natJobj);
++		json_object_put(natSessionJobj);
+ 		json_object_put(natIntfJobj);
+ 		if(isDnsObjExist == true) {
+ 			json_object_put(dnsSrvJobj);
+@@ -5260,6 +5317,12 @@
+ 			natIntfJobj = zcfgFeJsonMultiObjAppend(RDM_OID_NAT_INTF_SETTING, &natIntfIid, multiJobj, tmpObj);
+ 			json_object_put(tmpObj);
+ 		}
++		{
++			tmpObj = rtJobj;
++			rtJobj = NULL;
++			rtJobj = zcfgFeJsonMultiObjAppend(RDM_OID_ROUTING_ROUTER, &rtIid, multiJobj, tmpObj);
++			json_object_put(tmpObj);
++		}
+ 	}
+ 
+ 	paramValue = json_object_object_get(tr98Jobj, "ConnectionType");
+@@ -5277,6 +5340,31 @@
+ 				paramList++;
+ 				continue;
+ 			}
++			if(!strcmp(paramList->name, "X_ZYXEL_DefaultGatewayIface")){
++				if(!(tr181ParamValue = json_object_object_get(ipIfaceJobj, paramList->name))){
++					paramList++;
++					continue;
++				}
++				bool tr98SetDefaultIface = json_object_get_boolean(paramValue);
++				bool tr181SetDefaultIface = json_object_get_boolean(tr181ParamValue);
++				const char *activeDefaultGt = json_object_get_string(json_object_object_get(rtJobj, "X_ZYXEL_ActiveDefaultGateway"));
++				char *new_activeDefaultGt = NULL;
++
++				if(tr98SetDefaultIface && !tr181SetDefaultIface)
++					new_activeDefaultGt = activeDefaultGt_Add(activeDefaultGt, ipIface);
++
++				if(!tr98SetDefaultIface && tr181SetDefaultIface)
++					new_activeDefaultGt = activeDefaultGt_Strip(activeDefaultGt, ipIface);
++
++				if(new_activeDefaultGt) {
++					json_object_object_add(rtJobj, "X_ZYXEL_ActiveDefaultGateway", json_object_new_string(new_activeDefaultGt));
++					free(new_activeDefaultGt);
++				}
++
++				json_object_object_add(ipIfaceJobj, paramList->name, json_object_new_boolean(tr98SetDefaultIface));
++				paramList++;
++				continue;
++			}
+ 
+ 			/*Write value from WANPPPConnection to Device.PPP.Interface.i*/
+ 			tr181ParamValue = json_object_object_get(pppIfaceJobj, paramList->name);
+@@ -5541,6 +5629,16 @@
+ 			}
+ 			json_object_put(ipIfaceJobj);
+ 		}
++
++		if(rtJobj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_ROUTING_ROUTER, &rtIid, rtJobj, NULL)) != ZCFG_SUCCESS ) {
++				zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.Routing.Router. Fail\n", __FUNCTION__);
++			}
++			else {
++				zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.Routing.Router. Success\n", __FUNCTION__);
++			}
++			json_object_put(rtJobj);
++		}
+ 	}
+ 
+ 	return ZCFG_SUCCESS;
+@@ -6092,6 +6190,9 @@
+ 		else if(!strcmp(paramList->name, "DefaultGateway")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_ROUTING_ROUTER_V4_FWD, "GatewayIPAddress");
+ 		}
++		else if(!strcmp(paramList->name, "X_ZYXEL_DefaultGatewayIface")){
++			attrValue = zcfgFeParamAttrGetByName(RDM_OID_IP_IFACE, paramList->name);
++		}
+ 		else if(!strcmp(paramList->name, "NATEnabled")){
+ 			attrValue = zcfgFeParamAttrGetByName(RDM_OID_NAT_INTF_SETTING, "Enable");
+ 		}
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2015-11-20 16:35:37.855506988 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2015-11-20 16:35:37.947506991 +0800
+@@ -450,6 +450,7 @@
+ 	{ "X_ZYXEL_PPTP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPSEC_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_MaxSessionPerHost", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "X_ZYXEL_DefaultGatewayIface", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6RD_PROFILE
+ #ifndef SUNRISE_TR98_CUSTOMIZATION // Sunrise
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+@@ -694,6 +695,7 @@
+ 	{ "X_ZYXEL_PPTP_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_IPSEC_ALG", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "X_ZYXEL_MaxSessionPerHost", PARAMETER_ATTR_WRITE, 0, json_type_uint32},
++	{ "X_ZYXEL_DefaultGatewayIface", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ #ifdef IPV6RD_PROFILE
+ #ifndef SUNRISE_TR98_CUSTOMIZATION // Sunrise
+ 	{ "X_ZYXEL_Enable_6RD", PARAMETER_ATTR_WRITE, 0, json_type_boolean},

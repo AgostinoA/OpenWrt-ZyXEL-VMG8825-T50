@@ -1,0 +1,235 @@
+Index: ez-ipupdate-3.0.11b8/ez-ipupdate.c
+===================================================================
+--- ez-ipupdate-3.0.11b8.orig/ez-ipupdate.c	2015-12-29 18:05:38.158906588 +0800
++++ ez-ipupdate-3.0.11b8/ez-ipupdate.c	2015-12-29 17:49:57.155705800 +0800
+@@ -141,6 +141,12 @@
+ #define FREEDNS_DEFAULT_PORT "80"
+ #define FREEDNS_REQUEST "/nic/update"
+ 
++//support NOIP
++#define NOIP_DEFAULT_SERVER "dynupdate.no-ip.com"
++#define NOIP_DEFAULT_PORT "80"
++#define NOIP_REQUEST "/update.php"
++
++
+ #define DEFAULT_TIMEOUT 120
+ #define DEFAULT_UPDATE_PERIOD 120
+ #define DEFAULT_RESOLV_PERIOD 30
+@@ -408,6 +414,12 @@
+ int FREEDNS_check_info(void);
+ static char *FREEDNS_fields_used[] = { "server", "address", "user", "host", NULL};
+ 
++//Support NOIP
++int NOIP_update_entry(void);
++int NOIP_check_info(void);
++static char *NOIP_fields_used[] = { "server", "address", "user", "host", NULL};
++
++
+ struct service_t services[] = {
+   { "NULL",
+     { "null", "NULL", 0, },
+@@ -633,6 +645,17 @@
+   	FREEDNS_DEFAULT_PORT,
+   	FREEDNS_REQUEST  
+   	},
++  	//Support NOIP  
++  { "noip",
++  	{ "noip", "dynupdate.no-ip.com", 0, },
++  	NULL,
++  	NOIP_update_entry,
++  	NOIP_check_info,
++  	NOIP_fields_used,
++  	NOIP_DEFAULT_SERVER,
++  	NOIP_DEFAULT_PORT,
++  	NOIP_REQUEST  
++  	},
+ };
+ 
+ static struct service_t *service = NULL;
+@@ -1763,8 +1786,8 @@
+         printf("\nStart DDNS_StatusLog\n");
+         fprintf(fp,"%s",address_log);/*updated address*/
+         fprintf(fp,"/Accepted"); /*updated is success.*/
+-        fprintf(fp,"/%s",asctime (timeinfo) );
+-
++		fprintf(fp,"/%s",host);
++		fprintf(fp,"/%s",asctime (timeinfo) );
+         if ((fplog = fopen("/var/log/ddns_status_time.log", "w+")) != NULL )
+         {
+             fprintf(fplog,"%s",asctime (timeinfo));
+@@ -1776,6 +1799,7 @@
+         fprintf(stderr, "Can not get IP Address in DDNS_StatusLog\n");
+         fprintf(fp,"%s",address_log);
+         fprintf(fp,"/Not Accepted"); /*updated is fail.*/
++		fprintf(fp,"/%s",host);
+         fprintf(fp,"/%s",asctime (timeinfo) );
+     }
+   }
+@@ -5538,8 +5562,166 @@
+ 
+   return 0;
+ }
+-//dtdns  end
++//freedns  end
++
++
++//support NOIP
++int NOIP_update_entry(void)
++{
++  char buf[BUFFER_SIZE+1];
++  char *bp = buf;
++  int bytes;
++  int btot;
++  int ret;
++
++  buf[BUFFER_SIZE] = '\0';
++
++  if(do_connect((int*)&client_sockfd, server, port) != 0)
++  {
++    if(!(options & OPT_QUIET))
++    {
++      show_message("error connecting to %s:%s\n", server, port);
++    }
++    return(UPDATERES_ERROR);
++  }
++
++  snprintf(buf, BUFFER_SIZE, "GET %s?", request);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "username=%s&",user_name);
++  output(buf); 
++  snprintf(buf, BUFFER_SIZE, "pass=%s&", password);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "host=%s&",host);
++  output(buf); 
++  snprintf(buf, BUFFER_SIZE, " HTTP/1.1\015\012");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "Host: %s\015\012", server);
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "User-Agent: %s-%s %s [%s] (%s)\015\012",
++      "ez-update", VERSION, OS, (options & OPT_DAEMON) ? "daemon" : "", "by Angus Mackay");
++  output(buf);
++  snprintf(buf, BUFFER_SIZE, "\015\012");
++  output(buf);
++
++  if((bytes=read_input(buf, BUFFER_SIZE)) <= 0){
++      close(client_sockfd);
++      return(UPDATERES_ERROR);
++  }
++  buf[bytes] = '\0';
++
++  dprintf((stderr, "server output: %s\n", buf));
++
++  if(sscanf(buf, " HTTP/1.%*c %3d", &ret) != 1)
++  {
++    ret = -1;
++  }
++
++  switch(ret)
++  {
++    case -1:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("strange server response, are you connecting to the right server?\n");
++      }
++      break;
++
++    case 200:
++
++      if(strstr(buf, "status=3") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("Unable to locate this record");
++        }
++      }
++	  else if(strstr(buf, "status=2") != NULL)
++      {
++        if(!(options & OPT_QUIET))
++        {
++          printf("status=2");
++        }
++      }
+ 
++      else
++      {
++        success[0]='0';
++
++        innerText(address_log, buf, "to ", NULL, "in");
++        address_log[16]='\0';
++
++        DDNS_StatusLog();
++//        show_message("Success!!\n");
++//        if(!(options & OPT_QUIET))
++//        {
++//          fprintf(stderr, "server output: %s\n", buf);
++//        }
++		return(UPDATERES_OK);
++      }
++      break;
++
++    case 401:
++      if(!(options & OPT_QUIET))
++      {
++        show_message("authentication failure\n");
++      }
++      success[0] = '1';
++      DDNS_StatusLog();
++      return(UPDATERES_SHUTDOWN);
++      break;
++
++    default:
++      if(!(options & OPT_QUIET))
++      {
++        *auth = '\0';
++        sscanf(buf, " HTTP/1.%*c %*3d %255[^\r\n]", auth);
++        show_message("unknown return code: %d\n", ret);
++        show_message("server response: %s\n", auth);
++      }
++      break;
++  }
++  success[0] = '1';
++  DDNS_StatusLog();
++  return(UPDATERES_ERROR);
++}
++
++int NOIP_check_info(void)
++{
++  char buf[BUFSIZ+1];
++
++  if((host == NULL) || (*host == '\0'))
++  {
++    if(options & OPT_DAEMON)
++    {
++      return(-1);
++    }
++    if(host) { free(host); }
++    printf("host: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    host = strdup(buf);
++    chomp(host);
++  }
++
++  if(interface == NULL && address == NULL)
++  {
++    if(options & OPT_DAEMON)
++    {
++      fprintf(stderr, "you must provide either an interface or an address\n");
++      return(-1);
++    }
++    if(interface) { free(interface); }
++    printf("interface: ");
++    *buf = '\0';
++    fgets(buf, BUFSIZ, stdin);
++    chomp(buf);
++    option_handler(CMD_interface, buf);
++  }
++
++  warn_fields(service->fields_used);
++
++  return 0;
++}
++//NOIP  end
+ 
+ static int is_in_list(char *needle, char **haystack)
+ {

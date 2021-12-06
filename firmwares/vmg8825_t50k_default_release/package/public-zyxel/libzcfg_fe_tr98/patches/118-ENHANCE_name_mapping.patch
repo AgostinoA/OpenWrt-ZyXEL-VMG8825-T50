@@ -1,0 +1,727 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2015-05-13 18:06:13.896754953 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2015-05-13 18:09:57.159098800 +0800
+@@ -105,6 +105,10 @@
+ CFLAGS += -DZY1905
+ endif
+ 
++ifeq ($(strip $(ZYXEL)),y)
++CFLAGS += -DZYXEL_EXT=1
++endif
++
+ #Sunrise
+ ifneq ($(strip $(CONFIG_SUNRISE_STB_PROVISION)),)
+ CFLAGS += -DSUNRISE_STB_PROVISION
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2015-05-13 18:06:13.888754953 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2015-05-13 18:10:22.013584000 +0800
+@@ -2600,6 +2600,13 @@
+ 		return ret;
+ 	}
+ 
++#ifdef ZCFG_DYNAMIC_NAMEMAPPING
++	{
++		char tr181MappingName[128] = {0};
++		zcfgFe98To181ObjMappingNameGet(tr98TmpName, tr181MappingName);
++		zcfgLog(ZCFG_LOG_INFO, "%s : tr181 mapping, %s\n", __FUNCTION__, tr181MappingName);
++	}
++#endif
+ 	/* wanIntfObj will be DSL.Channel.i or Ethernet.Interface.i */
+ 	/* Check it's DSL or Ethernet first */
+ 	if(strstr(wanIntfObj, "DSL") != NULL) { // DSL WAN
+@@ -2678,6 +2685,7 @@
+ 
+ 	}
+ 
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
+ 	if(ret == ZCFG_SUCCESS) {
+ 		if((ret = zcfgFe181To98MappingNameGet(ipIfacePathName, wanIpConnObj)) != ZCFG_SUCCESS) {
+ 			return ret;
+@@ -2685,6 +2693,20 @@
+ 	}
+ 
+ 	sscanf(wanIpConnObj, "%*[^.].%*[^.].%*d.%*[^.].%*d.WANIPConnection.%d", idx);
++#else
++	{
++		zcfg_name_t nameSeqNum = 0;
++		objIndex_t tr98ObjIid;
++
++		IID_INIT(tr98ObjIid);
++		zcfgFe98To181ObjMappingNameAdd((const char *)tr98FullPathName, (const char *)ipIfacePathName, &nameSeqNum, &tr98ObjIid);
++
++		if(IS_SEQNUM_RIGHT(nameSeqNum)) {
++			printf("Added WANIPConnection %d\n", tr98ObjIid.idx[2]);
++			*idx = tr98ObjIid.idx[2];
++		}
++	}
++#endif
+ 
+ #else
+ 		if(wanLinkOid == RDM_OID_ATM_LINK) {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2015-05-13 18:06:13.896754953 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2015-05-13 18:14:53.922772200 +0800
+@@ -27,6 +27,212 @@
+ #include "zcfg_rdm_obj.h"
+ #include "zcfg_debug.h"
+ #include "zcfg_fe_tr98_handle.h"
++#include "zcfg_tr98_common.h"
++
++#define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
++
++static struct json_object *tr98StaticNameTable = NULL;
++
++
++tr98NameObj_t tr98NameObjList[] =
++{
++{e_TR98_IGD, &tr98Obj[e_TR98_IGD-e_TR98_START]}, 
++#ifdef CONFIG_PACKAGE_ZyIMS
++{e_TR98_SERVICE                             , &tr98Obj[e_TR98_SERVICE                             -e_TR98_START]},
++{e_TR98_VOICE_SRV                           , &tr98Obj[e_TR98_VOICE_SRV                           -e_TR98_START]},
++{e_TR98_VOICE_CAPB                          , &tr98Obj[e_TR98_VOICE_CAPB                          -e_TR98_START]},
++{e_TR98_VOICE_CAPB_SIP                      , &tr98Obj[e_TR98_VOICE_CAPB_SIP                      -e_TR98_START]},
++//{e_TR98_VOICE_CAPB_MGCP                     , &tr98Obj[e_TR98_VOICE_CAPB_MGCP                     -e_TR98_START]},
++//{e_TR98_VOICE_CAPB_H323                     , &tr98Obj[e_TR98_VOICE_CAPB_H323                     -e_TR98_START]},
++{e_TR98_VOICE_CAPB_CODEC                    , &tr98Obj[e_TR98_VOICE_CAPB_CODEC                    -e_TR98_START]},
++{e_TR98_VOICE_PROF                          , &tr98Obj[e_TR98_VOICE_PROF                          -e_TR98_START]},
++//{e_TR98_VOICE_PROF_SRV_PRO_INFO             , &tr98Obj[e_TR98_VOICE_PROF_SRV_PRO_INFO             -e_TR98_START]},
++{e_TR98_VOICE_PROF_SIP                      , &tr98Obj[e_TR98_VOICE_PROF_SIP                      -e_TR98_START]},
++//{e_TR98_VOICE_PROF_SIP_SUBSCRIBE_OBJ        , &tr98Obj[e_TR98_VOICE_PROF_SIP_SUBSCRIBE_OBJ        -e_TR98_START]},
++//{e_TR98_VOICE_PROF_SIP_RESP_MAP_OBJ         , &tr98Obj[e_TR98_VOICE_PROF_SIP_RESP_MAP_OBJ         -e_TR98_START]},
++//{e_TR98_VOICE_PROF_RTP                      , &tr98Obj[e_TR98_VOICE_PROF_RTP                      -e_TR98_START]},
++//{e_TR98_VOICE_PROF_RTP_RTCP                 , &tr98Obj[e_TR98_VOICE_PROF_RTP_RTCP                 -e_TR98_START]},
++//{e_TR98_VOICE_PROF_RTP_SRTP                 , &tr98Obj[e_TR98_VOICE_PROF_RTP_SRTP                 -e_TR98_START]},
++//{e_TR98_VOICE_PROF_RTP_REDUNDANCY           , &tr98Obj[e_TR98_VOICE_PROF_RTP_REDUNDANCY           -e_TR98_START]},
++//{e_TR98_VOICE_PROF_NUM_PLAN                 , &tr98Obj[e_TR98_VOICE_PROF_NUM_PLAN                 -e_TR98_START]},
++//{e_TR98_VOICE_PROF_NUM_PLAN_PREFIX_INFO     , &tr98Obj[e_TR98_VOICE_PROF_NUM_PLAN_PREFIX_INFO     -e_TR98_START]},
++//{e_TR98_VOICE_PROF_TONE                     , &tr98Obj[e_TR98_VOICE_PROF_TONE                     -e_TR98_START]},
++//{e_TR98_VOICE_PROF_TONE_EVENT               , &tr98Obj[e_TR98_VOICE_PROF_TONE_EVENT               -e_TR98_START]},
++//{e_TR98_VOICE_PROF_TONE_DESCRIPTION         , &tr98Obj[e_TR98_VOICE_PROF_TONE_DESCRIPTION         -e_TR98_START]},
++//{e_TR98_VOICE_PROF_TONE_PATTERN             , &tr98Obj[e_TR98_VOICE_PROF_TONE_PATTERN             -e_TR98_START]},
++//{e_TR98_VOICE_PROF_FAX_T38                  , &tr98Obj[e_TR98_VOICE_PROF_FAX_T38                  -e_TR98_START]},
++{e_TR98_VOICE_LINE                          , &tr98Obj[e_TR98_VOICE_LINE                          -e_TR98_START]},
++{e_TR98_VOICE_LINE_SIP                      , &tr98Obj[e_TR98_VOICE_LINE_SIP                      -e_TR98_START]},
++//{e_TR98_VOICE_LINE_SIP_EVENT_SUBS           , &tr98Obj[e_TR98_VOICE_LINE_SIP_EVENT_SUBS           -e_TR98_START]},
++//{e_TR98_VOICE_LINE_RINGER                   , &tr98Obj[e_TR98_VOICE_LINE_RINGER                   -e_TR98_START]},
++//{e_TR98_VOICE_LINE_RINGER_EVENT             , &tr98Obj[e_TR98_VOICE_LINE_RINGER_EVENT             -e_TR98_START]},
++//{e_TR98_VOICE_LINE_RINGER_DESCRIPTION       , &tr98Obj[e_TR98_VOICE_LINE_RINGER_DESCRIPTION       -e_TR98_START]},
++//{e_TR98_VOICE_LINE_RINGER_PATTERN           , &tr98Obj[e_TR98_VOICE_LINE_RINGER_PATTERN           -e_TR98_START]},
++//{e_TR98_VOICE_LINE_CALLING_FEATURE          , &tr98Obj[e_TR98_VOICE_LINE_CALLING_FEATURE          -e_TR98_START]},
++{e_TR98_VOICE_LINE_PROCESSING               , &tr98Obj[e_TR98_VOICE_LINE_PROCESSING               -e_TR98_START]},
++{e_TR98_VOICE_LINE_CODEC                    , &tr98Obj[e_TR98_VOICE_LINE_CODEC                    -e_TR98_START]},
++{e_TR98_VOICE_LINE_CODEC_LIST               , &tr98Obj[e_TR98_VOICE_LINE_CODEC_LIST               -e_TR98_START]},
++//{e_TR98_VOICE_LINE_SESSION                  , &tr98Obj[e_TR98_VOICE_LINE_SESSION                  -e_TR98_START]},
++//{e_TR98_VOICE_LINE_STATS                    , &tr98Obj[e_TR98_VOICE_LINE_STATS                    -e_TR98_START]},
++{e_TR98_VOICE_PHY_INTF                      , &tr98Obj[e_TR98_VOICE_PHY_INTF                      -e_TR98_START]},
++//{e_TR98_VOICE_PSTN                          , &tr98Obj[e_TR98_VOICE_PSTN                          -e_TR98_START]},
++{e_TR98_VOICE_COMMON                        , &tr98Obj[e_TR98_VOICE_COMMON                        -e_TR98_START]},
++//{e_TR98_VOICE_PHONE_BOOK                    , &tr98Obj[e_TR98_VOICE_PHONE_BOOK                    -e_TR98_START]},
++//{e_TR98_VOICE_FXO                           , &tr98Obj[e_TR98_VOICE_FXO                           -e_TR98_START]},
++//{e_TR98_VOICE_FXO_PORT                      , &tr98Obj[e_TR98_VOICE_FXO_PORT                      -e_TR98_START]},
++#endif
++{e_TR98_CAPB                    , &tr98Obj[e_TR98_CAPB                    -e_TR98_START]},
++{e_TR98_PERF_DIAG               , &tr98Obj[e_TR98_PERF_DIAG               -e_TR98_START]},
++{e_TR98_DEV_INFO                , &tr98Obj[e_TR98_DEV_INFO                -e_TR98_START]},
++//{e_TR98_VEND_CONF_FILE          , &tr98Obj[e_TR98_VEND_CONF_FILE          -e_TR98_START]},
++//{e_TR98_DEV_CONF                , &tr98Obj[e_TR98_DEV_CONF                -e_TR98_START]},
++{e_TR98_MGMT_SRV                , &tr98Obj[e_TR98_MGMT_SRV                -e_TR98_START]},
++{e_TR98_MGAB_DEV                , &tr98Obj[e_TR98_MGAB_DEV                -e_TR98_START]},
++{e_TR98_TIME                    , &tr98Obj[e_TR98_TIME                    -e_TR98_START]},
++//{e_TR98_USR_INTF                , &tr98Obj[e_TR98_USR_INTF                -e_TR98_START]},
++//{e_TR98_CAPT_PORTAL             , &tr98Obj[e_TR98_CAPT_PORTAL             -e_TR98_START]},
++{e_TR98_L3_FWD                  , &tr98Obj[e_TR98_L3_FWD                  -e_TR98_START]},
++{e_TR98_FWD                     , &tr98Obj[e_TR98_FWD                     -e_TR98_START]},
++{e_TR98_L2_BR                   , &tr98Obj[e_TR98_L2_BR                   -e_TR98_START]},
++{e_TR98_BR                      , &tr98Obj[e_TR98_BR                      -e_TR98_START]},
++{e_TR98_PORT                    , &tr98Obj[e_TR98_PORT                    -e_TR98_START]},
++{e_TR98_VLAN                    , &tr98Obj[e_TR98_VLAN                    -e_TR98_START]},
++{e_TR98_FILTER                  , &tr98Obj[e_TR98_FILTER                  -e_TR98_START]},
++{e_TR98_MARK                    , &tr98Obj[e_TR98_MARK                    -e_TR98_START]},
++{e_TR98_AVAI_INTF               , &tr98Obj[e_TR98_AVAI_INTF               -e_TR98_START]},
++{e_TR98_QUE_MGMT                , &tr98Obj[e_TR98_QUE_MGMT                -e_TR98_START]},
++{e_TR98_CLS                     , &tr98Obj[e_TR98_CLS                     -e_TR98_START]},
++//{e_TR98_APP                     , &tr98Obj[e_TR98_APP                     -e_TR98_START]},
++//{e_TR98_FLOW                    , &tr98Obj[e_TR98_FLOW                    -e_TR98_START]},
++//{e_TR98_POLICER                 , &tr98Obj[e_TR98_POLICER                 -e_TR98_START]},
++{e_TR98_QUE                     , &tr98Obj[e_TR98_QUE                     -e_TR98_START]},
++{e_TR98_SHAPER                  , &tr98Obj[e_TR98_SHAPER                  -e_TR98_START]},
++//{e_TR98_QUE_STAT                , &tr98Obj[e_TR98_QUE_STAT                -e_TR98_START]},
++{e_TR98_LAN_CONF_SEC            , &tr98Obj[e_TR98_LAN_CONF_SEC            -e_TR98_START]},
++{e_TR98_IP_PING_DIAG            , &tr98Obj[e_TR98_IP_PING_DIAG            -e_TR98_START]},
++{e_TR98_TRA_RT_DIAG             , &tr98Obj[e_TR98_TRA_RT_DIAG             -e_TR98_START]},
++{e_TR98_RT_HOP                  , &tr98Obj[e_TR98_RT_HOP                  -e_TR98_START]},
++{e_TR98_DL_DIAG                 , &tr98Obj[e_TR98_DL_DIAG                 -e_TR98_START]},
++{e_TR98_UL_DIAG                 , &tr98Obj[e_TR98_UL_DIAG                 -e_TR98_START]},
++{e_TR98_UDP_ECHO_CONF           , &tr98Obj[e_TR98_UDP_ECHO_CONF           -e_TR98_START]},
++{e_TR98_LAN_DEV                 , &tr98Obj[e_TR98_LAN_DEV                 -e_TR98_START]},
++{e_TR98_LAN_HOST_CONF_MGMT      , &tr98Obj[e_TR98_LAN_HOST_CONF_MGMT      -e_TR98_START]},
++{e_TR98_IP_INTF                 , &tr98Obj[e_TR98_IP_INTF                 -e_TR98_START]},
++#ifdef IPV6INTERFACE_PROFILE
++{e_TR98_IP_INTF_IPV6ADDR        , &tr98Obj[e_TR98_IP_INTF_IPV6ADDR        -e_TR98_START]},
++{e_TR98_IP_INTF_IPV6PREFIX      , &tr98Obj[e_TR98_IP_INTF_IPV6PREFIX      -e_TR98_START]},
++#endif
++#ifdef ROUTERADVERTISEMENT_PROFILE
++{e_TR98_IP_INTF_ROUTERADVER     , &tr98Obj[e_TR98_IP_INTF_ROUTERADVER     -e_TR98_START]},
++#endif
++#ifdef IPV6SERVER_PROFILE
++{e_TR98_IP_INTF_DHCPV6SRV       , &tr98Obj[e_TR98_IP_INTF_DHCPV6SRV       -e_TR98_START]},
++#endif
++{e_TR98_DHCP_STATIC_ADDR        , &tr98Obj[e_TR98_DHCP_STATIC_ADDR        -e_TR98_START]},
++{e_TR98_DHCP_OPT                , &tr98Obj[e_TR98_DHCP_OPT                -e_TR98_START]},
++{e_TR98_DHCP_COND_SERVPOOL      , &tr98Obj[e_TR98_DHCP_COND_SERVPOOL      -e_TR98_START]},
++//{e_TR98_SERVPOOL_DHCP_STATICADDR, &tr98Obj[e_TR98_SERVPOOL_DHCP_STATICADDR-e_TR98_START]},
++//{e_TR98_SERVPOOL_DHCP_OPT       , &tr98Obj[e_TR98_SERVPOOL_DHCP_OPT       -e_TR98_START]},
++{e_TR98_LAN_ETH_INTF_CONF       , &tr98Obj[e_TR98_LAN_ETH_INTF_CONF       -e_TR98_START]},
++{e_TR98_LAN_ETH_INTF_CONF_STAT  , &tr98Obj[e_TR98_LAN_ETH_INTF_CONF_STAT  -e_TR98_START]},
++//{e_TR98_LAN_USB_INTF_CONF       , &tr98Obj[e_TR98_LAN_USB_INTF_CONF       -e_TR98_START]},
++//{e_TR98_LAN_USB_INTF_CONF_STAT  , &tr98Obj[e_TR98_LAN_USB_INTF_CONF_STAT  -e_TR98_START]},
++{e_TR98_LAN_DEV_WLAN_CFG        , &tr98Obj[e_TR98_LAN_DEV_WLAN_CFG        -e_TR98_START]},
++{e_TR98_WLAN_CFG_STAT           , &tr98Obj[e_TR98_WLAN_CFG_STAT           -e_TR98_START]},
++{e_TR98_WPS                     , &tr98Obj[e_TR98_WPS                     -e_TR98_START]},
++//{e_TR98_REG                     , &tr98Obj[e_TR98_REG                     -e_TR98_START]},
++//{e_TR98_ASSOC_DEV               , &tr98Obj[e_TR98_ASSOC_DEV               -e_TR98_START]},
++{e_TR98_WEP_KEY                 , &tr98Obj[e_TR98_WEP_KEY                 -e_TR98_START]},
++{e_TR98_PSK                     , &tr98Obj[e_TR98_PSK                     -e_TR98_START]},
++//{e_TR98_AP_WMM_PARAM            , &tr98Obj[e_TR98_AP_WMM_PARAM            -e_TR98_START]},
++//{e_TR98_STA_WMM_PARAM           , &tr98Obj[e_TR98_STA_WMM_PARAM           -e_TR98_START]},
++{e_TR98_HOSTS                   , &tr98Obj[e_TR98_HOSTS                   -e_TR98_START]},
++{e_TR98_HOST                    , &tr98Obj[e_TR98_HOST                    -e_TR98_START]},
++//{e_TR98_LAN_INTF                , &tr98Obj[e_TR98_LAN_INTF                -e_TR98_START]},
++//{e_TR98_LAN_INTF_ETH_INTF_CONF  , &tr98Obj[e_TR98_LAN_INTF_ETH_INTF_CONF  -e_TR98_START]},
++//{e_TR98_USB_INTF_CONF           , &tr98Obj[e_TR98_USB_INTF_CONF           -e_TR98_START]},
++//{e_TR98_LAN_INTF_WLAN_CFG       , &tr98Obj[e_TR98_LAN_INTF_WLAN_CFG       -e_TR98_START]},
++{e_TR98_WAN_DEV                 , &tr98Obj[e_TR98_WAN_DEV                 -e_TR98_START]},
++{e_TR98_WAN_COMM_INTF_CONF      , &tr98Obj[e_TR98_WAN_COMM_INTF_CONF      -e_TR98_START]},
++//{e_TR98_WAN_COMM_INTF_CONNECT   , &tr98Obj[e_TR98_WAN_COMM_INTF_CONNECT   -e_TR98_START]},
++{e_TR98_WAN_DSL_INTF_CONF       , &tr98Obj[e_TR98_WAN_DSL_INTF_CONF       -e_TR98_START]},
++{e_TR98_WAN_DSL_INTF_TEST_PARAM , &tr98Obj[e_TR98_WAN_DSL_INTF_TEST_PARAM -e_TR98_START]},
++{e_TR98_WAN_DSL_INTF_CONF_STAT  , &tr98Obj[e_TR98_WAN_DSL_INTF_CONF_STAT  -e_TR98_START]},
++{e_TR98_TTL                     , &tr98Obj[e_TR98_TTL                     -e_TR98_START]},
++{e_TR98_ST                      , &tr98Obj[e_TR98_ST                      -e_TR98_START]},
++//{e_TR98_LST_SHOWTIME            , &tr98Obj[e_TR98_LST_SHOWTIME            -e_TR98_START]},
++//{e_TR98_CURRENT_DAY             , &tr98Obj[e_TR98_CURRENT_DAY             -e_TR98_START]},
++//{e_TR98_QTR_HR                  , &tr98Obj[e_TR98_QTR_HR                  -e_TR98_START]},
++{e_TR98_WAN_ETH_INTF_CONF       , &tr98Obj[e_TR98_WAN_ETH_INTF_CONF       -e_TR98_START]},
++{e_TR98_WAN_ETH_INTF_CONF_STAT  , &tr98Obj[e_TR98_WAN_ETH_INTF_CONF_STAT  -e_TR98_START]},
++{e_TR98_WAN_DSL_DIAG            , &tr98Obj[e_TR98_WAN_DSL_DIAG            -e_TR98_START]},
++{e_TR98_WAN_CONN_DEV            , &tr98Obj[e_TR98_WAN_CONN_DEV            -e_TR98_START]},
++{e_TR98_WAN_DSL_LINK_CONF       , &tr98Obj[e_TR98_WAN_DSL_LINK_CONF       -e_TR98_START]},
++{e_TR98_WAN_ATM_F5_LO_DIAG      , &tr98Obj[e_TR98_WAN_ATM_F5_LO_DIAG      -e_TR98_START]},
++{e_TR98_WAN_ATM_F4_LO_DIAG      , &tr98Obj[e_TR98_WAN_ATM_F4_LO_DIAG      -e_TR98_START]},
++{e_TR98_WAN_PTM_LINK_CONF       , &tr98Obj[e_TR98_WAN_PTM_LINK_CONF       -e_TR98_START]},
++{e_TR98_WAN_PTM_LINK_CONF_STAT  , &tr98Obj[e_TR98_WAN_PTM_LINK_CONF_STAT  -e_TR98_START]},
++{e_TR98_WAN_ETH_LINK_CONF       , &tr98Obj[e_TR98_WAN_ETH_LINK_CONF       -e_TR98_START]},
++//{e_TR98_WAN_POTS_LINK_CONF      , &tr98Obj[e_TR98_WAN_POTS_LINK_CONF      -e_TR98_START]},
++{e_TR98_WAN_IP_CONN             , &tr98Obj[e_TR98_WAN_IP_CONN             -e_TR98_START]},
++{e_TR98_DHCP_CLIENT             , &tr98Obj[e_TR98_DHCP_CLIENT             -e_TR98_START]},
++{e_TR98_SENT_DHCP_OPT           , &tr98Obj[e_TR98_SENT_DHCP_OPT           -e_TR98_START]},
++{e_TR98_REQ_DHCP_OPT            , &tr98Obj[e_TR98_REQ_DHCP_OPT            -e_TR98_START]},
++{e_TR98_WAN_IP_PORT_MAP         , &tr98Obj[e_TR98_WAN_IP_PORT_MAP         -e_TR98_START]},
++{e_TR98_WAN_IP_CONN_STAT        , &tr98Obj[e_TR98_WAN_IP_CONN_STAT        -e_TR98_START]},
++#ifdef IPV6INTERFACE_PROFILE
++{e_TR98_WAN_IP_CONN_IPV6ADDR    , &tr98Obj[e_TR98_WAN_IP_CONN_IPV6ADDR    -e_TR98_START]},
++{e_TR98_WAN_IP_CONN_IPV6PREFIX	 , &tr98Obj[e_TR98_WAN_IP_CONN_IPV6PREFIX	 -e_TR98_START]},
++#endif
++#ifdef DHCPV6CLIENT_PROFILE
++{e_TR98_WAN_IP_CONN_DHCPV6CLIENT, &tr98Obj[e_TR98_WAN_IP_CONN_DHCPV6CLIENT-e_TR98_START]},
++#endif
++#ifdef IPV6RD_PROFILE
++{e_TR98_WAN_IP_CONN_IPV6RD	     , &tr98Obj[e_TR98_WAN_IP_CONN_IPV6RD	     -e_TR98_START]},
++#endif
++{e_TR98_WAN_PPP_CONN            , &tr98Obj[e_TR98_WAN_PPP_CONN            -e_TR98_START]},
++{e_TR98_WAN_PPP_PORT_MAP        , &tr98Obj[e_TR98_WAN_PPP_PORT_MAP        -e_TR98_START]},
++{e_TR98_WAN_PPP_CONN_STAT       , &tr98Obj[e_TR98_WAN_PPP_CONN_STAT       -e_TR98_START]},
++#ifdef IPV6INTERFACE_PROFILE
++{e_TR98_WAN_PPP_CONN_IPV6ADDR    , &tr98Obj[e_TR98_WAN_PPP_CONN_IPV6ADDR    -e_TR98_START]},
++{e_TR98_WAN_PPP_CONN_IPV6PREFIX  , &tr98Obj[e_TR98_WAN_PPP_CONN_IPV6PREFIX  -e_TR98_START]},
++#endif
++#ifdef DHCPV6CLIENT_PROFILE
++{e_TR98_WAN_PPP_CONN_DHCPV6CLIENT, &tr98Obj[e_TR98_WAN_PPP_CONN_DHCPV6CLIENT-e_TR98_START]},
++#endif
++#ifdef IPV6RD_PROFILE
++{e_TR98_WAN_PPP_CONN_IPV6RD      , &tr98Obj[e_TR98_WAN_PPP_CONN_IPV6RD      -e_TR98_START]},
++#endif
++{e_TR98_FIREWALL                , &tr98Obj[e_TR98_FIREWALL                -e_TR98_START]},
++{e_TR98_FIREWALL_LEVEL          , &tr98Obj[e_TR98_FIREWALL_LEVEL          -e_TR98_START]},
++{e_TR98_FIREWALL_CHAIN          , &tr98Obj[e_TR98_FIREWALL_CHAIN          -e_TR98_START]},
++{e_TR98_FIREWALL_CHAIN_RULE     , &tr98Obj[e_TR98_FIREWALL_CHAIN_RULE     -e_TR98_START]},
++#if ZYXEL_EXT
++{e_TR98_ZYXEL_EXT               , &tr98Obj[e_TR98_ZYXEL_EXT               -e_TR98_START]},
++{e_TR98_DNS_RT_ENTRY            , &tr98Obj[e_TR98_DNS_RT_ENTRY            -e_TR98_START]},
++{e_TR98_D_DNS                   , &tr98Obj[e_TR98_D_DNS                   -e_TR98_START]},
++{e_TR98_SCHEDULE                , &tr98Obj[e_TR98_SCHEDULE                -e_TR98_START]},
++{e_TR98_REMO_MGMT               , &tr98Obj[e_TR98_REMO_MGMT               -e_TR98_START]},
++{e_TR98_REMO_SRV                , &tr98Obj[e_TR98_REMO_SRV                -e_TR98_START]},
++{e_TR98_IGMP                    , &tr98Obj[e_TR98_IGMP                    -e_TR98_START]},
++#ifdef SUNRISE_RANDOM_PASSWORD
++{e_TR98_LOG_CFG           		 , &tr98Obj[e_TR98_LOG_CFG           		 -e_TR98_START]},
++{e_TR98_LOG_CFG_GP           	 , &tr98Obj[e_TR98_LOG_CFG_GP           	 -e_TR98_START]},
++{e_TR98_LOG_CFG_GP_ACCOUNT       , &tr98Obj[e_TR98_LOG_CFG_GP_ACCOUNT       -e_TR98_START]},
++#endif
++{e_TR98_LOG_SETTING             , &tr98Obj[e_TR98_LOG_SETTING             -e_TR98_START]},
++{e_TR98_LOG_CLASSIFY            , &tr98Obj[e_TR98_LOG_CLASSIFY            -e_TR98_START]},
++{e_TR98_LOG_CATEGORY	     , &tr98Obj[e_TR98_LOG_CATEGORY	     -e_TR98_START]},
++#endif
++#if OBSOLETED
++#else
++//{e_TR98_WAN_DSL_CONN_MGMT       , &tr98Obj[e_TR98_WAN_DSL_CONN_MGMT       -e_TR98_START]},
++//{e_TR98_WAN_DSL_CONN_SRVC       , &tr98Obj[e_TR98_WAN_DSL_CONN_SRVC       -e_TR98_START]},
++#endif
++#ifdef ONECONNECT
++{e_TR98_ONECONNECT_EXT	     , &tr98Obj[e_TR98_ONECONNECT_EXT	     -e_TR98_START]}
++#endif
++};
+ 
+ #ifdef SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+ zcfgRet_t ReplaceWANDeviceIndex(char* pathname)
+@@ -138,6 +344,7 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#if 0
+ static int zcfgFeTr98HandlerGet(char *tr98FullPathName)
+ {
+ 	static int last = 0;
+@@ -163,6 +370,37 @@
+ 
+ 	return -1;
+ }
++#endif
++
++static int zcfgFeTr98HandlerGet(char *tr98FullPathName)
++{
++	tr98NameObj_t *entry = NULL;
++	tr98Object_t *tr98Obj = NULL;
++	int seqnum = 0;
++	char pathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++
++	if(!tr98FullPathName)
++		return -1;
++
++	entry = (tr98NameObj_t *)json_object_object_get(tr98StaticNameTable, (const char *)tr98FullPathName);
++	if(!entry)
++		return -1;
++
++	seqnum = (int)entry->nameSeqNum;
++	if(!IS_SEQNUM_RIGHT(seqnum)) {
++		zcfgLog(ZCFG_LOG_ERR, "%s: wrong sequence num\n", __FUNCTION__);
++		return -1;
++	}
++
++	tr98Obj = entry->tr98Obj;
++	strcpy(pathName, tr98Obj->name);
++	if(strcmp(tr98FullPathName, pathName)) {
++		zcfgLog(ZCFG_LOG_ERR, "%s: wrong tr98Obj entry\n", __FUNCTION__);
++		return -1;
++	}
++
++	return ARRAY_SEQNUM(seqnum);
++}
+ 
+ zcfgRet_t zcfgFeTr181IfaceStackLowerLayerGet(char *higherLayer, char *result)
+ {
+@@ -226,7 +464,7 @@
+ 	objIndex_t *linkIid = NULL;
+ 	void *linkObj = NULL;
+ 	zcfg_offset_t linkOid = 0;
+-	char *paramStr = NULL;
++	const char *paramStr = NULL;
+ 	bool linkParmStatus;
+ 	char hLIntfName[100];
+ 
+@@ -373,6 +611,260 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++zcfgRet_t zcfgFe98StaticNameTableInit(void)
++{
++	int maxTableEntries = e_TR98_LAST;
++	int n = 0, n_Entries;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(tr98StaticNameTable)
++		return ZCFG_SUCCESS;
++
++	if(!(tr98StaticNameTable = json_object_new_c_object(maxTableEntries))) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: Tr98 static name table allocation fail\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	n_Entries = e_TR98_LAST-e_TR98_START;
++	while(n < n_Entries) {
++		json_object_object_add(tr98StaticNameTable, (const char *)tr98Obj[n].name, 
++			    (struct json_object *)&tr98NameObjList[n]);
++		n++;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	objIndex_t tr181ObjIid, objIid;
++	zcfg_offset_t oid;
++	zcfg_name_t seqnum = 0;
++	char pathName[OBJ_NAME_BUFF_SIZE] = {0};
++	const char *tr181Name = NULL;
++
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	return ZCFG_SUCCESS;
++#endif
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(!tr98PathName || !tr181PathName || !nameSeqNum || !tr98ObjIid)
++		return ZCFG_INTERNAL_ERROR;
++
++	*nameSeqNum = 0;
++	IID_INIT((*tr98ObjIid));
++
++	IID_INIT(objIid);
++	if((ret = zcfgFe98NameToSeqnum(tr98PathName, &seqnum, &objIid)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: NameToSeqnum fail!\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(tr181ObjIid);
++	if(!strstr(tr181PathName, "Device")) {
++		sprintf(pathName, "Device.%s", tr181PathName);
++		tr181Name = pathName;
++	}
++	else {
++		tr181Name = tr181PathName;
++	}
++	if((oid = zcfgFeObjNameToObjId((char *)tr181Name, &tr181ObjIid)) == ZCFG_NO_SUCH_OBJECT) {
++		zcfgLog(ZCFG_LOG_INFO, "%s Name To ObjId fail!\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	if((ret = zcfg98To181ObjMappingAdd(seqnum, &objIid, oid, &tr181ObjIid)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s 98To181 mapping add fail!\n", __FUNCTION__);
++		return ret;
++	}
++
++	*nameSeqNum = seqnum;
++	memcpy(tr98ObjIid, &objIid, sizeof(objIndex_t));
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFe98To181ObjMappingNameGet(const char *tr98PathName, char *tr181PathName)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_name_t nameSeqNum = 0;
++	objIndex_t tr181ObjIid, objIid;
++	zcfg_offset_t oid;
++
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	return ZCFG_SUCCESS;
++#endif
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(!tr98PathName || !tr181PathName)
++		return ZCFG_INTERNAL_ERROR;
++
++ 	IID_INIT(objIid);
++	if((ret = zcfgFe98NameToSeqnum(tr98PathName, &nameSeqNum, &objIid)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: NameToSeqnum fail!\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(tr181ObjIid);
++	//if((ret = zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR98_MAPPING, nameSeqNum, &objIid, &oid, &tr181ObjIid)) != ZCFG_SUCCESS) {
++	if((ret = zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR98_OBJMAPPING, nameSeqNum, &objIid, &oid, &tr181ObjIid)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: 98To181 mapping query fail\n", __FUNCTION__);
++		return ret;
++	}
++
++	if((ret = zcfgFeObjIdToName(oid, &tr181ObjIid, tr181PathName)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: ObjId to Name fail\n", __FUNCTION__);
++		return ret;	
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	zcfg_name_t nameSeqNum = 0;
++	objIndex_t tr181ObjIid, objIid;
++	zcfg_offset_t oid;
++
++#ifndef ZCFG_DYNAMIC_NAMEMAPPING
++	return ZCFG_SUCCESS;
++#endif
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(!tr98PathName || !tr181PathName)
++		return ZCFG_INTERNAL_ERROR;
++
++	IID_INIT(tr181ObjIid);
++	if((oid = zcfgFeObjNameToObjId((char *)tr181PathName, &tr181ObjIid)) == ZCFG_NO_SUCH_OBJECT) {
++		zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++		return ZCFG_INTERNAL_ERROR;
++	}
++
++	IID_INIT(objIid);
++	//if((ret = zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR181_MAPPING, oid, &tr181ObjIid, &nameSeqNum, &objIid)) != ZCFG_SUCCESS) {
++	if((ret = zcfgObjMappingGet(ZCFG_MSG_REQUEST_TR181_OBJMAPPING, oid, &tr181ObjIid, &nameSeqNum, &objIid)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: 181To98 mapping query fail\n", __FUNCTION__);
++		return ret;
++	}
++
++ 	IID_INIT(objIid);
++	if((ret = zcfgFe98SeqnumToName(nameSeqNum, &objIid, tr98PathName)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s: SeqnumToName fail\n", __FUNCTION__);
++		return ret;
++	}
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFe98NameToSeqnum(const char *tr98PathName, zcfg_name_t *seqnum, objIndex_t *tr98ObjIid)
++{
++	const char *pos = NULL;
++	int n = 0, n_subpathname = 0;
++	bool subpathname = false;
++	char instNumStr[5] = {0};
++	char pathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	int pathNameLen = 0, instNumStrLen = 0;
++	objIndex_t objIid;
++	tr98NameObj_t *entry = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(!tr98PathName || !seqnum || !tr98ObjIid || (strlen(tr98PathName) <= 0))
++		return ZCFG_INTERNAL_ERROR;
++
++	IID_INIT(objIid);
++	pos = (tr98PathName + n);
++	while(*pos != '\0') {
++		if(*pos == '.') {
++			subpathname = (subpathname == true) ? false : true;
++			pathName[pathNameLen++] = *pos;
++		}
++		else if(subpathname == true) {
++			if(_isdigit(*pos)) {
++				if(instNumStrLen == 0) {
++					pathName[pathNameLen++] = 'i';
++				}
++				instNumStr[instNumStrLen++] = *pos;
++				if((instNumStrLen+1) >= sizeof(instNumStr))
++					return ZCFG_NO_SUCH_OBJECT;
++			}
++			else {
++				subpathname = false;
++				pathName[pathNameLen++] = *pos;
++			}
++		}
++		else {
++			pathName[pathNameLen++] = *pos;
++		}
++		pos = tr98PathName+(++n);
++		if(((subpathname == false) && instNumStrLen) || ((*pos == '\0') && instNumStrLen)) {
++			int idx = 0;
++			objIid.idx[n_subpathname++] = ((idx = atoi(instNumStr)) > 255) ? 255 : idx;
++			instNumStrLen = 0;
++			memset(instNumStr, 0, sizeof(instNumStr));
++		}
++	}
++
++	zcfgLog(ZCFG_LOG_INFO, "%s: parsed, %s\n", __FUNCTION__, pathName);
++
++	objIid.level = n_subpathname;
++	entry = (tr98NameObj_t *)json_object_object_get(tr98StaticNameTable, (const char *)pathName);
++	if(!entry)
++		return ZCFG_NO_SUCH_OBJECT;
++
++	if(!IS_SEQNUM_RIGHT((entry->nameSeqNum)))
++		return ZCFG_NO_SUCH_OBJECT;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s: seqnum, %u\n", __FUNCTION__, entry->nameSeqNum);
++	*seqnum = (zcfg_name_t)entry->nameSeqNum;
++	memcpy(tr98ObjIid, &objIid, sizeof(objIndex_t));
++
++	return ZCFG_SUCCESS;
++}
++
++zcfgRet_t zcfgFe98SeqnumToName(zcfg_name_t seqnum, objIndex_t *objIid, char *tr98PathName)
++{
++	int nameListSeqnum = 0, n = 0, level = 0;
++	int tr98PathNameLen = 0;
++	const char *name = NULL;
++	char pathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char instNumStr[5] = {0};
++	const char *pos = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s\n", __FUNCTION__);
++
++	if(!(IS_SEQNUM_RIGHT(seqnum)) || !objIid || !tr98PathName)
++		return ZCFG_INTERNAL_ERROR;
++
++	nameListSeqnum = ARRAY_SEQNUM(seqnum);
++	name = (tr98NameObjList[nameListSeqnum].tr98Obj)->name;
++	strcpy(pathName, name);
++
++	pos = (pathName + n);
++	while(*pos != '\0') {
++		if(*pos == 'i') {
++			sprintf(instNumStr, "%d", objIid->idx[level++]);
++			strcat(tr98PathName, instNumStr);
++			tr98PathNameLen += strlen(instNumStr);
++		}
++		else {
++			*(tr98PathName + (tr98PathNameLen++)) = *pos;
++		}
++		pos = (pathName + (++n));
++	}
++	*(tr98PathName + tr98PathNameLen) = '\0';
++
++	zcfgLog(ZCFG_LOG_INFO, "%s: translated, %s\n", __FUNCTION__, tr98PathName);
++
++	return ZCFG_SUCCESS;
++}
++
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *tr98ObjName, struct json_object **value)
+ {
+ 	zcfgRet_t ret;
+@@ -889,7 +1381,8 @@
+ 
+ #if 1 //__ZYXEL__, Mark
+ zcfgRet_t zcfgFeGetTr181NameParm(const char *notifyName, char *objName, char *objParm){
+-	char *ptr = NULL, *ptr2 = NULL;
++	char *ptr = NULL;
++	const char *ptr2 = NULL;
+ 	int n_Len, n_Len2;
+ 	char *IpIntObjName = "IP.Interface";
+ 	char *PppIntObjName = "PPP.Interface";
+@@ -962,7 +1455,7 @@
+ 	char tr181ObjName[128] = {0};
+ 	char tr181ParamName[64] = {0};
+ 	char tr98ClassName[128] = {0};
+-	char *ptr = NULL, *token = NULL, *tmp = NULL;
++	char *token = NULL, *tmp = NULL;
+ 	int handler = 0;
+ 
+ #if TR98_MAPPING_DEBUG
+@@ -1120,7 +1613,7 @@
+ 	char tr98ClassName[256] = {0};
+ 	int handler = 0;
+ 	tr98Parameter_t *paramList = NULL;
+-	char paraName[64] = {0};
++	//char paraName[64] = {0};
+ 
+ 	if((ret = zcfgFeTr98ClassNameGet(tr98ObjName, tr98ClassName)) != ZCFG_SUCCESS) {
+ 		return ret;
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2015-05-13 18:06:13.880754953 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2015-05-13 18:11:52.137595500 +0800
+@@ -10,6 +10,7 @@
+ #include "zcfg_msg.h"
+ #include "zcfg_debug.h"
+ #include "zcfg_fe_schema.h"
++#include "zcfg_tr98_common.h"
+ 
+ #define TR98_MAPPING_DEBUG 0
+ 
+@@ -37,12 +38,23 @@
+ 	int (*setAttr)(char *, int , char *, int , struct json_object *);
+ }tr98Object_t;
+ 
++typedef struct tr98NameObj_s {
++	zcfg98sn_t nameSeqNum;
++	tr98Object_t *tr98Obj;
++}tr98NameObj_t;
++
+ #define TR98_MAX_OBJ_NAME_LENGTH 128
+ 
+ zcfgRet_t zcfgFeTr98AllIGDNameGet();
+ 
+ 
+ zcfgRet_t zcfgFeTr98ObjGet(char *, struct json_object **);
++zcfgRet_t zcfgFe98StaticNameTableInit(void);
++zcfgRet_t zcfgFe98To181ObjMappingNameAdd(const char *tr98PathName, const char *tr181PathName, zcfg_name_t *nameSeqNum, objIndex_t *tr98ObjIid);
++zcfgRet_t zcfgFe98To181ObjMappingNameGet(const char *tr98PathName, char *tr181PathName);
++zcfgRet_t zcfgFe181To98ObjMappingNameGet(const char *tr181PathName, char *tr98PathName);
++zcfgRet_t zcfgFe98NameToSeqnum(const char *tr98PathName, zcfg_name_t *seqnum, objIndex_t *tr98ObjIid);
++zcfgRet_t zcfgFe98SeqnumToName(zcfg_name_t seqnum, objIndex_t *objIid, char *tr98PathName);
+ zcfgRet_t zcfgFeTr98ObjNameGet(char *, struct  json_object** );
+ zcfgRet_t zcfgFeTr98ObjNameObjGet(char *, struct json_object **);
+ zcfgRet_t zcfgFeTr98ObjParamSet(char *, uint32_t , struct json_object *, char *);
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2015-05-13 18:06:13.896754953 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2015-05-13 18:12:57.533134400 +0800
+@@ -194,7 +194,7 @@
+ #endif
+ 
+ #define OBSOLETED 1
+-#define ZYXEL_EXT 1
++//#define ZYXEL_EXT 1
+ 
+ #define ATTR_INDEX_CREA ATTR_INDEXNODE|OBJECT_ATTR_CREATE
+ 
+@@ -206,16 +206,44 @@
+ {TR98_VOICE_SRV,				ATTR_INDEXNODE,	para_VoiceSrv,			voiceSrvObjGet,			 NULL,					 NULL,			   NULL, voiceNotify, voiceSrvAttrGet, voiceSrvAttrSet},
+ {TR98_VOICE_CAPB,				0,				para_VoiceCapb,			voiceCapbObjGet,			 NULL,					 NULL,			   NULL, voiceNotify, voiceCapbAttrGet, voiceCapbAttrSet},
+ {TR98_VOICE_CAPB_SIP,			0,				para_VoiceCapbSip,		voiceCapbSipObjGet,		 NULL,					 NULL,			   NULL, voiceNotify, voiceCapbSipAttrGet, voiceCapbSipAttrSet},
++//{TR98_VOICE_CAPB_MGCP                     },
++//{TR98_VOICE_CAPB_H323     },
+ {TR98_VOICE_CAPB_CODEC,			ATTR_INDEXNODE,	para_VoiceCapbCodec,	voiceCapbCodecObjGet,		 NULL,					 NULL,			   NULL, voiceNotify, voiceCapbCodecAttrGet, voiceCapbCodecAttrSet},
+-{TR98_VOICE_COMMON,				0,				para_VoiceCommon, 		voiceCommonObjGet,			 voiceCommonSet, 	NULL, 		NULL, 	NULL},
+ {TR98_VOICE_PROF,				ATTR_INDEX_CREA,para_VoiceProf,			voiceProfObjGet,			 voiceProfSet,			 voiceProfAdd,	   voiceProfDel, voiceNotify, voiceProfAttrGet, voiceProfAttrSet},
++//{TR98_VOICE_PROF_SRV_PRO_INFO         },
+ {TR98_VOICE_PROF_SIP,			0,				para_VoiceProfSip,		voiceProfSipObjGet,		 voiceProfSipSet,		 NULL,			   NULL, voiceNotify, voiceProfSipAttrGet, voiceProfSipAttrSet},
++//{TR98_VOICE_PROF_SIP_SUBSCRIBE_OBJ      },
++//{TR98_VOICE_PROF_SIP_RESP_MAP_OBJ       },
++//{TR98_VOICE_PROF_RTP                    },
++//{TR98_VOICE_PROF_RTP_RTCP               },
++//{TR98_VOICE_PROF_RTP_SRTP               },
++//{TR98_VOICE_PROF_RTP_REDUNDANCY         },
++//{TR98_VOICE_PROF_NUM_PLAN               },
++//{TR98_VOICE_PROF_NUM_PLAN_PREFIX_INFO   },
++//{TR98_VOICE_PROF_TONE                   },
++//{TR98_VOICE_PROF_TONE_EVENT             },
++//{TR98_VOICE_PROF_TONE_DESCRIPTION       },
++//{TR98_VOICE_PROF_TONE_PATTERN           },
++//{TR98_VOICE_PROF_FAX_T38                },
+ {TR98_VOICE_LINE,				ATTR_INDEX_CREA,para_VoiceLine,			voiceLineObjGet,			 voiceLineSet,			 voiceLineAdd,	   voiceLineDel,	voiceNotify, voiceLineAttrGet, voiceLineAttrSet},
+ {TR98_VOICE_LINE_SIP,			0,				para_VoiceLineSip,		voiceLineSipObjGet,		 voiceLineSipSet,		 NULL,			   NULL,	voiceNotify, voiceLineSipAttrGet, voiceLineSipAttrSet},
++//{TR98_VOICE_LINE_SIP_EVENT_SUBS         },
++//{TR98_VOICE_LINE_RINGER                 },
++//{TR98_VOICE_LINE_RINGER_EVENT           },
++//{TR98_VOICE_LINE_RINGER_DESCRIPTION     },
++//{TR98_VOICE_LINE_RINGER_PATTERN         },
++//{TR98_VOICE_LINE_CALLING_FEATURE        },
+ {TR98_VOICE_LINE_PROCESSING,	0,				para_VoiceLineProcessing, voiceLineProcObjGet,		 voiceLineProcSet,		 NULL,			   NULL,	voiceNotify, voiceLineProcAttrGet, voiceLineProcAttrSet},
+ {TR98_VOICE_LINE_CODEC,			0, 				para_VoiceLineCodec, 	voiceLineCodecObjGet,       NULL,					 NULL,			   NULL,	voiceNotify, voiceLineCodecAttrGet, voiceLineCodecAttrSet},
+ {TR98_VOICE_LINE_CODEC_LIST,	ATTR_INDEXNODE,	para_VoiceLineCodecList, voiceLineCodecListObjGet,	 voiceLineCodecListObjSet,					 NULL,			   NULL,	voiceNotify, voiceLineCodecListAttrGet, voiceLineCodecListAttrSet},
++//{TR98_VOICE_LINE_SESSION                },
++//{TR98_VOICE_LINE_STATS                  },
+ {TR98_VOICE_PHY_INTF,			ATTR_INDEXNODE,	para_VoicePhyIntf,		voicePhyIntfObjGet,		 voicePhyIntfSet,		 NULL,			   NULL,	voiceNotify, voicePhyIntfAttrGet, voicePhyIntfAttrSet},
++//{TR98_VOICE_PSTN                        },
++{TR98_VOICE_COMMON,				0,				para_VoiceCommon, 		voiceCommonObjGet,			 voiceCommonSet, 	NULL, 		NULL, 	NULL},
++//{TR98_VOICE_PHONE_BOOK                  },
++//{TR98_VOICE_FXO                         },
++//{TR98_VOICE_FXO_PORT                    },
+ #endif
+ {TR98_CAPB,                     0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_PERF_DIAG,                0,              para_PerpDiag,          perfDiagObjGet,          NULL,                   NULL,             NULL,            NULL},
+@@ -327,7 +355,7 @@
+ {TR98_WAN_IP_CONN_IPV6RD,       0,              para_WANIpv6Rd,     	WANIpv6RdObjGet,         WANIpv6RdObjSet,        NULL,             NULL,            NULL},
+ #endif
+ {TR98_WAN_PPP_CONN,             ATTR_INDEX_CREA,para_WANPppConn,        WANPppConnObjGet,        WANPppConnObjSet,       WANPppConnObjAdd, WANPppConnObjDel, WANPppConnObjNotify, /*NULL, NULL*/ WANPppConnObjAttrGet, WANPppConnObjAttrSet},
+-{TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,       WANPortMappingSet,      WANPortMappingAdd,WANPortMappingDel,NULL},	
++{TR98_WAN_PPP_PORT_MAP,         ATTR_INDEX_CREA,para_WANPppPortMap,     WANPortMappingObjGet,    WANPortMappingSet,      WANPortMappingAdd, WANPortMappingDel, WANPortMappingNotify, WANPortMappingAttrGet, WANPortMappingAttrSet},	
+ {TR98_WAN_PPP_CONN_STAT,        0,              para_WANPppConnStat,    WANConnStObjGet,         NULL,                   NULL,   NULL, WANConnStObjNotify, WANConnStObjAttrGet, WANConnStObjAttrSet},
+ #ifdef IPV6INTERFACE_PROFILE
+ {TR98_WAN_PPP_CONN_IPV6ADDR,    ATTR_INDEX_CREA, para_WANPppv6Addr,     WANPppv6AddrObjGet,        WANPppv6AddrObjSet,     WANPppv6AddrObjAdd, WANPppv6AddrObjDel,            NULL},

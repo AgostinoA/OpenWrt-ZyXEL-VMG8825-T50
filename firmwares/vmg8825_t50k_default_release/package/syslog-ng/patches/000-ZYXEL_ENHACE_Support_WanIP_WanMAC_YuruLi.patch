@@ -1,0 +1,140 @@
+Index: syslog-ng-2.0.10/src/cfg-grammar.y
+===================================================================
+--- syslog-ng-2.0.10.orig/src/cfg-grammar.y	2008-05-16 18:49:48.000000000 +0800
++++ syslog-ng-2.0.10/src/cfg-grammar.y	2018-06-14 10:19:03.242169452 +0800
+@@ -66,11 +66,12 @@
+ 
+ %token KW_CHAIN_HOSTNAMES KW_NORMALIZE_HOSTNAMES KW_KEEP_HOSTNAME KW_CHECK_HOSTNAME KW_BAD_HOSTNAME
+ %token KW_KEEP_TIMESTAMP
+-%token KW_USE_DNS KW_USE_FQDN 
++%token KW_USE_DNS KW_USE_FQDN
+ %token KW_DNS_CACHE KW_DNS_CACHE_SIZE
+ %token KW_DNS_CACHE_EXPIRE KW_DNS_CACHE_EXPIRE_FAILED KW_DNS_CACHE_HOSTS
+ %token KW_PERSIST_ONLY
+ %token KW_TZ_CONVERT KW_TS_FORMAT KW_FRAC_DIGITS
++%token KW_WAN_IP KW_WAN_MAC
+ 
+ %token KW_LOG_FIFO_SIZE KW_LOG_FETCH_LIMIT KW_LOG_IW_SIZE KW_LOG_PREFIX
+ 
+@@ -744,6 +745,8 @@
+ 	| KW_USE_TIME_RECVD '(' yesno ')'	{ configuration->use_time_recvd = $3; }
+ 	| KW_USE_FQDN '(' yesno ')'		{ configuration->use_fqdn = $3; }
+ 	| KW_USE_DNS '(' dnsmode ')'		{ configuration->use_dns = $3; }
++	| KW_WAN_IP '(' string ')'			{ configuration->wan_ip = $3; }
++	| KW_WAN_MAC '(' string ')'			{ configuration->wan_mac = $3; }
+ 	| KW_TIME_REOPEN '(' NUMBER ')'		{ configuration->time_reopen = $3; }
+ 	| KW_TIME_REAP '(' NUMBER ')'		{ configuration->time_reap = $3; }
+ 	| KW_TIME_SLEEP '(' NUMBER ')'		
+Index: syslog-ng-2.0.10/src/cfg-lex.l
+===================================================================
+--- syslog-ng-2.0.10.orig/src/cfg-lex.l	2008-11-06 18:49:05.000000000 +0800
++++ syslog-ng-2.0.10/src/cfg-lex.l	2018-06-14 10:19:03.242169452 +0800
+@@ -96,6 +96,8 @@
+         { "use_time_recvd",	KW_USE_TIME_RECVD },
+         { "use_fqdn",           KW_USE_FQDN },
+ 	{ "use_dns",		KW_USE_DNS },
++	{ "wan_ip",		KW_WAN_IP },
++	{ "wan_mac",		KW_WAN_MAC },
+   	{ "gc_threshold",	KW_GC_BUSY_THRESHOLD },
+   	{ "gc_busy_threshold",	KW_GC_BUSY_THRESHOLD },
+   	{ "gc_idle_threshold",	KW_GC_IDLE_THRESHOLD },
+Index: syslog-ng-2.0.10/src/cfg.h
+===================================================================
+--- syslog-ng-2.0.10.orig/src/cfg.h	2008-05-16 18:49:48.000000000 +0800
++++ syslog-ng-2.0.10/src/cfg.h	2018-06-14 10:19:03.242169452 +0800
+@@ -60,6 +60,8 @@
+   gboolean use_fqdn;
+   gboolean use_dns;
+   gboolean use_dns_cache;
++  gchar *wan_ip;
++  gchar *wan_mac;
+   gint dns_cache_size, dns_cache_expire, dns_cache_expire_failed;
+   gchar *dns_cache_hosts;
+   gint time_reopen;
+Index: syslog-ng-2.0.10/src/cfg.c
+===================================================================
+--- syslog-ng-2.0.10.orig/src/cfg.c	2008-05-16 18:49:48.000000000 +0800
++++ syslog-ng-2.0.10/src/cfg.c	2018-06-14 10:30:59.283622022 +0800
+@@ -275,6 +275,9 @@
+   self->recv_zone_offset = -1;
+   self->send_zone_offset = -1;
+   self->keep_timestamp = TRUE;
++  
++  self->wan_ip = NULL;
++  self->wan_mac = NULL;
+ 
+   configuration = self;
+ 
+@@ -360,6 +363,8 @@
+     regfree(&self->bad_hostname);
+   g_free(self->bad_hostname_re);
+   g_free(self->dns_cache_hosts);
++  g_free(self->wan_ip);
++  g_free(self->wan_mac);
+   g_free(self);
+ }
+ 
+Index: syslog-ng-2.0.10/src/macros.c
+===================================================================
+--- syslog-ng-2.0.10.orig/src/macros.c	2008-05-16 18:49:48.000000000 +0800
++++ syslog-ng-2.0.10/src/macros.c	2018-06-14 10:59:04.707053776 +0800
+@@ -20,7 +20,8 @@
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  */
+-
++ 
++#include "cfg.h"
+ #include "macros.h"
+ #include "logmsg.h"
+ #include "syslog-names.h"
+@@ -105,11 +106,16 @@
+         { "MSG", M_MESSAGE },
+         { "MSGONLY", M_MSGONLY },
+         { "MESSAGE", M_MESSAGE },
+-        { "SOURCEIP", M_SOURCE_IP }
++        { "SOURCEIP", M_SOURCE_IP },
++        { "LOCALIP", M_LOCAL_IP },
++        { "MACADDR", M_MACADDR }
+ };
+ 
+ GHashTable *macro_hash;
+ 
++extern GlobalConfig *configuration;
++
++
+ static void
+ result_append(GString *result, guchar *str, gsize len, gboolean escape)
+ {
+@@ -440,6 +446,18 @@
+         result_append(result, ip, strlen(ip), !!(flags & MF_ESCAPE_RESULT));
+         break;
+       }
++	case M_LOCAL_IP:
++	  {
++	  	if(configuration->wan_ip != NULL)
++	  		result_append(result, configuration->wan_ip, strlen(configuration->wan_ip), !!(flags & MF_ESCAPE_RESULT));
++		break;
++	  }
++	case M_MACADDR:
++	  {
++	  	if(configuration->wan_mac != NULL)
++	  		result_append(result, configuration->wan_mac, strlen(configuration->wan_mac), !!(flags & MF_ESCAPE_RESULT));
++		break;
++	  }
+     default:
+       g_assert_not_reached();
+       break;
+Index: syslog-ng-2.0.10/src/macros.h
+===================================================================
+--- syslog-ng-2.0.10.orig/src/macros.h	2008-05-16 18:49:48.000000000 +0800
++++ syslog-ng-2.0.10/src/macros.h	2018-06-14 10:49:15.906277007 +0800
+@@ -101,6 +101,8 @@
+   M_MESSAGE,
+   M_MSGONLY,
+   M_SOURCE_IP,
++  M_LOCAL_IP,
++  M_MACADDR,
+   M_MAX,
+ 
+   M_MATCH_REF_OFS=256

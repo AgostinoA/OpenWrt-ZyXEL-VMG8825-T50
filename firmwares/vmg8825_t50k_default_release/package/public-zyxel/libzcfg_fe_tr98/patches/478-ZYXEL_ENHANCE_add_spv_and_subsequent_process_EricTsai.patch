@@ -1,0 +1,211 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2017-07-03 14:31:41.895221063 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2017-07-03 14:31:42.067221064 +0800
+@@ -25,6 +25,10 @@
+ CFLAGS += -DZYXEL_EXT=1
+ CFLAGS += -DZCFG_APPLY_MULTIOBJSET_ON_SESSIONCOMPLETE
+ 
++ifeq ($(CONFIG_ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT),y)
++CFLAGS += -DZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
++endif
++
+ ifeq ($(CONFIG_ZCFG_TR098181_OBJECT_MAPPING_NUM_NAME_CONVERT),y)
+ CFLAGS += -DTR098181_OBJECT_MAPPING_NUM_NAME_CONVERT
+ endif
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.c	2017-07-03 14:31:42.019221064 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.c	2017-07-03 14:24:44.830394000 +0800
+@@ -326,6 +326,17 @@
+ 
+ static zcfgRet_t zcfgFeTr98ClassNameGet(char *objName, char *className);
+ 
++#ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
++static zcfgRet_t spvSntDhcpOptSubRout(const char *, objIndex_t *, struct json_object *, struct json_object *);
++
++// it might execute subsequent rout on spv these obj
++tr98RpcSubRout_t spvSubseqRoutList[] = {
++{e_TR98_SENT_DHCP_OPT, spvSntDhcpOptSubRout},
++{0, NULL}
++};
++
++#endif
++
+ #ifdef ZCFG_TR98_PARAM_GUARD
+ tr98ParmRout_t parmGurdRoutList[] = {
+ {e_TR98_QUE, qMgmtQueParmGurd},
+@@ -1374,7 +1385,8 @@
+ 	arrayObj = json_object_new_object();
+ 	json_object_object_add(arrayObj, "name", json_object_new_string(objpath));
+ 	json_object_object_add(arrayObj, "obj", obj);
+-	json_object_object_add(arrayObj, "spv", spv);
++	if(spv)
++		json_object_object_add(arrayObj, "spv", spv);
+ 
+ 	n = arrayLength;
+ 	json_object_array_put_idx(tr98SpvObj, n, arrayObj);
+@@ -1480,6 +1492,126 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++#ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
++//e_TR98_SENT_DHCP_OPT
++static zcfgRet_t spvSntDhcpOptSubRout(const char *objPathName, objIndex_t *objIid, struct json_object *tr98SpvObj, struct json_object *sessTr98SpvObj)
++{
++	char pathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	objIndex_t wanObjIid;
++	zcfgRet_t rst = ZCFG_SUCCESS;
++
++	ztrdbg(ZTR_DL_INFO,  "%s\n", __FUNCTION__);
++	//(!objIid || !tr98SpvObj || !sessTr98SpvObj)
++#if 0
++	IID_INIT(wanObjIid);
++	memcpy(&wanObjIid, objIid, sizeof(objIndex_t));
++	wanObjIid.level--;
++	wanObjIid.idx[3] = 0;
++	zcfgFe98SeqnumToName(e_TR98_WAN_IP_CONN, wanObjIid, pathName);
++	if(!strstr(pathName, "WANIPConnection"))
++		return ZCFG_EMPTY_OBJECT;
++#endif
++	strcpy(pathName, objPathName);
++	char *dhcpcltstr = strstr(pathName, ".DHCPClient");
++	if(dhcpcltstr)
++		*dhcpcltstr = '\0';
++
++	struct json_object *spv;
++	struct json_object *wanObj = zcfgFeRetrieveTr98SpvObject(tr98SpvObj, pathName, &spv);
++	if(wanObj){
++		struct json_object *appendWanObj = JSON_OBJ_COPY(wanObj);
++		struct json_object *appendSpvObj = JSON_OBJ_COPY(spv);
++		if((rst = zcfgFeDeleteTr98SpvObject(tr98SpvObj, pathName)) == ZCFG_SUCCESS)
++			rst = zcfgFeAddTr98SpvObject(tr98SpvObj, pathName, appendWanObj, appendSpvObj);
++
++		return rst;
++	}
++
++	wanObj = zcfgFeRetrieveTr98SpvObject(sessTr98SpvObj, pathName, &spv);
++	if(wanObj){
++		struct json_object *appendWanObj = JSON_OBJ_COPY(wanObj);
++		struct json_object *appendSpvObj = JSON_OBJ_COPY(spv);
++		rst = zcfgFeAddTr98SpvObject(tr98SpvObj, pathName, appendWanObj, appendSpvObj);
++
++		return rst;
++	}else{
++		rst = zcfgFeTr98ObjGet(pathName, &wanObj);
++		if(rst != ZCFG_SUCCESS)
++			return rst;
++		spv = json_object_new_object();
++		json_object_object_add(wanObj, "Reset", json_object_new_boolean(true));
++		json_object_object_add(spv, "Reset", json_object_new_boolean(true));
++		rst = zcfgFeAddTr98SpvObject(tr98SpvObj, pathName, wanObj, spv);
++
++		return rst;
++	}
++
++	// no subsequent spv obj
++	return ZCFG_EMPTY_OBJECT;
++}
++
++static rpcSubRout existSpvSubseqRout(zcfg_name_t seqnum)
++{
++	rpcSubRout rout = 0;
++	int n = 0;
++
++	while(spvSubseqRoutList[n].nameSeqNum && (spvSubseqRoutList[n].nameSeqNum != seqnum))
++		n++;
++
++	rout = spvSubseqRoutList[n].nameSeqNum ? spvSubseqRoutList[n].rout : 0;
++
++	return rout;
++}
++
++// on a spv, add its subsequent process
++bool zcfgAddSpvSubsequent(struct json_object *tr98SpvObj)
++{
++	zcfg_name_t seqnum;
++	objIndex_t tr98ObjIid;
++	rpcSubRout subseqRout;
++	const char *objpathnames[e_TR98_LAST-e_TR98_START], *arrayObjPath;
++	int n = 0, nObj = 0, arrayLength;
++	struct json_object *arrayObj, *sessTr98SpvObj;
++
++
++	sessTr98SpvObj = zcfgFeSessionTr98SpvObjRetrieve();
++	arrayLength = json_object_array_length(tr98SpvObj);
++	ztrdbg(ZTR_DL_INFO,  "%s: tr98SpvObj n=%d\n", __FUNCTION__, arrayLength);
++
++	while(n != arrayLength){
++		arrayObj = json_object_array_get_idx(tr98SpvObj, n);
++		if(!arrayObj)
++			continue;
++
++		if((arrayObjPath = json_object_get_string(json_object_object_get(arrayObj, "name"))))
++			objpathnames[nObj++] = arrayObjPath;
++
++		n++;
++	}
++
++	char pathName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	bool subsequentSpv = false;
++
++	n = 0;
++	while(n != nObj){
++		arrayObjPath = objpathnames[n];
++		strcpy(pathName, arrayObjPath);
++		IID_INIT(tr98ObjIid);
++		if((zcfgFe98NameToSeqnum(pathName, &seqnum, &tr98ObjIid) == ZCFG_SUCCESS) &&
++				(subseqRout = existSpvSubseqRout(seqnum))){
++			ztrdbg(ZTR_DL_INFO,  "%s: there's spv subsequent process on %s\n", __FUNCTION__, pathName);
++
++			if(subseqRout(pathName, &tr98ObjIid, tr98SpvObj, sessTr98SpvObj) == ZCFG_SUCCESS)
++				subsequentSpv = true;
++		}
++
++		n++;
++	}
++
++	return subsequentSpv;
++}
++#endif
++
+ //-------------------------------------------------------------------------------------------------------------------------------------
+ // TR98 spv api, utilized by tr98 handle rout
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98.h	2017-07-03 14:31:42.019221064 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98.h	2017-07-03 14:31:42.067221064 +0800
+@@ -164,6 +164,7 @@
+ }tr98NameObj_t;
+ 
+ typedef zcfgRet_t (*parmGurdRout)(const char *objpath, const char *parmname, struct json_object *spvobj, struct json_object *parmGurdObj, char **faultString);
++typedef zcfgRet_t (*rpcSubRout)(const char *, objIndex_t *, struct json_object *, struct json_object *);
+ 
+ #define ZCFG_TR98_PARMGURD "/etc/zcfg_tr98_parmgurd.json"
+ typedef struct tr98ParmRout_s {
+@@ -171,6 +172,11 @@
+ 	parmGurdRout rout;
+ }tr98ParmRout_t;
+ 
++typedef struct tr98RpcSubRout_s {
++	zcfg98sn_t nameSeqNum;
++	rpcSubRout rout;
++}tr98RpcSubRout_t;
++
+ #define TR98_MAX_OBJ_NAME_LENGTH 257
+ #define _isdigit(c) ((c >= 0x30) && (c <= 0x39))
+ 
+@@ -249,6 +255,12 @@
+ #define zcfgTr98RetrieveParmGurdObj(n) NULL
+ #endif
+ 
++#ifdef ZCFG_APPLY_RPC_METHOD_AND_SUBSEQUENT_ROUT
++bool zcfgAddSpvSubsequent(struct json_object *tr98SpvObj);
++#else
++#define zcfgAddSpvSubsequent(obj) (0)
++#endif
++
+ zcfgRet_t zcfgFeTr98ObjSpvGet(const char *, struct json_object **);
+ zcfgRet_t zcfgFeTr98ObjSpvDelete(const char *);
+ struct json_object *zcfgFeSessionTr98SpvObjRetrieve();

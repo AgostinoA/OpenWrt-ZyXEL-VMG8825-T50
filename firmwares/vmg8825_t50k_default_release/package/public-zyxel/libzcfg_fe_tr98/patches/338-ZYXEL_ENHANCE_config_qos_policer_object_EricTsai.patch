@@ -1,0 +1,83 @@
+Index: libzcfg_fe_tr98-1.0/qos.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/qos.c	2016-07-18 14:53:19.616938425 +0800
++++ libzcfg_fe_tr98-1.0/qos.c	2016-07-18 14:49:18.610014800 +0800
+@@ -989,10 +989,14 @@
+ 		
+ 		if(!strcmp(paramList->name, "ClassPolicer")){
+ 			paramValue = json_object_object_get(cObj, "Policer");
+-			if(paramValue){
+-				sscanf(json_object_get_string(paramValue), "Device.QoS.Policer.%d", &classPolicer);
+-				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(classPolicer));
++			const char *clsPolicerStr = json_object_get_string(paramValue);
++			if(clsPolicerStr && strlen(clsPolicerStr)){
++				//sscanf(json_object_get_string(paramValue), "Device.QoS.Policer.%d", &classPolicer);
++				sscanf(clsPolicerStr, "Policer.%d", &classPolicer);
++				if(classPolicer == 0)
++					classPolicer = -1;
+ 			}
++			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(classPolicer));
+ 			paramList++;
+ 			continue;
+ 		}
+@@ -1036,7 +1040,7 @@
+ 	struct json_object *tmpObj = NULL;
+ 	struct json_object *paramValue = NULL;
+ 	tr98Parameter_t *paramList = NULL;
+-	char policer[128] = "";
++	char policer[128] = {0};
+ 	char app[128] = "";
+ 	char *ptr = NULL;
+ 	char tr098Intf[128] = {0};
+@@ -1085,8 +1089,8 @@
+ 						if(strcmp(tr098Intf, "LAN") && strcmp(tr098Intf, "lo")){
+ 							if((ret = zcfgFe98To181MappingNameGet(tr098Intf, ptr)) != ZCFG_SUCCESS){
+ 								zcfgLog(ZCFG_LOG_ERR, "%s: fail to mapping class intf from tr98 to tr181 with ret=%d\n", __FUNCTION__, ret);
+-								zcfgFeJsonObjFree(cObj);
+-								return ret;
++								//zcfgFeJsonObjFree(cObj);
++								goto complete;
+ 							}
+ 
+ 							if(*ptr == '\0')
+@@ -1099,7 +1103,14 @@
+ 					json_object_object_add(cObj, "Interface", json_object_new_string(tr181Intf));				
+ 				}
+ 				else if(!strcmp(paramList->name, "ClassPolicer")){
+-					sprintf(policer, "Device.QoS.Policer.%d", json_object_get_int(paramValue));
++					int clsPolicer = json_object_get_int(paramValue);
++					if(clsPolicer < -1 || clsPolicer == 0){
++						ret = ZCFG_INVALID_PARAM_VALUE;
++						goto complete;
++					}
++					//sprintf(policer, "Device.QoS.Policer.%d", json_object_get_int(paramValue));
++					if(clsPolicer != -1)
++						sprintf(policer, "Policer.%d", clsPolicer);
+ 					json_object_object_add(cObj, "Policer", json_object_new_string(policer));
+ 				}
+ 				else if(!strcmp(paramList->name, "ClassApp")){
+@@ -1124,8 +1135,13 @@
+ 		}
+ 	}
+ 
+-	/* is not multiple set, jsut set object immediately after update parameter value */
+-	if(!multiJobj){
++
++complete:
++	if(ret != ZCFG_SUCCESS){
++		if(!multiJobj)
++			zcfgFeJsonObjFree(cObj);
++	}else if(!multiJobj){
++		/* is not multiple set, jsut set object immediately after update parameter value */
+ 		if((ret = zcfgFeObjJsonSet(RDM_OID_QOS_CLS, &cIid, cObj, NULL)) != ZCFG_SUCCESS ) {
+ 			zcfgLog(ZCFG_LOG_ERR, "%s : Set RDM_OID_QOS_CLS object Fail with ret=%d\n", __FUNCTION__, ret);
+ 		}
+@@ -1133,7 +1149,7 @@
+ 		return ret;
+ 	}
+ 	
+-	return ZCFG_SUCCESS;
++	return ret;
+ }
+ 
+ zcfgRet_t qMgmtClsAdd(char *tr98FullPathName, int *idx){

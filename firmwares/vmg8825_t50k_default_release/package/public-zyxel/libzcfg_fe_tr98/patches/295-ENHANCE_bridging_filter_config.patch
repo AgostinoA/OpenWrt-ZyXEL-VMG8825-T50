@@ -1,0 +1,352 @@
+Index: libzcfg_fe_tr98-1.0/l2bridge.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/l2bridge.c	2016-02-24 15:32:31.378629706 +0800
++++ libzcfg_fe_tr98-1.0/l2bridge.c	2016-02-24 15:33:43.746631095 +0800
+@@ -788,12 +788,12 @@
+ 	zcfgRet_t ret;
+ 	char mappingPathName[128] = {0};
+ 	char tmpChar[4] = {0};
+-	char tr181Obj[128] = {0};
++	//char tr181Obj[128] = {0};
+ 	//char paramName[64] = {0};
+ 	char filterBrRef[32] = {0};
+ 	char filterIntf[32] = {0};
+ 	char numOfFilterIntf[4] = {0};
+-	uint32_t  brFilterOid = 0, brPortOid = 0;
++	uint32_t  brPortOid = 0;
+ 	char *ptr = NULL;
+ 	uint8_t numOfInstance = 0;
+ 	objIndex_t brFilterIid, brPortIid;
+@@ -803,14 +803,14 @@
+ 	char zyxelPrefixParam[64] = {0};
+ 	rdm_BridgingBrPort_t *brPortObj = NULL;
+ 
+-	printf("Enter %s\n", __FUNCTION__);
++	ztrdbg(ZTR_DL_INFO, "Enter %s\n", __FUNCTION__);
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
+-		printf("98 to 181 Mapping Fail!!\n");
++		ztrdbg(ZTR_DL_ERR, "%s: 98 to 181 Mapping Fail!!\n", __FUNCTION__);
+ 		return ret;
+ 	}
+ 	else   /* mappingPathName will be Bridging.Filter.i */
+-		printf("TR181 object %s\n", mappingPathName);
++		ztrdbg(ZTR_DL_DEBUG, "%s: TR181 object %s\n", __FUNCTION__, mappingPathName);
+ 
+ 	ptr = strrchr(mappingPathName, '.');
+ 	strcpy(tmpChar, ptr+1);
+@@ -826,7 +826,7 @@
+ 	brFilterIid.level = 1;
+ 	sscanf(mappingPathName, "Bridging.Filter.%hhu", &brFilterIid.idx[0]);
+ 	if((ret = feObjJsonGet(RDM_OID_BRIDGING_FILTER, &brFilterIid, &brFilterJobj, updateFlag)) != ZCFG_SUCCESS) {
+-		printf("%s : Get Obj Fail\n", __FUNCTION__);
++		ztrdbg(ZTR_DL_ERR, "%s : Get Obj Fail\n", __FUNCTION__);
+ 		return ret;
+ 	}
+ #endif	
+@@ -844,7 +844,8 @@
+ 
+ 		/*special case*/
+ 		/*we default use this object index number as parameter 'FilterKey' under tr98 */
+-		if((strstr(paramList->name, "FilterKey") != NULL) ||(strstr(paramList->name, "FilterInterface") != NULL)){
++		//if((strstr(paramList->name, "FilterKey") != NULL) ||(strstr(paramList->name, "FilterInterface") != NULL)){
++		if(strstr(paramList->name, "FilterKey") != NULL){
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_int(numOfInstance));
+ 			paramList++;
+ 			continue;
+@@ -854,16 +855,20 @@
+ 		if(strstr(paramList->name, "FilterBridgeReference") != NULL){
+ 			//sprintf(paramName, "%s", "Bridge");
+ 			paramValue = json_object_object_get(brFilterJobj, "Bridge");
+-			if(paramValue != NULL) {
+-				sprintf(filterBrRef, "%s", json_object_get_string(paramValue));
++			const char *paramBridge = json_object_get_string(paramValue);
++			if(paramBridge && strlen(paramBridge)) {
++				sprintf(filterBrRef, "%s", paramBridge);
+ 				ptr = NULL;
+ 				ptr = strrchr(filterBrRef, '.');
+ 				strcpy(tmpChar, ptr+1);
+ 				numOfInstance = atoi(tmpChar);	
+ 				json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_int(numOfInstance));
+-				paramList++;
+-				continue;	
+ 			}
++			else
++				json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_int(-1));
++
++			paramList++;
++			continue;
+ 		}
+ 
+ 		/*  we default use parameter 'X_ZYXEL_AvailableInterfaceKey' under object "Bridging.Bridge.i.Port.i" as the parameter 'FilterInterface' under tr98. 
+@@ -873,24 +878,26 @@
+ 		 */
+ 		if(strstr(paramList->name, "FilterInterface") != NULL){
+ 			//sprintf(paramName, "%s", "Interface");
+-			paramValue = json_object_object_get(brFilterJobj, "Interface");
+-			if(paramValue != NULL){
++			const char *paramStr = json_object_get_string(json_object_object_get(brFilterJobj, "Interface"));
++			if(paramStr && strlen(paramStr)){
+ 				IID_INIT(brPortIid);
+-				sprintf(filterIntf, "Device.%s", json_object_get_string(paramValue));
++				sprintf(filterIntf, "Device.%s", paramStr);
+ 				brPortOid = zcfgFeObjNameToObjId(filterIntf, &brPortIid);
+-				if((ret = feObjStructGet(RDM_OID_BRIDGING_BR_PORT, &brPortIid, (void **)&brPortObj, updateFlag)) == ZCFG_SUCCESS) {
++				if((ret = feObjStructGet(brPortOid, &brPortIid, (void **)&brPortObj, updateFlag)) == ZCFG_SUCCESS) {
+ 					sprintf(numOfFilterIntf,"%d",brPortObj->X_ZYXEL_AvailableInterfaceKey);
+ 					zcfgFeObjStructFree(brPortObj);
+ 				}
+-				else {
+-					json_object_put(brFilterJobj);
+-					return ret;
+-				}
+ 				
+-				json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_string(numOfFilterIntf));
+-				paramList++;
+-				continue;
++				if(strlen(numOfFilterIntf))
++					json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_string(numOfFilterIntf));
++				else
++					json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_string(""));
+ 			}
++			else
++				json_object_object_add(*tr98Jobj, paramList->name,  json_object_new_string(""));
++
++			paramList++;
++			continue;
+ 		}
+ 
+ 		if(strstr(paramList->name, "Enable") != NULL){
+@@ -923,7 +930,7 @@
+ 		}
+ 
+ 		/*Not defined in tr181, give it a default value*/
+-		printf("Can't find parameter %s in TR181\n", paramList->name);
++		ztrdbg(ZTR_DL_INFO, "%s: Can't find parameter %s in TR181\n", __FUNCTION__, paramList->name);
+ 		paramList++;
+ 	}
+ 
+@@ -932,6 +939,34 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++static bool  crParamEmpty(struct json_object *param)
++{
++	json_type parmType = json_object_get_type(param);
++	bool empty = true;
++
++	switch(parmType) {
++	case json_type_boolean:
++		empty = json_object_get_boolean(param) ? false : true;
++		break;
++	case json_type_string:
++		{
++		const char *value = json_object_get_string(param);
++		empty = (value && strlen(value)) ? false : true;
++		break;
++		}
++	default: break;
++	}
++
++	return empty;
++}
++
++#define TR98_PARM_FILTER_CFG "{\
++    \"VLANIDFilter\": {}, \"EthertypeFilterList\": {}, \"SourceMACAddressFilterList\": {}, \"DestMACAddressFilterList\": {}, \
++    \"SourceMACFromVendorClassIDFilter\": {}, \"DestMACFromVendorClassIDFilter\": {}, \"SourceMACFromClientIDFilter\": {}, \
++    \" DestMACFromClientIDFilter\": {}, \"SourceMACFromUserClassIDFilter\": {}, \"DestMACFromUserClassIDFilter\": {} }"
++
++#define paramThere(parmList, parmName) (paramList && (json_object_object_get(parmList, parmName)!=NULL))
++
+ zcfgRet_t l2BrFilterObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj, char *paramfault)
+ {
+ 	zcfgRet_t ret;
+@@ -949,6 +984,12 @@
+ 	tr98Parameter_t *paramList = NULL;
+ 	char zyxelPrefixParam[64] = {0};
+ 	rdm_BridgingBrPort_t *brPortObj = NULL;
++	bool crParameterNotEmpty = false;
++	struct json_object *crParmsObj = NULL;
++	int bridgeReference = 0;
++	struct json_object *ipIfaceObj = NULL;
++	objIndex_t ipIfaceIid;
++	bool bridgeSpecified = false;
+ 
+ 	printf("Enter %s\n", __FUNCTION__);
+ 	
+@@ -965,6 +1006,8 @@
+ 	if((ret = zcfgFeObjJsonGet(brFilterOid, &brFilterIid, &brFilterJobj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 
++	crParmsObj = json_tokener_parse((const char *)TR98_PARM_FILTER_CFG);
++
+ 	if(multiJobj){
+ 		tmpObj = brFilterJobj;
+ 		brFilterJobj = NULL;
+@@ -976,6 +1019,10 @@
+ 		/*Write new parameter value from tr98 object to tr181 objects*/
+ 		paramValue = json_object_object_get(tr98Jobj, paramList->name);
+ 		if(paramValue != NULL){
++			if((crParameterNotEmpty == false) && paramThere(crParmsObj, paramList->name)) {
++				crParameterNotEmpty = (crParamEmpty(paramValue) == true) ? false : true;
++			}
++
+ 			/*Write value from Config to Device.Bridging.Filter.i*/
+ 			tr181ParamValue = json_object_object_get(brFilterJobj, paramList->name);
+ 			if(tr181ParamValue != NULL){
+@@ -985,7 +1032,7 @@
+ 			}
+ 		}
+ 
+-		/*special case*/		
++		/*special case*/
+ 		if(strstr(paramList->name, "Enable") != NULL){
+ 			json_object_object_add(brFilterJobj, "Enable", JSON_OBJ_COPY(paramValue));
+ 			paramList++;
+@@ -993,27 +1040,33 @@
+ 		}
+ 
+ 		if(strstr(paramList->name, "FilterBridgeReference") != NULL){
+-			sprintf(brPath, "Bridging.Bridge.%s", json_object_get_string(paramValue));	
+-			json_object_object_add(brFilterJobj, "Bridge", json_object_new_string(brPath));
++			bridgeReference =  json_object_get_int(paramValue);
++			if(bridgeReference > 0) {
++				sprintf(brPath, "Bridging.Bridge.%d", bridgeReference);
++				json_object_object_add(brFilterJobj, "Bridge", json_object_new_string(brPath));
++			}
+ 			paramList++;
+ 			continue;
+ 		}
+ 
+ 		if(strstr(paramList->name, "FilterInterface") != NULL){
+ 			IID_INIT(brPortIid);
+-			filterIntf = json_object_get_int(paramValue);
+-			while(zcfgFeObjStructGetNext(RDM_OID_BRIDGING_BR_PORT, &brPortIid, (void **)&brPortObj) == ZCFG_SUCCESS){
+-				if (brPortObj->X_ZYXEL_AvailableInterfaceKey == filterIntf){
+-					sprintf(brPortPath, "Bridging.Bridge.%d.Port.%d", brPortIid.idx[0], brPortIid.idx[1]);
+-					zcfgFeObjStructFree(brPortObj);
+-					break;
++			const char *intf = json_object_get_string(paramValue);
++			if(intf && strlen(intf) && ((filterIntf = atoi(intf)) > 0)) {
++				//filterIntf = json_object_get_int(paramValue);
++				while(zcfgFeObjStructGetNext(RDM_OID_BRIDGING_BR_PORT, &brPortIid, (void **)&brPortObj) == ZCFG_SUCCESS){
++					if (brPortObj->X_ZYXEL_AvailableInterfaceKey == filterIntf){
++						sprintf(brPortPath, "Bridging.Bridge.%d.Port.%d", brPortIid.idx[0], brPortIid.idx[1]);
++						zcfgFeObjStructFree(brPortObj);
++						break;
++					}
++					else
++						zcfgFeObjStructFree(brPortObj);
+ 				}
+-				else
+-					zcfgFeObjStructFree(brPortObj);
+ 			}
+-
+ 			
+-			json_object_object_add(brFilterJobj, "Interface", json_object_new_string(brPortPath));
++			if(strlen(brPortPath))
++				json_object_object_add(brFilterJobj, "Interface", json_object_new_string(brPortPath));
+ 			paramList++;
+ 			continue;
+ 		}		
+@@ -1030,6 +1083,30 @@
+ 		paramList++;	
+ 	} /*Edn while*/
+ 
++	if(bridgeReference > 0) {
++		char ipIfaceIfName[30] = {0};
++
++		sprintf(ipIfaceIfName, "br%d", (bridgeReference-1));
++		IID_INIT(ipIfaceIid);
++		while(zcfgFeObjJsonGetNextWithoutUpdate(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceObj) == ZCFG_SUCCESS) {
++			const char *ifName = json_object_get_string(json_object_object_get(ipIfaceObj, "X_ZYXEL_IfName"));
++			if(ifName && strlen(ifName) && !strcmp(ifName, ipIfaceIfName)) {
++				bridgeSpecified = true;
++				break;
++			}
++			json_object_put(ipIfaceObj);
++		}
++		if(multiJobj && bridgeSpecified == true) {
++			zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE, &ipIfaceIid, multiJobj, ipIfaceObj);
++			json_object_put(ipIfaceObj);
++		}
++	}
++
++	if(crParmsObj) {
++		json_object_object_add(brFilterJobj, "X_ZYXEL_Enable_Criteria", json_object_new_boolean(crParameterNotEmpty));
++		json_object_put(crParmsObj);
++	}
++
+ 	/*Set Device.Bridging.Filter.i */
+ 	if(multiJobj)
+ 		json_object_put(tmpObj);
+@@ -1043,6 +1120,19 @@
+ 			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.Bridging.Filter.i Success\n", __FUNCTION__);
+ 
+ 		json_object_put(brFilterJobj);
++
++		if(bridgeSpecified != true)
++			return ZCFG_SUCCESS;
++
++		if((ret = zcfgFeObjJsonSet(RDM_OID_IP_IFACE, &ipIfaceIid, ipIfaceObj, NULL)) != ZCFG_SUCCESS ){
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set IP.Interface Fail\n", __FUNCTION__);
++			json_object_put(ipIfaceObj);
++			return ret;
++		}
++		else
++			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set IP.Interface Success\n", __FUNCTION__);
++
++		json_object_put(ipIfaceObj);
+ 	}
+ 	return ZCFG_SUCCESS;
+ }
+@@ -1052,15 +1142,15 @@
+ 	zcfgRet_t ret;
+ 	objIndex_t objIid;
+ 		
+-	printf("Enter %s\n", __FUNCTION__);
+-	
++	ztrdbg(ZTR_DL_INFO, "Enter %s\n", __FUNCTION__);
++
+ 	/*add the object "Device.Bridging.Filter.i" */
+ 	IID_INIT(objIid);
+ 	if((ret = zcfgFeObjStructAdd(RDM_OID_BRIDGING_FILTER, &objIid, NULL)) != ZCFG_SUCCESS){
+-		printf("Add Instance Fail!!\n");
++		ztrdbg(ZTR_DL_ERR, "Add Instance Fail!!\n");
+ 		return ret;
+ 	}
+-	
++
+ 	*idx = objIid.idx[0];
+ 	return ZCFG_SUCCESS;
+ }
+@@ -1073,24 +1163,21 @@
+ 	uint32_t  oid = 0;
+ 	objIndex_t objIid;
+ 
+-	printf("Enter %s\n", __FUNCTION__);
++	ztrdbg(ZTR_DL_INFO, "Enter %s\n", __FUNCTION__);
+ 
+ 	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS)
+ 		return ret;
+ 		
+ 	IID_INIT(objIid);
+-	printf("mappingPathName %s\n", mappingPathName);
++	ztrdbg(ZTR_DL_DEBUG, "%s: mappingPathName %s\n", __FUNCTION__, mappingPathName);
+ 	sprintf(tr181Obj, "Device.%s", mappingPathName);
+ 	oid = zcfgFeObjNameToObjId(tr181Obj, &objIid);
+ 
+ 	ret = zcfgFeObjJsonDel(oid, &objIid, NULL);
+-	if(ret == ZCFG_SUCCESS)
+-		printf("Delete Object Success\n");
+-	else
+-		printf("Delete Object Fail\n");
+-		return ret;
++	if((ret != ZCFG_DELAY_APPLY) && (ret != ZCFG_SUCCESS))
++		ztrdbg(ZTR_DL_ERR, "%s: Delete Object Fail\n", __FUNCTION__);
+ 
+-	return ZCFG_SUCCESS;
++	return ret;
+ }
+ 
+ zcfgRet_t l2BrFilterObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)

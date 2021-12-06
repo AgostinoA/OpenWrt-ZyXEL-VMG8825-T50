@@ -1,0 +1,184 @@
+Index: libzcfg_fe_tr98-1.0/Makefile
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/Makefile	2016-03-15 10:08:41.916154049 +0800
++++ libzcfg_fe_tr98-1.0/Makefile	2016-03-15 10:08:42.000154049 +0800
+@@ -5,6 +5,9 @@
+ INC_PATH = -I$(TOOLCHAIN)/include -I$(COMMON_ZCFG_INCLUDE_DIR) -I.
+ OBJ_FILES = wanDev.o wanDev_api.o zyExt.o diag.o devInfo.o devTime.o root.o mgmtSrv.o lanDev.o l2bridge.o l3fwd.o lanConfSec.o firewall.o schedule.o qos.o voice.o
+ 
++SSL_LIBS = -lssl -lcrypto
++LINK_LIBS += $(SSL_LIBS)
++
+ ifeq ($(CONFIG_ZYXEL_ONECONNECT),y)
+ LINK_LIB += -lsqlite3
+ OBJ_FILES += oneConnect.o
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2016-03-15 10:08:41.988154049 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2016-03-15 10:11:48.280443631 +0800
+@@ -20,6 +20,57 @@
+ 
+ #define WAN_ADD_INDIVIDUAL
+ 
++#include <openssl/evp.h>
++#include <openssl/sha.h>
++#include <openssl/hmac.h>
++#include <openssl/bio.h>
++#include <openssl/buffer.h>
++
++char *base64_encode(unsigned char *input, int length)
++{
++	BIO *bmem, *b64;
++	BUF_MEM *bptr;
++	char *buffer;
++
++	b64 = BIO_new(BIO_f_base64());
++	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
++	bmem = BIO_new(BIO_s_mem());
++	b64 = BIO_push(b64, bmem);
++	BIO_write(b64, input, length);
++	BIO_flush(b64);
++	BIO_get_mem_ptr(b64, &bptr);
++
++	buffer= (char *)malloc(bptr->length+1);
++	memcpy(buffer, bptr->data, bptr->length);
++	buffer[bptr->length] = 0;
++
++	BIO_free_all(b64);
++
++	return buffer;
++}
++
++char *base64_decode(unsigned char *input, int *length)
++{
++	BIO *b64, *bmem;
++	BUF_MEM *bptr;
++	char *buffer;
++
++	b64 = BIO_new(BIO_f_base64());
++	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
++	bmem = BIO_new_mem_buf(input, -1);
++	bmem = BIO_push(b64, bmem);
++	
++	BIO_get_mem_ptr(bmem, &bptr); 
++	buffer= (char *)malloc(bptr->length+1);
++	memset(buffer, 0, bptr->length);
++	*length = bptr->length;
++	BIO_read(bmem, buffer, bptr->length);
++	BIO_free_all(bmem);
++
++	return buffer;
++}
++
++
+ extern tr98Object_t tr98Obj[];
+ 
+ extern zcfgRet_t zcfgFeTr181IfaceStackHigherLayerGet(char *, char *);
+@@ -4298,12 +4349,30 @@
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
++		uint32_t paramTag=0;
+ 		/* get parameter value from tr181 */
+ 		paramValue = json_object_object_get(optObj, paramList->name);
+-
++        paramTag = json_object_get_int(json_object_object_get(optObj, "Tag"));
+ 		/* write it to tr098 json object */
+ 		if(paramValue != NULL) {
+-			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			if((paramTag == 60) && (!strcmp(paramList->name, "Value"))) {
++				const char *paramValueStr = NULL;
++				char tmpbuf[254] = {0};
++				char *b = tmpbuf;
++				const char *p;
++				int c;
++
++				paramValueStr = json_object_get_string(paramValue);
++
++				for ( paramValueStr += 4 ; paramValueStr[0] && paramValueStr[1] && sscanf(paramValueStr, "%2x", &c) ; paramValueStr += 2){
++					b += sprintf(b, "%c", c);
++				} 
++                *b = 0;
++				
++				json_object_object_add(*tr98Jobj, paramList->name, json_object_new_string(tmpbuf));
++			}else{
++				json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			}
+ 		}else if(!strcmp(paramList->name, "Enable")) {
+ 			json_object_object_add(*tr98Jobj, paramList->name, json_object_new_boolean(false));
+ 		}else if(!strcmp(paramList->name, "Tag")) {
+@@ -4356,16 +4425,73 @@
+ 		}
+ 
+ 		/* set(update) value to target object */
++
+ 		if(optObj){
+ 			paramList = tr98Obj[handler].parameter;
+ 			while(paramList->name != NULL) {
+ 				/* get parameter from tr098 */
+ 				paramValue = json_object_object_get(tr98Jobj, paramList->name);
+-
++				const char *paramValueStr = NULL;
++				uint32_t paramTag=0;
++					
++				paramTag = json_object_get_int(json_object_object_get(tr98Jobj, "Tag"));						
++				
++				if ((paramTag == 60) && (!strcmp(paramList->name, "Value")))
++				{
++					char *decodeStr = NULL;
++					int decodeStr_len = 0;
++					const char *p;
++					char tmpbuf[254] = {0};
++					char *b = tmpbuf;
++					char dhcpOptStr[256]={0};
++					int dhcpOptStrlen = 0;
++					
++					sprintf(dhcpOptStr, "%02x", paramTag);
++					
++					paramValueStr = json_object_get_string(paramValue);
++					
++					if((paramValueStr != NULL) || (paramValueStr != '\0'))
++					{
++						decodeStr = base64_decode( paramValueStr, &decodeStr_len);
++						if ((decodeStr != NULL) || (decodeStr != '\0') || 
++							(strcmp(paramValueStr, "IA==")) || (strcmp(paramValueStr, "TlVMTA==")) || (decodeStr_len != 0))
++						{
++							//convert to hex String
++							for(p=decodeStr; *p; ++p)
++								b += sprintf(b, "%02x", (const int)*p);
++							*b = 0;
++								
++							dhcpOptStrlen = strlen(tmpbuf);
++								
++							if (dhcpOptStrlen > 1)
++								dhcpOptStrlen = dhcpOptStrlen/2;
++						}
++							
++					}
++					char hexStrlen[4]={0} ;
++					//prefix length of 2 digits hex numbers
++					sprintf(hexStrlen, "%02d",dhcpOptStrlen);
++					
++					//append prefix as option60 hex string+length of 2 digits hex numbers
++					strcat(dhcpOptStr, hexStrlen);
++					
++					//append prefix as option60 hexdec+length of 2 digits hex numbers+hex string
++					strcat(dhcpOptStr, tmpbuf);
++					/* write it to tr181 json object */
++					if((dhcpOptStr != NULL) && (!strcmp(paramList->name, "Value"))) {
++					  json_object_object_add(optObj, paramList->name, json_object_new_string(dhcpOptStr));
++					}
++				}
++				else if(paramValue != NULL) {
++					json_object_object_add(optObj, paramList->name, JSON_OBJ_COPY(paramValue));
++				}
++				
++#if 0
+ 				/* write it to tr181 json object */
+ 				if(paramValue != NULL) {
+ 					json_object_object_add(optObj, paramList->name, JSON_OBJ_COPY(paramValue));
+ 				}
++#endif
+ 				paramList++;
+ 			}
+ 		}

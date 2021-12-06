@@ -1,0 +1,1298 @@
+Index: wide-dhcpv6-20080615/common.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.c	2017-12-26 20:05:20.730129621 +0800
++++ wide-dhcpv6-20080615/common.c	2017-12-27 10:05:53.813768100 +0800
+@@ -1594,7 +1594,456 @@
+ 	bp = (char *)p;
+ 	for (; p + 1 <= ep; p = np) {
+ 		struct duid duid0;
++//#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++//		struct classID class0;
++//#endif
++		/*
++		 * get the option header.  XXX: since there is no guarantee
++		 * about the header alignment, we need to make a local copy.
++		 */
++		memcpy(&opth, p, sizeof(opth));
++		optlen = ntohs(opth.dh6opt_len);
++		opt = ntohs(opth.dh6opt_type);
++
++		cp = (char *)(p + 1);
++		np = (struct dhcp6opt *)(cp + optlen);
++
++		dprintf(LOG_DEBUG, FNAME, "get DHCP option %s, len %d",
++		    dhcp6optstr(opt), optlen);
++
++		/* option length field overrun */
++		if (np > ep) {
++			dprintf(LOG_INFO, FNAME, "malformed DHCP options");
++			goto fail;
++		}
++
++		switch (opt) {
++		case DH6OPT_CLIENTID:
++			if (optlen == 0)
++				goto malformed;
++			duid0.duid_len = optlen;
++			duid0.duid_id = cp;
++			dprintf(LOG_DEBUG, "",
++				"  DUID: %s", duidstr(&duid0));
++			if (duidcpy(&optinfo->clientID, &duid0)) {
++				dprintf(LOG_ERR, FNAME, "failed to copy DUID");
++				goto fail;
++			}
++			break;
++		case DH6OPT_SERVERID:
++			if (optlen == 0)
++				goto malformed;
++			duid0.duid_len = optlen;
++			duid0.duid_id = cp;
++			dprintf(LOG_DEBUG, "", "  DUID: %s", duidstr(&duid0));
++			if (duidcpy(&optinfo->serverID, &duid0)) {
++				dprintf(LOG_ERR, FNAME, "failed to copy DUID");
++				goto fail;
++			}
++			break;
++		case DH6OPT_STATUS_CODE:
++			if (optlen < sizeof(u_int16_t))
++				goto malformed;
++			memcpy(&val16, cp, sizeof(val16));
++			num16 = ntohs(val16);
++			dprintf(LOG_DEBUG, "", "  status code: %s",
++			    dhcp6_stcodestr(num16));
++
++			/* need to check duplication? */
++
++			if (dhcp6_add_listval(&optinfo->stcode_list,
++			    DHCP6_LISTVAL_STCODE, &num16, NULL) == NULL) {
++				dprintf(LOG_ERR, FNAME, "failed to copy "
++				    "status code");
++				goto fail;
++			}
+ 
++			break;
++		case DH6OPT_ORO:
++			if ((optlen % 2) != 0 || optlen == 0)
++				goto malformed;
++			reqopts = optlen / 2;
++			for (i = 0, val = cp; i < reqopts;
++			     i++, val += sizeof(u_int16_t)) {
++				u_int16_t opttype;
++
++				memcpy(&opttype, val, sizeof(u_int16_t));
++				num = (int)ntohs(opttype);
++
++				dprintf(LOG_DEBUG, "",
++					"  requested option: %s",
++					dhcp6optstr(num));
++
++				if (dhcp6_find_listval(&optinfo->reqopt_list,
++				    DHCP6_LISTVAL_NUM, &num, 0)) {
++					dprintf(LOG_INFO, FNAME, "duplicated "
++					    "option type (%s)",
++					    dhcp6optstr(opttype));
++					goto nextoption;
++				}
++
++				if (dhcp6_add_listval(&optinfo->reqopt_list,
++				    DHCP6_LISTVAL_NUM, &num, NULL) == NULL) {
++					dprintf(LOG_ERR, FNAME,
++					    "failed to copy requested option");
++					goto fail;
++				}
++			  nextoption:
++				;
++			}
++			break;
++		case DH6OPT_PREFERENCE:
++			if (optlen != 1)
++				goto malformed;
++			dprintf(LOG_DEBUG, "", "  preference: %d",
++			    (int)*(u_char *)cp);
++			if (optinfo->pref != DH6OPT_PREF_UNDEF) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated preference option");
++			} else
++				optinfo->pref = (int)*(u_char *)cp;
++			break;
++		case DH6OPT_ELAPSED_TIME:
++			if (optlen != 2)
++				goto malformed;
++			memcpy(&val16, cp, sizeof(val16));
++			val16 = ntohs(val16);
++			dprintf(LOG_DEBUG, "", "  elapsed time: %lu",
++			    (u_int32_t)val16);
++			if (optinfo->elapsed_time !=
++			    DH6OPT_ELAPSED_TIME_UNDEF) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated elapsed time option");
++			} else
++				optinfo->elapsed_time = val16;
++			break;
++		case DH6OPT_RELAY_MSG:
++			if ((optinfo->relaymsg_msg = malloc(optlen)) == NULL)
++				goto fail;
++			memcpy(optinfo->relaymsg_msg, cp, optlen);
++			optinfo->relaymsg_len = optlen;
++			break;
++		case DH6OPT_SOL_MAX_RT:
++			/*Kerker 2016/02/04
++			 *	SOL_MAX_RT
++			 */
++			if (optlen != 4)
++				goto malformed;
++			memcpy(&val32, cp, sizeof(val32));
++			val32 = ntohs(val32);
++			if(val32<60||val32>86400){
++				optinfo->max_rt=(SOL_MAX_RT / 1000);
++			}else{
++				optinfo->max_rt = val32;
++			}
++			break;
++		case DH6OPT_AUTH:
++			if (optlen < sizeof(struct dhcp6opt_auth) - 4)
++				goto malformed;
++
++			/*
++			 * Any DHCP message that includes more than one
++			 * authentication option MUST be discarded.
++			 * [RFC3315 Section 21.4.2]
++			 */
++			if (optinfo->authproto != DHCP6_AUTHPROTO_UNDEF) {
++				dprintf(LOG_INFO, FNAME, "found more than one "
++				    "authentication option");
++				goto fail;
++			}
++
++			optinfo->authproto = *cp++;
++			optinfo->authalgorithm = *cp++;
++			optinfo->authrdm = *cp++;
++			memcpy(&optinfo->authrd, cp, sizeof(optinfo->authrd));
++			cp += sizeof(optinfo->authrd);
++
++			dprintf(LOG_DEBUG, "", "  %s", sprint_auth(optinfo));
++
++			authinfolen =
++			    optlen - (sizeof(struct dhcp6opt_auth) - 4);
++			switch (optinfo->authproto) {
++			case DHCP6_AUTHPROTO_DELAYED:
++				if (authinfolen == 0) {
++					optinfo->authflags |=
++					    DHCP6OPT_AUTHFLAG_NOINFO;
++					break;
++				}
++				/* XXX: should we reject an empty realm? */
++				if (authinfolen <
++				    sizeof(optinfo->delayedauth_keyid) + 16) {
++					goto malformed;
++				}
++
++				optinfo->delayedauth_realmlen = authinfolen -
++				    (sizeof(optinfo->delayedauth_keyid) + 16);
++				optinfo->delayedauth_realmval =
++				    malloc(optinfo->delayedauth_realmlen);
++				if (optinfo->delayedauth_realmval == NULL) {
++					dprintf(LOG_WARNING, FNAME, "failed "
++					    "allocate memory for auth realm");
++					goto fail;
++				}
++				memcpy(optinfo->delayedauth_realmval, cp,
++				    optinfo->delayedauth_realmlen);
++				cp += optinfo->delayedauth_realmlen;
++
++				memcpy(&optinfo->delayedauth_keyid, cp,
++				    sizeof(optinfo->delayedauth_keyid));
++				optinfo->delayedauth_keyid =
++				    ntohl(optinfo->delayedauth_keyid);
++				cp += sizeof(optinfo->delayedauth_keyid);
++
++				optinfo->delayedauth_offset = cp - bp;
++				cp += 16;
++
++				dprintf(LOG_DEBUG, "", "  auth key ID: %x, "
++				    "offset=%d, realmlen=%d",
++				    optinfo->delayedauth_keyid,
++				    optinfo->delayedauth_offset,
++				    optinfo->delayedauth_realmlen);
++				break;
++//#ifdef notyet
++			case DHCP6_AUTHPROTO_RECONFIG:
++				if (authinfolen == 0) {
++					optinfo->authflags |=
++						DHCP6OPT_AUTHFLAG_NOINFO;
++				break;
++				}
++
++				optinfo->reconfigauth_type = *cp++;
++				optinfo->reconfigauth_offset = cp - bp;
++				struct dhcp6 *dh6;
++				//memcpy(optinfo->reconfigauth_val, cp, optinfo->reconfigauth_offset);
++				memcpy(optinfo->reconfigauth_val, cp, sizeof(optinfo->reconfigauth_val));
++				cp += sizeof(optinfo->reconfigauth_val);
++				break;
++//#endif
++			default:
++				dprintf(LOG_INFO, FNAME,
++				    "unsupported authentication protocol: %d",
++				    *cp);
++				goto fail;
++			}
++			break;
++		case DH6OPT_RAPID_COMMIT:
++			if (optlen != 0)
++				goto malformed;
++			optinfo->rapidcommit = 1;
++			break;
++		case DH6OPT_INTERFACE_ID:
++			if ((optinfo->ifidopt_id = malloc(optlen)) == NULL)
++				goto fail;
++			memcpy(optinfo->ifidopt_id, cp, optlen);
++			optinfo->ifidopt_len = optlen;
++			break;
++		case DH6OPT_RECONF_MSG:
++			optinfo->reconfigureMsgType = *cp++;
++			break;
++		case DH6OPT_RECONF_ACCEPT:
++			if (optlen != 0)
++				goto malformed;
++			optinfo->reconfigureAccept = 1;
++			break;
++		case DH6OPT_SIP_SERVER_D:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->sipname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_DNSNAME:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->dnsname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NIS_DOMAIN_NAME:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->nisname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NISP_DOMAIN_NAME:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->nispname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_BCMCS_SERVER_D:
++			if (dhcp6_get_domain(optlen, cp, opt,
++			    &optinfo->bcmcsname_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_SIP_SERVER_A:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->sip_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_DNS:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->dns_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NIS_SERVERS:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->nis_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NISP_SERVERS:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->nisp_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_BCMCS_SERVER_A:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->bcmcs_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_NTP:
++			if (dhcp6_get_addr(optlen, cp, opt,
++			    &optinfo->ntp_list) == -1)
++				goto fail;
++			break;
++		case DH6OPT_IA_PD:
++			if (optlen + sizeof(struct dhcp6opt) <
++			    sizeof(optia))
++				goto malformed;
++			memcpy(&optia, p, sizeof(optia));
++			ia.iaid = ntohl(optia.dh6_ia_iaid);
++			ia.t1 = ntohl(optia.dh6_ia_t1);
++			ia.t2 = ntohl(optia.dh6_ia_t2);
++
++			dprintf(LOG_DEBUG, "",
++			    "  IA_PD: ID=%lu, T1=%lu, T2=%lu",
++			    ia.iaid, ia.t1, ia.t2);
++
++			/* duplication check */
++			if (dhcp6_find_listval(&optinfo->iapd_list,
++			    DHCP6_LISTVAL_IAPD, &ia, 0)) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated IA_PD %lu", ia.iaid);
++				break; /* ignore this IA_PD */
++			}
++
++			/* take care of sub-options */
++			TAILQ_INIT(&sublist);
++			if (copyin_option(opt,
++			    (struct dhcp6opt *)((char *)p + sizeof(optia)),
++			    (struct dhcp6opt *)(cp + optlen), &sublist)) {
++				goto fail;
++			}
++
++			/* link this option set */
++			if (dhcp6_add_listval(&optinfo->iapd_list,
++			    DHCP6_LISTVAL_IAPD, &ia, &sublist) == NULL) {
++				dhcp6_clear_list(&sublist);
++				goto fail;
++			}
++			dhcp6_clear_list(&sublist);
++
++			break;
++		case DH6OPT_REFRESHTIME:
++			if (optlen != 4)
++				goto malformed;
++			memcpy(&val32, cp, sizeof(val32));
++			val32 = ntohl(val32);
++			dprintf(LOG_DEBUG, "",
++			    "   information refresh time: %lu", val32);
++			if (val32 < DHCP6_IRT_MINIMUM) {
++				/*
++				 * A client MUST use the refresh time
++				 * IRT_MINIMUM if it receives the option with a
++				 * value less than IRT_MINIMUM.
++				 * [draft-ietf-dhc-lifetime-02.txt,
++				 *  Section 3.2]
++				 */
++				dprintf(LOG_INFO, FNAME,
++				    "refresh time is too small (%d), adjusted",
++				    val32);
++				val32 = DHCP6_IRT_MINIMUM;
++			}
++			if (optinfo->refreshtime != DH6OPT_REFRESHTIME_UNDEF) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated refresh time option");
++			} else
++				optinfo->refreshtime = (int64_t)val32;
++			break;
++		case DH6OPT_IA_NA:
++			if (optlen + sizeof(struct dhcp6opt) <
++			    sizeof(optia))
++				goto malformed;
++			memcpy(&optia, p, sizeof(optia));
++			ia.iaid = ntohl(optia.dh6_ia_iaid);
++			ia.t1 = ntohl(optia.dh6_ia_t1);
++			ia.t2 = ntohl(optia.dh6_ia_t2);
++
++			dprintf(LOG_DEBUG, "",
++			    "  IA_NA: ID=%lu, T1=%lu, T2=%lu",
++			    ia.iaid, ia.t1, ia.t2);
++
++			/* duplication check */
++			if (dhcp6_find_listval(&optinfo->iana_list,
++			    DHCP6_LISTVAL_IANA, &ia, 0)) {
++				dprintf(LOG_INFO, FNAME,
++				    "duplicated IA_NA %lu", ia.iaid);
++				break; /* ignore this IA_NA */
++			}
++
++			/* take care of sub-options */
++			TAILQ_INIT(&sublist);
++			if (copyin_option(opt,
++			    (struct dhcp6opt *)((char *)p + sizeof(optia)),
++			    (struct dhcp6opt *)(cp + optlen), &sublist)) {
++				goto fail;
++			}
++
++			/* link this option set */
++			if (dhcp6_add_listval(&optinfo->iana_list,
++			    DHCP6_LISTVAL_IANA, &ia, &sublist) == NULL) {
++				dhcp6_clear_list(&sublist);
++				goto fail;
++			}
++			dhcp6_clear_list(&sublist);
++
++			break;
++		default:
++			/* no option specific behavior */
++			dprintf(LOG_INFO, FNAME,
++			    "unknown or unexpected DHCP6 option %s, len %d",
++			    dhcp6optstr(opt), optlen);
++			break;
++		}
++	}
++
++	return (0);
++
++  malformed:
++	dprintf(LOG_INFO, FNAME, "malformed DHCP option: type %d, len %d",
++	    opt, optlen);
++  fail:
++	dhcp6_clear_options(optinfo);
++	return (-1);
++}
++
++int
++dhcp6_get_options_for_server6(p, ep, optinfo, optinfo_extra)
++	struct dhcp6opt *p, *ep;
++	struct dhcp6_optinfo *optinfo;
++	struct dhcp6_optinfo_extra *optinfo_extra;
++{
++	struct dhcp6opt *np, opth;
++	int i, opt, optlen, reqopts, num;
++	u_int16_t num16;
++	char *bp, *cp, *val;
++	u_int16_t val16;
++	u_int32_t val32;
++	struct dhcp6opt_ia optia;
++	struct dhcp6_ia ia;
++	struct dhcp6_list sublist;
++	int authinfolen;
++
++	bp = (char *)p;
++	for (; p + 1 <= ep; p = np) {
++		struct duid duid0;
++//#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++		struct classID class0;
++//#endif
+ 		/*
+ 		 * get the option header.  XXX: since there is no guarantee
+ 		 * about the header alignment, we need to make a local copy.
+@@ -1639,6 +2088,30 @@
+ 				goto fail;
+ 			}
+ 			break;
++		case DH6OPT_USER_CLASS:
++			if (optlen == 0)
++				goto malformed;
++			class0.classID_len = optlen;
++			class0.classID_id = cp;
++			dprintf(LOG_DEBUG, "",
++				"  DUID: %s", duidstr(&class0));
++			if (duidcpy(&optinfo_extra->userClassID, &class0)) {
++				dprintf(LOG_ERR, FNAME, "failed to copy userClassID");
++				goto fail;
++			}
++			break;
++		case DH6OPT_VENDOR_CLASS:
++			if (optlen == 0)
++				goto malformed;
++			class0.classID_len = optlen;
++			class0.classID_id = cp;
++			dprintf(LOG_DEBUG, "",
++				"  DUID: %s", duidstr(&class0));
++			if (duidcpy(&optinfo_extra->vendorClassID, &class0)) {
++				dprintf(LOG_ERR, FNAME, "failed to copy vendorClassID");
++				goto fail;
++			}
++			break;
+ 		case DH6OPT_STATUS_CODE:
+ 			if (optlen < sizeof(u_int16_t))
+ 				goto malformed;
+@@ -2029,7 +2502,7 @@
+ 	char value[32*257]={0};
+ 	char tmpOpt[4];
+ 	char tmpValue[257];
+-	
++
+ 	dhcp6cJsonMsg = json_object_new_object();
+ 	for(i=0 ; i<dhcp6cMsg.option_idx ; i++)
+ 	{
+@@ -3054,24 +3527,43 @@
+ 	return (0);
+ }
+ 
+-int dhcp6_get_options_from_rdm(struct dhcp6_optinfo *optinfo)
++int dhcp6_get_options_from_rdm(struct dhcp6_optinfo *optinfo, struct host_conf *client_conf)
+ {
++	rdm_Dhcpv6SrvPool_t *dhcp6sPoolObj = NULL;
+ 	rdm_Dhcpv6SrvPoolOpt_t *srvPoolOptObj = NULL;
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+-	objIndex_t dhcpIid, optIid, dhcpCltIid;
++	objIndex_t srvPoolIid, optIid, dhcpCltIid;
+ 	char tmpValue[257];
+ 	uint8_t hexDump[257];
+ 	dhcp6_ia_t *ia_new;
+ 	struct dhcp6_list sublist;
+-
+ 	char file_buf[16];
++	bool poolfound = false;
+ 
+-	IID_INIT(dhcpIid);
+-	dhcpIid.level = 1;
+-	dhcpIid.idx[0] = 1;
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++	/*find the dhcpv6 server pool Iid*/
++	IID_INIT(srvPoolIid);
++	while(zcfgFeObjStructGetNext(RDM_OID_DHCPV6_SRV_POOL, &srvPoolIid, (void **)&dhcp6sPoolObj) == ZCFG_SUCCESS) {
++		if(!strcmp(dhcp6sPoolObj->X_ZYXEL_SrvPoolName, client_conf->pool.name)) { 
++			poolfound = true;
++			zcfgFeObjStructFree(dhcp6sPoolObj);
++			break;
++		}
++		zcfgFeObjStructFree(dhcp6sPoolObj);
++	}
++#endif
++	//printf("dhcp6_get_options_from_rdm: poolfound=%d\n",poolfound);
++	if(!poolfound)
++	{
++		dprintf(LOG_DEBUG, FNAME, "dhcp6_get_options_from_rdm: not found pool, set Iid to default!");
++
++		IID_INIT(srvPoolIid);
++		srvPoolIid.level=1;
++		srvPoolIid.idx[0]=1;
++	}
+ 
+ 	IID_INIT(optIid);
+-	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV6_SRV_POOL_OPT, &dhcpIid, &optIid, (void **)&srvPoolOptObj)) == ZCFG_SUCCESS)
++	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV6_SRV_POOL_OPT, &srvPoolIid, &optIid, (void **)&srvPoolOptObj)) == ZCFG_SUCCESS)
+ 	{
+ 		if(srvPoolOptObj->Enable)
+ 		{
+Index: wide-dhcpv6-20080615/common.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/common.h	2017-12-26 20:05:20.730129621 +0800
++++ wide-dhcpv6-20080615/common.h	2017-12-27 10:06:54.237028100 +0800
+@@ -163,6 +163,7 @@
+ 	int ClientIPv6eidtPid;/*check send Pid msg or not*/
+ 	int ClientIPv6release_flag;
+ 	int ClientIPv6deletAddr;/*check send release addr msg or not */
++	char ClientIPv6poolName[64];
+ };
+ 
+ extern int foreground;
+@@ -210,6 +211,8 @@
+ 				   struct dhcp6_optinfo *));
+ extern int dhcp6_get_options __P((struct dhcp6opt *, struct dhcp6opt *,
+ 				  struct dhcp6_optinfo *));
++extern int dhcp6_get_options_for_server6 __P((struct dhcp6opt *, struct dhcp6opt *,
++				  struct dhcp6_optinfo *, struct dhcp6_optinfo_extra *));
+ extern int dhcp6_add_options_to_rdm __P((struct dhcp6opt *, struct dhcp6opt *,
+ 				  struct dhcp6_optinfo *));
+ extern int dhcp6_set_options __P((int, struct dhcp6opt *, struct dhcp6opt *,
+Index: wide-dhcpv6-20080615/config.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/config.c	2008-06-15 15:48:41.000000000 +0800
++++ wide-dhcpv6-20080615/config.c	2017-12-27 10:13:30.712492100 +0800
+@@ -60,6 +60,15 @@
+ #include <base64.h>
+ #include <lease.h>
+ 
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++
++#include "zcfg_rdm_obj.h"
++#include "zcfg_rdm_oid.h"
++#include "zcfg_fe_rdm_struct.h"
++#include "zcfg_fe_rdm_access.h"
++
+ extern int errno;
+ 
+ struct prefix_ifconf *prefix_ifconflist;
+@@ -1980,6 +1989,215 @@
+ 	}
+ }
+ 
++typedef struct rdm_SimpleSrvPool_s{
++	char SrvPoolName[65];
++	uint32_t Order;
++	char DUID[131];
++	bool DUIDExclude;
++	char VendorClassID[5];
++	bool VendorClassIDExclude;
++	char UserClassID[5];
++	bool UserClassIDExclude;
++	char SourceAddress[33];
++	char SourceAddressMask[33];
++	bool SourceAddressExclude;
++}rdm_SimpleSrvPool_t;
++
++struct split
++{
++  uint64_t start;
++  uint64_t end;
++};
++
++void ipv6_prefix (unsigned char *masked, unsigned char *packed, int prefix)
++{
++  struct split parts;
++  uint64_t mask = 0;
++  unsigned char *p = masked;
++
++  memset(masked, 0, sizeof(struct in6_addr));
++  memcpy(&parts, packed, sizeof(parts));
++
++  if (prefix <= 64)
++  {
++    mask = bswap_64(bswap_64(parts.start) & ((uint64_t) (~0) << (64 - prefix)));
++    memcpy(masked, &mask, sizeof(uint64_t));
++    return;
++  }
++
++  prefix -= 64;
++
++  memcpy(masked, &(parts.start), sizeof(uint64_t));
++  p += sizeof(uint64_t);
++  mask = bswap_64(bswap_64(parts.end) & (uint64_t) (~0) << (64 - prefix));
++  memcpy(p, &mask, sizeof(uint64_t));
++}
++
++
++bool find_match_pool(char *poolName, struct duid *duid, struct dhcp6_optinfo_extra *optinfo_extra)
++{
++	bool found = false;
++	objIndex_t srvPoolIid;
++	rdm_Dhcpv6SrvPool_t *srvPoolObj = NULL;
++	int i=0,j=0;
++	int ObjNum=0;
++	rdm_SimpleSrvPool_t tmpObj;
++	rdm_SimpleSrvPool_t SimpleSrvPoolObj[8];
++
++	//printf("find_match_pool: duid=%s\n", duidstr(duid));
++	//printf("find_match_pool: vendorClassID=%s\n", duidstr(&optinfo_extra->vendorClassID));
++	//printf("find_match_pool: userClassID=%s\n", duidstr(&optinfo_extra->userClassID));
++	//printf("find_match_pool: cltAddr=%s\n", optinfo_extra->cltLinkAddr);
++
++	/*get all pool from rdm*/
++	IID_INIT(srvPoolIid);
++	while((zcfgFeObjStructGetNext(RDM_OID_DHCPV6_SRV_POOL, &srvPoolIid, (void **)&srvPoolObj)) == ZCFG_SUCCESS)
++	{
++		if((srvPoolObj->Enable) && (srvPoolObj->Order!=0))
++		{
++			strcpy(SimpleSrvPoolObj[ObjNum].SrvPoolName,srvPoolObj->X_ZYXEL_SrvPoolName);
++			SimpleSrvPoolObj[ObjNum].Order = srvPoolObj->Order;
++
++			strcpy(SimpleSrvPoolObj[ObjNum].DUID,srvPoolObj->DUID);
++			SimpleSrvPoolObj[ObjNum].DUIDExclude = srvPoolObj->DUIDExclude;
++
++			strcpy(SimpleSrvPoolObj[ObjNum].VendorClassID,srvPoolObj->VendorClassID);
++			SimpleSrvPoolObj[ObjNum].VendorClassIDExclude = srvPoolObj->VendorClassIDExclude;
++
++			strcpy(SimpleSrvPoolObj[ObjNum].UserClassID,srvPoolObj->UserClassID);
++			SimpleSrvPoolObj[ObjNum].UserClassIDExclude = srvPoolObj->UserClassIDExclude;
++
++			strcpy(SimpleSrvPoolObj[ObjNum].SourceAddress,srvPoolObj->SourceAddress);
++			strcpy(SimpleSrvPoolObj[ObjNum].SourceAddressMask,srvPoolObj->SourceAddressMask);
++			SimpleSrvPoolObj[ObjNum].SourceAddressExclude = srvPoolObj->SourceAddressExclude;
++
++			ObjNum++;
++		}
++		zcfgFeObjStructFree(srvPoolObj);
++
++		if(ObjNum==8)
++			break;
++	}
++#if 0
++	printf("find_match_pool: ObjNum=%d\n",ObjNum);
++	for (i=0;i<ObjNum;i++)
++	{
++		printf("find_match_pool: 1SimpleSrvPoolObj[%d].Order=%d\n",i,SimpleSrvPoolObj[i].Order);
++		printf("find_match_pool: 1SimpleSrvPoolObj[%d].SrvPoolName=%s\n",i,SimpleSrvPoolObj[i].SrvPoolName);
++		printf("find_match_pool: 1SimpleSrvPoolObj[%d].DUID=%s\n",i,SimpleSrvPoolObj[i].DUID);
++		printf("find_match_pool: 1SimpleSrvPoolObj[%d].DUIDExclude=%d\n",i,SimpleSrvPoolObj[i].DUIDExclude);
++	}
++#endif
++	/*sort all pool by order*/
++	for (i=0;i<ObjNum;i++)
++	{
++		for (j=0;j<ObjNum-i-1;j++)
++		{
++			if(SimpleSrvPoolObj[j].Order > SimpleSrvPoolObj[j+1].Order)
++			{
++				memcpy(&tmpObj,&SimpleSrvPoolObj[j],sizeof(rdm_Dhcpv6SrvPool_t));
++				memcpy(&SimpleSrvPoolObj[j],&SimpleSrvPoolObj[j+1],sizeof(rdm_Dhcpv6SrvPool_t));
++				memcpy(&SimpleSrvPoolObj[j+1],&tmpObj,sizeof(rdm_Dhcpv6SrvPool_t));
++			}
++		}
++	}
++#if 0
++	for (i=0;i<ObjNum;i++)
++	{
++		printf("find_match_pool: 2SimpleSrvPoolObj[%d].Order=%d\n",i,SimpleSrvPoolObj[i].Order);
++		printf("find_match_pool: 2SimpleSrvPoolObj[%d].Alias=%s\n",i,SimpleSrvPoolObj[i].SrvPoolName);
++		printf("find_match_pool: 2SimpleSrvPoolObj[%d].DUID=%s\n",i,SimpleSrvPoolObj[i].DUID);
++		printf("find_match_pool: 2SimpleSrvPoolObj[%d].DUIDExclude=%d\n",i,SimpleSrvPoolObj[i].DUIDExclude);
++		printf("find_match_pool: 2SimpleSrvPoolObj[%d].SourceAddressExclude=%d\n",i,SimpleSrvPoolObj[i].SourceAddressExclude);
++		printf("find_match_pool: 2SimpleSrvPoolObj[%d].SourceAddress=%s\n",i,SimpleSrvPoolObj[i].SourceAddress);
++	}
++#endif
++
++	/*check match pool*/
++	for (i=0;i<ObjNum;i++)
++	{
++		//printf("find_match_pool: i=%d\n",i);
++		found = true;
++		//printf("11found = %d\n", found);
++		if(!SimpleSrvPoolObj[i].DUIDExclude)
++		{
++			//printf("find_match_pool: check duid\n");
++			//printf("find_match_pool: SimpleSrvPoolObj[%d].DUID=%s\n", i, SimpleSrvPoolObj[i].DUID);
++			if((strcmp(SimpleSrvPoolObj[i].DUID,duidstr(duid))!=0))
++			{
++				found = false;
++			}
++		}
++		//printf("22found = %d\n", found);
++		if(!SimpleSrvPoolObj[i].VendorClassIDExclude)
++		{
++			//printf("find_match_pool: check VendorClassID\n");
++			if((strcmp(SimpleSrvPoolObj[i].VendorClassID,duidstr(&optinfo_extra->vendorClassID))!=0))
++			{
++				found = false;
++			}
++		}
++
++		//printf("33found = %d\n", found);
++		if(!SimpleSrvPoolObj[i].UserClassIDExclude)
++		{
++			//printf("find_match_pool: check UserClassID\n");
++			if((strcmp(SimpleSrvPoolObj[i].UserClassID,duidstr(&optinfo_extra->userClassID))!=0))
++			{
++				found = false;
++			}
++		}
++		//printf("44found = %d\n", found);
++		if(!SimpleSrvPoolObj[i].SourceAddressExclude)
++		{
++			//printf("find_match_pool: check SourceAddress\n");
++			if(strcmp(SimpleSrvPoolObj[i].SourceAddressMask,"")==0)
++			{
++				/*check all SourceAddress*/
++				//printf("find_match_pool: SimpleSrvPoolObj[%d].SourceAddress=%s\n", i, SimpleSrvPoolObj[i].SourceAddress);
++				if(strcmp(SimpleSrvPoolObj[i].SourceAddress,optinfo_extra->cltLinkAddr)!=0)
++				{
++					found = false;
++				}
++			}
++			else
++			{
++				/*calculate compare prefix*/
++				unsigned char packed[sizeof(struct in6_addr)];
++  				unsigned char masked[sizeof(struct in6_addr)];
++				char buf[INET6_ADDRSTRLEN], buf2[INET6_ADDRSTRLEN];
++				int prefix = 64;
++				prefix = atoi(SimpleSrvPoolObj[i].SourceAddressMask);
++
++				inet_pton(AF_INET6, SimpleSrvPoolObj[i].SourceAddress, packed);
++				ipv6_prefix(masked, packed, prefix);
++				inet_ntop(AF_INET6, masked, buf, INET6_ADDRSTRLEN);
++				//printf("buf = %s\n", buf);
++
++				inet_pton(AF_INET6, optinfo_extra->cltLinkAddr, packed);
++				ipv6_prefix(masked, packed, prefix);
++				inet_ntop(AF_INET6, masked, buf2, INET6_ADDRSTRLEN);
++				//printf("buf2 = %s\n", buf2);
++
++				if(strcmp(buf,buf2)!=0)
++				{
++					found = false;
++				}
++			}
++		}
++
++		//printf("55found = %d\n", found);
++		if(found)
++		{
++			//printf("SimpleSrvPoolObj[%d].SrvPoolName=%s\n",i, SimpleSrvPoolObj[i].SrvPoolName);
++			strcpy(poolName,SimpleSrvPoolObj[i].SrvPoolName);
++			break;
++		}
++	}
++
++	return found;
++}
++
+ struct host_conf *
+ create_dynamic_hostconf(duid, pool)
+ 	struct duid *duid;
+@@ -2036,6 +2254,7 @@
+ 	if (duidcpy(&host->duid, duid) != 0) {
+ 		goto bad;
+ 	}
++
+ 	if (pool->name) {
+ 		if ((host->pool.name = strdup(pool->name)) == NULL) {
+ 			dprintf(LOG_ERR, FNAME, "memory allocation failed");
+@@ -2049,7 +2268,116 @@
+ 	TAILQ_INSERT_HEAD(&dynamic_hostconf_head, dynconf, link);
+ 	dynamic_hostconf_count++; 
+ 
+-	dprintf(LOG_DEBUG, FNAME, "created host_conf (name=%s)", host->name);
++	return (host);
++
++bad:
++	if (host)
++		clear_hostconf(host);	/* host->next must be NULL */
++	if (dynconf)
++		free(dynconf);
++
++	return (NULL);
++}
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++struct host_conf *
++create_dynamic_hostconf_from_rdm(duid, optinfo_extra, pool)
++	struct duid *duid;
++	struct dhcp6_optinfo_extra *optinfo_extra;
++	struct dhcp6_poolspec *pool;
++{
++	struct dynamic_hostconf *dynconf = NULL;
++	struct host_conf *host;
++	char* strid = NULL;
++	static int init = 1;
++
++	if (init) {
++		TAILQ_INIT(&dynamic_hostconf_head);
++		dynamic_hostconf_count = 0;
++		init = 0;
++	}
++
++	if (dynamic_hostconf_count >= DHCP6_DYNAMIC_HOSTCONF_MAX) {
++		struct dynamic_hostconf_listhead *head = &dynamic_hostconf_head;
++
++		dprintf(LOG_DEBUG, FNAME, "reached to the max count (count=%lu)",
++			dynamic_hostconf_count);
++
++		/* Find the last entry that doesn't need authentication */
++		TAILQ_FOREACH_REVERSE(dynconf, head, dynamic_hostconf_listhead, link)
++			if (dynconf->host->delayedkey == NULL)
++				break;
++		if (dynconf == NULL)
++			dynconf = TAILQ_LAST(head, dynamic_hostconf_listhead);
++		TAILQ_REMOVE(head, dynconf, link);
++		dynamic_hostconf_count--;
++		clear_hostconf(dynconf->host);
++	} else {
++		if ((dynconf = malloc(sizeof(*dynconf))) == NULL) {
++			dprintf(LOG_ERR, FNAME, "memory allocation failed");
++			return (NULL);
++		}
++	}
++	memset(dynconf, 0, sizeof(*dynconf));
++
++	if ((host = malloc(sizeof(*host))) == NULL) {
++		dprintf(LOG_ERR, FNAME, "memory allocation failed");
++		goto bad;
++	}
++	memset(host, 0, sizeof(*host));
++	TAILQ_INIT(&host->prefix_list);
++	TAILQ_INIT(&host->addr_list);
++
++	if ((strid = duidstr(duid)) == NULL)
++		strid = "???";
++	if ((host->name = strdup(strid)) == NULL) {
++		dprintf(LOG_ERR, FNAME, "memory allocation failed");
++		goto bad;
++	}
++	if (duidcpy(&host->duid, duid) != 0) {
++		goto bad;
++	}
++
++	/*check and replace pool*/
++	//printf("create_dynamic_hostconf: pool->name=%s\n",pool->name);
++	//printf("create_dynamic_hostconf: pool->pltime=%d\n",pool->pltime);
++	//printf("create_dynamic_hostconf: pool->vltime=%d\n",pool->vltime);
++
++	bool poolFound;
++	char poolName[64];
++	poolFound = find_match_pool(poolName, duid, optinfo_extra);
++	//printf("create_dynamic_hostconf: poolFound=%d\n",poolFound);
++
++	if (poolFound) {
++		//printf("create_dynamic_hostconf: poolName=%s\n",poolName);
++		if ((host->pool.name = strdup(poolName)) == NULL) {
++			dprintf(LOG_ERR, FNAME, "memory allocation failed");
++			goto bad;
++		}
++
++		host->pool.pltime = 86400;
++		host->pool.vltime = 86400;
++	}
++	else if (pool->name) {
++		if ((host->pool.name = strdup(pool->name)) == NULL) {
++			dprintf(LOG_ERR, FNAME, "memory allocation failed");
++			goto bad;
++		}
++
++		host->pool.pltime = pool->pltime;
++		host->pool.vltime = pool->vltime;
++	}
++	else
++	{
++		host->pool.pltime = pool->pltime;
++		host->pool.vltime = pool->vltime;
++	}
++
++	//printf("create_dynamic_hostconf: host->pool.pltime=%d\n",host->pool.pltime);
++	//printf("create_dynamic_hostconf: host->pool.vltime=%d\n",host->pool.vltime);
++
++	dynconf->host = host;
++	TAILQ_INSERT_HEAD(&dynamic_hostconf_head, dynconf, link);
++	dynamic_hostconf_count++; 
+ 
+ 	return (host);
+ 
+@@ -2061,6 +2389,7 @@
+ 
+ 	return (NULL);
+ }
++#endif
+ 
+ struct host_conf *
+ find_dynamic_hostconf(duid)
+Index: wide-dhcpv6-20080615/config.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/config.h	2017-12-26 20:05:20.674128680 +0800
++++ wide-dhcpv6-20080615/config.h	2017-12-27 10:09:55.991659500 +0800
+@@ -339,4 +339,8 @@
+ 	struct in6_addr *));
+ struct host_conf *create_dynamic_hostconf __P((struct duid *,
+ 	struct dhcp6_poolspec *));
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++struct host_conf *create_dynamic_hostconf_from_rdm __P((struct duid *,
++	struct dhcp6_optinfo_extra *, struct dhcp6_poolspec *));
++#endif
+ extern char *qstrdup __P((char *));
+Index: wide-dhcpv6-20080615/dhcp6.h
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6.h	2017-12-26 20:05:20.674128680 +0800
++++ wide-dhcpv6-20080615/dhcp6.h	2017-12-27 10:08:23.561824900 +0800
+@@ -145,6 +145,11 @@
+ 	struct in6_addr addr;
+ };
+ 
++struct classID {
++	size_t classID_len;	/* length */
++	char *classID_id;	/* variable length ID value (must be opaque) */
++};
++
+ /* Internal data structure */
+ typedef enum { DHCP6_LISTVAL_NUM = 1,
+ 	       DHCP6_LISTVAL_STCODE, DHCP6_LISTVAL_ADDR6,
+@@ -244,6 +249,12 @@
+ #define reconfigauth_val authinfo.aiu_reconfig.val
+ };
+ 
++struct dhcp6_optinfo_extra {
++	struct classID vendorClassID; /* VendorClassID */
++	struct classID userClassID;	/* UserClassID */
++	char cltLinkAddr[64];
++};
++
+ /* DHCP6 base packet format */
+ struct dhcp6 {
+ 	union {
+Index: wide-dhcpv6-20080615/dhcp6s.c
+===================================================================
+--- wide-dhcpv6-20080615.orig/dhcp6s.c	2017-12-26 20:05:20.722129486 +0800
++++ wide-dhcpv6-20080615/dhcp6s.c	2017-12-27 10:09:50.973490200 +0800
+@@ -177,11 +177,19 @@
+ static int process_relayforw __P((struct dhcp6 **, struct dhcp6opt **,
+     struct relayinfolist *, struct sockaddr *));
+ static int set_statelessinfo __P((int, struct dhcp6_optinfo *));
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++static int react_solicit __P((struct dhcp6_if *, struct dhcp6 *, ssize_t,
++    struct dhcp6_optinfo *, struct sockaddr *, int, struct relayinfolist *, struct dhcp6_optinfo_extra *));
++static int react_request __P((struct dhcp6_if *, struct in6_pktinfo *,
++    struct dhcp6 *, ssize_t, struct dhcp6_optinfo *, struct sockaddr *, int,
++    struct relayinfolist *, struct dhcp6_optinfo_extra *));
++#else
+ static int react_solicit __P((struct dhcp6_if *, struct dhcp6 *, ssize_t,
+     struct dhcp6_optinfo *, struct sockaddr *, int, struct relayinfolist *));
+ static int react_request __P((struct dhcp6_if *, struct in6_pktinfo *,
+     struct dhcp6 *, ssize_t, struct dhcp6_optinfo *, struct sockaddr *, int,
+     struct relayinfolist *));
++#endif
+ static int react_renew __P((struct dhcp6_if *, struct in6_pktinfo *,
+     struct dhcp6 *, ssize_t, struct dhcp6_optinfo *, struct sockaddr *, int,
+     struct relayinfolist *));
+@@ -193,9 +201,15 @@
+ static int react_decline __P((struct dhcp6_if *, struct in6_pktinfo *,
+     struct dhcp6 *, ssize_t, struct dhcp6_optinfo *, struct sockaddr *, int,
+     struct relayinfolist *));
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++static int react_confirm __P((struct dhcp6_if *, struct in6_pktinfo *,
++    struct dhcp6 *, ssize_t,
++    struct dhcp6_optinfo *, struct sockaddr *, int, struct relayinfolist *, struct dhcp6_optinfo_extra *));
++#else
+ static int react_confirm __P((struct dhcp6_if *, struct in6_pktinfo *,
+     struct dhcp6 *, ssize_t,
+     struct dhcp6_optinfo *, struct sockaddr *, int, struct relayinfolist *));
++#endif
+ static int react_informreq __P((struct dhcp6_if *, struct dhcp6 *, ssize_t,
+     struct dhcp6_optinfo *, struct sockaddr *, int, struct relayinfolist *));
+ static int server6_send __P((int, struct dhcp6_if *, struct dhcp6 *,
+@@ -237,7 +251,7 @@
+ static void setleases_dhcp6sinfo __P((struct dhcp6_listval *, struct dhcp6_binding *));
+ static void resetleases_dhcp6sinfo __P((struct dhcp6_binding *));
+ static void addleases_dhcp6sLocalAddr __P((struct dhcp6_optinfo *, struct sockaddr *));
+-static void addjson_dhcp6sLeases __P((struct dhcp6_optinfo *));
++static void addjson_dhcp6sLeases __P((struct dhcp6_optinfo *, char *));
+ 
+ 
+ //add the dhcp6s json define
+@@ -909,6 +923,7 @@
+ 	struct dhcp6opt *optend;
+ 	struct relayinfolist relayinfohead;
+ 	struct relayinfo *relayinfo;
++	struct dhcp6_optinfo_extra optinfo_extra;
+ 
+ 	TAILQ_INIT(&relayinfohead);
+ 
+@@ -1007,20 +1022,41 @@
+ 	 * parse and validate options in the message
+ 	 */
+ 	dhcp6_init_options(&optinfo);
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++	memset(&optinfo_extra, 0, sizeof(optinfo_extra));
++	sprintf(optinfo_extra.cltLinkAddr,"%s",addr2str((struct sockaddr *)&from));
++	if (dhcp6_get_options_for_server6((struct dhcp6opt *)(dh6 + 1),
++	    optend, &optinfo, &optinfo_extra) < 0) {
++		dprintf(LOG_INFO, FNAME, "failed to parse options");
++		goto end;
++	}
++#else
+ 	if (dhcp6_get_options((struct dhcp6opt *)(dh6 + 1),
+ 	    optend, &optinfo) < 0) {
+ 		dprintf(LOG_INFO, FNAME, "failed to parse options");
+ 		goto end;
+ 	}
++#endif
++	//printf("server6_recv: dh6_msgtype=%d\n",dh6->dh6_msgtype);
+ 
+ 	switch (dh6->dh6_msgtype) {
+ 	case DH6_SOLICIT:
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++		(void)react_solicit(ifp, dh6, len, &optinfo,
++		    (struct sockaddr *)&from, fromlen, &relayinfohead, &optinfo_extra);
++#else
+ 		(void)react_solicit(ifp, dh6, len, &optinfo,
+ 		    (struct sockaddr *)&from, fromlen, &relayinfohead);
++#endif
+ 		break;
+ 	case DH6_REQUEST:
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++		(void)react_request(ifp, pi, dh6, len, &optinfo,
++		    (struct sockaddr *)&from, fromlen, &relayinfohead, &optinfo_extra);
++#else
+ 		(void)react_request(ifp, pi, dh6, len, &optinfo,
+ 		    (struct sockaddr *)&from, fromlen, &relayinfohead);
++#endif
+ 		break;
+ 	case DH6_RENEW:
+ 		(void)react_renew(ifp, pi, dh6, len, &optinfo,
+@@ -1039,8 +1075,13 @@
+ 		    (struct sockaddr *)&from, fromlen, &relayinfohead);
+ 		break;
+ 	case DH6_CONFIRM:
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++		(void)react_confirm(ifp, pi, dh6, len, &optinfo,
++		    (struct sockaddr *)&from, fromlen, &relayinfohead, &optinfo_extra);
++#else
+ 		(void)react_confirm(ifp, pi, dh6, len, &optinfo,
+ 		    (struct sockaddr *)&from, fromlen, &relayinfohead);
++#endif
+ 		break;
+ 	case DH6_INFORM_REQ:
+ 		(void)react_informreq(ifp, dh6, len, &optinfo,
+@@ -1259,6 +1300,18 @@
+ 	return (0);
+ }
+ 
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++static int
++react_solicit(ifp, dh6, len, optinfo, from, fromlen, relayinfohead, optinfo_extra)
++	struct dhcp6_if *ifp;
++	struct dhcp6 *dh6;
++	ssize_t len;
++	struct dhcp6_optinfo *optinfo;
++	struct sockaddr *from;
++	int fromlen;
++	struct relayinfolist *relayinfohead;
++	struct dhcp6_optinfo_extra *optinfo_extra;
++#else
+ static int
+ react_solicit(ifp, dh6, len, optinfo, from, fromlen, relayinfohead)
+ 	struct dhcp6_if *ifp;
+@@ -1268,6 +1321,7 @@
+ 	struct sockaddr *from;
+ 	int fromlen;
+ 	struct relayinfolist *relayinfohead;
++#endif
+ {
+ 	struct dhcp6_optinfo roptinfo;
+ 	struct host_conf *client_conf;
+@@ -1407,10 +1461,17 @@
+ 		release_file_address();
+ #endif
+ 		if (client_conf == NULL && ifp->pool.name) {
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++			if ((client_conf = create_dynamic_hostconf_from_rdm(&optinfo->clientID,
++				optinfo_extra, &ifp->pool)) == NULL)
++#else
+ 			if ((client_conf = create_dynamic_hostconf(&optinfo->clientID,
+ 				&ifp->pool)) == NULL)
++#endif
++			{
+ 				dprintf(LOG_NOTICE, FNAME,
+ 			    	"failed to make host configuration");
++			}
+ 		}
+ 		TAILQ_INIT(&conflist);
+ 
+@@ -1469,6 +1530,19 @@
+ 	return (-1);
+ }
+ 
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++static int
++react_request(ifp, pi, dh6, len, optinfo, from, fromlen, relayinfohead, optinfo_extra)
++	struct dhcp6_if *ifp;
++	struct in6_pktinfo *pi;
++	struct dhcp6 *dh6;
++	ssize_t len;
++	struct dhcp6_optinfo *optinfo;
++	struct sockaddr *from;
++	int fromlen;
++	struct relayinfolist *relayinfohead;
++	struct dhcp6_optinfo_extra *optinfo_extra;
++#else
+ static int
+ react_request(ifp, pi, dh6, len, optinfo, from, fromlen, relayinfohead)
+ 	struct dhcp6_if *ifp;
+@@ -1479,6 +1553,7 @@
+ 	struct sockaddr *from;
+ 	int fromlen;
+ 	struct relayinfolist *relayinfohead;
++#endif
+ {
+ 	struct dhcp6_optinfo roptinfo;
+ 	struct host_conf *client_conf;
+@@ -1625,10 +1700,17 @@
+ 		release_file_address();
+ #endif
+ 		if (client_conf == NULL && ifp->pool.name) {
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++			if ((client_conf = create_dynamic_hostconf_from_rdm(&optinfo->clientID,
++				optinfo_extra, &ifp->pool)) == NULL)
++#else
+ 			if ((client_conf = create_dynamic_hostconf(&optinfo->clientID,
+ 				&ifp->pool)) == NULL)
++#endif
++			{
+ 				dprintf(LOG_NOTICE, FNAME,
+ 			    	"failed to make host configuration");
++			}
+ 		}
+ 		TAILQ_INIT(&conflist);
+ 
+@@ -1719,7 +1801,7 @@
+ 	    &roptinfo, relayinfohead, client_conf);
+ 	// TODO: Add the local IPv6 address
+ 	addleases_dhcp6sLocalAddr(optinfo, from);
+-	addjson_dhcp6sLeases(optinfo);
++	addjson_dhcp6sLeases(optinfo, client_conf->pool.name);
+ 
+ 
+ 	//struct dhcp6opt_ia optia;
+@@ -2218,6 +2300,19 @@
+ 	return (-1);
+ }
+ 
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++static int
++react_confirm(ifp, pi, dh6, len, optinfo, from, fromlen, relayinfohead, optinfo_extra)
++	struct dhcp6_if *ifp;
++	struct in6_pktinfo *pi;
++	struct dhcp6 *dh6;
++	ssize_t len;
++	struct dhcp6_optinfo *optinfo;
++	struct sockaddr *from;
++	int fromlen;
++	struct relayinfolist *relayinfohead;
++	struct dhcp6_optinfo_extra *optinfo_extra;
++#else
+ static int
+ react_confirm(ifp, pi, dh6, len, optinfo, from, fromlen, relayinfohead)
+ 	struct dhcp6_if *ifp;
+@@ -2228,6 +2323,7 @@
+ 	struct sockaddr *from;
+ 	int fromlen;
+ 	struct relayinfolist *relayinfohead;
++#endif
+ {
+ 	struct dhcp6_optinfo roptinfo;
+ 	struct dhcp6_list conflist;
+@@ -2277,8 +2373,15 @@
+ 	}
+ 
+ 	if (client_conf == NULL && ifp->pool.name) {
++#ifdef ZYXEL_DHCPV6S_MULTIPOOL
++		if ((client_conf = create_dynamic_hostconf_from_rdm(&optinfo->clientID,
++			optinfo_extra, &ifp->pool)) == NULL)
++#else
+ 		if ((client_conf = create_dynamic_hostconf(&optinfo->clientID,
+-			&ifp->pool)) == NULL) {
++			&ifp->pool)) == NULL)
++#endif
++
++		{
+ 			dprintf(LOG_NOTICE, FNAME,
+ 		    	"failed to make host configuration");
+ 			goto fail;
+@@ -2808,8 +2911,11 @@
+ 	dh6->dh6_msgtype = (u_int8_t)type;
+ 
+ #ifdef ZYXEL_DHCPV6S_OPTION
+-	/*load tr98 table dhcpv6 server pool option*/
+-	dhcp6_get_options_from_rdm(roptinfo);
++	if(client_conf != NULL)
++	{
++		/*load tr98 table dhcpv6 server pool option*/
++		dhcp6_get_options_from_rdm(roptinfo, client_conf);
++	}
+ #endif
+ 
+ 	/* set options in the reply message */
+@@ -2873,8 +2979,11 @@
+ 		    sizeof (dh6relay->dh6relay_peeraddr));
+ 
+ #ifdef ZYXEL_DHCPV6S_OPTION
+-		/*load tr98 table dhcpv6 server pool option*/
+-		dhcp6_get_options_from_rdm(&relayopt);
++		if(client_conf != NULL)
++		{
++			/*load tr98 table dhcpv6 server pool option*/
++			dhcp6_get_options_from_rdm(&relayopt, client_conf);
++		}
+ #endif
+ 
+ 		len = sizeof(*dh6relay);
+@@ -3803,6 +3912,7 @@
+ 		json_object_object_add(dhcp6sMsgBody, "ClientIPv6elapsedtime", json_object_new_string(dhcp6sMsg.ClientIPv6elapsedtime));
+ 		json_object_object_add(dhcp6sMsgBody, "ClientIPv6Indentity", json_object_new_string(dhcp6sMsg.ClientIPv6Indentity));
+ 		json_object_object_add(dhcp6sMsgBody, "ClientIPv6Option", json_object_new_string(dhcp6sMsg.ClientIPv6Option));
++		json_object_object_add(dhcp6sMsgBody, "ClientIPv6poolName", json_object_new_string(dhcp6sMsg.ClientIPv6poolName));
+ 	}
+ 	if(dhcp6sMsg.ClientIPv6deletAddr){
+ 		json_object_object_add(dhcp6sMsgBody, "ClientIPv6release_flag", json_object_new_int(dhcp6sMsg.ClientIPv6release_flag));
+@@ -4050,8 +4160,9 @@
+ }
+ 
+ static void
+-addjson_dhcp6sLeases(optinfo)
++addjson_dhcp6sLeases(optinfo, poolname)
+ 	struct dhcp6_optinfo *optinfo;
++	char* poolname;
+ {
+ 	//set dhcp6s json config for TR069
+ 	struct json_object *dhcp6sJsonMsg = NULL;
+@@ -4138,6 +4249,7 @@
+ 				}
+ 				sprintf(optInfo, "%s%s%s", optInfo_1, optInfo_2, optInfo_3);
+ 				sprintf(dhcp6sMsg.ClientIPv6Option, "%s", optInfo);
++				sprintf(dhcp6sMsg.ClientIPv6poolName, "%s", poolname);
+ #if 0
+ 				printf("ORZORZORZORZORZ ClientIPv6addr = %s, addr = %s, %s(%d)\n", dhcp6sMsg.ClientIPv6addr, IPv6addr, __FUNCTION__, __LINE__);
+ 				printf("ORZORZORZORZORZ ClientIPv6addrPltime = %d,  %s(%d)\n", dhcp6sMsg.ClientIPv6addrPltime, __FUNCTION__, __LINE__);

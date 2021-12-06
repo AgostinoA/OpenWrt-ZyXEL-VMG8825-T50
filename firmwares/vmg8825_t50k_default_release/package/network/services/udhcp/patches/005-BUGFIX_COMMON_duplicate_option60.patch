@@ -1,0 +1,93 @@
+Index: udhcp-0.9.8/dhcpc.c
+===================================================================
+--- udhcp-0.9.8.orig/dhcpc.c	2014-03-20 17:01:52.958585144 +0800
++++ udhcp-0.9.8/dhcpc.c	2014-03-20 17:05:37.365847400 +0800
+@@ -439,7 +439,7 @@
+ 		exit_client(1);
+ 	
+ #if 1 /* ZyXEL DHCP options support, ZyXEL, John */
+-	read_config_options();
++	read_config_options(client_config.interface);
+ #else
+ 	if (!client_config.clientid) {
+ 		client_config.clientid = xmalloc(6 + 3);
+Index: udhcp-0.9.8/options.c
+===================================================================
+--- udhcp-0.9.8.orig/options.c	2014-03-20 17:01:52.930585145 +0800
++++ udhcp-0.9.8/options.c	2014-03-20 17:06:37.518375500 +0800
+@@ -282,17 +282,50 @@
+ 	}
+ }
+ 
+-int read_config_options()
++int read_config_options(const char* intfName)
+ {
+ 	rdm_Dhcpv4ReqOpt_t *reqOptObj = NULL;
+ 	rdm_Dhcpv4SentOpt_t *sentOptObj = NULL;
+ 	objIndex_t optIid;
++	rdm_IpIface_t *ipIface = NULL;
++	rdm_Dhcpv4Client_t *dhcpcObj = NULL;
++	objIndex_t ipIfaceIid;
++	objIndex_t dhcpIid;
++	char ipIntf[256] = "";
++	int found = 0;
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 	char hexOpt[256];
+-	
++
++	//find ip.interface via interface name
++	IID_INIT(ipIfaceIid);
++	while(zcfgFeObjStructGetNext(RDM_OID_IP_IFACE, &ipIfaceIid, (void **)&ipIface) == ZCFG_SUCCESS) {
++		if ( !strcmp(ipIface->X_ZYXEL_IfName, intfName) ){
++			sprintf(ipIntf, "IP.Interface.%d", ipIfaceIid.idx[0]);
++			free(ipIface);
++			break;
++		}
++		free(ipIface);
++	}
++
++	if (strlen(ipIntf) == 0)//can't find corresponding ip interface
++		return 0;
++
++	IID_INIT(dhcpIid);
++	while(zcfgFeObjStructGetNext(RDM_OID_DHCPV4_CLIENT, &dhcpIid, (void **)&dhcpcObj) == ZCFG_SUCCESS) {
++		if ( !strcmp(dhcpcObj->Interface, ipIntf) ){
++			found = 1;
++			free(ipIface);
++			break;
++		}
++		else
++			free(ipIface);
++	}
++
++	if (found == 0)
++		return 0;
+ 
+ 	IID_INIT(optIid);
+-	while((ret = zcfgFeObjStructGetNext(RDM_OID_DHCPV4_REQ_OPT, &optIid, (void **)&reqOptObj)) == ZCFG_SUCCESS){
++	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV4_REQ_OPT, &dhcpIid, &optIid, (void **)&reqOptObj)) == ZCFG_SUCCESS){
+ 		if(reqOptObj->Enable){
+ 			if(reqOptObj->Tag == DHCP_6RD_OPT) {
+ 				options[last_option_index - 3].flags |= OPTION_REQ;
+@@ -313,7 +346,7 @@
+ 	sent_config_options[0] = DHCP_END;
+ 	
+ 	IID_INIT(optIid);
+-	while((ret = zcfgFeObjStructGetNext(RDM_OID_DHCPV4_SENT_OPT, &optIid, (void **)&sentOptObj)) == ZCFG_SUCCESS){
++	while((ret = zcfgFeSubInStructGetNext(RDM_OID_DHCPV4_SENT_OPT, &dhcpIid, &optIid, (void **)&sentOptObj)) == ZCFG_SUCCESS){
+ 		if(sentOptObj->Enable){
+ 			hexStringToOption(sentOptObj->Value, hexOpt);
+ 			add_option_string(sent_config_options, (unsigned char *)hexOpt);
+Index: udhcp-0.9.8/options.h
+===================================================================
+--- udhcp-0.9.8.orig/options.h	2014-03-20 17:01:52.930585145 +0800
++++ udhcp-0.9.8/options.h	2014-03-20 17:06:52.983968000 +0800
+@@ -68,7 +68,7 @@
+ #if 1 /* ZyXEL DHCP option support (porting from BRCM and MSTC), John */
+ void hexOptionToString(char *hexOpt, char *hexStr);
+ void hexStringToOption(char * hexStr,char * hexOpt);
+-int read_config_options(void);
++int read_config_options(const char* intfName);
+ #endif
+ 
+ 

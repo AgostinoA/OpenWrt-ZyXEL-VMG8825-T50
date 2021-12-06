@@ -1,0 +1,86 @@
+Index: bridge-utils-1.2/brctl/brctl_cmd.c
+===================================================================
+--- bridge-utils-1.2.orig/brctl/brctl_cmd.c	2015-11-16 18:39:28.000000000 +0800
++++ bridge-utils-1.2/brctl/brctl_cmd.c	2015-11-16 18:56:25.641017363 +0800
+@@ -695,9 +695,20 @@
+ 	qsort(fdb, offset, sizeof(struct fdb_entry), compare_fdbs);
+ 
+ #if defined(PLATFORM_BROADCOM) && defined(CONFIG_BCM_VLAN_AGGREGATION)
++#if defined(ZYXEL_PATCH)
++	printf("port no\tvid\tmac addr\t\tis local?\tageing timer\tifname\n");
++#else
+ 	printf("port no\tvid\tmac addr\t\tis local?\tageing timer\n");
++#endif
++#else
++#if defined(ZYXEL_PATCH)
++	printf("port no\tmac addr\t\tis local?\tageing timer\tifname\n");
+ #else
+ 	printf("port no\tmac addr\t\tis local?\tageing timer\n");
++#endif	
++#endif
++#if defined(ZYXEL_PATCH)
++	char ifName[IFNAMSIZ];
+ #endif
+ 	for (i = 0; i < offset; i++) {
+ 		const struct fdb_entry *f = fdb + i;
+@@ -710,6 +721,12 @@
+ 		       f->mac_addr[3], f->mac_addr[4], f->mac_addr[5]);
+ 		printf("%s\t\t", f->is_local?"yes":"no");
+ 		br_show_timer(&f->ageing_timer_value);
++#if defined(ZYXEL_PATCH)		
++		ifName[0] = 0;
++		if(!get_ifname(brname, f->port_no, ifName)){
++			printf("\t\t%s", ifName);
++		}
++#endif
+ 		printf("\n");
+ 	}
+ 	return 0;
+Index: bridge-utils-1.2/libbridge/libbridge.h
+===================================================================
+--- bridge-utils-1.2.orig/libbridge/libbridge.h	2015-11-16 18:39:28.000000000 +0800
++++ bridge-utils-1.2/libbridge/libbridge.h	2015-11-16 18:58:02.957686448 +0800
+@@ -128,4 +128,9 @@
+ 			    int path_cost);
+ extern int br_read_fdb(const char *br, struct fdb_entry *fdbs, 
+ 		       unsigned long skip, int num);
++
++#if defined(ZYXEL_PATCH)
++extern int get_ifname(const char *brname, int portno, char *ifname);
++#endif
++
+ #endif
+Index: bridge-utils-1.2/libbridge/libbridge_devif.c
+===================================================================
+--- bridge-utils-1.2.orig/libbridge/libbridge_devif.c	2015-11-16 18:39:28.000000000 +0800
++++ bridge-utils-1.2/libbridge/libbridge_devif.c	2015-11-16 18:58:26.094315350 +0800
+@@ -107,6 +107,29 @@
+ 	return -1;
+ }
+ 
++#if defined(ZYXEL_PATCH)
++int get_ifname(const char *brname, int portno, char *ifname)
++{
++	int ifindices[MAX_PORTS];
++	unsigned long args[4] = { BRCTL_GET_PORT_LIST,
++				  (unsigned long)ifindices, MAX_PORTS, 0 };
++	struct ifreq ifr;
++
++	memset(ifindices, 0, sizeof(ifindices));
++	strncpy(ifr.ifr_name, brname, IFNAMSIZ);
++	ifr.ifr_data = (char *) &args;
++
++	if (ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr) < 0) {
++		dprintf("get_portno: get ports of %s failed: %s\n",
++			brname, strerror(errno));
++		return -1;
++	}
++
++	if_indextoname(ifindices[portno], ifname);
++	return 0;
++}
++#endif
++
+ /* get information via ioctl */
+ static int old_get_bridge_info(const char *bridge, struct bridge_info *info)
+ {

@@ -1,0 +1,502 @@
+Index: ntpclient-2007/ntpclient.c
+===================================================================
+--- ntpclient-2007.orig/ntpclient.c	2008-01-01 10:16:10.000000000 +0800
++++ ntpclient-2007/ntpclient.c	2014-09-18 14:29:14.704330139 +0800
+@@ -55,6 +55,15 @@
+ #ifdef USE_OBSOLETE_GETTIMEOFDAY
+ #include <sys/time.h>
+ #endif
++#ifdef ZyXEL_PATCH
++#include <signal.h>
++#include <poll.h>
++#define SNTP_RESULT_FILE "/tmp/sntp.dat"
++
++#ifdef __linux__
++#undef __linux__
++#endif
++#endif
+ 
+ #include "ntpclient.h"
+ 
+@@ -123,6 +132,17 @@
+ 	unsigned int fine;
+ };
+ 
++#ifdef ZyXEL_PATCH
++#define NTP_MAX 5
++typedef struct {
++	char *hostname;
++	int port;
++	struct in_addr addr;
++	unsigned short isResolv;
++} NTP_SERVER;
++static int srv_stop = 0;
++#endif
++
+ struct ntp_control {
+ 	u32 time_of_send[2];
+ 	int live;
+@@ -132,10 +152,18 @@
+ 	int goodness;
+ 	int cross_check;
+ 	char serv_addr[4];
++#ifdef ZyXEL_PATCH	
++	NTP_SERVER ntp_server[NTP_MAX];
++	int ntp_server_count;
++#endif	
+ };
+ 
+ /* prototypes for some local routines */
++#ifdef ZyXEL_PATCH	
++int send_packet(int usd, u32 time_sent[2]);
++#else
+ static void send_packet(int usd, u32 time_sent[2]);
++#endif
+ static int rfc1305print(u32 *data, struct ntptime *arrival, struct ntp_control *ntpc, int *error);
+ /* static void udp_handle(int usd, char *data, int data_len, struct sockaddr *sa_source, int sa_len); */
+ 
+@@ -225,8 +253,16 @@
+ 	*time_fine   = NTPFRAC(now.tv_usec);
+ #endif
+ }
++#ifdef ZyXEL_PATCH	
++void stop_handler(int signal)
++{
++  srv_stop = 1;
++}
+ 
++int send_packet(int usd, u32 time_sent[2])
++#else
+ static void send_packet(int usd, u32 time_sent[2])
++#endif
+ {
+ 	u32 data[12];
+ #define LI 0
+@@ -237,10 +273,12 @@
+ #define PREC -6
+ 
+ 	if (debug) fprintf(stderr,"Sending ...\n");
++#ifndef ZyXEL_PATCH		
+ 	if (sizeof data != 48) {
+ 		fprintf(stderr,"size error\n");
+ 		return;
+ 	}
++#endif
+ 	memset(data,0,sizeof data);
+ 	data[0] = htonl (
+ 		( LI << 30 ) | ( VN << 27 ) | ( MODE << 24 ) |
+@@ -250,7 +288,11 @@
+ 	ntpc_gettime(time_sent, time_sent+1);
+ 	data[10] = htonl(time_sent[0]); /* Transmit Timestamp coarse */
+ 	data[11] = htonl(time_sent[1]); /* Transmit Timestamp fine   */
++#ifdef ZyXEL_PATCH	
++	return send(usd,data,48,0);
++#else	
+ 	send(usd,data,48,0);
++#endif
+ }
+ 
+ static void get_packet_timestamp(int usd, struct ntptime *udp_arrival_ntp)
+@@ -438,21 +480,37 @@
+ #endif
+ 	return 1;
+ }
+-
++#ifdef ZyXEL_PATCH
++char* stuff_net_addr(struct in_addr *p, char *hostname)
++#else
+ static void stuff_net_addr(struct in_addr *p, char *hostname)
++#endif
+ {
+ 	struct hostent *ntpserver;
+ 	ntpserver=gethostbyname(hostname);
+ 	if (ntpserver == NULL) {
+-		herror(hostname);
++		if(debug) herror(hostname);
++#ifdef ZyXEL_PATCH
++		return NULL;
++#else		
+ 		exit(1);
++#endif
+ 	}
+ 	if (ntpserver->h_length != 4) {
+ 		/* IPv4 only, until I get a chance to test IPv6 */
+ 		fprintf(stderr,"oops %d\n",ntpserver->h_length);
++#ifdef ZyXEL_PATCH
++		return NULL;
++#else			
+ 		exit(1);
++#endif
+ 	}
++#ifdef ZyXEL_PATCH
++	if(p != NULL) memcpy(&(p->s_addr),ntpserver->h_addr_list[0],4);
++	return ntpserver->h_addr_list[0];
++#else
+ 	memcpy(&(p->s_addr),ntpserver->h_addr_list[0],4);
++#endif
+ }
+ 
+ static void setup_receive(int usd, unsigned int interface, short port)
+@@ -470,18 +528,89 @@
+ 	/* listen(usd,3); this isn't TCP; thanks Alexander! */
+ }
+ 
++#ifdef ZyXEL_PATCH
++int setup_transmit(int usd, struct ntp_control *ntpc, int host_idx)
++#else
+ static void setup_transmit(int usd, char *host, short port, struct ntp_control *ntpc)
++#endif
+ {
++#ifdef ZyXEL_PATCH
++	if(ntpc == NULL) return 0;
++	if(host_idx < 0 || host_idx > ntpc->ntp_server_count)
++		return 0;
++	char *host;
++	int port;
++#endif
+ 	struct sockaddr_in sa_dest;
+ 	memset(&sa_dest,0,sizeof sa_dest);
+ 	sa_dest.sin_family=AF_INET;
++#ifdef ZyXEL_PATCH
++	host = ntpc->ntp_server[host_idx].hostname;
++	port = ntpc->ntp_server[host_idx].port;
++	if(stuff_net_addr(&(sa_dest.sin_addr),host) == NULL)
++		return 0;
++	ntpc->ntp_server[host_idx].isResolv = 1;
++	ntpc->ntp_server[host_idx].addr = sa_dest.sin_addr;
++#else
+ 	stuff_net_addr(&(sa_dest.sin_addr),host);
++#endif
+ 	memcpy(ntpc->serv_addr,&(sa_dest.sin_addr),4); /* XXX asumes IPv4 */
+ 	sa_dest.sin_port=htons(port);
+ 	if (connect(usd,(struct sockaddr *)&sa_dest,sizeof sa_dest)==-1)
++#ifdef ZyXEL_PATCH	
++		return 0;
++	else
++		return 1;
++#else
+ 		{perror("connect");exit(1);}
++#endif
+ }
++#ifdef ZyXEL_PATCH
++int ntp_handle(int usd, struct ntp_control *ntpc, int *_e){
++	struct sockaddr sa_xmit;
++	int i, pack_len, error;
++	socklen_t sa_xmit_len;
++	struct ntptime udp_arrival_ntp;
++	static u32 incoming_word[325];
++#define incoming ((char *) incoming_word)
++#define sizeof_incoming (sizeof incoming_word)
++	unsigned short isUpdateTime = 0;
++	struct pollfd poll_fd;
++	memset(&poll_fd, 0, sizeof(struct pollfd));
++
++	sa_xmit_len=sizeof sa_xmit;
++	send_packet(usd,ntpc->time_of_send);
++	poll_fd.fd = usd; /* We'll be polling shortly */
++	poll_fd.events = POLLIN;	
++	
++	if( poll( &poll_fd, 1, 5000 ) ) {
++		if (debug) printf("Receive.....\n");
+ 
++		pack_len=recvfrom(usd,incoming,sizeof_incoming,0,
++		                  &sa_xmit,&sa_xmit_len);
++		error = ntpc->goodness;
++		if (pack_len<0) {
++			if (debug) perror("recvfrom");		
++		} else if (pack_len>0 && (unsigned)pack_len<sizeof_incoming){
++			get_packet_timestamp(usd, &udp_arrival_ntp);
++			if (check_source(pack_len, &sa_xmit, sa_xmit_len, ntpc)!=0) goto fail;
++			if (rfc1305print(incoming_word, &udp_arrival_ntp, ntpc, &error)!=0) goto fail;
++			/* udp_handle(usd,incoming,pack_len,&sa_xmit,sa_xmit_len); */		
++			isUpdateTime = 1;
++		} else {
++			if (debug) printf("Ooops.  pack_len=%d\n",pack_len);
++			fflush(stdout);
++		}
++		
++		*_e = error;
++	}
++fail:
++#undef incoming
++#undef sizeof_incoming
++
++	return isUpdateTime;
++}
++#else
+ static void primary_loop(int usd, struct ntp_control *ntpc)
+ {
+ 	fd_set fds;
+@@ -545,6 +674,7 @@
+ #undef incoming
+ #undef sizeof_incoming
+ }
++#endif
+ 
+ #ifdef ENABLE_REPLAY
+ static void do_replay(void)
+@@ -612,6 +742,14 @@
+ 	ntpc.cycle_time=600;          /* seconds */
+ 	ntpc.goodness=0;
+ 	ntpc.cross_check=1;
++	
++#ifdef ZyXEL_PATCH
++	int port, probes_sent=0, err;
++	char *tmp;
++	int ntp_idx = 0;
++	ntpc.ntp_server_count = 0;
++	memset(ntpc.ntp_server, 0, sizeof(NTP_SERVER)*NTP_MAX);
++#endif	
+ 
+ 	for (;;) {
+ 		c = getopt( argc, argv, "c:" DEBUG_OPTION "f:g:h:i:lp:q:" REPLAY_OPTION "st");
+@@ -635,7 +773,23 @@
+ 				ntpc.goodness = atoi(optarg);
+ 				break;
+ 			case 'h':
++#ifdef ZyXEL_PATCH
++				if(ntpc.ntp_server_count >= NTP_MAX){
++					fprintf(stderr, "Only support %d NTP server. \n", NTP_MAX);
++					exit(1);
++				}
++				port = 0;
++				hostname = optarg;
++				if((tmp = strchr(hostname, ':')) != NULL){ 
++					*tmp = '\0'; 
++					port = atoi(tmp+1);
++				}
++				ntpc.ntp_server[ntpc.ntp_server_count].hostname = hostname;
++				ntpc.ntp_server[ntpc.ntp_server_count].port = ((port == 0) ? NTP_PORT : port);
++				ntpc.ntp_server_count++;
++#else			
+ 				hostname = optarg;
++#endif
+ 				break;
+ 			case 'i':
+ 				ntpc.cycle_time = atoi(optarg);
+@@ -668,7 +822,12 @@
+ 				exit(1);
+ 		}
+ 	}
+-	if (hostname == NULL) {
++#ifdef ZyXEL_PATCH	
++	if (ntpc.ntp_server_count == 0) 
++#else
++	if (hostname == NULL) 
++#endif
++	{
+ 		usage(argv[0]);
+ 		exit(1);
+ 	}
+@@ -683,6 +842,26 @@
+ 	}
+ 
+ 	if (debug) {
++#ifdef ZyXEL_PATCH
++		printf("Configuration:\n"
++		"  -c probe_count %d\n"
++		"  -d (debug)     %d\n"
++		"  -g goodness    %d\n"
++		"  -i interval    %d\n"
++		"  -l live        %d\n"
++		"  -p local_port  %d\n"
++		"  -q min_delay   %f\n"
++		"  -s set_clock   %d\n"
++		"  -x cross_check %d\n",
++		ntpc.probe_count, debug, ntpc.goodness,
++		ntpc.cycle_time, ntpc.live, udp_local_port, min_delay,
++		ntpc.set_clock, ntpc.cross_check );
++		
++		printf("  -h hostname    \n");
++		for(c=0; c<ntpc.ntp_server_count; c++){
++			printf("\t\t %d => %s\n", (c+1), ntpc.ntp_server[c].hostname);
++		}
++#else	
+ 		printf("Configuration:\n"
+ 		"  -c probe_count %d\n"
+ 		"  -d (debug)     %d\n"
+@@ -697,8 +876,60 @@
+ 		ntpc.probe_count, debug, ntpc.goodness,
+ 		hostname, ntpc.cycle_time, ntpc.live, udp_local_port, min_delay,
+ 		ntpc.set_clock, ntpc.cross_check );
++#endif
+ 	}
+-
++#ifdef ZyXEL_PATCH		
++	signal(SIGKILL, &stop_handler);
++	signal(SIGHUP, &stop_handler);
++	signal(SIGTERM, &stop_handler);
++	signal(SIGQUIT, &stop_handler);
++#endif	
++	
++#ifdef ZyXEL_PATCH		
++	for (ntp_idx = 0;srv_stop == 0;) {
++		if ((probes_sent >= ntpc.probe_count && ntpc.probe_count != 0)) {
++			break;
++		}
++		/* Startup sequence */
++		if ((usd=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP))==-1)
++			{perror ("socket");exit(1);}
++
++		setup_receive(usd, INADDR_ANY, udp_local_port);
++		
++		if(ntp_idx >= ntpc.ntp_server_count) ntp_idx = 0;	
++		if(!setup_transmit(usd, &ntpc, ntp_idx)){
++			sleep(15);
++			ntp_idx++;
++			close(usd);
++			continue;
++		}
++		
++		if (debug)
++			printf("Connect NTP server %s (%s)\n", 
++				ntpc.ntp_server[ntp_idx].hostname, 
++				inet_ntoa(ntpc.ntp_server[ntp_idx].addr));
++		
++		if(!ntp_handle(usd, &ntpc, &err)){ ntp_idx++; sleep(5);}
++		else {
++			probes_sent++;
++			if(ntpc.set_clock){
++				system("date > "SNTP_RESULT_FILE);
++				/*notify the ntp sync success , by charisse*/
++				handle_ntpsync_success();
++			}
++			/* best rollover option: specify -g, -s, and -l.
++			 * simpler rollover option: specify -s and -l, which
++			 * triggers a magic -c 1 */
++			if ((err < ntpc.goodness && ntpc.goodness != 0) ||
++				(probes_sent >= ntpc.probe_count && ntpc.probe_count != 0)) {
++				ntpc.set_clock = 0;
++				if (!ntpc.live) break;
++			}
++		}
++		close(usd);
++		sleep(ntpc.cycle_time); 
++	}
++#else
+ 	/* Startup sequence */
+ 	if ((usd=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP))==-1)
+ 		{perror ("socket");exit(1);}
+@@ -708,6 +939,7 @@
+ 	setup_transmit(usd, hostname, NTP_PORT, &ntpc);
+ 
+ 	primary_loop(usd, &ntpc);
++#endif	
+ 
+ 	close(usd);
+ 	return 0;
+Index: ntpclient-2007/Makefile
+===================================================================
+--- ntpclient-2007.orig/Makefile	2008-01-01 01:13:56.000000000 +0800
++++ ntpclient-2007/Makefile	2014-09-18 14:28:02.934263278 +0800
+@@ -13,15 +13,17 @@
+ CFLAGS += -DENABLE_DEBUG
+ CFLAGS += -DENABLE_REPLAY
+ # CFLAGS += -DUSE_OBSOLETE_GETTIMEOFDAY
++CFLAGS += -DZyXEL_PATCH
+ 
+-LDFLAGS += -lrt
++ZYXEL_LIBS = -lzcfg_msg
++LDFLAGS += -lrt $(ZYXEL_LIBS)
+ 
+ all: ntpclient
+ 
+ test: ntpclient
+ 	./ntpclient -d -r <test.dat
+ 
+-ntpclient: ntpclient.o phaselock.o
++ntpclient: ntpclient.o phaselock.o extern.o
+ 
+ ntpclient.o phaselock.o: ntpclient.h
+ 
+Index: ntpclient-2007/extern.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ntpclient-2007/extern.c	2014-09-18 14:28:02.938263278 +0800
+@@ -0,0 +1,65 @@
++#ifdef ZyXEL_PATCH
++#include <stdio.h>
++#include <string.h>
++
++
++/*ZyXEL zcfg*/
++#include "zcfg_common.h"
++#include "zcfg_fe_rdm_access.h"
++#include "zcfg_msg.h"
++#include <json/json.h>
++
++
++void ntpclient_eid_register( void ){
++	/*Register dnsmasq eid which is defined in zcfg_eid.h*/
++	zcfgEidInit(ZCFG_EID_NTPCLIENT, NULL);
++}
++
++static zcfgRet_t ntpclient_msg_send(int msg_type, int payloadLen, const char *payload)
++{
++	zcfgRet_t ret;
++	void *sendBuf = NULL;
++	void *recvBuf = NULL;
++	zcfgMsg_t *sendMsgHdr = NULL;
++	zcfgMsg_t *recvMsgHdr = NULL;
++	int buf_size = 0;
++
++	buf_size = sizeof(zcfgMsg_t)+payloadLen;
++	sendBuf = malloc(buf_size);
++	sendMsgHdr = (zcfgMsg_t*)sendBuf;
++
++	sendMsgHdr->type = msg_type;
++	sendMsgHdr->length = payloadLen;
++	sendMsgHdr->srcEid = ZCFG_EID_NTPCLIENT;
++	sendMsgHdr->dstEid = ZCFG_EID_TR69;
++	if(payload != NULL)
++		memcpy(sendBuf+sizeof(zcfgMsg_t), payload, payloadLen);
++
++	ret = zcfgMsgSendAndGetReply(sendMsgHdr, (zcfgMsg_t **)&recvBuf, 0);
++
++	if(ret == ZCFG_SUCCESS) {
++		recvMsgHdr = (zcfgMsg_t*)recvBuf;
++
++		if(recvMsgHdr->type == RESPONSE_SUCCESS) {
++			/*Success*/
++		}
++		free(recvBuf);
++	}
++
++	return ret;
++}
++
++void handle_ntpsync_success(void)
++{
++	zcfgRet_t ret;
++
++	/* send ZCFG_MSG_MGABDEV_DETECT to ESMD for notification  */
++	ret = ntpclient_msg_send(ZCFG_MSG_NTP_SYNC_SUCCESS, 0, NULL);
++	if(ret != ZCFG_SUCCESS && ret != ZCFG_SUCCESS_AND_NO_REPLY)
++		printf( "%s ntpclient_msg_send fail,ret=%d", __func__, ret);
++
++}
++
++
++#endif
++
+Index: ntpclient-2007/ntpclient.h
+===================================================================
+--- ntpclient-2007.orig/ntpclient.h	2007-12-31 05:41:04.000000000 +0800
++++ ntpclient-2007/ntpclient.h	2014-09-18 14:28:02.938263278 +0800
+@@ -1,3 +1,5 @@
++#ifndef __NTPCLIENT_H__
++#define __NTPCLIENT_H__
+ /* when present, debug is a true global */
+ #ifdef ENABLE_DEBUG
+ extern int debug;
+@@ -10,3 +12,9 @@
+ 
+ /* prototype for function defined in phaselock.c */
+ int contemplate_data(unsigned int absolute, double skew, double errorbar, int freq);
++
++#ifdef ZyXEL_PATCH
++void ntpclient_eid_register( void );
++void handle_ntpsync_success(void);
++#endif
++#endif
+\ No newline at end of file

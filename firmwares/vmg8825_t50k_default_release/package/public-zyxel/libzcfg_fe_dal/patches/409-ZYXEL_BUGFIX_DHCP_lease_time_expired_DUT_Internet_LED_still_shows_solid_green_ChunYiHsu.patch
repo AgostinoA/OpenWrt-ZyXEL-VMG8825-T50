@@ -1,0 +1,84 @@
+Index: libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/js/zcfg_fe_dal_networkmap.c	2017-12-26 10:09:47.769297221 +0800
++++ libzcfg_fe_dal-1.0/js/zcfg_fe_dal_networkmap.c	2017-12-26 10:48:40.339821069 +0800
+@@ -983,6 +983,9 @@
+ 		X_ZYXEL_DefaultGatewayIface = true;
+ #endif
+ 		if(X_ZYXEL_DefaultGatewayIface && (!strcmp(Status, "Up") || !strcmp(Status, "LowerLayerDown"))){
++			bool bIPv6Exist = false;
++			char sysCmd[128] = "\0";
++
+ 			IID_INIT(v4AddrIid);
+ 			v4AddrIid.level = 2;
+ 			v4AddrIid.idx[0] = ipIfaceIid.idx[0];
+@@ -1001,23 +1004,55 @@
+ 				}
+ 				zcfgFeJsonObjFree(v4AddrObj);
+ 			}
+-			IID_INIT(v6AddrIid);
+-			v6AddrIid.level = 2;
+-			v6AddrIid.idx[0] = ipIfaceIid.idx[0];
+-			v6AddrIid.idx[1] = 1;
+-			if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, &v6AddrObj) == ZCFG_SUCCESS){
+-				IPAddress = json_object_get_string(json_object_object_get(v6AddrObj,"IPAddress"));
+-				Status = json_object_get_string(json_object_object_get(v6AddrObj, "Status"));
+-				if(Status == NULL){
+-					Status = "";
++
++#ifdef OI_CUSTOMIZATION
++			sprintf(sysCmd, "ifconfig | grep -A2 \"nas\\|ppp\" | grep \"inet6 addr\" | grep \"Scope:Global\" > /var/wan6ipcheck");
++			system(sysCmd);
++			FILE *fp = fopen("/var/wan6ipcheck", "r");
++			if(fp) {
++				char wan6ip[512] = {0};
++				fread(wan6ip, 1, sizeof(wan6ip) - 1, fp);
++				if(strchr(wan6ip, ':'))
++					bIPv6Exist = true;
++				fclose(fp);
++			}
++
++			if ( bIPv6Exist == false )
++			{
++				IID_INIT(v6AddrIid);
++				while(zcfgFeObjJsonGetNext(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, &v6AddrObj) == ZCFG_SUCCESS) {
++					if ( v6AddrIid.idx[0] == ipIfaceIid.idx[0] ) {
++						int bEnable = json_object_get_int(json_object_object_get(v6AddrObj, "Enable"));
++						if ( bEnable ) {
++							Jaddi(v6AddrObj,"Enable",false);
++							zcfgFeObjJsonSet(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, v6AddrObj, NULL);
++						}
++					}
++
++					zcfgFeJsonObjFree(v6AddrObj);
+ 				}
+-				if(IPAddress != NULL && strcmp(IPAddress, "") && !strcmp(Status, "Enabled")){
+-					wanstatus = 1;
++			}
++			else
++#endif /* OI_CUSTOMIZATION */
++			{
++				IID_INIT(v6AddrIid);
++				v6AddrIid.level = 2;
++				v6AddrIid.idx[0] = ipIfaceIid.idx[0];
++				v6AddrIid.idx[1] = 1;
++				if(zcfgFeObjJsonGet(RDM_OID_IP_IFACE_V6_ADDR, &v6AddrIid, &v6AddrObj) == ZCFG_SUCCESS){
++					IPAddress = json_object_get_string(json_object_object_get(v6AddrObj,"IPAddress"));
++					Status = json_object_get_string(json_object_object_get(v6AddrObj, "Status"));
++					if(Status == NULL){
++						Status = "";
++					}
++					if(IPAddress != NULL && strcmp(IPAddress, "") && !strcmp(Status, "Enabled")){
++						wanstatus = 1;
++						zcfgFeJsonObjFree(v6AddrObj);
++						zcfgFeJsonObjFree(ipIfaceObj);
++						break;
++					}
+ 					zcfgFeJsonObjFree(v6AddrObj);
+-					zcfgFeJsonObjFree(ipIfaceObj);
+-					break;
+ 				}
+-				zcfgFeJsonObjFree(v6AddrObj);
+ 			}
+ 		}
+ 		

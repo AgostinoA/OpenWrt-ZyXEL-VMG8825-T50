@@ -1,0 +1,606 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2014-12-11 13:45:52.790749948 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2014-12-11 13:45:52.806749949 +0800
+@@ -581,7 +581,6 @@
+ 		return ret;
+ 	}
+ 
+-	/*fill up tr98 LANEthernetInterfaceConfig.i.Stats object*/
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+@@ -609,6 +608,67 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.Showtime
++
++    Related object in TR181:
++    Device.DSL.Line.i.Stats.Total.
++*/
++extern zcfgRet_t WANDslIfaceCfgStObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	char tr181PathName[128] = {0};
++	char tr181Obj[128] = {0};
++	tr98Parameter_t *paramList = NULL;
++	objIndex_t dslLineIid;
++	uint32_t  dslLineOid = 0;
++	struct json_object *dslStasShowTime = NULL;
++	struct json_object *paramValue = NULL;
++	char vendorParamName[32] = {0};
++	struct json_object *vendorParamValue = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++
++	/* tr98TmpName will be InternetGatewayDevice.WANDevice.i */
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, tr181PathName)) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get TR181 mapping name fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(dslLineIid);
++	sprintf(tr181Obj, "Device.%s", tr181PathName);
++	dslLineOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
++	if((ret = feObjJsonGet(dslLineOid, &dslLineIid, &dslStasShowTime, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get dslStasShowTime obj fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		sprintf(vendorParamName, "X_ZYXEL_%s", paramList->name);
++		paramValue = json_object_object_get(dslStasShowTime, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		else if( (vendorParamValue = json_object_object_get(dslStasShowTime, vendorParamName)) != NULL){
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(vendorParamValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++
++	json_object_put(dslStasShowTime);	
++	return ZCFG_SUCCESS;
++}
++
+ 
+ /*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANEthernetInterfaceConfig
+  *
+Index: libzcfg_fe_tr98-1.0/wanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.h	2014-12-11 13:45:52.790749948 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.h	2014-12-11 13:45:52.806749949 +0800
+@@ -6,6 +6,7 @@
+ extern tr98Parameter_t para_WANDslIfaceCfg[];
+ extern tr98Parameter_t para_WANDslIfTestParam[];
+ extern tr98Parameter_t para_WANDslIfaceCfgStatTotal[];
++extern tr98Parameter_t para_WANDslIfaceCfgStatSt[];
+ extern tr98Parameter_t para_WANEthIntfConf[];
+ extern tr98Parameter_t para_WANEthIntfConfStat[];
+ extern tr98Parameter_t para_WANDslLinkConf[];
+@@ -59,7 +60,8 @@
+ 
+ /*InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.Total*/
+ extern zcfgRet_t WANDslIfaceCfgTtlObjGet(char *, int, struct json_object **, bool);
+-
++/* InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.Showtime */
++extern zcfgRet_t WANDslIfaceCfgStObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t WANEthIfaceCfgObjGet(char *, int, struct json_object **, bool);
+ extern zcfgRet_t WANEthIfaceCfgObjSet(char *, int, struct json_object *, struct json_object *);
+ 
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2014-12-11 13:45:52.790749948 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2014-12-17 11:21:12.503710933 +0800
+@@ -261,9 +261,9 @@
+ #endif
+ {TR98_DHCP_STATIC_ADDR,         ATTR_INDEX_CREA,para_DhcpStaticAddr,    lanDhcpStaticAddrObjGet, lanDhcpStaticAddrObjSet,lanDhcpStaticAddrObjAdd,lanDhcpStaticAddrObjDel, lanDhcpStaticAddrObjNotify, lanDhcpStaticAddrObjAttrGet, lanDhcpStaticAddrObjAttrSet},
+ {TR98_DHCP_OPT,                 ATTR_INDEX_CREA,para_DhcpOpt,           lanDhcpOptObjGet,        lanDhcpOptObjSet,       lanDhcpOptObjAdd, lanDhcpOptObjDel,lanDhcpOptObjNotify, lanDhcpOptObjAttrGet, lanDhcpOptObjAttrSet},
+-{TR98_DHCP_COND_SERVPOOL,       ATTR_INDEXNODE, para_DhcpCondServPool,  NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_SERVPOOL_DHCP_STATICADDR, ATTR_INDEXNODE,	para_DhcpCondServPoolDhcpStaticAddr,NULL,        NULL,                   NULL,             NULL,            NULL},
+-{TR98_SERVPOOL_DHCP_OPT,        ATTR_INDEXNODE, para_DhcpCondServPoolDhcpOpt,NULL,               NULL,                   NULL,             NULL,            NULL},
++{TR98_DHCP_COND_SERVPOOL,       ATTR_INDEX_CREA,para_DhcpCondServPool,  lanDhcpCondServPoolObjGet,  lanDhcpCondServPoolObjSet,  lanDhcpCondServPoolObjAdd,  lanDhcpCondServPoolObjDel, lanDhcpCondServPoolObjNotify, lanDhcpCondServPoolObjAttrGet, lanDhcpCondServPoolObjAttrSet},
++//{TR98_SERVPOOL_DHCP_STATICADDR, ATTR_INDEXNODE,	para_DhcpCondServPoolDhcpStaticAddr,NULL, NULL, NULL, NULL, NULL, NULL, NULL},
++//{TR98_SERVPOOL_DHCP_OPT,        ATTR_INDEXNODE, para_DhcpCondServPoolDhcpOpt,NULL,  NULL,  NULL,  NULL, NULL, NULL, NULL},
+ {TR98_LAN_ETH_INTF_CONF,        ATTR_INDEXNODE, para_LanEthIntfConf,    lanEthIntfConfObjGet,    lanEthIntfConfObjSet,   NULL,             NULL,            lanEthIntfConfObjNotify, lanEthIntfConfObjAttrGet, lanEthIntfConfObjAttrSet},
+ {TR98_LAN_ETH_INTF_CONF_STAT,   0,              para_LanEthIntfConfStat,lanEthIntfConfStatObjGet,NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LAN_USB_INTF_CONF,        ATTR_INDEXNODE, NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+@@ -290,7 +290,7 @@
+ {TR98_WAN_DSL_INTF_TEST_PARAM,  0,              para_WANDslIfTestParam, WANDslIfTestParamObjGet,    NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_DSL_INTF_CONF_STAT,   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_TTL,                      0,              para_WANDslIfaceCfgStatTotal,  WANDslIfaceCfgTtlObjGet,                    NULL,                   NULL,             NULL,            NULL},
+-//{TR98_ST,                       0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_ST,                       0,              para_WANDslIfaceCfgStatSt,     WANDslIfaceCfgStObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LST_SHOWTIME,             0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_CURRENT_DAY,              0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_QTR_HR,                   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+Index: libzcfg_fe_tr98-1.0/wanDev_parameter.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev_parameter.h	2014-12-11 13:45:52.790749948 +0800
++++ libzcfg_fe_tr98-1.0/wanDev_parameter.h	2014-12-11 13:45:52.806749949 +0800
+@@ -182,6 +182,29 @@
+ 	{ NULL, 0, 0, 0}
+ };
+ 
++tr98Parameter_t para_WANDslIfaceCfgStatSt[] = {
++	{ "ReceiveBlocks", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "TransmitBlocks", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CellDelin", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LinkRetrain", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "InitErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LInit", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "InitTimeouts", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LossOfFraming", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "LOF", PARAMETER_ATTR_READONLY, 0, json_type_boolean},
++	{ "ErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "SeverelyErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCSeverelyErroredSecs", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "FECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCFECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "HECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCHECErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "CRCErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ "ATUCCRCErrors", PARAMETER_ATTR_READONLY, 0, json_type_uint32},
++	{ NULL, 0, 0, 0}
++};
++
+ tr98Parameter_t para_WANEthIntfConf[] = {
+ 	{ "Enable", PARAMETER_ATTR_WRITE, 0, json_type_boolean},
+ 	{ "Status", PARAMETER_ATTR_READONLY, 10, json_type_string},
+Index: libzcfg_fe_tr98-1.0/lanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.c	2014-12-11 13:45:52.786749948 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.c	2014-12-17 11:19:45.620108623 +0800
+@@ -15,6 +15,7 @@
+ 
+ extern tr98Object_t tr98Obj[];
+ 
++
+ int getNumOfBridge()
+ {
+ 	objIndex_t objIid;
+@@ -1872,7 +1873,7 @@
+ 
+ 
+ 
+-#if 0
++
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.DHCPConditionalServingPool.i
+ 
+     Related object in TR181:
+@@ -1881,66 +1882,352 @@
+ zcfgRet_t lanDhcpCondServPoolObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 
++	zcfgRet_t ret;
++	char mappingPathName[128] = {0};
++	char tr181Obj[128] = {0};
++	uint32_t Oid = 0;
++	objIndex_t Iid;
++	struct json_object *Jobj = NULL;
++	struct json_object *paramValue = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++	
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s() 98 to 181 Mapping Fail!!\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(Iid);
++	sprintf(tr181Obj, "Device.%s", mappingPathName);
++	Oid = zcfgFeObjNameToObjId(tr181Obj, &Iid);
++	if((ret = feObjJsonGet(Oid, &Iid, &Jobj, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s() feObjJsonGet Fail!! Oid=%u ret=%d\n\n", __FUNCTION__, Oid, ret);
++		return ret;
++	}
++
++	/*fill up tr98 LANEthernetInterfaceConfig object*/
++	*tr98Jobj = json_object_new_object();
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		paramValue = json_object_object_get(Jobj, paramList->name);
++		if(paramValue != NULL) {
++			json_object_object_add(*tr98Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++			paramList++;
++			continue;
++		}
++		
++		/*Not defined in tr181, give it a default value*/
++#if TR98_MAPPING_DEBUG
++		printf("Can't find parameter %s in TR181\n", paramList->name);
++#endif
++		paramList++;
++	}
++
++	json_object_put(Jobj);	
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t lanDhcpCondServPoolObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
+ {
+ 
++	zcfgRet_t ret;
++	char mappingPathName[128] = {0};
++	char tr181Obj[128] = {0};
++	uint32_t Oid = 0;
++	objIndex_t Iid;
++	struct json_object *Jobj = NULL;
++	struct json_object *paramValue = NULL;
++	struct json_object *tr181ParamValue = NULL;
++	struct json_object *tmpObj = NULL;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++	
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s() 98 to 181 Mapping Fail!!\n", __FUNCTION__);
++		return ret;
++	}
++
++	IID_INIT(Iid);
++	sprintf(tr181Obj, "Device.%s", mappingPathName);
++	Oid = zcfgFeObjNameToObjId(tr181Obj, &Iid);
++	if((ret = zcfgFeObjJsonGet(Oid, &Iid, &Jobj)) != ZCFG_SUCCESS){
++		return ret;
++	}
++	if(multiJobj){
++		tmpObj = Jobj;
++		Jobj = NULL;
++		Jobj = zcfgFeJsonMultiObjAppend(Oid, &Iid, multiJobj, tmpObj);
++	}
++	
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*Write new parameter value from tr98 object to tr181 objects*/
++		paramValue = json_object_object_get(tr98Jobj, paramList->name);
++		if(paramValue != NULL){
++			/*Write value from Config to Device.Ethernet.Interface.i*/
++			tr181ParamValue = json_object_object_get(Jobj, paramList->name);
++			if(tr181ParamValue != NULL) {
++				json_object_object_add(Jobj, paramList->name, JSON_OBJ_COPY(paramValue));
++				paramList++;
++				continue;
++			}		
++		}
++
++		paramList++;	
++	}
++
++	if(multiJobj){
++		json_object_put(tmpObj);
++	}
++	else{
++		if((ret = zcfgFeObjJsonSet(Oid, &Iid, Jobj, NULL)) != ZCFG_SUCCESS ) {
++			zcfgLog(ZCFG_LOG_ERR, "%s : Set Object Oid:%u Fail\n", __FUNCTION__, Oid);
++			json_object_put(Jobj);
++			return ret;
++		}
++		else {
++			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Object Oid:%u Success\n", __FUNCTION__, Oid);
++		}
++		json_object_put(Jobj);
++	}
+ 	return ZCFG_SUCCESS;
+ }
+ 
+ zcfgRet_t lanDhcpCondServPoolObjAdd(char *tr98FullPathName, int *idx)
+ {
+ 	zcfgRet_t ret;
++	char tr98ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
++	char tr181ObjName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	char tr98TmpName[TR98_MAX_OBJ_NAME_LENGTH] = {0};
+ 	objIndex_t objIid;
+-	char *ptr = NULL;
+-	rdm_Dhcpv4SrvPool_t *dhcpCondServPoolObj = NULL;
++	objIndex_t ipIntfIid;
++	rdm_IpIface_t *ipIntfObj = NULL;
++	rdm_Dhcpv4SrvPool_t *dhcpSrvPoolObj = NULL;
++	char ethLinkPathName[32] = {0};
++	char ipIntfPathName[32] = {0};
++	char *ptr;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
++
++	IID_INIT(objIid);
++	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV4_SRV_POOL, &objIid, NULL)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s(): add RDM_OID_DHCPV4_SRV_POOL Fail!!\n", __FUNCTION__);
++		return ret;
++	}
+ 
+-       printf("Enter %s\n", __FUNCTION__);
+-        
+ 	strcpy(tr98TmpName, tr98FullPathName);
+ 	ptr = strstr(tr98TmpName, ".LANHostConfigManagement");
+ 	*ptr = '\0';
+ 
+ 	/* tr98TmpName will be InternetGatewayDevice.LANDevice.i */
+-	printf("tr98TmpName %s\n", tr98TmpName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98TmpName, ethLinkPathName)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s() 98 to 181 Mapping Fail!!\n", __FUNCTION__);
++		return ret;
++	}
++	else{
++		/* mappingPathName will be Ethernet.Link.i */
++		zcfgLog(LOG_DEBUG, "%s() TR181 object %s\n", __FUNCTION__, ethLinkPathName);
++	}
+ 
++	IID_INIT(ipIntfIid);
++	while(feObjStructGetNext(RDM_OID_IP_IFACE, &ipIntfIid, (void **)&ipIntfObj, TR98_GET_WITHOUT_UPDATE) == ZCFG_SUCCESS){
++		if (strcmp(ipIntfObj->LowerLayers, ethLinkPathName) == 0){
++			sprintf(ipIntfPathName, "IP.Interface.%d", ipIntfIid.idx[0]);
++			zcfgFeObjStructFree(ipIntfObj);
++			break;
++		}
++		else
++			zcfgFeObjStructFree(ipIntfObj);
++	}
+ 
+-	//X_ZYXEL_LanDeviceInterface is no longer in use
+-	IID_INIT(objIid);
+-	if((ret = zcfgFeObjStructAdd(RDM_OID_DHCPV4_SRV_POOL, &objIid, NULL)) != ZCFG_SUCCESS){
+-		printf("Add Instance Fail!!\n");
++	if((ret = zcfgFeObjStructGet(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void **)&dhcpSrvPoolObj)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s(): get RDM_OID_DHCPV4_SRV_POOL Obj Fail!!\n", __FUNCTION__);
++		return ret;
++	}
++
++	strcpy(dhcpSrvPoolObj->Interface, ipIntfPathName);
++	ret = zcfgFeObjStructSet(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void *)dhcpSrvPoolObj, NULL);
++	zcfgFeObjStructFree(dhcpSrvPoolObj);
++	if((ret != ZCFG_DELAY_APPLY) && (ret != ZCFG_SUCCESS))
++	{			
++		zcfgLog(ZCFG_LOG_ERR, "%s(): Set RDM_OID_DHCPV4_SRV_POOL Fail. ret=%d\n", __FUNCTION__, ret);
+ 		return ret;
+ 	}
++
++	sprintf(tr181ObjName, "DHCPv4.Server.Pool.%d", objIid.idx[0] );
++
++	if (ret != ZCFG_DELAY_APPLY){
++		if((ret = zcfgFe181To98MappingNameGet(tr181ObjName, tr98ObjName)) != ZCFG_SUCCESS) {
++			zcfgLog(ZCFG_LOG_ERR, "%s(): Line:%d, 181 to 98 Mapping Fail!!\n", __FUNCTION__, __LINE__);
++			return ret;
++		}
++
++		sscanf(tr98ObjName, "%*[^.].%*[^.].%*d.%*[^.].DHCPConditionalServingPool.%d", idx);
++		zcfgLog(LOG_DEBUG, "%s(): *idx= %d \n", __FUNCTION__, *idx);
++	}
++	
++	return ret;
++}
++
++zcfgRet_t lanDhcpCondServPoolObjDel(char *tr98FullPathName)
++{
++	zcfgRet_t ret;
++	char mappingPathName[128] = {0};
++	char tr181Obj[128] = {0};
++	uint32_t  Oid = 0;
++	objIndex_t Iid;
++
++	zcfgLog(ZCFG_LOG_INFO, "Enter %s\n", __FUNCTION__);
+ 	
+-	if((ret = feObjStructGet(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void **)&dhcpCondServPoolObj)) == ZCFG_SUCCESS){
+-		sprintf(dhcpCondServPoolObj->X_ZYXEL_LanDeviceInterface,"%s",tr98TmpName);
++	if((ret = zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_ERR, "%s() 98 to 181 Mapping Fail!!\n", __FUNCTION__);
++		return ret;
++	}
+ 	
+-		if((ret = zcfgFeObjStructSet(RDM_OID_DHCPV4_SRV_POOL, &objIid, (void *)dhcpCondServPoolObj, NULL)) != ZCFG_SUCCESS) {
+-				printf("Set DHCPConditionalServingPool Fail\n");
+-				zcfgFeObjStructFree(dhcpCondServPoolObj);
+-				return ret;
+-		}
+ 
+-		zcfgFeObjStructFree(dhcpCondServPoolObj);
++	IID_INIT(Iid);
++	sprintf(tr181Obj, "Device.%s", mappingPathName);
++	Oid = zcfgFeObjNameToObjId(tr181Obj, &Iid);
++
++	ret = zcfgFeObjJsonDel(Oid, &Iid, NULL);
++	if(ret == ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_DEBUG, "%s() Delete Object Success\n", __FUNCTION__);
++	}
++	else if (ret == ZCFG_DELAY_APPLY){
++		zcfgLog(ZCFG_LOG_DEBUG, "%s() Delete Object, ret = ZCFG_DELAY_APPLY\n", __FUNCTION__);	
+ 	}
+ 	else{
+-		printf("Get LANDevice Fail!!\n");
+-		return ret;
++		zcfgLog(ZCFG_LOG_ERR, "%s() Delete Object Fail. ret=%d\n", __FUNCTION__, ret);
+ 	}
+ 
+-	*idx = objIid.idx[0];
+-	return ZCFG_SUCCESS;
++	return ret;
+ }
+ 
+-zcfgRet_t lanDhcpCondServPoolObjDel(char *tr98FullPathName)
++
++zcfgRet_t lanDhcpCondServPoolObjNotify(char *tr98ObjName, char *tr181ParamName, struct json_object *tr181ParamVal, int handler, struct json_object **tr98NotifyInfo)
+ {
++	bool found = false;
++	char tr98Notify[256] = "";
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(*tr98NotifyInfo == NULL) {
++		*tr98NotifyInfo = json_object_new_object();
++	}
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(tr181ParamName, paramList->name) == 0) {
++			found = true;
++			sprintf(tr98Notify, "%s.%s", tr98ObjName, paramList->name);
++			break;
++		}
++		
++		paramList++;
++	}
++
++	if(found) {
++		json_object_object_add(*tr98NotifyInfo, tr98Notify, JSON_OBJ_COPY(tr181ParamVal));
++	}
+ 
+ 	return ZCFG_SUCCESS;
+ }
+ 
++int lanDhcpCondServPoolObjAttrGet(char *tr98FullPathName, int handler, char *paramName)
++{
++	char tr181Obj[128] = {0};
++	char mappingPathName[128] = {0};
++	uint32_t Oid = 0;
++	objIndex_t Iid;
++	int attrValue = ZCFG_NO_SUCH_PARAMETER;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName) != ZCFG_SUCCESS) {
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++
++	IID_INIT(Iid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mappingPathName);
++	Oid = zcfgFeObjNameToObjId(tr181Obj, &Iid);
++		
++
++	/*fill up tr98 devInfo object*/
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++		
++		attrValue = zcfgFeParamAttrGetByName(Oid, paramList->name);
++		
++		if(attrValue < 0 ) {
++			attrValue = 0;
++		}
++		break;
++	}
++	
++	return attrValue;
++}
++
++zcfgRet_t lanDhcpCondServPoolObjAttrSet(char *tr98FullPathName, int handler, char *paramName, int newNotify, struct json_object *multiAttrJobj)
++{
++	zcfgRet_t ret;
++	char tr181Obj[128] = {0};
++	char mappingPathName[128] = {0};
++	uint32_t Oid = 0;
++	objIndex_t Iid;
++	int attrValue = 0;
++	tr98Parameter_t *paramList = NULL;
++
++	zcfgLog(ZCFG_LOG_DEBUG, "Enter %s\n", __FUNCTION__);
++	if(zcfgFe98To181MappingNameGet(tr98FullPathName, mappingPathName) != ZCFG_SUCCESS) {
++		zcfgLog(ZCFG_LOG_ERR, "%s() 98 to 181 Mapping Fail!!\n", __FUNCTION__);
++		return ZCFG_INVALID_OBJECT;
++	}
++	
++
++	IID_INIT(Iid);
++	snprintf(tr181Obj, sizeof(tr181Obj),"Device.%s", mappingPathName);
++	Oid = zcfgFeObjNameToObjId(tr181Obj, &Iid);
++
++	paramList = tr98Obj[handler].parameter;
++	while(paramList->name != NULL) {
++		/*find the matched parameter*/
++		if(strcmp(paramList->name, paramName)){
++			paramList++;
++			continue;
++		}
++		/*special case*/
++
++		attrValue = zcfgFeParamAttrGetByName(Oid, paramList->name);
++		if(attrValue < 0) {
++			ret = ZCFG_INVALID_ARGUMENTS;
++			break;
++		}
++
++		/*Write new parameter attribute from tr98 object to tr181 objects*/
++		attrValue = zcfgFeNotifyAttrValSet(attrValue, newNotify);
++		ret = zcfgFeMultiParamAttrAppend(Oid, multiAttrJobj, paramList->name, attrValue);
++		
++		if( ret != ZCFG_SUCCESS){
++			zcfgLog(ZCFG_LOG_ERR, "%s(): set %d %s attribute fail\n", __FUNCTION__, Oid, paramList->name);
++		}
++		break;
++
++	} /*Edn while*/
++	
++	return ret;
++}
++
++#if 0
+ 
+ /*  TR98 Object Name : InternetGatewayDevice.LANDevice.i.LANHostConfigManagement.DHCPConditionalServingPool.i.DHCPStaticAddress.i
+ 
+@@ -2075,7 +2362,7 @@
+     Related object in TR181:
+     Device.Ethernet.Interface.i
+ */
+-extern zcfgRet_t lanEthIntfConfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++zcfgRet_t lanEthIntfConfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
+ {
+ 	zcfgRet_t ret;
+ 	char mappingPathName[128] = {0};
+@@ -2119,7 +2406,7 @@
+ 	return ZCFG_SUCCESS;
+ }
+ 
+-extern zcfgRet_t lanEthIntfConfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
++zcfgRet_t lanEthIntfConfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj)
+ {
+ 	zcfgRet_t ret;
+ 	char mappingPathName[128] = {0};
+Index: libzcfg_fe_tr98-1.0/lanDev.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/lanDev.h	2014-12-11 13:45:52.790749948 +0800
++++ libzcfg_fe_tr98-1.0/lanDev.h	2014-12-11 13:56:43.962762439 +0800
+@@ -63,16 +63,25 @@
+ extern zcfgRet_t lanDhcpCondServPoolObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ extern zcfgRet_t lanDhcpCondServPoolObjAdd(char *tr98FullPathName, int *idx);
+ extern zcfgRet_t lanDhcpCondServPoolObjDel(char *tr98FullPathName);
++extern zcfgRet_t lanDhcpCondServPoolObjNotify(char *, char *, struct json_object *, int, struct json_object **);
++extern int lanDhcpCondServPoolObjAttrGet(char *, int, char *);
++extern zcfgRet_t lanDhcpCondServPoolObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
+ extern zcfgRet_t lanDhcpCondServPoolStaticAddrObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDhcpCondServPoolStaticAddrObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ extern zcfgRet_t lanDhcpCondServPoolStaticAddrObjAdd(char *tr98FullPathName, int *idx);
+ extern zcfgRet_t lanDhcpCondServPoolStaticAddrObjDel(char *tr98FullPathName);
++extern zcfgRet_t lanDhcpCondServPoolStaticAddrObjNotify(char *, char *, struct json_object *, int, struct json_object **);
++extern int lanDhcpCondServPoolStaticAddrObjAttrGet(char *, int, char *);
++extern zcfgRet_t lanDhcpCondServPoolStaticAddrObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
+ extern zcfgRet_t lanDhcpCondServPoolOptObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanDhcpCondServPoolOptObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);
+ extern zcfgRet_t lanDhcpCondServPoolOptObjAdd(char *tr98FullPathName, int *idx);
+ extern zcfgRet_t lanDhcpCondServPoolOptObjDel(char *tr98FullPathName);
++extern zcfgRet_t lanDhcpCondServPoolOptObjNotify(char *, char *, struct json_object *, int, struct json_object **);
++extern int lanDhcpCondServPoolOptObjAttrGet(char *, int, char *);
++extern zcfgRet_t lanDhcpCondServPoolOptObjAttrSet(char *, int, char *, int , struct json_object *);
+ 
+ extern zcfgRet_t lanEthIntfConfObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag);
+ extern zcfgRet_t lanEthIntfConfObjSet(char *tr98FullPathName, int handler, struct json_object *tr98Jobj, struct json_object *multiJobj);

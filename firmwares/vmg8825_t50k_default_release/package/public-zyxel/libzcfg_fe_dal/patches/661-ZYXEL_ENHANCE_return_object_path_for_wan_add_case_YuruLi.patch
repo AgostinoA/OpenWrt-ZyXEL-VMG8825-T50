@@ -1,0 +1,169 @@
+Index: libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/network/broadband/zcfg_fe_dal_broadband.c	2019-04-12 16:13:01.160602726 +0800
++++ libzcfg_fe_dal-1.0/network/broadband/zcfg_fe_dal_broadband.c	2019-04-12 16:14:13.017782325 +0800
+@@ -2483,6 +2483,7 @@
+ 
+ zcfgRet_t addLayer3Objects(struct json_object *Jobj){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
++	char ipIfacePath_tmp[32] = {0};
+ 	//objIndex_t ipIfaceIid;
+ 	//struct json_object *ipIfaceObj = NULL;
+ 	//const char *Name, *Mode, *Encapsulation, *ipMode;
+@@ -2494,6 +2495,10 @@
+ 	IID_INIT(ipIfaceIid);
+ 	if((ret = zcfgFeObjJsonAdd(RDM_OID_IP_IFACE, &ipIfaceIid, NULL)) != ZCFG_SUCCESS)
+ 		return ret;
++	
++	sprintf(ipIfacePath_tmp, "IP.Interface.%u", ipIfaceIid.idx[0]);
++	zcfgFeDalSetReturnValue(Jobj, json_type_string, "ipIfacePath", ipIfacePath_tmp);
++	
+ 	if((ret = zcfgFeObjJsonGetWithoutUpdate(RDM_OID_IP_IFACE, &ipIfaceIid, &ipIfaceObj)) != ZCFG_SUCCESS)
+ 		return ret;
+ 
+@@ -3505,6 +3510,12 @@
+ 	return false;
+ }
+ 
++
++/*
++ *  input: Jobj
++ *  output: _retJobj in Jobj
++ *             replyMsg
++*/
+ zcfgRet_t zcfgFeDalWanAdd(struct json_object *Jobj, char *replyMsg)
+ {
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+@@ -4662,6 +4673,16 @@
+ 	return ret;
+ }
+ 
++/*
++ * input: method, Jobj, replyMsg
++ * output(GET case):
++ *			Jarray: return on wan obj in Jarray[0] or return wan array
++ *
++ * output(POST case)
++ *                 There will be a _retJobj added in Jobj, the ipIfacePath will be added in _retJobj
++ *                  Jobj:{_retJobj:{ipIfacePath:{value}}}
++ *
++*/
+ zcfgRet_t zcfgFeDalWan(const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg){
+ 	zcfgRet_t ret = ZCFG_SUCCESS;
+ 
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.c
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.c	2019-04-12 16:13:01.208602727 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.c	2019-04-12 16:13:01.224602727 +0800
+@@ -3897,6 +3897,70 @@
+ }
+ 
+ /*
++ * get value in _retJobj of Jobj
++ * input: Jobj, key
++ * output: value
++*/
++int zcfgFeDalGetReturnValue(struct json_object *Jobj, const char *key, void* value){
++	json_type type;
++	
++	struct json_object *retParamJobj = json_object_object_get(json_object_object_get(Jobj, JSON_RET_OBJ_NAME), key);
++
++	if(retParamJobj == NULL)
++		return -1;
++
++	type = json_object_get_type(retParamJobj);
++
++	switch(type) {
++		case json_type_string:
++			strcpy((char*)value, (char*)json_object_get_string(retParamJobj));
++			break;
++		case json_type_boolean:
++			*(json_bool*)value = json_object_get_boolean(retParamJobj);
++			break;
++		case json_type_int:
++			*(int*)value = json_object_get_int(retParamJobj);
++			break;
++		default:
++			return -1;
++	}
++
++	return 0;
++}
++
++/*
++ * add {key:value} into _retJobj  (_retJobj is a JSON object in Jobj)
++ * input: Jobj, type(only support string, int, boolean), key, value
++ *
++*/
++
++int zcfgFeDalSetReturnValue(struct json_object *Jobj, json_type type, const char *key, void* value){
++
++	struct json_object *retParamJobj = json_object_object_get(Jobj, JSON_RET_OBJ_NAME);
++
++	if(retParamJobj == NULL){
++		retParamJobj = json_object_new_object();
++		json_object_object_add(Jobj, JSON_RET_OBJ_NAME, retParamJobj);
++	}
++
++	switch(type) {
++		case json_type_string:
++			json_object_object_add(retParamJobj, key, json_object_new_string((const char *)value));
++			break;
++		case json_type_boolean:
++			json_object_object_add(retParamJobj, key, json_object_new_boolean(*(json_bool*)value));
++			break;
++		case json_type_int:
++			json_object_object_add(retParamJobj, key, json_object_new_int(*(int*)value));
++			break;
++		default:
++			return -1;
++	}
++
++	return 0;
++}
++
++/*
+  * input:handlerName,  method, Jobj
+  * output: Jarray, replyMsg
+ */
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal_common.h	2019-04-12 16:12:56.220602631 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal_common.h	2019-04-12 16:13:01.224602727 +0800
+@@ -1,5 +1,12 @@
++#ifndef _ZCFG_FE_DAL_COMMON_H
++#define _ZCFG_FE_DAL_COMMON_H
++
+ #include <stdbool.h>
+ 
++
++#define JSON_RET_OBJ_NAME "_retJobj"
++
++
+ #define JSON_OBJ_COPY(json_object) json_tokener_parse(json_object_to_json_string(json_object))
+ #define Jget(obj, key) json_object_object_get(obj, key)
+ #define Jgets(obj, key) json_object_get_string(json_object_object_get(obj, key))
+@@ -137,4 +144,4 @@
+ bool validateMacAddr1(const char *macAddr, const char *delim);
+ bool parseParenService(const char *service, char *parenCtlService);
+ 
+-
++#endif
+Index: libzcfg_fe_dal-1.0/zcfg_fe_dal.h
+===================================================================
+--- libzcfg_fe_dal-1.0.orig/zcfg_fe_dal.h	2019-04-12 16:12:58.196602669 +0800
++++ libzcfg_fe_dal-1.0/zcfg_fe_dal.h	2019-04-12 16:13:01.224602727 +0800
+@@ -1,7 +1,13 @@
++#ifndef _ZCFG_FE_DAL_H
++#define _ZCFG_FE_DAL_H
+ 
++int zcfgFeDalGetReturnValue(struct json_object *Jobj, const char *key, void* value);
++int zcfgFeDalSetReturnValue(struct json_object *Jobj, json_type type, const char *key, void* value);
+ zcfgRet_t zcfgFeDalHandler(const char *handlerName, const char *method, struct json_object *Jobj, struct json_object *Jarray, char *replyMsg);
+ zcfgRet_t getWanLanList(struct json_object **Jarray);
+ int isDigitString(char *getString);
+ zcfgRet_t insertLoginUserInfo(struct json_object *Jobj, const char *userName, const char *level);
+ zcfgRet_t getLoginUserInfo(struct json_object *Jobj, char *userName, char *level);
+ bool isSameSubNet( char *lanIp, char *lansubnetMask, char *staticIP);
++
++#endif

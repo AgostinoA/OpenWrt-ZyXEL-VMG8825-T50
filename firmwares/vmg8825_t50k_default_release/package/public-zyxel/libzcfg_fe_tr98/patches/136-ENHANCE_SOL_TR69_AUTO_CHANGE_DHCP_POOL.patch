@@ -1,0 +1,227 @@
+--- a/Makefile
++++ b/Makefile
+@@ -133,3 +133,8 @@ endif
+ ifeq ($(CONFIG_SUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION),y)
+ CFLAGS += -DSUNRISE_FIXED_WANDEV_INDEX_CUSTOMIZATION
+ endif
++
++#SuperOnline
++ifeq ($(CONFIG_SOL_TR69_AUTO_CHANGE_DHCP_POOL),y)
++CFLAGS += -DSOL_TR69_AUTO_CHANGE_DHCP_POOL
++endif
+--- a/lanDev.c
++++ b/lanDev.c
+@@ -49,6 +49,118 @@ int getNumOfBridge()
+ 	return numOfBridge;
+ }
+ 
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++bool setDhcpAddresses(char *ip, char *mask, char *start, char *end){
++	int ipArr[4], maskArr[4], startArr[4], endArr[4];
++	char tmpstr[5] = {0};
++        char lanIp[16] = {0};
++        char subnetMask[16] = {0};
++	char *pch;
++	int i;
++
++        strcpy(lanIp, ip);
++        strcpy(subnetMask, mask);
++        
++	i = 0;
++	pch = strtok(lanIp, ".");
++	while (pch != NULL){
++		ipArr[i] = startArr[i] = endArr[i] = atoi(pch);
++		pch = strtok(NULL, ".");
++		i++;
++	}
++		
++	i = 0;
++	pch = strtok(subnetMask, ".");
++	while (pch != NULL){
++		maskArr[i] = atoi(pch);
++		pch = strtok(NULL, ".");
++		i++;
++	}
++		
++	int bcast2 = 255, bcast3 = 255;
++	int n2 = 0, n3=0;
++	int hosts2, hosts3;	
++	char dhcpStart[16] = {0};
++	char dhcpEnd[16] = {0};
++		
++	if (maskArr[0] == 255 && maskArr[1] == 0 &&  maskArr[2] == 0 && maskArr[3] == 0) {
++	/* 255.0.0.0 is only class A supported */
++		endArr[1] = 255;
++		endArr[2] = 255;
++	}
++	else if ((maskArr[0] == 255 && maskArr[1] == 255 && maskArr[3] == 0) && 
++		(maskArr[2] == 0 || maskArr[2] == 128 || maskArr[2] == 192 || maskArr[2] == 224 || maskArr[2]== 240 || maskArr[2] == 248 ||  maskArr[2] == 252)){
++		/* 255.255.0.0 is only class B supported */
++		n2 = ipArr[2] & maskArr[2];
++		hosts2 = 255 - maskArr[2];
++		bcast2 = n2 + hosts2;
++	}
++	else if ((maskArr[0] == 255 && maskArr[1] == 255 &&  maskArr[2] == 255 ) &&
++		(maskArr[3] == 0 || maskArr[3] == 128 || maskArr[3] == 192 || maskArr[3] == 224 || maskArr[3]== 240 || maskArr[3] == 248 ||  maskArr[3] == 252)) {
++		/* 255.255.255.0/128/192... class C supported */
++		n3 = ipArr[3] & maskArr[3];
++		hosts3 = 255 - maskArr[3];
++		bcast3 = n3 + hosts3;
++	}
++	else
++		return false;         
++
++	if (ipArr[3] == bcast3){
++		printf("warning !! Invalid IP address");
++		return false;
++	}
++	
++	for (i = 0; i < 2; i++){/*set the first 2 octets of addresses*/
++		sprintf(tmpstr, "%d.", startArr[i]);
++		strcat(dhcpStart, tmpstr);
++		sprintf(tmpstr, "%d.", endArr[i]);
++		strcat(dhcpEnd, tmpstr);
++	}
++		
++	/*set the third octets of addresses*/
++	if (ipArr[2] == (bcast2-1)) {
++		startArr[2] = n2;
++		endArr[2] = bcast2 -2;
++	}
++	else if(maskArr[2] == 255){
++		startArr[2] = ipArr[2];
++		endArr[2] = ipArr[2];
++	}
++	else if(maskArr[2] == 0){
++		startArr[2] = ipArr[2];
++		endArr[2] = 254;
++	}
++	else {
++		startArr[2] = ipArr[2];
++		endArr[2] = bcast2 -1;
++	}	
++
++	sprintf(tmpstr, "%d.", startArr[2]);
++	strcat(dhcpStart, tmpstr);
++	sprintf(tmpstr, "%d.", endArr[2]);
++	strcat(dhcpEnd, tmpstr);
++
++	/*set the last octets of addresses*/
++	if (ipArr[3] == (bcast3-1)) {
++		startArr[3] = n3 + 1;
++		endArr[3] = bcast3 -2;
++	}
++	else {
++		startArr[3] = ipArr[3] + 1;
++		endArr[3] = bcast3 -1;
++	}      
++
++	sprintf(tmpstr, "%d", startArr[3]);
++	strcat(dhcpStart, tmpstr);
++	sprintf(tmpstr, "%d", endArr[3]);
++	strcat(dhcpEnd, tmpstr);
++
++        strcpy(start, dhcpStart);
++        strcpy(end, dhcpEnd);
++	return true;
++}
++#endif
++
+ static zcfgRet_t ethLinkAdd(char *ethLinkPathName, char *lowerLayer)
+ {
+ 	zcfgRet_t ret;
+@@ -929,6 +1041,11 @@ zcfgRet_t lanIpIntfObjSet(char *tr98Full
+ 	struct json_object *ipIntfJobj = NULL;
+ 	struct json_object *ipIntfv4AddrJobj = NULL;
+ 	struct json_object *igmpJobj = NULL;
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++	rdm_Dhcpv4SrvPool_t *dhcpServPoolObj = NULL;
++	struct json_object *dhcpServPoolJObj = NULL;
++	objIndex_t dhcpServPoolIid;
++#endif
+ 	struct json_object *paramValue = NULL;
+ 	struct json_object *tr181ParamValue = NULL;
+ 	struct json_object *tmpObj = NULL;
+@@ -987,6 +1104,30 @@ zcfgRet_t lanIpIntfObjSet(char *tr98Full
+ 		ipIntfv4AddrJobj = zcfgFeJsonMultiObjAppend(RDM_OID_IP_IFACE_V4_ADDR, &ipIntfv4AddrIid, multiJobj, tmpObj);
+ 		json_object_put(tmpObj);
+ 	}
++
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++	if( json_object_object_get(tr98Jobj, "IPInterfaceIPAddress") || json_object_object_get(tr98Jobj, "IPInterfaceSubnetMask") ){
++		IID_INIT(dhcpServPoolIid);
++		while(zcfgFeObjStructGetNext(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, (void **)&dhcpServPoolObj) == ZCFG_SUCCESS){
++			if (strcmp(dhcpServPoolObj->Interface, mappingPathName) == 0){
++				if((ret = zcfgFeObjJsonGet(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, &dhcpServPoolJObj)) != ZCFG_SUCCESS)
++					return ret;
++
++				if(multiJobj){
++					tmpObj = dhcpServPoolJObj;
++					dhcpServPoolJObj = NULL;
++					dhcpServPoolJObj = zcfgFeJsonMultiObjAppend(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, multiJobj, tmpObj);
++					json_object_put(tmpObj);
++                                }
++					
++				zcfgFeObjStructFree(dhcpServPoolObj);
++				break;
++			}
++			else
++				zcfgFeObjStructFree(dhcpServPoolObj);
++		}
++	}
++#endif
+ #if 0
+ 	/*DNSServer*/
+ 	IID_INIT(dnsSrvIid);
+@@ -1042,12 +1183,30 @@ zcfgRet_t lanIpIntfObjSet(char *tr98Full
+ 			/*special case*/
+ 			if(strstr(paramList->name, "IPAddress") != NULL){
+ 				json_object_object_add(ipIntfv4AddrJobj, "IPAddress", JSON_OBJ_COPY(paramValue));
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++				char startIP[16] = {0}, endIP[16] = {0};
++				char *lanIP = json_object_get_string(paramValue);
++				char *mask = json_object_get_string(json_object_object_get(ipIntfv4AddrJobj, "SubnetMask"));
++
++				setDhcpAddresses(lanIP, mask, startIP, endIP );
++				json_object_object_add(dhcpServPoolJObj, "MinAddress", json_object_new_string(startIP));
++				json_object_object_add(dhcpServPoolJObj, "MaxAddress", json_object_new_string(endIP));
++#endif
+ 				paramList++;
+ 				continue;
+ 			}
+ 			
+ 			if(strstr(paramList->name, "SubnetMask") != NULL){
+ 				json_object_object_add(ipIntfv4AddrJobj, "SubnetMask", JSON_OBJ_COPY(paramValue));
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++                                char startIP[16] = {0}, endIP[16] = {0};
++                                char *lanIP = json_object_get_string(json_object_object_get(ipIntfv4AddrJobj, "IPAddress"));
++                                char *mask = json_object_get_string(paramValue);
++
++                                setDhcpAddresses(lanIP, mask, startIP, endIP );
++                                json_object_object_add(dhcpServPoolJObj, "MinAddress", json_object_new_string(startIP));
++                                json_object_object_add(dhcpServPoolJObj, "MaxAddress", json_object_new_string(endIP));
++#endif
+ 				paramList++;
+ 				continue;
+ 			}
+@@ -1135,6 +1294,20 @@ zcfgRet_t lanIpIntfObjSet(char *tr98Full
+ 		else {
+ 			zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.IP.Interface.i.IPv4Address.i Success\n", __FUNCTION__);
+ 		}
++
++#ifdef SOL_TR69_AUTO_CHANGE_DHCP_POOL //ZyXEL, Nick Lu, automatic change DHCP pool by LAN IP and subnet mask
++		if(dhcpServPoolJObj){
++			if((ret = zcfgFeObjJsonSet(RDM_OID_DHCPV4_SRV_POOL, &dhcpServPoolIid, dhcpServPoolJObj, NULL)) != ZCFG_SUCCESS ) {
++                	        zcfgLog(ZCFG_LOG_ERR, "%s : Set Device.DHCPv4.Server.Pool.i Fail\n", __FUNCTION__);
++                        	json_object_put(dhcpServPoolJObj);
++	                        return ret;
++        	        }
++                	else {
++                        	zcfgLog(ZCFG_LOG_DEBUG, "%s : Set Device.DHCPv4.Server.Pool.i Success\n", __FUNCTION__);
++				json_object_put(dhcpServPoolJObj);
++	                }
++		}
++#endif
+ 		json_object_put(ipIntfJobj);
+ 		json_object_put(ipIntfv4AddrJobj);
+ 	}

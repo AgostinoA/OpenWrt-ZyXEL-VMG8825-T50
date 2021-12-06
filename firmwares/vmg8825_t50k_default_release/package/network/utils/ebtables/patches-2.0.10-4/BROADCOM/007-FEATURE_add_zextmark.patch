@@ -1,0 +1,348 @@
+Index: ebtables-v2.0.10-4/extensions/ebt_zextmark_m.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.10-4/extensions/ebt_zextmark_m.c	2017-01-18 17:07:54.954449059 +0800
+@@ -0,0 +1,127 @@
++/* ebt_zextmark_m
++ *
++ * Authors:
++ * Bart De Schuymer <bdschuym@pandora.be>
++ *
++ * July, 2002
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include <linux/netfilter_bridge/ebt_mark_m.h>
++
++#define MARK '1'
++
++static struct option opts[] =
++{
++	{ "zextmark", required_argument, 0, MARK },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++"zextmark option:\n"
++"--zextmark    [!] [value][/mask]: Match nfmask value (see man page)\n");
++}
++
++static void init(struct ebt_entry_match *match)
++{
++	struct ebt_mark_m_info *markinfo = (struct ebt_mark_m_info *)match->data;
++
++	markinfo->mark    = 0;
++	markinfo->mask    = 0;
++	markinfo->invert  = 0;
++	markinfo->bitmask = 0;
++}
++
++#define OPT_MARK 0x01
++static int parse(int c, char **argv, int argc, const struct ebt_u_entry *entry,
++   unsigned int *flags, struct ebt_entry_match **match)
++{
++	struct ebt_mark_m_info *markinfo = (struct ebt_mark_m_info *)
++	   (*match)->data;
++	char *end;
++
++	switch (c) {
++	case MARK:
++		ebt_check_option2(flags, MARK);
++		if (ebt_check_inverse2(optarg))
++			markinfo->invert = 1;
++		markinfo->mark = strtoul(optarg, &end, 0);
++		markinfo->bitmask = EBT_MARK_AND;
++		if (*end == '/') {
++			if (end == optarg)
++				markinfo->bitmask = EBT_MARK_OR;
++			markinfo->mask = strtoul(end+1, &end, 0);
++		} else
++			markinfo->mask = 0xffffffff;
++		if ( *end != '\0' || end == optarg)
++			ebt_print_error2("Bad zextmark value '%s'", optarg);
++		break;
++	default:
++		return 0;
++	}
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_match *match, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_match *match)
++{
++	struct ebt_mark_m_info *markinfo =
++	   (struct ebt_mark_m_info *)match->data;
++
++	printf("--zextmark ");
++	if (markinfo->invert)
++		printf("! ");
++	if (markinfo->bitmask == EBT_MARK_OR)
++		printf("/0x%lx ", markinfo->mask);
++	else if(markinfo->mask != 0xffffffff)
++		printf("0x%lx/0x%lx ", markinfo->mark, markinfo->mask);
++	else
++		printf("0x%lx ", markinfo->mark);
++}
++
++static int compare(const struct ebt_entry_match *m1,
++   const struct ebt_entry_match *m2)
++{
++	struct ebt_mark_m_info *markinfo1 = (struct ebt_mark_m_info *)m1->data;
++	struct ebt_mark_m_info *markinfo2 = (struct ebt_mark_m_info *)m2->data;
++
++	if (markinfo1->invert != markinfo2->invert)
++		return 0;
++	if (markinfo1->mark != markinfo2->mark)
++		return 0;
++	if (markinfo1->mask != markinfo2->mask)
++		return 0;
++	if (markinfo1->bitmask != markinfo2->bitmask)
++		return 0;
++	return 1;
++}
++
++static struct ebt_u_match mark_match =
++{
++	.name		= "zextmark_m",
++	.size		= sizeof(struct ebt_mark_m_info),
++	.help		= print_help,
++	.init		= init,
++	.parse		= parse,
++	.final_check	= final_check,
++	.print		= print,
++	.compare	= compare,
++	.extra_ops	= opts,
++};
++
++void _init(void)
++{
++	ebt_register_match(&mark_match);
++}
+Index: ebtables-v2.0.10-4/extensions/ebt_zextmark.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ ebtables-v2.0.10-4/extensions/ebt_zextmark.c	2017-01-18 16:43:13.573299819 +0800
+@@ -0,0 +1,189 @@
++/* ebt_mark
++ *
++ * Authors:
++ * Bart De Schuymer <bdschuym@pandora.be>
++ *
++ * July, 2002, September 2006
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <getopt.h>
++#include "../include/ebtables_u.h"
++#include "../include/linux/netfilter_bridge/ebt_mark_t.h"
++
++static int mark_supplied;
++
++#define MARK_TARGET  '1'
++#define MARK_SETMARK '2'
++#define MARK_ORMARK  '3'
++#define MARK_ANDMARK '4'
++#define MARK_XORMARK '5'
++#define MARK_SETVTAG '6'
++
++static struct option opts[] =
++{
++	{ "zextmark-target" , required_argument, 0, MARK_TARGET },
++	/* an oldtime messup, we should have always used the scheme
++	 * <extension-name>-<option> */
++	{ "set-zextmark"    , required_argument, 0, MARK_SETMARK },
++	{ "zextmark-set"    , required_argument, 0, MARK_SETMARK },
++	{ "zextmark-or"     , required_argument, 0, MARK_ORMARK  },
++	{ "zextmark-and"    , required_argument, 0, MARK_ANDMARK },
++	{ "zextmark-xor"    , required_argument, 0, MARK_XORMARK },
++	{ "vtag-zextset"    , required_argument, 0, MARK_SETVTAG },
++	{ 0 }
++};
++
++static void print_help()
++{
++	printf(
++	"zextmark target options:\n"
++	" --zextmark-set value     : Set nfmark value\n"
++	" --zextmark-or  value     : Or nfmark with value (nfmark |= value)\n"
++	" --zextmark-and value     : And nfmark with value (nfmark &= value)\n"
++	" --zextmark-xor value     : Xor nfmark with value (nfmark ^= value)\n"
++	" --vtag-zextset value     : Set vlan tag value\n"
++	" --zextmark-target target : ACCEPT, DROP, RETURN or CONTINUE\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++	struct ebt_mark_t_info *markinfo =
++	   (struct ebt_mark_t_info *)target->data;
++
++	markinfo->target = EBT_ACCEPT;
++	markinfo->mark = 0;
++	mark_supplied = 0;
++}
++
++#define OPT_MARK_TARGET   0x01
++#define OPT_MARK_SETMARK  0x02
++#define OPT_MARK_ORMARK   0x04
++#define OPT_MARK_ANDMARK  0x08
++#define OPT_MARK_XORMARK  0x10
++#define OPT_MARK_SETVTAG  0x20
++static int parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++	struct ebt_mark_t_info *markinfo =
++	   (struct ebt_mark_t_info *)(*target)->data;
++	char *end;
++
++	switch (c) {
++	case MARK_TARGET:
++		{ int tmp;
++		ebt_check_option2(flags, OPT_MARK_TARGET);
++		if (FILL_TARGET(optarg, tmp))
++			ebt_print_error2("Illegal --zextmark-target target");
++		/* the 4 lsb are left to designate the target */
++		markinfo->target = (markinfo->target & ~EBT_VERDICT_BITS) | (tmp & EBT_VERDICT_BITS);
++		}
++		return 1;
++	case MARK_SETMARK:
++		ebt_check_option2(flags, OPT_MARK_SETMARK);
++		if (*flags & (OPT_MARK_ORMARK|OPT_MARK_ANDMARK|OPT_MARK_XORMARK))
++			ebt_print_error2("--zextmark-set cannot be used together with specific --zextmark option");
++                break;
++	case MARK_ORMARK:
++		ebt_check_option2(flags, OPT_MARK_ORMARK);
++		if (*flags & (OPT_MARK_SETMARK|OPT_MARK_ANDMARK|OPT_MARK_XORMARK))
++			ebt_print_error2("--zextmark-or cannot be used together with specific --zextmark option");
++		markinfo->target = (markinfo->target & EBT_VERDICT_BITS) | MARK_OR_VALUE;
++                break;
++	case MARK_ANDMARK:
++		ebt_check_option2(flags, OPT_MARK_ANDMARK);
++		if (*flags & (OPT_MARK_SETMARK|OPT_MARK_ORMARK|OPT_MARK_XORMARK))
++			ebt_print_error2("--zextmark-and cannot be used together with specific --zextmark option");
++		markinfo->target = (markinfo->target & EBT_VERDICT_BITS) | MARK_AND_VALUE;
++                break;
++	case MARK_XORMARK:
++		ebt_check_option2(flags, OPT_MARK_XORMARK);
++		if (*flags & (OPT_MARK_SETMARK|OPT_MARK_ANDMARK|OPT_MARK_ORMARK))
++			ebt_print_error2("--zextmark-xor cannot be used together with specific --zextmark option");
++		markinfo->target = (markinfo->target & EBT_VERDICT_BITS) | MARK_XOR_VALUE;
++                break;
++	case MARK_SETVTAG:
++		ebt_check_option2(flags, OPT_MARK_SETVTAG);
++		markinfo->target = (markinfo->target & EBT_VERDICT_BITS) | VTAG_SET_VALUE;
++		break;
++	 default:
++		return 0;
++	}
++	/* mutual code */
++	markinfo->mark = strtoul(optarg, &end, 0);
++	if (*end != '\0' || end == optarg)
++		ebt_print_error2("Bad MARK value '%s'", optarg);
++	mark_supplied = 1;
++	return 1;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++	struct ebt_mark_t_info *markinfo =
++	   (struct ebt_mark_t_info *)target->data;
++
++	if (time == 0 && mark_supplied == 0) {
++		ebt_print_error("No mark value supplied");
++	} else if (BASE_CHAIN && (markinfo->target|~EBT_VERDICT_BITS) == EBT_RETURN)
++		ebt_print_error("--zextmark-target RETURN not allowed on base chain");
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++	struct ebt_mark_t_info *markinfo =
++	   (struct ebt_mark_t_info *)target->data;
++	int tmp;
++
++	tmp = markinfo->target & ~EBT_VERDICT_BITS;
++	if (tmp == MARK_SET_VALUE)
++		printf("--zextmark-set");
++	else if (tmp == MARK_OR_VALUE)
++		printf("--zextmark-or");
++	else if (tmp == MARK_XOR_VALUE)
++		printf("--zextmark-xor");
++	else if (tmp == MARK_AND_VALUE)
++		printf("--zextmark-and");
++	else if (tmp == VTAG_SET_VALUE)
++		printf("--vtag-zextset");
++	else
++		ebt_print_error("oops, unknown zextmark action, try a later version of ebtables");
++	printf(" 0x%lx", markinfo->mark);
++	tmp = markinfo->target | ~EBT_VERDICT_BITS;
++	printf(" --zextmark-target %s", TARGET_NAME(tmp));
++}
++
++static int compare(const struct ebt_entry_target *t1,
++   const struct ebt_entry_target *t2)
++{
++	struct ebt_mark_t_info *markinfo1 =
++	   (struct ebt_mark_t_info *)t1->data;
++	struct ebt_mark_t_info *markinfo2 =
++	   (struct ebt_mark_t_info *)t2->data;
++
++	return markinfo1->target == markinfo2->target &&
++	   markinfo1->mark == markinfo2->mark;
++}
++
++static struct ebt_u_target mark_target =
++{
++	.name		= "zextmark",
++	.size		= sizeof(struct ebt_mark_t_info),
++	.help		= print_help,
++	.init		= init,
++	.parse		= parse,
++	.final_check	= final_check,
++	.print		= print,
++	.compare	= compare,
++	.extra_ops	= opts,
++};
++
++void _init(void)
++{
++	ebt_register_target(&mark_target);
++}
+Index: ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_mark_m.h
+===================================================================
+--- ebtables-v2.0.10-4.orig/include/linux/netfilter_bridge/ebt_mark_m.h	2011-12-16 04:02:48.000000000 +0800
++++ ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_mark_m.h	2017-02-02 16:18:51.172516254 +0800
+@@ -12,5 +12,6 @@
+ 	__u8 bitmask;
+ };
+ #define EBT_MARK_MATCH "mark_m"
++#define EBT_ZEXTMARK_MATCH "zextmark_m"
+ 
+ #endif
+Index: ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_mark_t.h
+===================================================================
+--- ebtables-v2.0.10-4.orig/include/linux/netfilter_bridge/ebt_mark_t.h	2017-02-01 16:51:51.344638430 +0800
++++ ebtables-v2.0.10-4/include/linux/netfilter_bridge/ebt_mark_t.h	2017-02-02 16:19:11.272222497 +0800
+@@ -20,5 +20,6 @@
+ 	int target;
+ };
+ #define EBT_MARK_TARGET "mark"
++#define EBT_ZEXTMARK_TARGET "zextmark"
+ 
+ #endif

@@ -1,0 +1,451 @@
+Index: econet-trx-7.3.207.4/tools/trx/trx.c
+===================================================================
+--- econet-trx-7.3.207.4.orig/tools/trx/trx.c	2015-09-23 19:28:03.153561285 +0800
++++ econet-trx-7.3.207.4/tools/trx/trx.c	2015-09-23 20:53:56.264920870 +0800
+@@ -44,6 +44,7 @@
+ #include <string.h>
+ #include <errno.h>
+ #include <unistd.h>
++#include <ctype.h>
+ #if defined(__APPLE__)
+ #include <machine/endian.h>
+ #include <machine/byte_order.h>
+@@ -72,6 +73,7 @@
+ #endif
+ 
+ uint32_t crc32buf(char *buf, size_t len);
++int xtoi(const char* xs, int* result);
+ 
+ void get_config(char *key, char *name, int name_size,char *file_path);
+ /**********************************************************************/
+@@ -101,6 +103,11 @@
+ unsigned long int padding = NO_PADDING;
+ #endif
+ 
++#if 1
++#define CRC32_INIT_VALUE 0xffffffff
++#define BUF_SIZE        100 * 1024
++static char buffer[BUF_SIZE];
++#endif
+ /**********************************************************************/
+ 
+ void usage(void) __attribute__ (( __noreturn__ ));
+@@ -118,6 +125,32 @@
+ 	exit(EXIT_FAILURE);
+ }
+ 
++void debug_info(struct trx_header *p)
++{
++	int i=0;
++
++	printf("============ZyXEL header information==================\n");
++	printf("\theader_len         : %d(%d)\n", p->header_len, STORE32_LE(p->header_len));
++	printf("\tlen                : %d(%d)\n", p->len, STORE32_LE(p->len));
++	printf("\tcrc32              : %d(%d)\n", p->crc32, STORE32_LE(p->crc32));
++	printf("\tchipId             : %s\n", p->chipId);
++	printf("\tboardId            : %s\n", p->boardId);
++	printf("\tmodelId            : ");
++		for(i=0;i<MODEL_ID_LEN;i++) printf("%02x ", p->modelId[i]);
++	printf("\n");
++	printf("\tkernel_len         : %d(%d)\n", p->kernel_len, STORE32_LE(p->kernel_len));
++	printf("\trootfs_len         : %d(%d)\n", p->rootfs_len, STORE32_LE(p->rootfs_len));
++	printf("\tdefcfg_len         : %d(%d)\n", p->defcfg_len, STORE32_LE(p->defcfg_len));
++	printf("\tkernelChksum       : %08x(%08x)\n", p->kernelChksum, STORE32_LE(p->kernelChksum));
++	printf("\trootfsChksum       : %08x(%08x)\n", p->rootfsChksum, STORE32_LE(p->rootfsChksum));
++	printf("\tdefcfgChksum       : %08x(%08x)\n", p->defcfgChksum, STORE32_LE(p->defcfgChksum));
++	printf("\timageSequence      : %d(%d)\n", p->imageSequence, STORE32_LE(p->imageSequence));
++	printf("\tswVersionInt       : %s\n", p->swVersionInt);
++	printf("\tswVersionExt       : %s\n", p->swVersionExt);
++	printf("\theaderChksum       : %08x(%08x)\n", p->headerChksum, STORE32_LE(p->headerChksum));
++	printf("\n\n\n");
++}
++
+ int main(int argc, char **argv)
+ {
+ 	FILE *out = stdout;
+@@ -130,14 +163,23 @@
+ 	size_t n;
+ 	uint32_t cur_len;
+ 	uint32_t round;
+-    uint32_t tcboot_crc32;
++	uint32_t tcboot_crc32;
+ 	unsigned long maxlen = TRX_MAX_LEN;
+ 	struct trx_header *p;
+ 	struct stat stbuf;
+ 
+-    	uint32_t allinone_crc32;
++	uint32_t allinone_crc32;
+ 	unsigned long count = 0;
+ 	unsigned char * crc_ptr = NULL;
++#if 1
++	int flag_ZYXEL = 0;
++	char kernel_fileName[256], rootfs_fileName[256], defcfg_fileName[256];
++	FILE *fp_kernel=NULL, *fp_rootfs=NULL, *fp_defcfg=NULL;
++	u_int32_t rootfs_size, kernel_size, defcfg_size, kernelCrc, rootfsCrc, defcfgCrc;
++	rootfs_size =  kernel_size =  defcfg_size= 0;
++	kernelCrc = rootfsCrc = defcfgCrc = CRC32_INIT_VALUE;
++	int isSupportDefcfg=0;
++#endif
+ 
+ 	fprintf(stderr, "mjn3's trx replacement - v0.81.1\n");
+ 
+@@ -156,7 +198,11 @@
+ 	in = NULL;
+ 	i = 0;
+ 
+-	while ((c = getopt(argc, argv, "-:k:r:o:m:a:b:u:c:d:f:p:t:gh")) != -1) {
++#if 1//zyxel
++	while ((c = getopt(argc, argv, "-:k:r:o:m:a:b:u:c:d:f:p:t:gh:T:K:R:C:P:B:I:S:s:")) != -1) {
++#else
++	while ((c = getopt(argc, argv, "-:k:r:o:m:a:b:u:c:d:f:p:t:gh:")) != -1) {
++#endif
+ 		switch (c) {
+ 			/*pork 20090313 added*/
+ #ifdef TRENDCHIP
+@@ -171,20 +217,69 @@
+                 fprintf(stderr, "rootfs size = %d\r\n", atoi(optarg));
+                 p->rootfs_len = STORE32_LE(atoi(optarg));
+                 break;
+-		case 'd':
++            case 'd':
+                fprintf(stderr, "ctromfile size = %d\r\n", atoi(optarg));
+                p->romfile_len = STORE32_LE(atoi(optarg));
+                 break;
+-			case 'p':
+-				padding = NEED_PADDING;
+-				break;
+-			/*use config file*/	
+-			case 'c':
+-			//	fprintf(stderr,"11 %s %d\n",optarg,sizeof(struct trx_header));
+-				if(optarg != NULL){
+-					strncpy(config_file,optarg,sizeof(config_file));	
+-				}
+-			break;
++#if 1//zyxel
++            case 'T':
++                if(strcmp(optarg,"ZYXEL") == 0)
++                    flag_ZYXEL = 1;
++                break;
++            case 'K':
++                strcpy(kernel_fileName, optarg);
++                break;
++            case 'R':
++                strcpy(rootfs_fileName, optarg);
++                break;
++            case 'C':
++                strcpy(defcfg_fileName, optarg);
++                isSupportDefcfg = 1;
++                break;
++            case 'P':
++                if (strlen(optarg) >= CHIP_ID_LEN)
++                    printf("\n*** WARNING *** Input Chip ID is oversized. Only %d bytes will be stored.\n", CHIP_ID_LEN - 1);
++                strncpy((char *)p->chipId, optarg, CHIP_ID_LEN - 1);
++                break;
++            case 'B':
++                if (strlen(optarg) >= BOARD_ID_LEN)
++                    printf("\n*** WARNING *** Input Board ID is oversized. Only %d bytes will be stored.\n", BOARD_ID_LEN - 1);
++                strncpy((char *)p->boardId, optarg, BOARD_ID_LEN - 1);
++                break;
++            case 'I':
++                if (strlen(optarg) != MODEL_ID_LEN)
++                    printf("\n*** WARNING *** The length of Model ID is not equal to %d.\n", MODEL_ID_LEN);
++                int byte=0;
++                char addr_str[3];
++                for(i=0;i<MODEL_ID_LEN;i++) {
++                    memset( addr_str, 0, 3 );
++                    memcpy( addr_str+1, optarg+i, 1 );
++                    xtoi(addr_str, &byte);
++                    optarg[i]=(byte & 0xff);
++                }
++                memcpy((char *)p->modelId, optarg, MODEL_ID_LEN);
++                break;
++            case 'S':
++                if (strlen(optarg) >= SW_VERSION_LEN)
++                    printf("\n*** WARNING *** Input internal SW Version is oversized. Only %d bytes will be stored.\n", SW_VERSION_LEN - 1);
++                strncpy((char *)p->swVersionInt, optarg, SW_VERSION_LEN - 1);
++                break;
++            case 's':
++                if (strlen(optarg) >= SW_VERSION_LEN)
++                    printf("\n*** WARNING *** Input external SW Version is oversized. Only %d bytes will be stored.\n", SW_VERSION_LEN - 1);
++                strncpy((char *)p->swVersionExt, optarg, SW_VERSION_LEN - 1);
++                break;
++#endif
++            case 'p':
++                padding = NEED_PADDING;
++                break;
++                /*use config file*/
++            case 'c':
++                //	fprintf(stderr,"11 %s %d\n",optarg,sizeof(struct trx_header));
++                if(optarg != NULL){
++                    strncpy(config_file,optarg,sizeof(config_file));
++                }
++                break;
+             /* frankliao 20100510 added over*/
+             case 't':
+                 if (!(in = fopen(argv[2], "rb"))) {
+@@ -196,16 +291,18 @@
+                     fprintf(stderr, "can not open file tcboot.bin for writing\n");
+                     usage();
+                 }
+-		{
+-			char *str;
+-			str = getenv("TCBOOT_SIZE");
+-			if (str) {
+-				TCBOOT_SIZE=strtoul(str, NULL, 0);
+-			} else {
+-				TCBOOT_SIZE=0x10000; //64K
+-			}
+-			//fprintf(stdout, "Max. tcboot size is 0x%04X\n", TCBOOT_SIZE);
+-		}
++
++                {
++                    char *str;
++                    str = getenv("TCBOOT_SIZE");
++                    if (str) {
++                        TCBOOT_SIZE=strtoul(str, NULL, 0);
++                    } else {
++                        TCBOOT_SIZE=0x10000; //64K
++                    }
++                    //fprintf(stdout, "Max. tcboot size is 0x%04X\n", TCBOOT_SIZE);
++                }
++
+                 n = fread(buf, 1, TCBOOT_SIZE + 1, in);
+                 if (!feof(in)) {
+                     fprintf(stderr, "fread failure or file \"%s\" too large\n",optarg);
+@@ -346,8 +443,8 @@
+ 					usage();
+ 				}
+ 				p->decompAddr= STORE32_LE(n);
+-		       	break;
+-           		case 'g':
++				break;
++			case 'g':
+ 				if (!(in = fopen("tclinux_allinone", "r+"))) {
+ 					fprintf(stderr, "can not open file tclinux_allinone for writing\n");
+ 					usage();
+@@ -404,6 +501,85 @@
+ 		fprintf(stderr, "we require atleast one filename\n");
+ 		usage();
+ 	}
++#if 1
++	if(flag_ZYXEL) {
++		/* Kernel */
++		if ((fp_kernel = fopen(kernel_fileName, "rb")) == NULL){
++			fprintf(stderr, "fopen '%s' error: %s (errno %d)\n", kernel_fileName, strerror(errno), errno);
++			return errno;
++		}
++
++		/* Rootfs */
++		if ((fp_rootfs = fopen(rootfs_fileName, "rb")) == NULL){
++			fprintf(stderr, "fopen '%s' error: %s (errno %d)\n", rootfs_fileName, strerror(errno), errno);
++			fclose(fp_kernel);
++			return errno;
++		}
++
++		/* defcfg */
++		if(isSupportDefcfg) {
++			if ((fp_defcfg = fopen(defcfg_fileName, "rb")) == NULL){
++				fprintf(stderr, "fopen '%s' error: %s (errno %d)\n", defcfg_fileName, strerror(errno), errno);
++				fclose(fp_kernel);
++				fclose(fp_rootfs);
++				isSupportDefcfg=0;
++				return errno;
++			}
++		}
++
++		/* kernel CRC, size and total size */
++		while (!feof(fp_kernel)) {
++			count = fread(buffer, sizeof(char), BUF_SIZE, fp_kernel);
++			if (ferror(fp_kernel)) {
++				perror("ZyXEL header: Read kernel image  error");
++				return errno;
++			}
++			kernelCrc = crc32buf(buffer, count);
++			kernel_size += count;
++		}
++
++		/* rootfs CRC, size and total size */
++		while (!feof(fp_rootfs)) {
++			count = fread(buffer, sizeof(char), BUF_SIZE, fp_rootfs);
++			if (ferror(fp_rootfs)) {
++				perror( "ZyXEL header: Read rootfs image error" );
++				return errno;
++			}
++			rootfsCrc = crc32buf(buffer, count);
++			rootfs_size += count;
++		}
++
++		/* defcfg CRC, size and total size */
++		if(isSupportDefcfg) {
++			while (!feof(fp_defcfg)) {
++				count = fread(buffer, sizeof(char), BUF_SIZE, fp_defcfg);
++				if (ferror(fp_defcfg)) {
++					perror( "ZyXEL header: Read error" );
++					return errno;
++				}
++				defcfgCrc = crc32buf(buffer, count);
++				defcfg_size += count;
++			}
++		}else {
++			defcfg_size = STORE32_LE(0);
++			defcfgCrc = STORE32_LE(0);
++		}
++
++		fclose(fp_kernel);
++		fclose(fp_rootfs);
++		if(isSupportDefcfg)
++			fclose(fp_defcfg);
++
++		p->kernel_len = STORE32_LE(kernel_size);
++		p->rootfs_len = STORE32_LE(rootfs_size);
++		p->defcfg_len = STORE32_LE(defcfg_size);
++		p->kernelChksum = STORE32_LE(kernelCrc);
++		p->rootfsChksum = STORE32_LE(rootfsCrc);
++		p->defcfgChksum = STORE32_LE(defcfgCrc);
++
++		p->imageSequence = 0;
++	}
++#endif
+ 	if(padding == NO_PADDING){
+ 		round = NO_ALIGN;
+ 	}
+@@ -424,17 +600,24 @@
+ 	//load config value from config file
+ 	if(stat(config_file,&stbuf) == 0){
+ 		#if 1
+-		get_config("Model",p->Model,sizeof(p->Model),config_file);
++		get_config("Model",(char *)p->Model,sizeof(p->Model),config_file);
+ 		fprintf(stderr,"Model %s \n",p->Model);
+ 		#endif
+-		get_config("version",p->version,sizeof(p->version),config_file);
++		get_config("version",(char *)p->version,sizeof(p->version),config_file);
+ 		fprintf(stderr,"version %s \n",p->version);
+-		get_config("customerversion",p->customerversion,sizeof(p->customerversion),config_file);
++		get_config("customerversion",(char *)p->customerversion,sizeof(p->customerversion),config_file);
+ 		fprintf(stderr,"customerversion %s \n",p->customerversion);
+ 	}else{
+ 		fprintf(stderr,"no config file\n");	
+ 	}	
+ 	p->len = STORE32_LE(cur_len);
++#if 1
++	if(flag_ZYXEL) {
++		p->headerChksum = 0;
++		p->headerChksum = STORE32_LE( crc32buf((char *)p, sizeof(struct trx_header)) );
++	}
++	debug_info(p);
++#endif
+ 	if (!fwrite(buf, cur_len, 1, out) || fflush(out)) {
+ 		fprintf(stderr, "fwrite failed\n");
+ 		return EXIT_FAILURE;
+@@ -591,3 +774,53 @@
+ 
+       return crc;
+ }
++
++// Converts a hexadecimal string to integer
++int xtoi(const char* xs, int* result)
++{
++ size_t szlen = 2;
++ int i, xv, fact;
++
++ if (szlen > 0)
++ {
++  // Converting more than 32bit hexadecimal value?
++  if (szlen>8) return 2; // exit
++
++  // Begin conversion here
++  *result = 0;
++  fact = 1;
++
++  // Run until no more character to convert
++  for(i=szlen-1; i>=0 ;i--)
++  {
++   if (isxdigit(*(xs+i)))
++   {
++    if (*(xs+i)>=97)
++    {
++     xv = ( *(xs+i) - 97) + 10;
++    }
++    else if ( *(xs+i) >= 65)
++    {
++     xv = (*(xs+i) - 65) + 10;
++    }
++    else
++    {
++     xv = *(xs+i) - 48;
++    }
++    *result += (xv * fact);
++    fact *= 16;
++   }
++   else
++   {
++    // Conversion was abnormally terminated
++    // by non hexadecimal digit, hence
++    // returning only the converted with
++    // an error value 4 (illegal hex character)
++    return 4;
++   }
++  }
++ }
++
++ // Nothing to convert
++ return 1;
++}
+Index: econet-trx-7.3.207.4/tools/trx/trx.h
+===================================================================
+--- econet-trx-7.3.207.4.orig/tools/trx/trx.h	2014-10-13 21:38:30.000000000 +0800
++++ econet-trx-7.3.207.4/tools/trx/trx.h	2015-09-23 19:28:03.173561286 +0800
+@@ -7,6 +7,18 @@
+ 
+ #ifndef TRX_H_
+ #define TRX_H_
++
++#if 1//defined(ZYXEL)
++#define ECONET_TRX_HEADER_LENGTH	0x100
++#define ZYXEL_TRX_HEADER_LENGTH		0x174	//sizeof(struct trx_header)
++#define CHIP_ID_LEN 		8
++#define BOARD_ID_LEN 		16
++#define SW_VERSION_LEN 		32
++#define MODEL_ID_LEN		4
++
++#define ZY_MODELID_PREFIX 		0x5a590000 /* prefix must be ZY */
++#endif
++
+ struct trx_header {
+ 	unsigned int magic;			/* "HDR0" */
+ 	unsigned int header_len;    /*Length of trx header*/
+@@ -20,7 +32,7 @@
+ #else
+ 	unsigned int kernel_len;	//kernel length
+ 	unsigned int rootfs_len;	//rootfs length
+-        unsigned int romfile_len;	//romfile length
++	unsigned int romfile_len;	//romfile length
+ 	#if 0
+ 	unsigned int reserved[42];  /* Reserved field of header */
+ 	#else
+@@ -28,10 +40,23 @@
+ 	unsigned int decompAddr;//kernel decompress address
+ 	unsigned int reserved[32];  /* Reserved field of header */
+ 	#endif
+-#endif	
++#endif
++#if 1//defined(ZYXEL)
++	unsigned char chipId[CHIP_ID_LEN];		/* Provided by Makefile */
++	unsigned char boardId[BOARD_ID_LEN];		/* Provided by Makefile */
++	unsigned char modelId[MODEL_ID_LEN];			/* Provided by Makefile */
++	unsigned int defcfg_len;	//default config length
++	unsigned int imageSequence;
++	unsigned char swVersionInt[SW_VERSION_LEN];	/* Provided by Makefile */
++	unsigned char swVersionExt[SW_VERSION_LEN];	/* Provided by Makefile */
++ 	unsigned int rootfsChksum;
++	unsigned int kernelChksum;
++	unsigned int defcfgChksum;
++    unsigned int headerChksum;
++#endif
+ };
+ #define TRX_MAGIC	0x30524448	/* "HDR0" */
+ #define TRX_MAGIC1	0x31524448	/* "HDR1" */
+ #define TRX_MAGIC2	0x32524448	/* "for tclinux" */
+-#define TRX_MAGIC3		0x33524448	/* "for romfile" */
++#define TRX_MAGIC3	0x33524448	/* "for romfile" */
+ #endif /* TRX_H_ */

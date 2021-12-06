@@ -1,0 +1,1105 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-06-15 20:09:35.007293038 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-06-16 09:53:45.361698585 +0800
+@@ -41,6 +41,9 @@
+ #include <cybergarage/util/cmutex.h>
+ #include <cybergarage/net/csocket.h>
+ #include <cybergarage/net/curl.h>
++#ifdef ZYXEL_PATCH
++#include <cybergarage/io/cfile.h>
++#endif
+ 
+ #ifdef  __cplusplus
+ extern "C" {
+@@ -54,6 +57,11 @@
+ #define CG_HTTP_READLINE_BUFSIZE 1024
+ #define CG_HTTP_SEVERNAME_MAXLEN 64
+ #define CG_HTTP_DATE_MAXLEN 128
++#ifdef ZYXEL_PATCH
++#define BOUNDARY_SIZE 256
++#define HTTPD_TMP_PATH "/tmp"
++#define HTTPD_MAX_UPLOAD_SIZE 31457280
++#endif
+ 
+ #define CG_HTTP_REQUESTLINE_DELIM "\r\n "
+ #define CG_HTTP_STATUSLINE_DELIM "\r\n "
+@@ -199,6 +207,11 @@
+ #define CG_HTTP_REASON_504 "Gateway Time-out"
+ #define CG_HTTP_REASON_505 "HTTP Version not supported"
+ 
++#ifdef ZYXEL_PATCH
++#define HTTP_POST_FORM_URLENCODE "application/x-www-form-urlencoded"
++#define HTTP_POST_FORM_MULTIPART "multipart/form-data"
++#endif
++
+ /****************************************
+ * Data Type
+ ****************************************/
+@@ -225,6 +238,21 @@
+ 	struct _CgHttpAuth *next;
+ } CgHttpAuth;
+ 
++#ifdef ZYXEL_PATCH
++typedef struct _CgHttpVal {
++	BOOL headFlag;
++	struct _CgHttpVal *prev;
++	struct _CgHttpVal *next;
++	CgString *name;
++	CgString *value;
++} CgHttpVal, CgHttpValList;
++
++typedef struct _CgHttpForm {
++	CgFileList *_FILE;
++	CgHttpValList *_GET;
++	CgHttpValList *_POST;
++} CgHttpForm;
++#endif
+ 
+ typedef struct _CgHttpHeader {
+ 	BOOL headFlag;
+@@ -267,6 +295,7 @@
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 	void *ctxdata;
+ 	CgHttpAuth authData;
++	CgHttpForm form;
+ #endif
+ } CgHttpRequest;
+ 
+@@ -288,6 +317,7 @@
+ #endif
+ } CgHttpServer, CgHttpServerList;
+ 
++
+ /****************************************
+ * Function 
+ ****************************************/
+@@ -384,6 +414,7 @@
+ BOOL cg_http_packet_read_body_to_file(
+ 							  CgHttpPacket *httpPkt, CgSocket *sock, char *lineBuf, int lineBufSize, char *savedFile);
+ BOOL cg_http_packet_read(CgHttpPacket *httpPkt, CgSocket *sock, BOOL onlyHeader, char *lineBuf, int lineBufSize, char *savedFile);
++BOOL cg_http_packet_parse_multipart(CgHttpPacket *httpPkt, CgSocket *sock, const char *boundry, CgHttpForm *form);
+ #else
+ BOOL cg_http_packet_read(CgHttpPacket *httpPkt, CgSocket *sock, BOOL onlyHeader, char *lineBuf, int lineBufSize);
+ #endif
+@@ -487,6 +518,11 @@
+ #define cg_http_request_getremoteaddress(httpReq) cg_socket_getremoteaddress(httpReq->sock)
+ #define cg_http_request_getremoteport(httpReq) cg_socket_getremoteport(httpReq->sock)
+ #endif
++#ifdef ZYXEL_PATCH  /*for form data, ZyXEL 2014*/
++#define cg_http_request_get_GET(httpReq, name) (CgHttpVal *)cg_http_vallist_get(httpReq->form._GET, name)
++#define cg_http_request_get_POST(httpReq, name) (CgHttpVal *)cg_http_vallist_get(httpReq->form._POST, name)
++#define cg_http_request_get_FILE(httpReq, name) (CgFile *)cg_filelist_getBy_valname(httpReq->form._FILE, name)
++#endif
+ 
+ /**** Content-Length ****/
+ #define cg_http_request_setcontentlength(httpReq,value) cg_http_packet_setcontentlength((CgHttpPacket*)httpReq, value)
+@@ -683,6 +719,38 @@
+ /** Put connection to persistent connection cache */
+ BOOL cg_http_persistentconnection_put(char *host, int port, void *data);
+ 
++#ifdef ZYXEL_PATCH
++/*****************************************
++* GET and POST variable
++******************************************/
++CgHttpVal *cg_http_val_new();
++void cg_http_val_delete(CgHttpVal *val);
++
++#define cg_http_val_next(val) (CgHttpVal *)cg_list_next((CgList *)val)
++          
++void cg_http_val_setname(CgHttpVal *val, char *name);
++char *cg_http_val_getname(CgHttpVal *val);
++void cg_http_val_setvalue(CgHttpVal *val, char *value);
++void cg_http_val_appendvalue(CgHttpVal *val, char *value, int len);
++char *cg_http_val_getvalue(CgHttpVal *val);
++
++/******************************************
++* List for CgHttpVal
++*******************************************/
++CgHttpValList *cg_http_vallist_new();
++void cg_http_vallist_delete(CgHttpValList *valList);
++
++#define cg_http_vallist_clear(valList) cg_list_clear((CgList *)valList, (CG_LIST_DESTRUCTORFUNC)cg_http_val_delete)
++#define cg_http_vallist_size(valList) cg_list_size((CgList *)valList)
++#define cg_http_vallist_gets(valList) (CgHttpVal *)cg_list_next((CgList *)valList)
++#define cg_http_vallist_add(valList, val) cg_list_add((CgList *)valList, (CgList *)val)
++
++CgHttpVal *cg_http_vallist_get(CgHttpValList *valList, char *name);
++void cg_http_vallist_set(CgHttpValList *valList, char *name, char *value);
++char *cg_http_vallist_getvalue(CgHttpValList *valList, char *name);
++
++#endif
++
+ #ifdef  __cplusplus
+ }
+ #endif
+Index: clinkc/include/cybergarage/io/cfile.h
+===================================================================
+--- clinkc.orig/include/cybergarage/io/cfile.h	2007-10-22 18:25:53.000000000 +0800
++++ clinkc/include/cybergarage/io/cfile.h	2014-06-15 20:09:35.099293037 +0800
+@@ -35,10 +35,13 @@
+ extern "C" {
+ #endif
+ 
++#ifdef ZYXEL_PATCH
++#define CG_USE_CFILE 1
++#else
+ #if defined(WIN32) || defined(WINCE)
+ #define CG_USE_CFILE 1
+ #endif
+-
++#endif
+ #if defined(CG_USE_CFILE)
+ 
+ /****************************************
+@@ -75,6 +78,11 @@
+ 	BOOL headFlag;
+ 	struct _CgFile *prev;
+ 	struct _CgFile *next;
++#ifdef ZYXEL_PATCH
++	CgString *val_name;
++	CgString *contentType;
++	CgString *file_name;
++#endif
+ 	CgString *name;
+ 	CgString *path;
+ 	char *content;
+@@ -87,6 +95,13 @@
+ 
+ CgFile *cg_file_new();
+ void cg_file_delete(CgFile *file);
++#ifdef ZYXEL_PATCH
++void cg_file_real_delete(CgFile *file);
++char *cg_file_getvalname(CgFile *file);
++void cg_file_setvalname(CgFile *file, char *val);
++char *cg_file_getContentType(CgFile *file);
++void cg_file_setContentType(CgFile *file, char *val);
++#endif
+ 
+ #define cg_file_next(file) (CgFile *)cg_list_next((CgList *)file)
+ 
+@@ -136,6 +151,23 @@
+  */
+ CgFileList *cg_filelist_new();
+ 
++#ifdef ZYXEL_PATCH
++
++CgFile * cg_filelist_getBy_valname(CgFileList *fileList, char *valname);
++/**
++ * Destroy a file list and real delete file
++ *
++ * \param fileList The file list in question
++ */
++void cg_filelist_real_delete(CgFileList *fileList);
++
++/**
++ * Clear the contents of a file list and real delete file
++ *
++ * \param fileList File list in question
++ */
++#define cg_filelist_real_clear(fileList) cg_list_clear((CgList *)fileList, (CG_LIST_DESTRUCTORFUNC)cg_file_real_delete)
++#endif
+ /**
+  * Destroy a file list
+  *
+Index: clinkc/src/cybergarage/http/chttp_packet.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_packet.c	2014-06-15 20:09:35.075293038 +0800
++++ clinkc/src/cybergarage/http/chttp_packet.c	2014-06-16 11:36:29.183828077 +0800
+@@ -56,11 +56,7 @@
+ 
+ #include <limits.h>
+ 
+-#define READBUF_LENGTH 1024
+-
+-#ifdef ZYXEL_PATCH
+-#define BOUNDARY_SIZE 256
+-#endif
++#define READBUF_LENGTH 4096
+ 
+ /****************************************
+ * cg_http_packet_new
+@@ -703,6 +699,239 @@
+ 	cg_log_debug_l4("Leaving...\n");
+ 	return TRUE;
+ }
++
++static char *find_boundary(char *ptr, int buflen, char *boundary, int len){
++	int i, b;
++	if(!ptr || !boundary || len<=0  || buflen<=0 || buflen < len) return NULL;
++	
++	for(i=0,b=0; i<buflen; i++){
++		if(ptr[i] != boundary[b++]){
++			b = 0;
++		}
++		
++		if(b>=len){
++			return ptr+i-len+1;
++		}
++	}
++
++	return NULL;
++}
++
++BOOL cg_http_packet_parse_multipart(CgHttpPacket *httpPkt, CgSocket *sock, const char *boundary, CgHttpForm *form){
++	long readLen, wirteFile = 0;
++	int conLen;
++	char readBuf[READBUF_LENGTH + 1]={0};
++	int tries = 0;
++	CgFile *fp = NULL;
++	CgHttpVal *val = NULL;
++	int length, l, w_len, i, maxReadLen, boundaryLen;
++	char *contentType = NULL, *contentDispos;
++	char *boundaryPtr = NULL, *boundaryCtPtr = NULL;
++	char *ptr = NULL, *tmp = NULL, *tmp2 = NULL;
++	char *readBufPtr = NULL;
++	char *filepath;
++	char filename[50] = {0};
++	char valname[50] = {0};
++	int parseFlag = 0;
++	BOOL done = FALSE;
++	BOOL parseHeader =FALSE;
++
++	cg_log_debug_l4("Entering...\n");
++	
++	if(!httpPkt || !sock || !httpPkt || !form) return FALSE;
++	
++	if(!form->_FILE) form->_FILE = cg_filelist_new();
++	if(!form->_POST) form->_POST = cg_http_vallist_new();
++
++	boundaryLen = strlen(boundary);
++	conLen = cg_http_packet_getcontentlength(httpPkt);
++	if (0 < conLen && conLen <= HTTPD_MAX_UPLOAD_SIZE) {
++		readLen = 0;
++		
++		readBufPtr = readBuf;
++		maxReadLen = READBUF_LENGTH;
++		parseHeader = TRUE;
++		/* Read content until conLen is reached, or tired of trying */
++		while (readLen < conLen && readLen <= HTTPD_MAX_UPLOAD_SIZE && tries < CG_HTTP_CWMP_SEND_RECV_TRY_COUNT && !done)
++		{
++			//printf("### maxReadLen = %d\n", maxReadLen);
++			length = cg_socket_read(sock, readBufPtr, maxReadLen);
++			//printf("length = %d\n", length);
++			if (length > 0){
++				readLen += length;
++				*(readBufPtr+length) = 0;
++				length = (readBufPtr+length) - readBuf;
++				ptr = readBuf;
++				do{
++					if(parseHeader && (boundaryPtr = find_boundary(ptr, ((readBuf+length) - ptr), boundary, boundaryLen))){
++						//printf("== boundry start ==\n");
++						if(boundaryPtr > ptr){
++							w_len = boundaryPtr - ptr -2; //igonre \r\n before boundry
++							if(w_len){
++								if(fp) //store other data
++									cg_file_write(fp, (CgByte *)ptr, sizeof(char)*w_len);  
++								else if(val)
++									cg_http_val_appendvalue(val, ptr, w_len);
++							
++								ptr += w_len;
++								wirteFile+=w_len;
++							}
++						}
++						// if has file pointer
++						if(fp){
++							//printf("file size = %d\n",wirteFile);
++							cg_file_close(fp);
++							cg_filelist_add(form->_FILE, fp);
++							fp = NULL;
++						}
++						// if has variable pointer
++						if(val){
++							//printf("variable size = %d\n",wirteFile);
++							cg_http_vallist_add(form->_POST, val);
++							val = NULL;
++						}
++						
++						if(!memcmp(boundaryPtr+strlen(boundary), "--", 2)){
++							//printf("== [End of boundry] ==\n");
++							done = TRUE;
++							break;
++						}
++						else if((boundaryCtPtr = strstr(boundaryPtr, "\r\n\r\n"))){
++							*boundaryCtPtr = 0;	
++							ptr = boundaryCtPtr+4;
++							parseHeader = FALSE;
++							//printf("\n== [strlen boundary header] %d ==\n", strlen(boundaryPtr));
++
++							valname[0] = 0;
++							filename[0] = 0;
++							
++							contentDispos = strstr(boundaryPtr, "Content-Disposition:");
++							contentType = strstr(boundaryPtr, "Content-Type:");	
++							if(contentType){
++								contentType+=13;
++								if((tmp = strstr(contentType, "\r\n"))) *tmp = 0;
++							}
++							
++							if(contentDispos){
++								contentDispos+=20;
++								if((tmp = strstr(contentDispos, "\r\n"))) *tmp = 0;
++								//printf("== [Content-Disposition] %s ==\n", contentDispos);
++								if((tmp=strstr(contentDispos, "name=")) && (tmp = tmp+6) && (tmp2 = strchr(tmp, '"'))){ //strlen("name=") +1 = 6
++									memcpy(valname, tmp, tmp2-tmp);
++									valname[tmp2-tmp] = 0;
++									//printf("== [_VAL_NAME_] %s ==\n", valname);
++								}
++								if((tmp=strstr(contentDispos, "filename=")) && (tmp = tmp+10) && (tmp2 = strchr(tmp, '"'))){//strlen("filename=") +1 = 10
++									if(tmp2-tmp){
++										memcpy(filename, tmp, tmp2-tmp);
++										filename[tmp2-tmp] = 0;
++										//printf("== [_FILE_] %s ==\n", filename);
++										filepath = tempnam(HTTPD_TMP_PATH, "file");
++										//printf("filepath: %s\n",filepath);
++										if(!fp && filepath){
++											wirteFile = 0;
++											fp = cg_file_new();
++											cg_file_setpath(fp, filepath); free(filepath);
++											cg_file_setfilename(fp ,filename);
++											if (!cg_file_open(fp, CG_FILE_OPEN_WRITE)) {
++												printf("[Error] fopen %s fail\n", cg_file_getname(fp));
++												cg_file_delete(fp);
++												return FALSE;
++											}
++											if(valname[0] != 0) cg_file_setvalname(fp, valname);
++											if(contentType) cg_file_setContentType(fp, contentType);
++										}
++										else {
++											if(filepath) free(filepath);
++											printf("[Error] file pointer is not null\n");
++											return FALSE;
++										}
++									}									
++								}
++								else{
++									if(!val){
++										wirteFile = 0;
++										val = cg_http_val_new();
++										if(valname[0] != 0) cg_http_val_setname(val, valname);
++									}
++									else {
++										printf("[Error] variable pointer is not null\n");
++										return FALSE;
++									}
++								}
++							}
++						}
++						else break; //need read a lot
++					}
++					
++					//if(boundaryPtr != ptr){
++						if((tmp =find_boundary(ptr, (readBuf+length-ptr), "\r\n-", 3))){
++							w_len = tmp - ptr;
++							parseHeader = TRUE;
++						}
++						else{
++							w_len = (readBuf+length) - ptr;
++							parseHeader = FALSE;
++						}
++						if(w_len){
++							if(fp) cg_file_write(fp, (CgByte *)ptr, sizeof(char)*w_len); //fwrite(ptr, sizeof(char), w_len, fp); 
++							else if(val){
++								if(w_len) cg_http_val_appendvalue(val, ptr, w_len);
++							}
++							
++							ptr += w_len;
++							wirteFile+=w_len;
++						}
++					//}
++				} 
++				while(ptr < (readBuf+length) && ((readBuf+length) - ptr) > boundaryLen);
++				
++				if(!done){
++					if((w_len = readBuf+length - ptr)){
++						memmove(readBuf, ptr, w_len);
++						readBufPtr = readBuf+w_len;
++						maxReadLen = READBUF_LENGTH - w_len;
++					}
++					else{
++						readBufPtr = readBuf;
++						maxReadLen = READBUF_LENGTH;
++					}
++				}
++			}
++			else{
++				tries++;
++			}
++		}
++		
++		if(fp) {
++			//printf("file size = %d\n",wirteFile);
++			cg_file_close(fp);
++			cg_filelist_add(form->_FILE, fp);
++		}
++		
++		if(val){
++			//printf("variable size = %d\n",wirteFile);
++			cg_http_vallist_add(form->_POST, val);
++		}
++		
++		//printf("==== [Total ReadLine %d] ====\n", readLen);
++		
++		if((tries >= CG_HTTP_CWMP_SEND_RECV_TRY_COUNT)){
++			printf("[Error] retry too many (tries = %d)\n", tries);
++			return FALSE;
++		}
++
++		if (readLen <= 0){
++			printf("[Error] no read content\n");
++			return FALSE;
++		}
++		//cg_http_packet_setcontentpointer(httpPkt, NULL, readLen);
++	}
++	else return FALSE;
++	
++	return TRUE;
++}
++
+ #endif
+ /****************************************
+ * cg_http_packet_read
+Index: clinkc/src/cybergarage/http/chttp_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_request.c	2014-06-15 20:09:34.955293039 +0800
++++ clinkc/src/cybergarage/http/chttp_request.c	2014-06-16 13:50:38.744923134 +0800
+@@ -66,7 +66,8 @@
+ #endif
+ 
+ #ifdef ZYXEL_PATCH
+-#define FIRMWARE_STORE_PATH "/var/firmwareUpgrade"
++//#define FIRMWARE_STORE_PATH "/var/firmwareUpgrade"
++#define FIRMWARE_STORE_PATH "/tmp/firmwareUpgrade"
+ #define CONFIG_STORE_PATH "/var/restoreConfig"
+ #define LOCAL_CERT_STORE_PATH "/var/local_cert"
+ #define WWAN_STORE_PATH "/var/wwan/tmp_wwanpackage"
+@@ -95,6 +96,9 @@
+ 		httpReq->postURL = cg_net_url_new();
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 		httpReq->ctxdata = NULL;
++		httpReq->form._FILE = NULL;
++		httpReq->form._GET = NULL;
++		httpReq->form._POST = NULL;
+ #endif
+ 		cg_http_request_setversion(httpReq, CG_HTTP_VER11);
+ 		cg_http_request_setuseragent(httpReq, CG_HTTP_USERAGENT_DEFAULT);
+@@ -128,6 +132,11 @@
+ 	/* ADD END Fabrice Fontaine Orange 23/04/2007 */
+ 	cg_http_response_delete(httpReq->httpRes);
+ 	cg_net_url_delete(httpReq->postURL);
++#ifdef ZYXEL_PATCH
++	if(httpReq->form._GET){ cg_http_vallist_delete(httpReq->form._GET); httpReq->form._GET = NULL;}
++	if(httpReq->form._POST){ cg_http_vallist_delete(httpReq->form._POST); httpReq->form._POST = NULL;}
++	if(httpReq->form._FILE){ cg_filelist_real_delete(httpReq->form._FILE); httpReq->form._FILE = NULL;}
++#endif
+ 	
+ 	free(httpReq);
+ 
+@@ -148,7 +157,11 @@
+ 	cg_http_request_setversion(httpReq, NULL);
+ 	cg_net_url_clear(httpReq->postURL);
+ 	cg_http_request_setuserdata(httpReq, NULL);
+-
++#ifdef ZYXEL_PATCH
++	if(httpReq->form._GET){ cg_http_vallist_delete(httpReq->form._GET); httpReq->form._GET = NULL;}
++	if(httpReq->form._POST){ cg_http_vallist_delete(httpReq->form._POST); httpReq->form._POST = NULL;}
++	if(httpReq->form._FILE){ cg_filelist_real_delete(httpReq->form._FILE); httpReq->form._FILE = NULL;}
++#endif
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
+@@ -773,7 +786,6 @@
+ /****************************************
+ * cg_http_request_read
+ ****************************************/
+-
+ BOOL cg_http_request_read(CgHttpRequest *httpReq, CgSocket *sock)
+ {
+ 	char lineBuf[CG_HTTP_READLINE_BUFSIZE];
+@@ -782,6 +794,12 @@
+ 	CgNetURI *uri = NULL;
+ 	BOOL failed = FALSE;
+ 	char *requestUri = NULL;
++#ifdef ZYXEL_PATCH	
++	char *tmp = NULL;
++	char *contentType = NULL;
++	char boundary[BOUNDARY_SIZE] = {0};
++	char *method = NULL;
++#endif
+ 
+ 	cg_log_debug_l4("Entering...\n");
+ 
+@@ -834,6 +852,42 @@
+ 
+ #ifdef ZYXEL_PATCH
+ 	/*File upload preprocessor*/
++	method = cg_http_request_getmethod(httpReq);
++	if((method && strcmp(method, CG_HTTP_GET)) && //method != GET
++		(cg_http_packet_hasheader((CgHttpPacket *)httpReq, CG_HTTP_CONTENT_LENGTH) ||
++		cg_http_packet_hasheader((CgHttpPacket *)httpReq, CG_HTTP_TRANSFER_ENCODING)))
++	{
++		if ((tmp = cg_http_packet_getheadervalue((CgHttpPacket *)httpReq, CG_HTTP_CONTENT_TYPE)))
++		{
++			contentType = strdup(tmp);
++			if((tmp = strchr(contentType,';'))){ *tmp = '\0'; tmp = tmp+1;}
++		}
++		
++		if(contentType && !strcmp(contentType, HTTP_POST_FORM_MULTIPART)){	
++#if 1 //__ZYXEL__, Mark, Firmware Upgrade use orignal function, because cg_http_packet_parse_multipart is to slow
++			requestUri = cg_http_request_geturi(httpReq);
++			if(requestUri && strstr(requestUri, "/cgi-bin/Firmware_Upgrade") != NULL){
++				system("echo 1 > /proc/sys/vm/drop_caches");
++				cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), FIRMWARE_STORE_PATH);
++			}
++			else
++#endif		
++			if(tmp && (tmp = strstr(tmp, "boundary="))){ 
++				snprintf(boundary, BOUNDARY_SIZE, "--%s", tmp+9);
++				if(!cg_http_packet_parse_multipart((CgHttpPacket *)httpReq, sock, boundary, &(httpReq->form)))
++					failed = TRUE;
++			}
++			else failed = TRUE;
++		}
++		else{
++			cg_http_packet_read_body((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf));
++		}
++			
++		if(contentType) free(contentType);
++	}
++	
++	if (failed == TRUE) return FALSE;
++#if 0
+ 	requestUri = cg_http_request_geturi(httpReq);
+ 	if(strstr(requestUri, "/cgi-bin/Firmware_Upgrade") != NULL)
+ 		cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), FIRMWARE_STORE_PATH);
+@@ -845,12 +899,13 @@
+                 cg_http_packet_read_body_to_file((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf), WWAN_STORE_PATH);
+ 	else
+ #endif
++#else
+ 	/* HTTP-request must have Content-Length or Transfer-Encoding header
+ 	   in order to have body */
+ 	if (cg_http_packet_hasheader((CgHttpPacket *)httpReq, CG_HTTP_CONTENT_LENGTH) ||
+ 	    cg_http_packet_hasheader((CgHttpPacket *)httpReq, CG_HTTP_TRANSFER_ENCODING))
+ 		cg_http_packet_read_body((CgHttpPacket *)httpReq, sock, lineBuf, sizeof(lineBuf));
+-	
++#endif	
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return TRUE;
+Index: clinkc/src/cybergarage/http/chttp_val.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ clinkc/src/cybergarage/http/chttp_val.c	2014-06-15 20:09:35.103293037 +0800
+@@ -0,0 +1,125 @@
++#ifdef ZYXEL_PATCH
++/******************************************************************************/
++/*
++*  Copyright (C) 2013 ZyXEL Communications, Corp.
++*  All Rights Reserved.
++*
++* ZyXEL Confidential; Need to Know only.
++* Protected as an unpublished work.
++*
++* The computer program listings, specifications and documentation
++* herein are the property of ZyXEL Communications, Corp. and
++* shall not be reproduced, copied, disclosed, or used in whole or
++* in part for any reason without the prior express written permission of
++* ZyXEL Communications, Corp.
++*/
++/******************************************************************************/
++
++#include <cybergarage/util/clist.h>
++#include <cybergarage/http/chttp.h>
++#include <cybergarage/util/clog.h>
++
++/****************************************
++* cg_http_val_new
++****************************************/
++
++CgHttpVal *cg_http_val_new()
++{
++	CgHttpVal *val;
++	
++	cg_log_debug_l4("Entering...\n");
++
++	val = (CgHttpVal *)malloc(sizeof(CgHttpVal));
++
++	if ( NULL != val )
++	{
++		cg_list_node_init((CgList *)val);
++		val->name = cg_string_new();
++		val->value = cg_string_new();
++	}
++
++	return val;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_val_delete
++****************************************/
++
++void cg_http_val_delete(CgHttpVal *val)
++{
++	cg_log_debug_l4("Entering...\n");
++/*	char *value  = cg_string_getvalue(val->value);
++	char *name = cg_string_getvalue(val->name);
++
++	printf("== Delete Val [name=%s, value=%s, next=0x%x, prev=0x%x] ==\n", 
++			(name)?name:"NULL", (value)?value:"NULL", val->next, val->prev);*/
++	cg_list_remove((CgList *)val);
++	cg_string_delete(val->name);
++	cg_string_delete(val->value);
++	free(val);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_val_setname
++****************************************/
++
++void cg_http_val_setname(CgHttpVal *val, char *name)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	cg_string_setvalue(val->name, name);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_val_getname
++****************************************/
++
++char *cg_http_val_getname(CgHttpVal *val)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	return cg_string_getvalue(val->name);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_val_setvalue
++****************************************/
++
++void cg_http_val_setvalue(CgHttpVal *val, char *value)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	cg_string_setvalue(val->value, value);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++void cg_http_val_appendvalue(CgHttpVal *val, char *value, int len)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	cg_string_naddvalue(val->value, value, len);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++/****************************************
++* cg_http_val_getvalue
++****************************************/
++
++char *cg_http_val_getvalue(CgHttpVal *val)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	return cg_string_getvalue(val->value);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++#endif
+\ No newline at end of file
+Index: clinkc/src/cybergarage/http/chttp_val_list.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ clinkc/src/cybergarage/http/chttp_val_list.c	2014-06-15 20:09:35.103293037 +0800
+@@ -0,0 +1,126 @@
++#ifdef ZYXEL_PATCH
++/******************************************************************************/
++/*
++*  Copyright (C) 2013 ZyXEL Communications, Corp.
++*  All Rights Reserved.
++*
++* ZyXEL Confidential; Need to Know only.
++* Protected as an unpublished work.
++*
++* The computer program listings, specifications and documentation
++* herein are the property of ZyXEL Communications, Corp. and
++* shall not be reproduced, copied, disclosed, or used in whole or
++* in part for any reason without the prior express written permission of
++* ZyXEL Communications, Corp.
++*/
++/******************************************************************************/
++
++#include <cybergarage/http/chttp.h>
++#include <cybergarage/util/clog.h>
++
++/****************************************
++* cg_http_vallist_new
++****************************************/
++
++CgHttpValList *cg_http_vallist_new()
++{
++	CgHttpValList *valList;
++
++	cg_log_debug_l4("Entering...\n");
++
++	valList = (CgHttpValList *)malloc(sizeof(CgHttpValList));
++
++	if ( NULL != valList )
++	{
++		cg_list_header_init((CgList *)valList);
++		valList->name = NULL;
++		valList->value = NULL;
++	}
++
++	return valList;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_vallist_delete
++****************************************/
++
++void cg_http_vallist_delete(CgHttpValList *valList)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	cg_http_vallist_clear(valList);
++	free(valList);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_vallist_getheader
++****************************************/
++
++CgHttpVal *cg_http_vallist_get(CgHttpValList *valList, char *name)
++{
++	CgHttpVal *val;
++	char *valName;
++		
++	cg_log_debug_l4("Entering...\n");
++
++	if (name == NULL)
++		return NULL;
++		
++	for (val = cg_http_vallist_gets(valList); val != NULL; val = cg_http_val_next(val)) {
++		valName = cg_http_val_getname(val);
++		if (valName == NULL)
++			continue;
++		if (cg_strcasecmp(valName, name) == 0)
++			return val;
++	}
++	
++	return NULL;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_vallist_setheader
++****************************************/
++
++void cg_http_vallist_set(CgHttpValList *valList, char *name, char *value)
++{
++	CgHttpVal *val;
++	
++	cg_log_debug_l4("Entering...\n");
++
++	val = cg_http_vallist_get(valList, name);
++	if (val == NULL) {
++		val = cg_http_val_new();
++		cg_http_vallist_add(valList, val);
++		cg_http_header_setname(val, name);
++	}
++	
++	cg_http_val_setvalue(val, value);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_http_vallist_setheader
++****************************************/
++
++char *cg_http_vallist_getvalue(CgHttpValList *valList, char *name)
++{
++	CgHttpVal *val;
++	
++	cg_log_debug_l4("Entering...\n");
++
++	val = cg_http_vallist_get(valList, name);
++	if (val != NULL)
++		return cg_http_val_getvalue(val);
++		
++	return NULL;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++#endif
+\ No newline at end of file
+Index: clinkc/src/cybergarage/io/cfile_list.c
+===================================================================
+--- clinkc.orig/src/cybergarage/io/cfile_list.c	2007-03-13 19:05:09.000000000 +0800
++++ clinkc/src/cybergarage/io/cfile_list.c	2014-06-15 20:09:35.103293037 +0800
+@@ -62,6 +62,48 @@
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
++#ifdef ZYXEL_PATCH
++/****************************************
++* cg_filelist_real_delete
++****************************************/
++
++void cg_filelist_real_delete(CgFileList *fileList)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	cg_filelist_real_clear(fileList);
++	free(fileList);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++/****************************************
++* cg_filelist_getBy_valname
++****************************************/
++
++CgFile *cg_filelist_getBy_valname(CgFileList *fpList, char *name)
++{
++	CgFile *fp;
++	char *valName;
++		
++	cg_log_debug_l4("Entering...\n");
++
++	if (name == NULL)
++		return NULL;
++		
++	for (fp = cg_filelist_gets(fpList); fp != NULL; fp = cg_file_next(fp)) {
++		valName = cg_file_getvalname(fp);
++		if (valName == NULL)
++			continue;
++		if (cg_strcasecmp(valName, name) == 0)
++			return fp;
++	}
++	
++	return NULL;
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++#endif
+ 
+ #endif
+ 
+Index: clinkc/src/cybergarage/io/cfile.c
+===================================================================
+--- clinkc.orig/src/cybergarage/io/cfile.c	2010-02-09 03:00:27.000000000 +0800
++++ clinkc/src/cybergarage/io/cfile.c	2014-06-15 20:09:35.103293037 +0800
+@@ -76,6 +76,7 @@
+ #include <sys/stat.h>
+ #include <unistd.h>
+ #include <dirent.h>
++#include <fcntl.h>
+ #endif
+ 
+ /****************************************
+@@ -95,6 +96,11 @@
+ 		cg_list_node_init((CgList *)file);
+ 		file->name = cg_string_new();
+ 		file->path = cg_string_new();
++#ifdef ZYXEL_PATCH
++		file->val_name = cg_string_new();
++		file->contentType = cg_string_new();
++		file->file_name = cg_string_new();
++#endif
+ 		file->content = NULL;
+ 		file->fp = NULL;
+ 	}
+@@ -113,7 +119,12 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	cg_list_remove((CgList *)file);
+-
++#ifdef ZYXEL_PATCH
++	if(file->fp) fclose(file->fp);
++	cg_string_delete(file->val_name);
++	cg_string_delete(file->contentType);
++	cg_string_delete(file->file_name);
++#endif
+ 	cg_string_delete(file->name);
+ 	cg_string_delete(file->path);
+ 	if (file->content != NULL)
+@@ -122,8 +133,81 @@
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+ }
++#ifdef ZYXEL_PATCH
++/****************************************
++* cg_file_real_delete
++****************************************/
++
++void cg_file_real_delete(CgFile *file)
++{
++	cg_log_debug_l4("Entering...\n");
++	
++	char *name = cg_file_getname(file);
++//	if(name) printf("== [ Delete file ] %s ==\n", name);
++	if(!cg_file_remove(file)){
++		cg_log_error("Cannot remove file (%s)....\n", (name) ? name : "");
++	}
++		
++	cg_file_delete(file);
++	
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_file_getvalname
++****************************************/
++
++char *cg_file_getvalname(CgFile *file)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	return cg_string_getvalue(file->val_name);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_file_setvalname
++****************************************/
++
++void cg_file_setvalname(CgFile *file, char *val)
++{
++	cg_log_debug_l4("Entering...\n");
++	
++	cg_string_setvalue(file->val_name, val);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
+ 
+ /****************************************
++* cg_file_getContentType
++****************************************/
++
++char *cg_file_getContentType(CgFile *file)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	return cg_string_getvalue(file->contentType);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++/****************************************
++* cg_file_setContentType
++****************************************/
++
++void cg_file_setContentType(CgFile *file, char *val)
++{
++	cg_log_debug_l4("Entering...\n");
++
++	cg_string_setvalue(file->contentType, val);
++
++	cg_log_debug_l4("Leaving...\n");
++}
++
++#endif
++/****************************************
+ * cg_file_setname
+ ****************************************/
+ 
+@@ -263,12 +347,18 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	fileName = cg_file_getname(file);
++#ifdef ZYXEL_PATCH	
++	if(fileName)
++#endif
+ #if defined(WINCE)
+ 	#pragma message("############################## FIXMELATER cfile.c - Verify File removal (untested on CE)")
+ 	removeSuccess = DeleteFile((void*)fileName);
+ #else
+ 	removeSuccess = remove(fileName);
+ #endif
++#ifdef ZYXEL_PATCH	
++	else removeSuccess = 1;
++#endif
+ 	
+ 	return (removeSuccess == 0) ? TRUE : FALSE;
+ 
+@@ -311,17 +401,23 @@
+ 
+ char *cg_file_getfilename(CgFile *file)
+ {
+-	char *fileName;
++	char *fileName = NULL;
+ 	int sepIdx;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+-
++#ifdef ZYXEL_PATCH		
++	fileName = cg_string_getvalue(file->file_name);
++	
++	if(!fileName){
++#endif	
+ 	fileName = cg_file_getname(file);	
+ 	sepIdx = cg_strrchr(fileName, CG_FILE_SEPARATOR, 1);
+ 	if (0 < sepIdx)
+ 		return (fileName + sepIdx + 1);
+ 	return NULL;
+-
++#ifdef ZYXEL_PATCH	
++	}
++#endif	
+ 	cg_log_debug_l4("Leaving...\n");
+ }
+ 
+@@ -617,7 +713,11 @@
+ 		if (mode & CG_FILE_OPEN_CREATE)
+ 			stdioMode = "w+b";
+ 		else
++#ifdef ZYXEL_PATCH	
++			stdioMode = "wb";
++#else
+ 			stdioMode = "r+b";
++#endif
+ 	}
+ 	else if (mode & CG_FILE_OPEN_READ)
+ 		stdioMode = "rb";
+@@ -702,6 +802,13 @@
+ 
+ void cg_file_setfilename(CgFile *file, char *name)
+ {
++#if ZYXEL_PATCH
++	cg_log_debug_l4("Entering...\n");
++
++	cg_string_setvalue(file->file_name, name);
++
++	cg_log_debug_l4("Leaving...\n");
++#else
+ 	int nameLen;
+ 	char *pathName;
+ 	int pathNameLen;
+@@ -723,6 +830,7 @@
+ 	}
+ 
+ 	cg_string_addvalue(file->name, name);
++#endif
+ }
+ 
+ #endif

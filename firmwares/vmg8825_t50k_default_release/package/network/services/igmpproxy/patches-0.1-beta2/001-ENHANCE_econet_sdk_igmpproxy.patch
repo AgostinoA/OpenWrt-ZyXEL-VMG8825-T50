@@ -1,0 +1,600 @@
+Index: igmpproxy-0.1-beta2/Makefile
+===================================================================
+--- igmpproxy-0.1-beta2.orig/Makefile	2005-08-20 20:34:18.000000000 +0800
++++ igmpproxy-0.1-beta2/Makefile	2015-08-18 10:17:32.144707545 +0800
+@@ -1,12 +1,37 @@
++#CROSS=mips-linux-
++#CC=$(CROSS)gcc
++AR=$(CROSS)ar
++LD=$(CROSS)ld
++STRIP=$(CROSS)strip
++RANLIB=$(CROSS)ranlib
++SIZE=$(CROSS)size
+ 
+ #BINDIR=../bin
+ BINDIR=/usr/local/bin
+ ETCDIR=/etc
+ MANDIR=/usr/share/man
+ 
++KERNELINC = -I$(KERNEL_DIR)/include
+ 
+ # CFLAGS=-g
+-CFLAGS=-O
++CFLAGS= -DTRENDCHIP $(KERNELINC)
++ifneq ($(TC_CFLAGS), )
++	CFLAGS += $(TC_CFLAGS)
++endif
++
++ifneq ($(strip $(TCSUPPORT_IGMP_QUICK_LEAVE)),)
++	CFLAGS += -DCONFIG_IGMP_SNOOPING
++	CFLAGS += -DCONFIG_BRIDGE_IGMP_SNOOPING
++endif
++
++ifneq ($(strip $(TCSUPPORT_CODE_SHRINK)),)
++CFLAGS += -Os
++else
++CFLAGS += -O2
++endif
++
++OBJS=igmpproxy.o config.o confread.o request.o udpsock.o mcgroup.o rttable.o \
++			igmp.o ifvc.o callout.o kern.o syslog.o lib.o mroute-api.o
+ 
+ default : build.h igmpproxy
+ 
+@@ -21,8 +46,9 @@
+ 	cp ../doc/igmpproxy.conf.5 ${MANDIR}/man5
+ 	if [ ! -e ${ETCDIR}/igmpproxy.conf ]; then cp igmpproxy.conf ${ETCDIR}; fi
+ 
+-igmpproxy : igmpproxy.o config.o confread.o request.o udpsock.o mcgroup.o rttable.o \
+-			igmp.o ifvc.o callout.o kern.o syslog.o lib.o mroute-api.o
++igmpproxy : $(OBJS)
++	$(CC) $(CFLAGS) $(OBJS) -o igmpproxy
++	$(STRIP) --strip-unneeded igmpproxy
+ 
+ build.h	:  
+ 	echo '#define BUILD "' `date +%y%m%d` '"' >build.h
+Index: igmpproxy-0.1-beta2/defs.h
+===================================================================
+--- igmpproxy-0.1-beta2.orig/defs.h	2005-08-20 20:44:47.000000000 +0800
++++ igmpproxy-0.1-beta2/defs.h	2015-08-18 10:17:32.144707545 +0800
+@@ -40,6 +40,7 @@
+ #include <stdlib.h>
+ #include <syslog.h>
+ #include <signal.h>
++#include <time.h>
+ 
+ #include <sys/socket.h>
+ #include <sys/un.h>
+@@ -89,6 +90,11 @@
+ #define FALSE		0
+ #define TRUE		1
+ 
++#ifdef TCSUPPORT_IGMP_QOS
++#define	IP_SKB_MARK				50
++#endif
++
++
+ typedef void (*cfunc_t)   (void *);
+ 
+ typedef u_int8_t   uint8;
+@@ -105,6 +111,9 @@
+ #define RECV_BUF_SIZE 8192
+ extern char     *recv_buf;
+ extern char     *send_buf;
++#ifdef TCSUPPORT_IGMP_QOS
++extern uint32	skb_mark;
++#endif
+ 
+ extern char     s1[];
+ extern char     s2[];
+@@ -275,6 +284,10 @@
+ void acceptLeaveMessage(uint32 src, uint32 group);
+ void sendGeneralMembershipQuery();
+ 
++#ifdef TCSUPPORT_IGMP_QOS
++void sendGeneralMembershipQueryBySignal();
++#endif
++
+ /* callout.c 
+ */
+ void callout_init();
+Index: igmpproxy-0.1-beta2/ifvc.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/ifvc.c	2005-05-24 23:49:18.000000000 +0800
++++ igmpproxy-0.1-beta2/ifvc.c	2015-08-18 10:17:32.144707545 +0800
+@@ -137,7 +137,7 @@
+             IfDescEp->allowednets->subnet_addr = subnet;
+ 
+             // Set the default params for the IF...
+-            IfDescEp->state         = IF_STATE_DOWNSTREAM;
++            IfDescEp->state         = /*IF_STATE_DOWNSTREAM*/IF_STATE_DISABLED;
+             IfDescEp->robustness    = DEFAULT_ROBUSTNESS;
+             IfDescEp->threshold     = DEFAULT_THRESHOLD;   /* ttl limit */
+             IfDescEp->ratelimit     = DEFAULT_RATELIMIT; 
+Index: igmpproxy-0.1-beta2/igmp.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/igmp.c	2005-05-24 23:49:16.000000000 +0800
++++ igmpproxy-0.1-beta2/igmp.c	2015-08-18 10:17:32.144707545 +0800
+@@ -140,11 +140,13 @@
+                     inetFmt(src, s1), inetFmt(dst, s2));
+                 return;
+             }
++#ifndef TRENDCHIP
+             else if(!isAdressValidForIf(checkVIF, src)) {
+                 log(LOG_WARNING, 0, "The source address %s for group %s, is not in any valid net for upstream VIF.",
+                     inetFmt(src, s1), inetFmt(dst, s2));
+                 return;
+             }
++#endif
+             
+             // Activate the route.
+             IF_DEBUG log(LOG_DEBUG, 0, "Route activate request from %s to %s",
+Index: igmpproxy-0.1-beta2/igmpproxy.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/igmpproxy.c	2005-08-20 20:56:32.000000000 +0800
++++ igmpproxy-0.1-beta2/igmpproxy.c	2015-08-18 10:17:32.144707545 +0800
+@@ -197,6 +197,9 @@
+     sigemptyset(&sa.sa_mask);
+     sigaction(SIGTERM, &sa, NULL);
+     sigaction(SIGINT, &sa, NULL);
++#ifdef TCSUPPORT_IGMP_QOS
++	sigaction(SIGUSR1, &sa, NULL); /* this message is from cfg manager when commit QoS node */
++#endif
+ 
+     // Loads configuration for Physical interfaces...
+     buildIfVc();    
+@@ -276,13 +279,22 @@
+     int     MaxFD, Rt, secs;
+     fd_set  ReadFDS;
+     int     dummy = 0;
++#ifdef TRENDCHIP
++    struct  timespec  curtime, lasttime, difftime, tv; 
++#else
+     struct  timeval  curtime, lasttime, difftime, tv; 
++#endif
+     // The timeout is a pointer in order to set it to NULL if nessecary.
+     struct  timeval  *timeout = &tv;
+ 
+     // Initialize timer vars
++#ifdef TRENDCHIP
++    difftime.tv_nsec = 0;
++	clock_gettime(CLOCK_MONOTONIC, &curtime);
++#else
+     difftime.tv_usec = 0;
+     gettimeofday(&curtime, NULL);
++#endif
+     lasttime = curtime;
+ 
+     // First thing we send a membership query in downstream VIF's...
+@@ -334,8 +346,14 @@
+                     if (errno != EINTR) log(LOG_ERR, errno, "recvfrom");
+                     continue;
+                 }
+-                
+-
++			#ifdef TCSUPPORT_IGMP_QOS
++				int len = sizeof(uint32);
++				if (getsockopt(MRouterFD, SOL_IP, IP_SKB_MARK, &skb_mark, &len)) {
++					/* dbg_info */
++					;//tcdbg_printf("%s,getsockopt error\n", __FUNCTION__);
++				}
++				//tcdbg_printf("xyz_dbg:%s, skb_mark is %x\n", __FUNCTION__, skb_mark);		
++			#endif
+                 acceptIgmp(recvlen);
+             }
+         }
+@@ -349,11 +367,31 @@
+              */
+             if (Rt == 0) {
+                 curtime.tv_sec = lasttime.tv_sec + secs;
++#ifdef TRENDCHIP
++                curtime.tv_nsec = lasttime.tv_nsec;
++#else
+                 curtime.tv_usec = lasttime.tv_usec;
++#endif
+                 Rt = -1; /* don't do this next time through the loop */
+             } else {
++#ifdef TRENDCHIP
++				clock_gettime(CLOCK_MONOTONIC, &curtime);
++#else
+                 gettimeofday(&curtime, NULL);
++#endif
++            }
++#ifdef TRENDCHIP
++            difftime.tv_sec = curtime.tv_sec - lasttime.tv_sec;
++            difftime.tv_nsec += curtime.tv_nsec - lasttime.tv_nsec;
++            while (difftime.tv_nsec > 1000000000) {
++                difftime.tv_sec++;
++                difftime.tv_nsec -= 1000000000;
++            }
++            if (difftime.tv_nsec < 0) {
++                difftime.tv_sec--;
++                difftime.tv_nsec += 1000000000;
+             }
++#else
+             difftime.tv_sec = curtime.tv_sec - lasttime.tv_sec;
+             difftime.tv_usec += curtime.tv_usec - lasttime.tv_usec;
+             while (difftime.tv_usec > 1000000) {
+@@ -364,6 +402,7 @@
+                 difftime.tv_sec--;
+                 difftime.tv_usec += 1000000;
+             }
++#endif
+             lasttime = curtime;
+             if (secs == 0 || difftime.tv_sec > 0)
+                 age_callout_queue(difftime.tv_sec);
+@@ -384,6 +423,14 @@
+     case SIGTERM:
+         sighandled |= GOT_SIGINT;
+         break;
++	/* this message is used for cfg_manager when commit QoS cfg node */
++#ifdef TCSUPPORT_IGMP_QOS
++	case SIGUSR1:
++		/* send query to lan side */
++		//tcdbg_printf("receive a signal.\n");
++		sendGeneralMembershipQueryBySignal();
++		break;
++#endif
+         /* XXX: Not in use.
+         case SIGHUP:
+             sighandled |= GOT_SIGHUP;
+Index: igmpproxy-0.1-beta2/mcgroup.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/mcgroup.c	2005-08-20 20:54:37.000000000 +0800
++++ igmpproxy-0.1-beta2/mcgroup.c	2015-08-18 10:17:32.144707545 +0800
+@@ -53,6 +53,14 @@
+         log( LOG_NOTICE, 0, "%sMcGroup: %s on %s", CmdSt, 
+             inetFmt( mcastaddr, s1 ), IfDp ? IfDp->Name : "<any>" );
+     }
++#ifdef TCSUPPORT_IGMP_QOS
++	if (setsockopt(UdpSock, IPPROTO_IP, IP_SKB_MARK, (void *)&skb_mark, sizeof(skb_mark))) {
++		//tcdbg_printf("%s, set IP_SKB_MARK failed.\n", __FUNCTION__);
++		;
++	}
++	
++	//tcdbg_printf("%s, set IP_SKB_MARK option.skb_mark is %x\n", __FUNCTION__, skb_mark);
++#endif
+     
+     if( setsockopt( UdpSock, IPPROTO_IP, 
+           Cmd == 'j' ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP, 
+Index: igmpproxy-0.1-beta2/mroute-api.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/mroute-api.c	2005-05-24 23:48:33.000000000 +0800
++++ igmpproxy-0.1-beta2/mroute-api.c	2015-08-18 10:17:32.144707545 +0800
+@@ -51,6 +51,10 @@
+ char        *recv_buf;           /* input packet buffer         */
+ char        *send_buf;           /* output packet buffer        */
+ 
++#ifdef TCSUPPORT_IGMP_QOS
++uint32 	skb_mark;
++#endif
++
+ 
+ // my internal virtual interfaces descriptor vector  
+ static struct VifDesc {
+Index: igmpproxy-0.1-beta2/request.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/request.c	2005-05-24 23:48:29.000000000 +0800
++++ igmpproxy-0.1-beta2/request.c	2015-08-18 10:17:32.144707545 +0800
+@@ -216,4 +216,30 @@
+ 
+ 
+ }
+- 
++#ifdef TCSUPPORT_IGMP_QOS
++void sendGeneralMembershipQueryBySignal()
++{
++	struct  Config  *conf = getCommonConfig();
++    struct  IfDesc  *Dp;
++    int             Ix;
++
++	//tcdbg_printf("send igmp query by signal.\n");
++	
++    // Loop through all downstream vifs...
++    for ( Ix = 0; Dp = getIfByIx( Ix ); Ix++ ) {
++        if ( Dp->InAdr.s_addr && ! (Dp->Flags & IFF_LOOPBACK) ) {
++            if(Dp->state == IF_STATE_DOWNSTREAM) {
++                // Send the membership query...
++                sendIgmp(Dp->InAdr.s_addr, allhosts_group, 
++                         IGMP_MEMBERSHIP_QUERY,
++                         conf->queryResponseInterval * IGMP_TIMER_SCALE, 0, 0);
++                
++                IF_DEBUG log(LOG_DEBUG, 0, "Sent membership query from %s to %s. Delay: %d",
++                    inetFmt(Dp->InAdr.s_addr,s1), inetFmt(allhosts_group,s2),
++                    conf->queryResponseInterval);
++            }
++        }
++    }
++}
++#endif
++
+Index: igmpproxy-0.1-beta2/rttable.c
+===================================================================
+--- igmpproxy-0.1-beta2.orig/rttable.c	2005-08-20 20:46:20.000000000 +0800
++++ igmpproxy-0.1-beta2/rttable.c	2015-08-18 10:17:32.144707545 +0800
+@@ -38,7 +38,22 @@
+ */
+ 
+ #include "defs.h"
+-    
++#ifdef TCSUPPORT_IGMP_QUICK_LEAVE
++#include <errno.h>
++#include <sys/time.h>
++#include <sys/fcntl.h>
++#include <linux/sockios.h>
++#include <linux/if_bridge.h>
++//#ifdef TCSUPPORT_IGMP_SNOOPING_V3
++//#include <linux/in.h>
++//#endif
++#define SIOCDEVPRIVATE	0x89F0
++#define BRCTL_GET_BRIDGE_INFO 6
++#define BRCTL_GET_MC_FDB_ENTRIES 21
++#define CHUNK 128
++#endif
++
++
+ /**
+ *   Routing table structure definition. Double linked list...
+ */
+@@ -56,8 +71,31 @@
+     uint32              ageVifBits;     // Bits representing aging VIFs.
+     int                 ageValue;       // Downcounter for death.          
+     int                 ageActivity;    // Records any acitivity that notes there are still listeners.
++#ifdef TCSUPPORT_IGMP_QOS
++	/* skb mark */
++	uint32				skb_mark;
++#endif
++};
++#ifdef TCSUPPORT_IGMP_QUICK_LEAVE
++struct mc_fdb_entry
++{
++	u_int8_t group_addr[16];
++	u_int8_t host_addr[6];
++	unsigned char is_router;
++	u_int16_t port_no;
++#ifdef TCSUPPORT_IGMP_SNOOPING_V3
++	u_int8_t src_addr[16];
++	u_int8_t filter_mode;
++#endif
++	struct timeval ageing_timer_value;
+ };
+ 
++int checkLastMemberInGroup(uint32 group);
++int br_read_mc_fdb(const char *bridge, struct mc_fdb_entry *fdbs, unsigned long offset, int num);
++static  void copy_mc_fdb(struct mc_fdb_entry *ent, const struct __mc_fdb_entry *f);
++static void jiffies_to_tv(struct timeval *tv, unsigned long jiffies);
++void getsnoopingfastleaveFlag(const char *bridge, int *snoopingFastLeaveFlag,int *igmpSnoopingFlag);
++#endif
+                  
+ // Keeper for the routing table...
+ static struct RouteTable   *routing_table;
+@@ -251,6 +289,9 @@
+         // The route is not active yet, so the age is unimportant.
+         newroute->ageValue    = conf->robustnessValue;
+         newroute->ageActivity = 0;
++	#ifdef TCSUPPORT_IGMP_QOS
++		newroute->skb_mark = skb_mark;
++	#endif
+         
+         BIT_ZERO(newroute->ageVifBits);     // Initially we assume no listeners.
+ 
+@@ -311,6 +352,10 @@
+         // Log the cleanup in debugmode...
+         log(LOG_INFO, 0, "Inserted route table entry for %s on VIF #%d",
+             inetFmt(croute->group, s1),ifx);
++        
++#if defined(TCSUPPORT_XPON_IGMP) && defined(TCSUPPORT_MULTICAST_SPEED)
++        system("/usr/bin/xponigmpcmd clearhwdrop");
++#endif
+ 
+     } else if(ifx >= 0) {
+ 
+@@ -335,11 +380,23 @@
+         }
+     }
+ 
++#ifdef TCSUPPORT_IGMP_QOS
++    // Send join message upstream, if the route has no joined flag...
++    if ((croute->upstrState != ROUTESTATE_JOINED) || (croute->skb_mark != skb_mark)) {
++        // Send Join request upstream
++		/* update old skb_mark */
++		croute->skb_mark = skb_mark;
++	
++		//tcdbg_printf("%s, send join leave packet to upstream\n", __FUNCTION__);	
++        sendJoinLeaveUpstream(croute, 1);
++    }
++#else
+     // Send join message upstream, if the route has no joined flag...
+     if(croute->upstrState != ROUTESTATE_JOINED) {
+         // Send Join request upstream
+         sendJoinLeaveUpstream(croute, 1);
+     }
++#endif
+ 
+     IF_DEBUG logRouteTable("Insert Route");
+ 
+@@ -428,7 +485,11 @@
+         // Check for fast leave mode...
+         if(croute->upstrState == ROUTESTATE_JOINED && conf->fastUpstreamLeave) {
+             // Send a leave message right away..
+-            sendJoinLeaveUpstream(croute, 0);
++            #ifdef TCSUPPORT_IGMP_QUICK_LEAVE 
++             if(checkLastMemberInGroup(group))
++			#endif
++               sendJoinLeaveUpstream(croute, 0);
++
+         }
+         // Set the routingstate to Last member check...
+         croute->upstrState = ROUTESTATE_CHECK_LAST_MEMBER;
+@@ -436,8 +497,141 @@
+         croute->ageValue = conf->lastMemberQueryCount;
+     }
+ }
++#ifdef TCSUPPORT_IGMP_QUICK_LEAVE
++int checkLastMemberInGroup(uint32 group)
++{
++	char brname[10] ="br0" ;
++	int i=0;
++	int n=0;
++	int groupMemberNum=0;
++	struct mc_fdb_entry *fdb = NULL,*head=NULL;
++	int offset = 0;
++	int igmpSnoopingFlag=0;
++	int  snoopingFastLeaveFlag=0;
++	
++	getsnoopingfastleaveFlag(brname,&snoopingFastLeaveFlag,&igmpSnoopingFlag);
++	if(igmpSnoopingFlag==0)
++		return 1;
++	for(;;) {
++		fdb = realloc(fdb, (offset + CHUNK) * sizeof(struct mc_fdb_entry));
++		if (!fdb) {
++			//fprintf(stderr, "Out of memory\n");
++			return 0;
++		}
++			
++		n = br_read_mc_fdb(brname, fdb+offset, offset, CHUNK);
++		if (n == 0)
++			break;
++		if (n < 0) {
++			//fprintf(stderr, "read of forward table failed: %s\n",strerror(errno));
++			free(fdb);
++			return 0;
++		}
++		offset += n;
++	}
++     head=fdb;
++     for(i=0;i<offset;i++)
++     {
++		
++	     if(inet_addr(fdb->group_addr)==group)
++		 	++groupMemberNum;
++	     ++fdb;
++     }
++	if((groupMemberNum==1&&snoopingFastLeaveFlag==0) || (groupMemberNum==0&&snoopingFastLeaveFlag==1))
++	 {      
++     	free(head);
++		return 1;        
++     }
++     free(head);	
++     return 0;
++}
++
++void getsnoopingfastleaveFlag(const char *bridge, int *snoopingFastLeaveFlag,int *igmpSnoopingFlag)
++{
++	struct ifreq ifr;
++	struct __bridge_info i;
++	int br_socket_fd=-1;
++	unsigned long args[4] = { BRCTL_GET_BRIDGE_INFO, (unsigned long) &i, 0, 0 };
++	strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
++
++	ifr.ifr_data = (char *) &args;
++	if ((br_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
++		return ;
++	if (ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr) < 0) {
++		//dprintf("%s: can't get info %s\n",bridge, strerror(errno));
++	    if(br_socket_fd>0)
++	       close(br_socket_fd);
++		return ;
++	}
++     *snoopingFastLeaveFlag = i.igmpsnoop_quickleave?1:0;
++	 *igmpSnoopingFlag = i.igmpsnoop_enabled?1:0;
++	   //tcdbg_printf("getsnoopingfastleaveFlag()-->snoopingFastLeaveFlag:%d\n",*snoopingFastLeaveFlag );
++     if(br_socket_fd>0)
++	    close(br_socket_fd);
++		   
++return ;
++}
+ 
++int br_read_mc_fdb(const char *bridge, struct mc_fdb_entry *fdbs, 
++		unsigned long offset, int num)
++{
++	int i,  n=0;
++	int br_socket_fd=-1;
++	struct __mc_fdb_entry fe[CHUNK];
++
++	{
++		/* old kernel, use ioctl */
++		if ((br_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
++		return errno;
++		unsigned long args[4] = { BRCTL_GET_MC_FDB_ENTRIES,
++					  (unsigned long) fe,
++					  num, offset };
++		struct ifreq ifr;
++		int retries = 0;
++
++		strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
++		ifr.ifr_data = (char *) args;
++
++	retry:
++		n = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
++		/* table can change during ioctl processing */
++		if (n < 0 && errno == EAGAIN && ++retries < 10) {
++			sleep(0);
++			goto retry;
++		}
++	}
++
++	for (i = 0; i < n; i++) 
++		copy_mc_fdb(fdbs+i, fe+i);
++	
++
++if(br_socket_fd>0)
++	close(br_socket_fd);
++	
++	return n;
++}
+ 
++static  void copy_mc_fdb(struct mc_fdb_entry *ent, 
++			      const struct __mc_fdb_entry *f)
++{
++	memcpy(ent->group_addr, f->group_addr, 16);
++	memcpy(ent->host_addr, f->host_addr, 6);
++	#ifdef TCSUPPORT_IGMP_SNOOPING_V3
++	memcpy(ent->src_addr,f->src_addr,16);
++	ent->filter_mode = f->filter_mode;
++	#endif
++	ent->port_no = f->port_no;
++	jiffies_to_tv(&ent->ageing_timer_value, f->ageing_timer_value);
++}
++static void jiffies_to_tv(struct timeval *tv, unsigned long jiffies)
++{
++	unsigned long long tvusec;
++
++	tvusec = (1000000ULL*jiffies)/100;
++	tv->tv_sec = tvusec/1000000;
++	tv->tv_usec = tvusec - 1000000 * tv->tv_sec;
++}
++#endif
+ /**
+ *   Ages groups in the last member check state. If the
+ *   route is not found, or not in this state, 0 is returned.
+Index: igmpproxy-0.1-beta2/igmpproxy.conf
+===================================================================
+--- igmpproxy-0.1-beta2.orig/igmpproxy.conf	2005-04-30 03:27:50.000000000 +0800
++++ igmpproxy-0.1-beta2/igmpproxy.conf	2014-10-13 21:20:02.000000000 +0800
+@@ -27,20 +27,20 @@
+ ##------------------------------------------------------
+ ## Configuration for eth0 (Upstream Interface)
+ ##------------------------------------------------------
+-phyint eth0 upstream  ratelimit 0  threshold 1
+-        altnet 10.0.0.0/8 
+-        altnet 192.168.0.0/24
++phyint nas0 upstream  ratelimit 0  threshold 1
++#        altnet 10.0.0.0/8 
++#        altnet 192.168.0.0/24
+ 
+ 
+ ##------------------------------------------------------
+ ## Configuration for eth1 (Downstream Interface)
+ ##------------------------------------------------------
+-phyint eth1 downstream  ratelimit 0  threshold 1
++phyint br0 downstream  ratelimit 0  threshold 1
+ 
+ 
+ ##------------------------------------------------------
+ ## Configuration for eth2 (Disabled Interface)
+ ##------------------------------------------------------
+-phyint eth2 disabled
++#phyint eth2 disabled
+ 
+ 

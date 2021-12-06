@@ -1,0 +1,158 @@
+Index: json-c-0.12/arraylist.c
+===================================================================
+--- json-c-0.12.orig/arraylist.c	2014-04-11 08:41:08.000000000 +0800
++++ json-c-0.12/arraylist.c	2016-01-05 15:24:36.274384577 +0800
+@@ -53,7 +53,7 @@
+ void*
+ array_list_get_idx(struct array_list *arr, int i)
+ {
+-  if(i >= arr->length) return NULL;
++  if(i >= arr->length || i < 0) return NULL;
+   return arr->array[i];
+ }
+ 
+@@ -78,7 +78,11 @@
+   if(arr->array[idx]) arr->free_fn(arr->array[idx]);
+   arr->array[idx] = data;
+   if(arr->length <= idx) arr->length = idx + 1;
++#if 0 /* ZyXEL, john */
+   return 0;
++#else
++  return idx + 1;
++#endif
+ }
+ 
+ int
+@@ -99,3 +103,25 @@
+ {
+   return arr->length;
+ }
++
++
++#if 1 /* zyxel, john */
++#include "json_object.h"
++int array_list_delete_idx(struct array_list *arr, int idx)
++{
++	if(idx > arr->length) return -1;
++
++	if(arr->array[idx]) arr->free_fn(arr->array[idx]);
++
++	if((idx + 1) == arr->length) {
++		arr->array[idx] = NULL; 
++		arr->length--;
++	}
++	else {
++		arr->array[idx] = json_object_new_object();
++		json_object_object_add(arr->array[idx], "emptyIns", json_object_new_boolean(1));
++	}
++
++	return 0;	
++}
++#endif
+Index: json-c-0.12/arraylist.h
+===================================================================
+--- json-c-0.12.orig/arraylist.h	2014-04-11 08:41:08.000000000 +0800
++++ json-c-0.12/arraylist.h	2016-01-05 15:24:36.274384577 +0800
+@@ -49,6 +49,9 @@
+ extern void
+ array_list_sort(struct array_list *arr, int(*compar)(const void *, const void *));
+ 
++extern int
++array_list_delete_idx(struct array_list *arr, int idx);
++
+ #ifdef __cplusplus
+ }
+ #endif
+Index: json-c-0.12/json_object.c
+===================================================================
+--- json-c-0.12.orig/json_object.c	2014-04-11 08:41:08.000000000 +0800
++++ json-c-0.12/json_object.c	2016-01-05 15:24:36.274384577 +0800
+@@ -239,7 +239,10 @@
+ 		case json_type_double:
+ 			jso->_to_json_string = &json_object_double_to_json_string;
+ 			break;
+-		case json_type_int:
++		case json_type_uint32:
++		case json_type_uint16:
++		case json_type_uint8:
++		case json_type_ulong:
+ 			jso->_to_json_string = &json_object_int_to_json_string;
+ 			break;
+ 		case json_type_object:
+@@ -248,6 +251,9 @@
+ 		case json_type_array:
+ 			jso->_to_json_string = &json_object_array_to_json_string;
+ 			break;
++		case json_type_time:
++		case json_type_base64:
++		case json_type_hex:
+ 		case json_type_string:
+ 			jso->_to_json_string = &json_object_string_to_json_string;
+ 			break;
+@@ -805,6 +811,14 @@
+   json_object_generic_delete(jso);
+ }
+ 
++#if 1 /* zyxel, john */
++int json_object_array_delete_idx(struct json_object *jso,
++					      int idx)
++{
++  return array_list_delete_idx(jso->o.c_array, idx);
++}
++#endif
++
+ struct json_object* json_object_new_array(void)
+ {
+   struct json_object *jso = json_object_new(json_type_array);
+Index: json-c-0.12/json_object.h
+===================================================================
+--- json-c-0.12.orig/json_object.h	2014-04-11 08:41:08.000000000 +0800
++++ json-c-0.12/json_object.h	2016-01-05 15:24:36.274384577 +0800
+@@ -103,9 +103,16 @@
+   json_type_boolean,
+   json_type_double,
+   json_type_int,
++  json_type_uint8,
++  json_type_uint16,
++  json_type_uint32,
+   json_type_object,
+   json_type_array,
+   json_type_string,
++  json_type_time,
++  json_type_base64,
++  json_type_hex,
++  json_type_ulong
+ } json_type;
+ 
+ /* reference counting functions */
+@@ -605,6 +612,18 @@
+  */
+ extern int json_object_get_string_len(struct json_object *obj);
+ 
++
++#if 1 /* zyxel, john */
++
++/** Delete the element at specificed index of the array (a json_object of type json_type_array)
++ * @param obj the json_object array
++ * @param idx the index of the deteled element
++ * @returns 0
++ */
++extern int json_object_array_delete_idx(struct json_object *jso,
++					      int idx);
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+Index: json-c-0.12/json_util.c
+===================================================================
+--- json-c-0.12.orig/json_util.c	2014-04-11 08:41:08.000000000 +0800
++++ json-c-0.12/json_util.c	2016-01-05 15:24:36.274384577 +0800
+@@ -135,6 +135,7 @@
+     wpos += (unsigned int)ret;
+   }
+ 
++  fsync(fd);
+   close(fd);
+   return 0;
+ }

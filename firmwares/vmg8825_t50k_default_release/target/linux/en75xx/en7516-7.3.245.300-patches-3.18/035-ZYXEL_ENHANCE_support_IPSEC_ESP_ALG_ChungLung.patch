@@ -1,0 +1,1257 @@
+Index: linux-3.18.21/include/linux/netfilter/nf_conntrack_ipsec.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/include/linux/netfilter/nf_conntrack_ipsec.h	2018-07-13 11:21:09.937861167 +0800
+@@ -0,0 +1,43 @@
++/* IPSEC constants and structs */
++#ifndef _NF_CONNTRACK_IPSEC_H
++#define _NF_CONNTRACK_IPSEC_H
++
++#include <linux/netfilter/nf_conntrack_common.h>
++
++/* conntrack private data */
++struct nf_ct_ipsec_master
++{
++   __be32 initcookie;  /* initcookie of ISAKMP */
++   __be32 lan_ip;        /* LAN IP */
++};
++
++struct nf_nat_ipsec
++{
++   __be32 lan_ip;   /* LAN IP */
++};
++
++#ifdef __KERNEL__
++
++#define IPSEC_PORT   500
++#define MAX_VPN_CONNECTION 8
++
++struct isakmp_pkt_hdr
++{
++   __be32 initcookie;
++};
++
++
++/* crap needed for nf_conntrack_compat.h */
++struct nf_conn;
++struct nf_conntrack_expect;
++
++extern int
++(*nf_nat_ipsec_hook_outbound)(struct sk_buff *skb,
++                           struct nf_conn *ct, enum ip_conntrack_info ctinfo);
++
++extern int
++(*nf_nat_ipsec_hook_inbound)(struct sk_buff *skb, struct nf_conn *ct,
++                             enum ip_conntrack_info ctinfo, __be32 lan_ip);
++
++#endif /* __KERNEL__ */
++#endif /* _NF_CONNTRACK_IPSEC_H */
+Index: linux-3.18.21/include/linux/netfilter/nf_conntrack_proto_esp.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/include/linux/netfilter/nf_conntrack_proto_esp.h	2018-07-13 11:21:09.937861167 +0800
+@@ -0,0 +1,20 @@
++#ifndef _CONNTRACK_PROTO_ESP_H
++#define _CONNTRACK_PROTO_ESP_H
++#include <asm/byteorder.h>
++
++/* ESP PROTOCOL HEADER */
++
++struct esphdr {
++	__u32	spi;
++};
++
++struct nf_ct_esp {
++	unsigned int stream_timeout;
++	unsigned int timeout;
++};
++
++#ifdef __KERNEL__
++#include <net/netfilter/nf_conntrack_tuple.h>
++
++#endif /* __KERNEL__ */
++#endif /* _CONNTRACK_PROTO_ESP_H */
+Index: linux-3.18.21/include/net/netfilter/nf_conntrack.h
+===================================================================
+--- linux-3.18.21.orig/include/net/netfilter/nf_conntrack.h	2018-07-13 11:21:03.053827031 +0800
++++ linux-3.18.21/include/net/netfilter/nf_conntrack.h	2018-07-13 11:21:09.937861167 +0800
+@@ -22,6 +22,11 @@
+ #include <linux/netfilter/nf_conntrack_dccp.h>
+ #include <linux/netfilter/nf_conntrack_sctp.h>
+ #include <linux/netfilter/nf_conntrack_proto_gre.h>
++#if (defined(CONFIG_NF_CONNTRACK_IPSEC) || defined(CONFIG_NF_CONNTRACK_IPSEC_MODULE))
++#include <linux/netfilter/nf_conntrack_ipsec.h>
++#include <linux/netfilter/nf_conntrack_proto_esp.h>
++#endif
++#include <linux/netfilter/nf_conntrack_proto_esp.h>
+ #include <net/netfilter/ipv6/nf_conntrack_icmpv6.h>
+ 
+ #include <net/netfilter/nf_conntrack_tuple.h>
+@@ -33,6 +38,9 @@
+ 	struct ip_ct_sctp sctp;
+ 	struct ip_ct_tcp tcp;
+ 	struct nf_ct_gre gre;
++#if (defined(CONFIG_NF_CT_PROTO_ESP) || defined(CONFIG_NF_CT_PROTO_ESP_MODULE))
++	struct nf_ct_esp esp;
++#endif
+ };
+ 
+ union nf_conntrack_expect_proto {
+Index: linux-3.18.21/include/net/netfilter/nf_conntrack_tuple.h
+===================================================================
+--- linux-3.18.21.orig/include/net/netfilter/nf_conntrack_tuple.h	2018-07-13 11:21:03.045826991 +0800
++++ linux-3.18.21/include/net/netfilter/nf_conntrack_tuple.h	2018-07-13 11:21:09.937861167 +0800
+@@ -61,6 +61,11 @@
+ 			struct {
+ 				__be16 key;
+ 			} gre;
++#if (defined(CONFIG_NF_CT_PROTO_ESP) || defined(CONFIG_NF_CT_PROTO_ESP_MODULE))
++			struct {
++				__be16 spi;
++			} esp;
++#endif
+ 		} u;
+ 
+ 		/* The protocol. */
+Index: linux-3.18.21/net/ipv4/netfilter/Kconfig
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/netfilter/Kconfig	2018-07-13 11:21:03.029826911 +0800
++++ linux-3.18.21/net/ipv4/netfilter/Kconfig	2018-07-13 11:21:09.937861167 +0800
+@@ -134,6 +134,11 @@
+ 	tristate
+ 	depends on NF_CT_PROTO_GRE
+ 
++config NF_NAT_PROTO_ESP
++	tristate
++	depends on NF_NAT && NF_CT_PROTO_ESP
++	default NF_NAT && NF_CT_PROTO_ESP
++
+ config NF_NAT_PPTP
+ 	tristate
+ 	depends on NF_CONNTRACK
+@@ -145,6 +150,11 @@
+ 	depends on NF_CONNTRACK
+ 	default NF_CONNTRACK_H323
+ 
++config NF_NAT_IPSEC
++	tristate
++	depends on NF_CONNTRACK && NF_NAT
++	default NF_NAT && NF_CONNTRACK_IPSEC
++
+ endif # NF_NAT_IPV4
+ 
+ config IP_NF_IPTABLES
+Index: linux-3.18.21/net/ipv4/netfilter/Makefile
+===================================================================
+--- linux-3.18.21.orig/net/ipv4/netfilter/Makefile	2018-07-13 11:21:03.021826872 +0800
++++ linux-3.18.21/net/ipv4/netfilter/Makefile	2018-07-13 11:21:09.937861167 +0800
+@@ -31,10 +31,12 @@
+ obj-$(CONFIG_NF_NAT_PPTP) += nf_nat_pptp.o
+ obj-$(CONFIG_NF_NAT_SNMP_BASIC) += nf_nat_snmp_basic.o
+ obj-$(CONFIG_NF_NAT_MASQUERADE_IPV4) += nf_nat_masquerade_ipv4.o
++obj-$(CONFIG_NF_NAT_IPSEC) += nf_nat_ipsec.o
+ obj-$(CONFIG_NF_NAT_PT) += nf_nat_pt.o
+ 
+ # NAT protocols (nf_nat)
+ obj-$(CONFIG_NF_NAT_PROTO_GRE) += nf_nat_proto_gre.o
++obj-$(CONFIG_NF_NAT_PROTO_ESP) += nf_nat_proto_esp.o
+ 
+ obj-$(CONFIG_NF_TABLES_IPV4) += nf_tables_ipv4.o
+ obj-$(CONFIG_NFT_CHAIN_ROUTE_IPV4) += nft_chain_route_ipv4.o
+Index: linux-3.18.21/net/ipv4/netfilter/nf_nat_ipsec.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/ipv4/netfilter/nf_nat_ipsec.c	2018-07-13 11:21:09.941861186 +0800
+@@ -0,0 +1,95 @@
++/*
++<:copyright-BRCM:2012:GPL/GPL:standard
++
++   Copyright (c) 2012 Broadcom Corporation
++   All Rights Reserved
++
++This program is free software; you can redistribute it and/or modify
++it under the terms of the GNU General Public License, version 2, as published by
++the Free Software Foundation (the "GPL").
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++
++
++A copy of the GPL is available at http://www.broadcom.com/licenses/GPLv2.php, or by
++writing to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.
++
++:>
++*/
++
++#include <linux/module.h>
++#include <linux/udp.h>
++#include <linux/ip.h>
++
++#include <net/netfilter/nf_nat.h>
++#include <net/netfilter/nf_nat_helper.h>
++//#include <net/netfilter/nf_nat_rule.h>
++#include <net/netfilter/nf_conntrack_helper.h>
++#include <net/netfilter/nf_conntrack_expect.h>
++#include <linux/netfilter/nf_conntrack_ipsec.h>
++
++MODULE_AUTHOR("Pavan Kumar <pavank@broadcom.com>");
++MODULE_DESCRIPTION("Netfilter connection tracking module for ipsec");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("nf_nat_ipsec");
++
++/* outbound packets == from LAN to WAN */
++static int
++ipsec_outbound_pkt(struct sk_buff *skb,
++                   struct nf_conn *ct, enum ip_conntrack_info ctinfo)
++
++{
++   struct iphdr *iph = ip_hdr(skb);
++   struct udphdr *udph = (void *)iph + iph->ihl * 4;
++
++#if 0 //PeterSu
++   /* make sure source port is 500 */
++   udph->source = htons(IPSEC_PORT);
++#endif
++   udph->check = 0;
++
++   return NF_ACCEPT;
++}
++
++
++/* inbound packets == from WAN to LAN */
++static int
++ipsec_inbound_pkt(struct sk_buff *skb, struct nf_conn *ct,
++                  enum ip_conntrack_info ctinfo, __be32 lan_ip)
++{
++   struct iphdr *iph = ip_hdr(skb);
++   struct udphdr *udph = (void *)iph + iph->ihl * 4;
++
++   iph->daddr = lan_ip;
++   udph->check = 0;
++   iph->check = 0;
++   iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
++
++   return NF_ACCEPT;
++}
++
++static int __init nf_nat_helper_ipsec_init(void)
++{
++   BUG_ON(nf_nat_ipsec_hook_outbound != NULL);
++   RCU_INIT_POINTER(nf_nat_ipsec_hook_outbound, ipsec_outbound_pkt);
++
++   BUG_ON(nf_nat_ipsec_hook_inbound != NULL);
++   RCU_INIT_POINTER(nf_nat_ipsec_hook_inbound, ipsec_inbound_pkt);
++
++   return 0;
++}
++
++static void __exit nf_nat_helper_ipsec_fini(void)
++{
++	RCU_INIT_POINTER(nf_nat_ipsec_hook_inbound, NULL);
++	RCU_INIT_POINTER(nf_nat_ipsec_hook_outbound, NULL);
++
++	synchronize_rcu();
++}
++
++module_init(nf_nat_helper_ipsec_init);
++module_exit(nf_nat_helper_ipsec_fini);
+Index: linux-3.18.21/net/ipv4/netfilter/nf_nat_proto_esp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/ipv4/netfilter/nf_nat_proto_esp.c	2018-07-13 11:21:09.941861186 +0800
+@@ -0,0 +1,115 @@
++/*
++<:copyright-BRCM:2012:GPL/GPL:standard
++
++   Copyright (c) 2012 Broadcom Corporation
++   All Rights Reserved
++
++This program is free software; you can redistribute it and/or modify
++it under the terms of the GNU General Public License, version 2, as published by
++the Free Software Foundation (the "GPL").
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++
++
++A copy of the GPL is available at http://www.broadcom.com/licenses/GPLv2.php, or by
++writing to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.
++
++:>
++*/
++/******************************************************************************
++Filename:       nf_nat_proto_esp.c
++Author:         Pavan Kumar
++Creation Date:  05/27/04
++
++Description:
++    Implements the ESP ALG connectiontracking.
++    Migrated to kernel 2.6.21.5 on April 16, 2008 by Dan-Han Tsai.
++    Migrated to kernel 3.4.11 on Jan 21, 2013 by Kirill Tsym
++*****************************************************************************/
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <linux/ip.h>
++
++#include <net/netfilter/nf_nat.h>
++#include <net/netfilter/nf_nat_l4proto.h>
++#include <linux/netfilter/nf_conntrack_proto_esp.h>
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Harald Welte <laforge@gnumonks.org>");
++MODULE_DESCRIPTION("Netfilter NAT protocol helper module for ESP");
++
++/* is spi in given range between min and max */
++static bool
++esp_in_range(const struct nf_conntrack_tuple *tuple,
++	     enum nf_nat_manip_type maniptype,
++	     const union nf_conntrack_man_proto *min,
++	     const union nf_conntrack_man_proto *max)
++{
++   return true;
++}
++
++/* generate unique tuple ... */
++static void
++esp_unique_tuple(const struct nf_nat_l3proto *l3proto,
++		 struct nf_conntrack_tuple *tuple,
++		 const struct nf_nat_range *range,
++		 enum nf_nat_manip_type maniptype,
++		 const struct nf_conn *ct)
++{
++   return;
++}
++
++/* manipulate a ESP packet according to maniptype */
++static bool
++esp_manip_pkt(struct sk_buff *skb,
++	      const struct nf_nat_l3proto *l3proto,
++	      unsigned int iphdroff, unsigned int hdroff,
++	      const struct nf_conntrack_tuple *tuple,
++	      enum nf_nat_manip_type maniptype)
++{
++   struct esphdr *esph;
++   struct iphdr *iph = (struct iphdr *)(skb->data + iphdroff);
++   __be32 oldip, newip;
++
++   if (!skb_make_writable(skb, hdroff + sizeof(*esph)))
++      return false;
++
++   if (maniptype == NF_NAT_MANIP_SRC)
++   {
++      /* Get rid of src ip and src pt */
++      oldip = iph->saddr;
++      newip = tuple->src.u3.ip;
++   }
++   else
++   {
++      /* Get rid of dst ip and dst pt */
++      oldip = iph->daddr;
++      newip = tuple->dst.u3.ip;
++   }
++
++   return true;
++}
++
++const struct nf_nat_l4proto esp __read_mostly = {
++   .l4proto = IPPROTO_ESP,
++   .manip_pkt = esp_manip_pkt,
++   .in_range = esp_in_range,
++   .unique_tuple = esp_unique_tuple,
++};
++
++int __init nf_nat_proto_esp_init(void)
++{
++   return nf_nat_l4proto_register(NFPROTO_IPV4, &esp);
++}
++
++void __exit nf_nat_proto_esp_fini(void)
++{
++   nf_nat_l4proto_unregister(NFPROTO_IPV4, &esp);
++}
++
++module_init(nf_nat_proto_esp_init);
++module_exit(nf_nat_proto_esp_fini);
+Index: linux-3.18.21/net/netfilter/Kconfig
+===================================================================
+--- linux-3.18.21.orig/net/netfilter/Kconfig	2018-07-13 11:21:03.009826812 +0800
++++ linux-3.18.21/net/netfilter/Kconfig	2018-07-13 11:21:09.941861186 +0800
+@@ -146,6 +146,16 @@
+ config NF_CT_PROTO_GRE
+ 	tristate
+ 
++config NF_CT_PROTO_ESP
++	tristate "ESP protocol support"
++	depends on NF_CONNTRACK
++	help
++	  Support the ESP protocol.  This allows ESP transports to be setup
++	  properly.
++
++	  If you want to compile it as a module, say 'M' here and read
++	  Documentation/modules.txt.  If unsure, say 'Y'.
++
+ config NF_CT_PROTO_SCTP
+ 	tristate 'SCTP protocol connection tracking support'
+ 	depends on NETFILTER_ADVANCED
+@@ -333,6 +343,13 @@
+  	  If you want to compile it as a module, say 'M' here and read       
+  	  Documentation/modules.txt.  If unsure, say 'Y'.
+ 
++config NF_CONNTRACK_IPSEC
++	tristate "IPSEC protocol support"
++	depends on NF_CONNTRACK
++	help
++	  Support the IPSEC protocol.  This allows UDP transports to be setup
++	  properly.
++
+ config NF_CT_NETLINK
+ 	tristate 'Connection tracking netlink interface'
+ 	select NETFILTER_NETLINK
+Index: linux-3.18.21/net/netfilter/Makefile
+===================================================================
+--- linux-3.18.21.orig/net/netfilter/Makefile	2018-07-13 11:21:03.001826773 +0800
++++ linux-3.18.21/net/netfilter/Makefile	2018-07-13 11:21:09.941861186 +0800
+@@ -23,6 +23,7 @@
+ obj-$(CONFIG_NF_CT_PROTO_GRE) += nf_conntrack_proto_gre.o
+ obj-$(CONFIG_NF_CT_PROTO_SCTP) += nf_conntrack_proto_sctp.o
+ obj-$(CONFIG_NF_CT_PROTO_UDPLITE) += nf_conntrack_proto_udplite.o
++obj-$(CONFIG_NF_CT_PROTO_ESP) += nf_conntrack_proto_esp.o
+ 
+ # netlink interface for nf_conntrack
+ obj-$(CONFIG_NF_CT_NETLINK) += nf_conntrack_netlink.o
+@@ -44,6 +45,7 @@
+ obj-$(CONFIG_NF_CONNTRACK_SIP) += nf_conntrack_sip.o
+ obj-$(CONFIG_NF_CONNTRACK_TFTP) += nf_conntrack_tftp.o
+ obj-$(CONFIG_NF_CONNTRACK_RTSP) += nf_conntrack_rtsp.o
++obj-$(CONFIG_NF_CONNTRACK_IPSEC) += nf_conntrack_ipsec.o
+ 
+ nf_nat-y	:= nf_nat_core.o nf_nat_proto_unknown.o nf_nat_proto_common.o \
+ 		   nf_nat_proto_udp.o nf_nat_proto_tcp.o nf_nat_helper.o
+Index: linux-3.18.21/net/netfilter/nf_conntrack_ipsec.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/netfilter/nf_conntrack_ipsec.c	2018-07-13 11:22:20.746212286 +0800
+@@ -0,0 +1,355 @@
++/*
++<:copyright-BRCM:2012:GPL/GPL:standard
++
++   Copyright (c) 2012 Broadcom
++   All Rights Reserved
++
++This program is free software; you can redistribute it and/or modify
++it under the terms of the GNU General Public License, version 2, as published by
++the Free Software Foundation (the "GPL").
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++
++
++A copy of the GPL is available at http://www.broadcom.com/licenses/GPLv2.php, or by
++writing to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.
++
++:>
++*/
++
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <linux/in.h>
++#include <linux/tcp.h>
++#include <linux/ip.h>
++
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_conntrack_core.h>
++#include <net/netfilter/nf_conntrack_helper.h>
++#include <net/udp.h>
++#include <linux/netfilter/nf_conntrack_ipsec.h>
++
++#ifdef CONFIG_NF_BL_EXT
++#include <linux/netfilter.h>
++#endif /* CONFIG_NF_BL_EXT */
++
++MODULE_AUTHOR("Pavan Kumar <pavank@broadcom.com>");
++MODULE_DESCRIPTION("Netfilter connection tracking module for ipsec");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("ip_conntrack_ipsec");
++
++static DEFINE_SPINLOCK(nf_ipsec_lock);
++
++int
++(*nf_nat_ipsec_hook_outbound)(struct sk_buff *skb,
++      struct nf_conn *ct, enum ip_conntrack_info ctinfo) __read_mostly;
++EXPORT_SYMBOL_GPL(nf_nat_ipsec_hook_outbound);
++
++int
++(*nf_nat_ipsec_hook_inbound)(struct sk_buff *skb,
++      struct nf_conn *ct, enum ip_conntrack_info ctinfo, __be32 lan_ip) __read_mostly;
++EXPORT_SYMBOL_GPL(nf_nat_ipsec_hook_inbound);
++
++static void __exit nf_conntrack_ipsec_fini(void);
++
++#define CT_REFRESH_TIMEOUT (60 * HZ)	 /* KT: Changed from 13 Sec to 1 Min */
++
++
++/* Internal table for ISAKMP */
++struct _ipsec_table
++{
++   u_int32_t initcookie;
++   __be32 lan_ip;
++   struct nf_conn *ct;
++   int pkt_rcvd;
++   int inuse;
++} ipsec_table[MAX_VPN_CONNECTION];
++
++static struct _ipsec_table *ipsec_alloc_entry(int *index)
++{
++   int idx = 0;
++
++   for( ; idx < MAX_VPN_CONNECTION; idx++ )
++   {
++      if( ipsec_table[idx].inuse )
++         continue;
++
++      *index = idx;
++      memset(&ipsec_table[idx], 0, sizeof(struct _ipsec_table));
++
++      pr_debug("([%d] alloc_entry()\n", idx);
++
++      return (&ipsec_table[idx]);
++   }
++
++   return NULL;
++}
++
++/*
++ * Search an IPsec table entry by ct.
++ */
++struct _ipsec_table *search_ipsec_entry_by_ct(struct nf_conn *ct)
++{
++   int idx = 0;
++
++   for( ; idx < MAX_VPN_CONNECTION; idx++)
++   {
++	  if (!ipsec_table[idx].inuse)
++		 continue;
++
++      pr_debug("Searching entry->ct(%p) <--> ct(%p)\n",
++         ipsec_table[idx].ct, ct);
++
++      /* check ct */
++      if (ipsec_table[idx].ct == ct)
++      {
++         pr_debug("Found entry with ct(%p)\n", ct);
++
++         return &ipsec_table[idx];
++      }
++   }
++   pr_debug("No Entry for ct(%p)\n", ct);
++   return NULL;
++}
++
++/*
++ * Search an IPSEC table entry by the initiator cookie.
++ */
++struct _ipsec_table *
++search_ipsec_entry_by_cookie(struct isakmp_pkt_hdr *isakmph)
++{
++   int idx = 0;
++   struct _ipsec_table *ipsec_entry = ipsec_table;
++
++   for( ; idx < MAX_VPN_CONNECTION; idx++ )
++   {
++	   pr_debug("Searching initcookie %x <-> %x\n",
++          ntohl(isakmph->initcookie), ntohl(ipsec_entry->initcookie));
++
++      if( isakmph->initcookie == ipsec_entry->initcookie )
++         return ipsec_entry;
++
++      ipsec_entry++;
++   }
++
++   return NULL;
++}
++
++/*
++ * Search an IPSEC table entry by the source IP address.
++ */
++struct _ipsec_table *
++search_ipsec_entry_by_addr(const __be32 lan_ip, int *index)
++{
++   int idx = 0;
++   struct _ipsec_table *ipsec_entry = ipsec_table;
++
++   for( ; idx < MAX_VPN_CONNECTION; idx++ )
++   {
++	   pr_debug("Looking up lan_ip=%pI4 table entry %pI4\n",
++              &lan_ip, &ipsec_entry->lan_ip);
++
++      if( ntohl(ipsec_entry->lan_ip) == ntohl(lan_ip) )
++      {
++    	  pr_debug("Search by addr returning entry %p\n", ipsec_entry);
++
++         *index = idx;
++         return ipsec_entry;
++      }
++      ipsec_entry++;
++   }
++
++   return NULL;
++}
++
++static inline int
++ipsec_inbound_pkt(struct sk_buff *skb, struct nf_conn *ct,
++		  enum ip_conntrack_info ctinfo, __be32 lan_ip)
++{
++//   struct nf_ct_ipsec_master *info = &nfct_help(ct)->help.ct_ipsec_info;
++   typeof(nf_nat_ipsec_hook_inbound) nf_nat_ipsec_inbound;
++
++   pr_debug("inbound ISAKMP packet for LAN %pI4\n", &lan_ip);
++
++   nf_nat_ipsec_inbound = rcu_dereference(nf_nat_ipsec_hook_inbound);
++   if (nf_nat_ipsec_inbound && ct->status & IPS_NAT_MASK)
++      return nf_nat_ipsec_inbound(skb, ct, ctinfo, lan_ip);
++
++   return NF_ACCEPT;
++}
++
++/*
++ * For outgoing ISAKMP packets, we need to make sure UDP ports=500
++ */
++static inline int
++ipsec_outbound_pkt(struct sk_buff *skb,
++                   struct nf_conn *ct, enum ip_conntrack_info ctinfo)
++{
++   typeof(nf_nat_ipsec_hook_outbound) nf_nat_ipsec_outbound;
++
++   pr_debug("outbound ISAKMP packet skb(%p)\n", skb);
++
++   nf_nat_ipsec_outbound = rcu_dereference(nf_nat_ipsec_hook_outbound);
++   if( nf_nat_ipsec_outbound && ct->status & IPS_NAT_MASK )
++      return nf_nat_ipsec_outbound(skb, ct, ctinfo);
++
++   return NF_ACCEPT;
++}
++
++/* track cookies inside ISAKMP, call expect_related */
++static int conntrack_ipsec_help(struct sk_buff *skb, unsigned int protoff,
++                             struct nf_conn *ct, enum ip_conntrack_info ctinfo)
++{
++   int dir = CTINFO2DIR(ctinfo);
++   /* struct nf_ct_ipsec_master *info = &nfct_help(ct)->help.ct_ipsec_info; */
++   struct nf_ct_ipsec_master *info = nfct_help_data(ct);
++   struct isakmp_pkt_hdr _isakmph, *isakmph = NULL;
++   struct _ipsec_table *ipsec_entry = ipsec_table;
++   int ret, index=0;
++
++   pr_debug("skb(%p) skb->data(%p) ct(%p) protoff(%d) offset(%d)\n", skb, skb->data, ct, protoff, (int) (protoff + sizeof(struct udphdr)));
++
++   isakmph = skb_header_pointer(skb, protoff + sizeof(struct udphdr), sizeof(_isakmph), &_isakmph);
++   if (isakmph == NULL)
++   {
++      pr_debug("ERR: no full ISAKMP header, can't track. isakmph=[%p]\n", isakmph);
++      return NF_ACCEPT;
++   }
++
++   if ( 0 == isakmph->initcookie )
++   {
++      pr_debug("ERR: all zero ISAKMP initcookie.\n");
++      return NF_ACCEPT;
++   }
++
++   spin_lock_bh(&nf_ipsec_lock);
++
++   if( dir == IP_CT_DIR_ORIGINAL )
++   {
++      int lan_ip = ct->tuplehash[dir].tuple.src.u3.ip;
++
++      /* create one entry in the internal table if a new connection is found */
++      if( (ipsec_entry = search_ipsec_entry_by_cookie(isakmph)) == NULL )
++      {
++         /* NOTE: cookies may be updated in the connection */
++         if( (ipsec_entry =
++              search_ipsec_entry_by_addr(lan_ip, &index)) == NULL )
++         {
++            ipsec_entry = ipsec_alloc_entry(&index);
++            if( ipsec_entry == NULL )
++            {
++               /* All entries are currently in use */
++               pr_debug("ERR: Too many sessions. ct(%p)\n", ct);
++               spin_unlock_bh(&nf_ipsec_lock);
++               return NF_DROP;
++            }
++
++            ipsec_entry->ct = ct; /* KT: Guess it should be here */
++            ipsec_entry->initcookie = isakmph->initcookie; /* KT: Update our cookie information - moved to here */
++            ipsec_entry->lan_ip = ct->tuplehash[dir].tuple.src.u3.ip;
++            ipsec_entry->inuse = 1;
++
++            pr_debug("NEW ipsec_entry[%d] with ct=%p, lan_ip=%pI4, initcookie=%x\n",
++				index, ipsec_entry->ct, &ipsec_entry->lan_ip,
++				ntohl(ipsec_entry->initcookie) );
++         } else {
++             pr_debug("EXISTING ipsec_entry[%d] with ct=%p, lan_ip=%pI4, initcookie=%x\n",
++ 				index, ipsec_entry->ct, &ipsec_entry->lan_ip,
++ 				ntohl(ipsec_entry->initcookie) );
++         }
++      }
++      ipsec_entry->pkt_rcvd++;
++
++      info->initcookie = isakmph->initcookie;
++      info->lan_ip = ct->tuplehash[dir].tuple.src.u3.ip;
++
++      pr_debug("L->W: initcookie=%x, lan_ip=%pI4, dir[%d] src.u3.ip=%pI4, dst.u3.ip=%pI4\n",
++              info->initcookie, &info->lan_ip,
++              dir,
++              &ct->tuplehash[dir].tuple.src.u3.ip,
++              &ct->tuplehash[dir].tuple.dst.u3.ip);
++
++      nf_ct_refresh_acct(ipsec_entry->ct, 0, skb, CT_REFRESH_TIMEOUT);
++
++      ret = ipsec_outbound_pkt(skb, ct, ctinfo);
++   }
++   else
++   {
++	  pr_debug("WAN->LAN ct=%p\n", ct);
++
++      if( (ipsec_entry = search_ipsec_entry_by_cookie(isakmph)) != NULL )
++      {
++    	 nf_ct_refresh_acct(ipsec_entry->ct, 0, skb, CT_REFRESH_TIMEOUT);
++         ipsec_entry->pkt_rcvd++;
++
++         pr_debug("W->L: initcookie=%x, lan_ip=%pI4, dir[%d] src.u3.ip=%pI4, dst.u3.ip=%pI4\n",
++              info->initcookie, &info->lan_ip,
++              dir,
++              &ct->tuplehash[dir].tuple.src.u3.ip,
++              &ct->tuplehash[dir].tuple.dst.u3.ip);
++
++         ret = ipsec_inbound_pkt(skb, ct, ctinfo, ipsec_entry->lan_ip);
++      }
++      else
++      {
++    	 pr_debug("WARNNING: client from WAN tries to connect to VPN server in the LAN. ipsec_entry=[%p]\n", ipsec_entry);
++         ret = NF_ACCEPT;
++      }
++   }
++
++   spin_unlock_bh(&nf_ipsec_lock);
++
++   return ret;
++}
++
++/* Called when the connection is deleted. */
++static void ipsec_destroy(struct nf_conn *ct)
++{
++	struct _ipsec_table *ipsec_entry = NULL;
++
++	spin_lock_bh(&nf_ipsec_lock);
++	pr_debug("DEL IPsec entry ct(%p)\n", ct);
++	if ((ipsec_entry = search_ipsec_entry_by_ct(ct))) {
++		memset(ipsec_entry, 0, sizeof(struct _ipsec_table));
++	} else {
++		pr_debug("DEL IPsec entry failed: ct(%p)\n", ct);
++	}
++	spin_unlock_bh(&nf_ipsec_lock);
++}
++
++
++static const struct nf_conntrack_expect_policy ipsec_exp_policy = {
++	.max_expected	= 3,
++	.timeout		= 300,
++};
++
++/* ISAKMP protocol helper */
++static struct nf_conntrack_helper ipsec __read_mostly = {
++   .name = "ipsec",
++   .me = THIS_MODULE,
++   .data_len = sizeof(struct nf_ct_ipsec_master),
++   .tuple.src.l3num = AF_INET,
++   .tuple.dst.protonum = IPPROTO_UDP,
++   .tuple.src.u.udp.port = __constant_htons(IPSEC_PORT),
++
++   .help = conntrack_ipsec_help,
++   .destroy = ipsec_destroy,
++   .expect_policy		= &ipsec_exp_policy,
++};
++
++static int __init nf_conntrack_ipsec_init(void)
++{
++   return nf_conntrack_helper_register(&ipsec);
++}
++
++static void __exit nf_conntrack_ipsec_fini(void)
++{
++    nf_conntrack_helper_unregister(&ipsec);
++}
++
++module_init(nf_conntrack_ipsec_init);
++module_exit(nf_conntrack_ipsec_fini);
+Index: linux-3.18.21/net/netfilter/nf_conntrack_proto_esp.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-3.18.21/net/netfilter/nf_conntrack_proto_esp.c	2018-07-13 11:21:09.941861186 +0800
+@@ -0,0 +1,441 @@
++/*
++<:copyright-BRCM:2012:GPL/GPL:standard
++
++   Copyright (c) 2012 Broadcom
++   All Rights Reserved
++
++This program is free software; you can redistribute it and/or modify
++it under the terms of the GNU General Public License, version 2, as published by
++the Free Software Foundation (the "GPL").
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++
++
++A copy of the GPL is available at http://www.broadcom.com/licenses/GPLv2.php, or by
++writing to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++Boston, MA 02111-1307, USA.
++
++:>
++*/
++/******************************************************************************
++ Filename:       nf_conntrack_proto_esp.c
++ Author:         Pavan Kumar
++ Creation Date:  05/27/04
++
++ Description:
++  Implements the ESP ALG connection tracking.
++  Migrated to kernel 2.6.21.5 on April 16, 2008 by Dan-Han Tsai.
++  Migrated to kernel 3.4.11 on Jan 21, 2013 by Kirill Tsym
++*****************************************************************************/
++
++#include <linux/module.h>
++#include <linux/types.h>
++#include <linux/timer.h>
++#include <linux/list.h>
++#include <linux/seq_file.h>
++#include <linux/in.h>
++#include <linux/skbuff.h>
++#include <linux/ip.h>
++
++#include <net/netfilter/nf_log.h>
++#include <net/netfilter/nf_conntrack_l4proto.h>
++#include <net/netfilter/nf_conntrack_helper.h>
++#include <net/netfilter/nf_conntrack_core.h>
++#include <linux/netfilter/nf_conntrack_proto_esp.h>
++
++enum grep_conntrack {
++	ESP_CT_UNREPLIED,
++	ESP_CT_REPLIED,
++	ESP_CT_MAX
++};
++
++static unsigned int esp_timeouts[ESP_CT_MAX] = {
++	[ESP_CT_UNREPLIED]	= 30*HZ,
++	[ESP_CT_REPLIED]	= 60*HZ,
++};
++
++#define IPSEC_INUSE    1
++#define MAX_PORTS      8 			/* KT: Changed to match MAX_VPN_CONNECTION */
++#define TEMP_SPI_START 1500
++
++struct _esp_table
++{
++   u_int32_t l_spi;
++   u_int32_t r_spi;
++   u_int32_t l_ip;
++   u_int32_t r_ip;
++   u_int32_t timeout;
++   u_int16_t tspi;
++   struct nf_conn *ct;
++   int    pkt_rcvd;
++   int    inuse;
++};
++
++static struct _esp_table esp_table[MAX_PORTS];
++
++
++/*
++ * Allocate a free IPSEC table entry.
++ */
++struct _esp_table *alloc_esp_entry( void )
++{
++   int idx = 0;
++
++   for( ; idx < MAX_PORTS; idx++ )
++   {
++      if( esp_table[idx].inuse == IPSEC_INUSE )
++         continue;
++
++      memset(&esp_table[idx], 0, sizeof(struct _esp_table));
++      esp_table[idx].tspi  = idx + TEMP_SPI_START;
++      esp_table[idx].inuse = IPSEC_INUSE;
++
++      pr_debug("[%d] alloc_entry() tspi(%u)\n", idx, esp_table[idx].tspi);
++
++      return (&esp_table[idx]);
++   }
++   return NULL;
++}
++
++/*
++ * Search an ESP table entry by ct.
++ */
++struct _esp_table *search_esp_entry_by_ct(struct nf_conn *ct)
++{
++   int idx = 0;
++
++   for( ; idx < MAX_PORTS; idx++)
++   {
++	  if(esp_table[idx].inuse != IPSEC_INUSE )
++		 continue;
++
++      pr_debug("Searching entry->ct(%p) <--> ct(%p)\n",
++         esp_table[idx].ct, ct);
++
++      /* checking ct */
++      if(esp_table[idx].ct == ct)
++      {
++         pr_debug("Found entry with ct(%p)\n", ct);
++
++         return &esp_table[idx];
++      }
++   }
++
++   pr_debug("No Entry for ct(%p)\n", ct);
++   return NULL;
++}
++
++/*
++ * Search an ESP table entry by source IP.
++ * If found one, update the spi value
++ */
++struct _esp_table *search_esp_entry_by_ip( const struct nf_conntrack_tuple *tuple, const __u32 spi )
++{
++   int idx = 0;
++   __u32 srcIP = tuple->src.u3.ip;
++   __u32 dstIP = tuple->dst.u3.ip;
++   struct _esp_table *esp_entry = esp_table;
++
++   for( ; idx < MAX_PORTS; idx++, esp_entry++ )
++   {
++      pr_debug("   Searching IP %pI4 <-> %pI4,  %pI4\n",
++          &srcIP, &esp_entry->l_ip,
++          &esp_entry->r_ip);
++
++      /* make sure l_ip is LAN IP */
++      if( (srcIP == esp_entry->l_ip) && (((unsigned char *)&(srcIP))[0] == 192) )
++      {
++         pr_debug("   found entry with l_ip\n");
++         esp_entry->l_spi = spi;
++
++         /* This is a new connection of the same LAN host */
++         if( dstIP != esp_entry->r_ip )
++         {
++            esp_entry->r_ip = dstIP;
++            esp_entry->r_spi = 0;
++         }
++         return esp_entry;
++      }
++      else if( srcIP == esp_entry->r_ip )
++      {
++         pr_debug("   found entry with r_ip\n");
++         /* FIXME */
++         if( esp_entry->r_spi == 0 )
++         {
++            pr_debug("   found entry with r_ip and r_spi == 0\n");
++            esp_entry->r_spi = spi;
++            return esp_entry;
++         }
++	 /* We cannot handle spi changed at WAN side */
++         pr_debug("   found entry with r_ip but r_spi != 0\n");
++      }
++   }
++   pr_debug("No Entry for spi(0x%x)\n", spi);
++   return NULL;
++}
++
++/*
++ * Search an ESP table entry by spi
++ */
++struct _esp_table *search_esp_entry_by_spi( const __u32 spi, const __u32 srcIP )
++{
++	int idx = 0;
++	struct _esp_table *esp_entry = esp_table;
++
++	for( ; idx < MAX_PORTS; idx++, esp_entry++ )
++	{
++		pr_debug("   Searching spi 0x%x <-> 0x%x, 0x%x\n",
++		spi, esp_entry->l_spi, esp_entry->r_spi);
++
++		if( (spi == esp_entry->l_spi) || (spi == esp_entry->r_spi) )
++		{
++			pr_debug("   In %s, found entry %d with tspi %u\n",
++			  __FUNCTION__, idx, esp_entry->tspi);
++
++			/* l_spi and r_spi may be the same */
++			if( (spi == esp_entry->l_spi) && (srcIP == esp_entry->r_ip) )
++			{
++				pr_debug("l_spi(0x%x)==r_spi\n", spi);
++				esp_entry->r_spi = spi;
++			}
++
++			return esp_entry;
++		}
++	}
++	pr_debug("No Entry for spi(0x%x)\n", spi);
++
++	return NULL;
++}
++
++/* invert esp part of tuple */
++static bool esp_invert_tuple(struct nf_conntrack_tuple *tuple,
++			    const struct nf_conntrack_tuple *orig)
++{
++   pr_debug("with spi = %u\n", orig->src.u.esp.spi);
++
++   tuple->dst.u.esp.spi = orig->dst.u.esp.spi;
++   tuple->src.u.esp.spi = orig->src.u.esp.spi;
++   return true;
++}
++
++/* esp hdr info to tuple */
++static bool esp_pkt_to_tuple(const struct sk_buff *skb, unsigned int dataoff,
++                            struct nf_conntrack_tuple *tuple)
++{
++   struct esphdr _esphdr, *esphdr;
++   struct _esp_table *esp_entry = NULL;
++
++   esphdr = skb_header_pointer(skb, dataoff, sizeof(_esphdr), &_esphdr);
++   if( !esphdr )
++   {
++      /* try to behave like "nf_conntrack_proto_generic" */
++      tuple->src.u.all = 0;
++      tuple->dst.u.all = 0;
++      return true;
++   }
++
++   pr_debug("Enter pkt_to_tuple() with spi 0x%x\n", esphdr->spi);
++   /* check if esphdr has a new SPI:
++    *   if no, update tuple with correct tspi and increment pkt count;
++    *   if yes, check if we have seen the source IP:
++    *             if yes, do the tspi and pkt count update
++    *             if no, create a new entry
++    */
++
++   if( ((esp_entry = search_esp_entry_by_spi(esphdr->spi, tuple->src.u3.ip)) == NULL) )
++   {
++      if( (esp_entry =
++           search_esp_entry_by_ip(tuple, esphdr->spi)) == NULL )
++      {
++#if 0
++      /* Because SA is simplex, it's possible that WAN starts connection first.
++	  * We need to make sure that the connection starts from LAN.
++	  */
++         if( ((unsigned char *)&(tuple->src.u3.ip))[0] != 192 )
++	 {
++ 	      pr_debug("srcIP %pI4 is WAN IP, DROP packet\n", &tuple->src.u3.ip);
++	      return false;
++	 }
++#endif
++         esp_entry = alloc_esp_entry();
++         if( esp_entry == NULL )
++         {
++            pr_debug("Too many entries. New spi(0x%x)\n", esphdr->spi);
++            return false;
++         }
++         esp_entry->l_spi = esphdr->spi;
++         esp_entry->l_ip = tuple->src.u3.ip;
++         esp_entry->r_ip = tuple->dst.u3.ip;
++      }
++   }
++
++   pr_debug("esp_entry: tspi(%u) l_ip[%pI4]-->r_ip[%pI4] tuple: srcIP[%pI4]-->dstIP[%pI4]\n",
++         esp_entry->tspi,
++         &esp_entry->l_ip, &esp_entry->r_ip,
++         &tuple->src.u3.ip, &tuple->dst.u3.ip);
++
++   tuple->dst.u.esp.spi = tuple->src.u.esp.spi = esp_entry->tspi;
++   esp_entry->pkt_rcvd++;
++
++   return true;
++}
++
++/* print esp part of tuple */
++static void esp_print_tuple(struct seq_file *s,
++                           const struct nf_conntrack_tuple *tuple)
++{
++   seq_printf(s, "srcspi=0x%x dstspi=0x%x ",
++              tuple->src.u.esp.spi, tuple->dst.u.esp.spi);
++}
++
++/* print private data for conntrack */
++static void esp_print_conntrack(struct seq_file *s, struct nf_conn *ct)
++{
++   seq_printf(s, "timeout=%u, stream_timeout=%u ",
++              (ct->proto.esp.timeout / HZ),
++              (ct->proto.esp.stream_timeout / HZ));
++}
++
++static unsigned int *esp_get_timeouts(struct net *net)
++{
++	return esp_timeouts;
++}
++
++/* Returns verdict for packet, and may modify conntrack */
++static int esp_packet(struct nf_conn *ct,
++				const struct sk_buff *skb,
++                unsigned int dataoff,
++                enum ip_conntrack_info ctinfo,
++                u_int8_t pf,
++                unsigned int hooknum,
++  		        unsigned int *timeouts)
++{
++   struct esphdr _esphdr, *esphdr;
++   struct iphdr *iph = ip_hdr(skb);
++
++   esphdr = skb_header_pointer(skb, dataoff, sizeof(_esphdr), &_esphdr);
++#if 1 /*+++ Kide@zyxel: Fix code trace as receiving esp-pkt without esp hdr/payload,
++       * the case could happen via 'nmap -sO -p 50 10.10.100.172' port scan utility.
++       */
++   if (esphdr == NULL)
++       return -NF_ACCEPT;
++#endif
++
++   pr_debug("(0x%x) %pI4 <-> %pI4 status %s info %d %s\n",
++	  esphdr->spi, &iph->saddr, &iph->daddr, (ct->status & IPS_SEEN_REPLY) ? "SEEN" : "NOT_SEEN",
++	  ctinfo, (ctinfo == IP_CT_NEW ) ? "CT_NEW" : "SEEN_REPLY" );
++
++   /* If we've seen traffic both ways, this is some kind of ESP
++      stream.  Extend timeout. */
++   if( test_bit(IPS_SEEN_REPLY_BIT, &ct->status) )
++   {
++      nf_ct_refresh_acct(ct, ctinfo, skb, ct->proto.esp.stream_timeout);
++      /* Also, more likely to be important, and not a probe */
++      if( !test_and_set_bit(IPS_ASSURED_BIT, &ct->status) )
++         nf_conntrack_event_cache(IPCT_ASSURED, ct);
++   }
++   else
++      nf_ct_refresh_acct(ct, ctinfo, skb, ct->proto.esp.timeout);
++
++   return NF_ACCEPT;
++}
++
++/* Called when a new connection for this protocol found. */
++static bool esp_new(struct nf_conn *ct, const struct sk_buff *skb,
++                   unsigned int dataoff, unsigned int *timeouts)
++{
++   struct iphdr *iph = ip_hdr(skb);
++   struct _esp_table *esp_entry;
++   struct esphdr _esphdr, *esphdr;
++
++   ct->proto.esp.stream_timeout = timeouts[ESP_CT_UNREPLIED];
++   ct->proto.esp.timeout = timeouts[ESP_CT_UNREPLIED];
++
++   esphdr = skb_header_pointer(skb, dataoff, sizeof(_esphdr), &_esphdr);
++#if 1 /*+++ Kide@zyxel: Fix code trace as receiving esp-pkt without esp hdr/payload,
++       * the case could happen via 'nmap -sO -p 50 10.10.100.172' port scan utility.
++       */
++   if (esphdr == NULL)
++       return false;
++#endif
++
++   pr_debug("NEW SPI(0x%x) %pI4 <-> %pI4 ct(%p)\n",
++     esphdr->spi, &iph->saddr, &iph->daddr, ct);
++
++   if( (esp_entry = search_esp_entry_by_spi(esphdr->spi, 0)) != NULL ) {
++      esp_entry->ct = ct;
++   } else {
++	  pr_debug("ERR: In esp_new(), cannot find an entry with SPI %x\n", esphdr->spi);
++      return false;
++   }
++
++   return true;
++}
++
++/* Protect conntrack agaist broken packets. Code referenced from nf_conntrack_proto_tcp.c. */
++static int esp_error(struct net *net, struct nf_conn *tmpl,
++                     struct sk_buff *skb,
++                     unsigned int dataoff,
++                     enum ip_conntrack_info *ctinfo,
++                     u_int8_t pf,
++                     unsigned int hooknum)
++{
++   const struct esphdr *esphdr;
++   struct esphdr _esphdr;
++
++   /* smaller than minimal ESP header? */
++   esphdr = skb_header_pointer(skb, dataoff, sizeof(_esphdr), &_esphdr);
++   if (esphdr == NULL) {
++      if (LOG_INVALID(net, IPPROTO_ESP))
++         nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
++                       "nf_ct_esp: short packet ");
++      return -NF_ACCEPT;
++   }
++   return NF_ACCEPT;
++}
++/* Called when the connection is deleted. */
++static void esp_destroy(struct nf_conn *ct)
++{
++	struct _esp_table *esp_entry = NULL;
++
++	pr_debug("DEL ESP entry ct(%p)\n", ct);
++	if ((esp_entry = search_esp_entry_by_ct(ct))) {
++		memset(esp_entry, 0, sizeof(struct _esp_table));
++	} else {
++		pr_debug("ERR: DEL ESP Failed for ct(%p): no such entry\n", ct);
++	}
++}
++
++/* protocol helper struct */
++struct nf_conntrack_l4proto nf_conntrack_l4proto_esp4 = {
++   .l3proto = PF_INET,
++   .l4proto = IPPROTO_ESP,
++   .name = "esp",
++   .pkt_to_tuple = esp_pkt_to_tuple,
++   .invert_tuple = esp_invert_tuple,
++   .print_tuple = esp_print_tuple,
++   .print_conntrack = esp_print_conntrack,
++   .get_timeouts    = esp_get_timeouts,
++   .packet = esp_packet,
++   .new = esp_new,
++   .error = esp_error,
++   .destroy = esp_destroy,
++   .me = THIS_MODULE,
++};
++
++int __init nf_ct_proto_esp_init(void)
++{
++   return nf_ct_l4proto_register(&nf_conntrack_l4proto_esp4);
++}
++
++void __exit nf_ct_proto_esp_fini(void)
++{
++   nf_ct_l4proto_unregister(&nf_conntrack_l4proto_esp4);
++}
++module_init(nf_ct_proto_esp_init);
++module_exit(nf_ct_proto_esp_fini);
++
++MODULE_LICENSE("GPL");
+Index: linux-3.18.21/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h
+===================================================================
+--- linux-3.18.21.orig/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h	2018-07-13 11:21:03.037826951 +0800
++++ linux-3.18.21/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h	2018-07-13 11:21:09.941861186 +0800
+@@ -32,6 +32,11 @@
+ 	struct {
+ 		__be16 key;	/* GRE key is 32bit, PPtP only uses 16bit */
+ 	} gre;
++#if (defined(CONFIG_NF_CT_PROTO_ESP) || defined(CONFIG_NF_CT_PROTO_ESP_MODULE))
++	struct {
++		__be16 spi;
++	} esp;
++#endif
+ };
+ 
+ #define CTINFO2DIR(ctinfo) ((ctinfo) >= IP_CT_IS_REPLY ? IP_CT_DIR_REPLY : IP_CT_DIR_ORIGINAL)

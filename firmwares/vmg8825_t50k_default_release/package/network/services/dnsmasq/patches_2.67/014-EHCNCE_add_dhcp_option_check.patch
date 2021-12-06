@@ -1,0 +1,383 @@
+Index: dnsmasq-2.67/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.67.orig/src/dnsmasq.h	2015-10-12 19:51:32.362349003 +0800
++++ dnsmasq-2.67/src/dnsmasq.h	2015-10-12 19:51:32.374349003 +0800
+@@ -666,6 +666,9 @@
+ #define DHOPT_RFC3925         2048
+ #define DHOPT_TAGOK           4096
+ #define DHOPT_ADDR6           8192
++#ifdef ZYXEL_PATCH 	//for option 125
++#define DHOPT_RFC3925_OPT     16384
++#endif
+ 
+ struct dhcp_boot {
+   char *file, *sname, *tftp_sname;
+@@ -687,6 +690,9 @@
+ #define MATCH_CIRCUIT    3
+ #define MATCH_REMOTE     4
+ #define MATCH_SUBSCRIBER 5
++#ifdef ZYXEL_PATCH
++#define MATCH_VENDOR_EXACT 6
++#endif
+ 
+ /* vendorclass, userclass, remote-id or cicuit-id */
+ struct dhcp_vendor {
+Index: dnsmasq-2.67/src/option.c
+===================================================================
+--- dnsmasq-2.67.orig/src/option.c	2015-10-12 19:51:32.334349003 +0800
++++ dnsmasq-2.67/src/option.c	2015-10-13 18:51:26.348975906 +0800
+@@ -140,6 +140,7 @@
+ #define LOPT_QUIET_RA     328
+ #ifdef ZYXEL_PATCH
+ #define LOPT_TAG_IFNAME   329
++#define LOPT_VENDOREXACT  330
+ #endif
+ 
+ #ifdef HAVE_GETOPT_LONG
+@@ -196,6 +197,9 @@
+     { "read-ethers", 0, 0, 'Z' },
+     { "alias", 1, 0, 'V' },
+     { "dhcp-vendorclass", 1, 0, 'U' },
++#ifdef ZYXEL_PATCH
++    { "dhcp-vendorclass-exact", 1, 0, LOPT_VENDOREXACT },
++#endif	
+     { "dhcp-userclass", 1, 0, 'j' },
+     { "dhcp-ignore", 1, 0, 'J' },
+     { "edns-packet-max", 1, 0, 'P' },
+@@ -356,6 +360,9 @@
+   { LOPT_MAXTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for maximum TTL to send to clients."), NULL },
+   { 'u', ARG_ONE, "<username>", gettext_noop("Change to this user after startup. (defaults to %s)."), CHUSER }, 
+   { 'U', ARG_DUP, "set:<tag>,<class>", gettext_noop("Map DHCP vendor class to tag."), NULL },
++#ifdef ZYXEL_PATCH
++  { LOPT_VENDOREXACT, ARG_DUP, "set:<tag>,<class>", gettext_noop("Map DHCP vendor class to tag. (Exact match)"), NULL },
++#endif  
+   { 'v', 0, NULL, gettext_noop("Display dnsmasq version and copyright information."), NULL },
+   { 'V', ARG_DUP, "<ipaddr>,<ipaddr>,<netmask>", gettext_noop("Translate IPv4 addresses from upstream servers."), NULL },
+   { 'W', ARG_DUP, "<name>,<target>,...", gettext_noop("Specify a SRV record."), NULL },
+@@ -924,6 +931,18 @@
+ 	      break;
+ 	    }
+ 	}
++#ifdef ZYXEL_PATCH 	//for option 125
++	else if (strstr(arg, "vi-encap-opt:") == arg)
++	{
++	  new->u.encap = atoi(arg+13);
++	  new->flags |= DHOPT_RFC3925_OPT;
++	  if (flags == DHOPT_MATCH)
++	    {
++	      option_ok = 1;
++	      break;
++	    }
++	}
++#endif
+       else
+ 	{
+ 	  new->netid = opt_malloc(sizeof (struct dhcp_netid));
+@@ -935,7 +954,7 @@
+ 	  new->netid->next = np;
+ 	  np = new->netid;
+ 	}
+-      
++
+       arg = comma; 
+     }
+ 
+@@ -952,13 +971,80 @@
+   else
+ #endif
+     if (opt_len == 0 &&
+-	!(new->flags & (DHOPT_VENDOR | DHOPT_ENCAPSULATE | DHOPT_RFC3925)))
++#ifdef ZYXEL_PATCH 	//for option 125
++	!(new->flags & (DHOPT_VENDOR | DHOPT_ENCAPSULATE | DHOPT_RFC3925 | DHOPT_RFC3925_OPT))
++#else
++	!(new->flags & (DHOPT_VENDOR | DHOPT_ENCAPSULATE | DHOPT_RFC3925))
++#endif
++	)
+       opt_len = lookup_dhcp_len(AF_INET, new->opt);
+   
+   /* option may be missing with rfc3925 match */
+   if (!option_ok)
+     ret_err(_("bad dhcp-option"));
+-  
++#ifdef ZYXEL_PATCH 	//for option 125
++	// config format {id}={str}%%{id}=hex#{hex_str}%%....
++	// convert to format {id}{len}{val}{id}{len}{val}....
++	if(comma && (new->flags & DHOPT_RFC3925_OPT)){
++		char *tmp_val,*match_str, *next_str, *tmpPtr, *tmpPtr2, tmpBuf[10];
++		char *new_val;
++		int tmp_len, i, match_len, j, k, match_id, v;
++		
++		if((tmp_len = strlen(comma)) <= 0 || !(new_val = calloc(1, tmp_len+3)) || !(tmp_val = (char *)opt_string_alloc(comma))){
++			ret_err(_("bad dhcp-option-125  1"));
++		}
++
++		i=j=0;
++		for(match_str = tmp_val; match_str ; ){
++			next_str = strstr(match_str,"%%");
++			if(next_str) { match_len = next_str - match_str; next_str+=2;}
++			else { match_len = strlen(match_str); }
++
++			if(match_len){
++				//parse suboption, format: {id}={value}
++				tmpPtr = strchr(match_str, '=');
++				if(tmpPtr && (i = tmpPtr-match_str)<=3){
++					strncpy(tmpBuf, match_str, i); tmpBuf[i] = '\0';
++					match_id = atoi(tmpBuf);
++			
++					if(match_id > 0 && match_id <= 255 && (match_len -= (i+1)) > 0 && match_len <= 255){
++						new_val[j++] = (char) match_id;
++						match_str += (i+1); 
++						if(!strncmp(match_str,"hex#", 4)){
++							match_str+=4;
++							match_len-=4;
++							tmpBuf[2] = 0;
++							for(k=j+1,tmpPtr=match_str;(tmpPtr+2) <= (match_str+match_len);tmpPtr+=2)
++							{
++								tmpBuf[0] = *tmpPtr;
++								tmpBuf[1] = *(tmpPtr+1);
++								v = (int)strtol(tmpBuf, &tmpPtr2, 16);
++								if(*tmpPtr2 != '\0')
++									ret_err(_("bad dhcp-option-125  2"));
++								new_val[k++] = (char) ( v & 0xFF);
++							}
++							new_val[j] = (char)((k-j-1)& 0xFF); //hex length
++							j=k;
++						}
++						else {
++							new_val[j++] = (char) (match_len & 0xFF); //string length
++							memcpy((new_val+j), match_str, match_len);
++							j+=match_len;
++						}
++					}
++					else ret_err(_("bad dhcp-option-125  3"));
++				}
++			}
++			match_str = next_str;
++		}
++		if(j <= 0) ret_err(_("bad dhcp-option-125   4"));
++		
++		new->len = j;
++	    new->val = (unsigned char *)new_val;
++		free(tmp_val);
++	}
++	else
++#endif	
+   if (comma)
+     {
+       /* characterise the value */
+@@ -967,6 +1053,7 @@
+       is_addr = is_addr6 = is_hex = is_dec = is_string = 1;
+       addrs = digs = 1;
+       dots = 0;
++	  
+       for (cp = comma; (c = *cp); cp++)
+ 	if (c == ',')
+ 	  {
+@@ -1015,7 +1102,7 @@
+ 	  }
+ 	else
+ 	  found_dig = 1;
+-     
++
+       if (!found_dig)
+ 	is_dec = is_addr = 0;
+      
+@@ -1173,6 +1260,7 @@
+       else if (is_string)
+ 	{
+  	  /* text arg */
++  
+ 	  if ((new->opt == OPTION_DOMAIN_SEARCH || new->opt == OPTION_SIP_SERVER) &&
+ 	      !is6 && !(new->flags & (DHOPT_ENCAPSULATE | DHOPT_VENDOR | DHOPT_RFC3925)))
+ 	    {
+@@ -1312,11 +1400,12 @@
+ 	    }
+ #endif
+ 	  else
+-	    {
++	    {		
+ 	      new->len = strlen(comma);
+ 	      /* keep terminating zero on string */
+ 	      new->val = (unsigned char *)opt_string_alloc(comma);
+ 	      new->flags |= DHOPT_STRING;
++		  
+ 	    }
+ 	}
+     }
+@@ -1324,7 +1413,11 @@
+   if (!is6 && 
+       ((new->len > 255) || 
+       (new->len > 253 && (new->flags & (DHOPT_VENDOR | DHOPT_ENCAPSULATE))) ||
+-       (new->len > 250 && (new->flags & DHOPT_RFC3925))))
++       (new->len > 250 && (new->flags & DHOPT_RFC3925))
++#ifdef ZYXEL_PATCH 	//for option 125
++       || (new->len > 250 && (new->flags & DHOPT_RFC3925_OPT))
++#endif	   
++	  ))
+     ret_err(_("dhcp-option too long"));
+   
+   if (flags == DHOPT_MATCH)
+@@ -3164,8 +3257,9 @@
+ 	break;
+       }
+ #endif
+-			      
+-
++#ifdef ZYXEL_PATCH			      
++    case LOPT_VENDOREXACT: /*--dhcp-vendorclass-exact*/
++#endif
+     case 'U':           /* --dhcp-vendorclass */
+     case 'j':           /* --dhcp-userclass */
+     case LOPT_CIRCUIT:  /* --dhcp-circuitid */
+@@ -3186,7 +3280,11 @@
+ 	 arg = comma;
+ 	 if ((comma = split(arg)))
+ 	   {
++#ifdef ZYXEL_PATCH
++         if ((option != LOPT_VENDOREXACT && option  != 'U') || strstr(arg, "enterprise:") != arg)
++#else
+ 	     if (option  != 'U' || strstr(arg, "enterprise:") != arg)
++#endif
+ 	       ret_err(gen_err);
+ 	     else
+ 	       new->enterprise = atoi(arg+11);
+@@ -3200,7 +3298,11 @@
+ 	   else if (*p != ':')
+ 	     break;
+ 	 unhide_metas(comma);
++#ifdef ZYXEL_PATCH
++	 if ((option == LOPT_VENDOREXACT && option == 'U') || option == 'j' || *p || !dig)
++#else	 
+ 	 if (option == 'U' || option == 'j' || *p || !dig)
++#endif
+ 	   {
+ 	     new->len = strlen(comma);  
+ 	     new->data = opt_malloc(new->len);
+@@ -3220,7 +3322,12 @@
+ 	     break;
+ 	   case 'U':
+ 	     new->match_type = MATCH_VENDOR;
+-	     break; 
++	     break;
++#ifdef ZYXEL_PATCH
++	   case LOPT_VENDOREXACT:
++	     new->match_type = MATCH_VENDOR_EXACT;
++	     break;
++#endif
+ 	   case LOPT_CIRCUIT:
+ 	     new->match_type = MATCH_CIRCUIT;
+ 	     break;
+Index: dnsmasq-2.67/src/rfc2131.c
+===================================================================
+--- dnsmasq-2.67.orig/src/rfc2131.c	2015-10-12 19:51:32.346349003 +0800
++++ dnsmasq-2.67/src/rfc2131.c	2015-10-13 18:49:15.752301031 +0800
+@@ -76,7 +76,7 @@
+ 
+ 	
+ 	for(tmpNetid = netid; tmpNetid; tmpNetid = tmpNetid->next){
+-		//my_syslog(MS_DHCP | LOG_WARNING, _("tmpNetid->net=%s, %s"),  tmpNetid->net, iface_name);
++		//my_syslog(MS_DHCP | LOG_DEBUG, _("tmpNetid->net=%s, %s"),  tmpNetid->net, iface_name);
+ 		if( !strncmp(tmpNetid->net, "Crit_br", 7)){
+ 			brNamePtr = strstr(tmpNetid->net, "br");
+ 			if(iface_name != NULL && strcmp(brNamePtr, iface_name)){
+@@ -448,7 +448,61 @@
+ 		break;
+ 	    }	  
+ 	}
+-      else
++#ifdef ZYXEL_PATCH 	//for option 125
++	else if (o->flags & DHOPT_RFC3925_OPT)
++	{
++		char *match_str, *next_str, *tmpPtr, *matchPtr, tmpBuf[255], hexBuf[3];
++		unsigned char *x, *y, *opt_value;
++		int match_len, match_id, i, j, match2, v;
++		unsigned char isStr=0;
++		
++		if (!(opt = option_find(mess, sz, OPTION_VENDOR_IDENT_OPT, 5)))
++			continue;
++			
++		for (offset = 0; offset < (option_len(opt) - 5u); offset += len + 5)
++	    {
++			len = option_uint(opt, offset + 4 , 1);
++			if ((offset + len + 5 <= (option_len(opt))) && 
++				option_uint(opt, offset, 4) == (unsigned int)o->u.encap)
++			{
++				len = option_uint(opt, 4 , 1);
++				x = option_ptr(opt, offset + 5);
++				y = option_ptr(opt, offset + len + 5);
++				
++				match = 1;
++				for(match_str = o->val; match_str < (o->val + o->len) ; ){
++					match_id = (int)match_str[0];
++					match_len = (int)match_str[1];
++					next_str = match_str+match_len+2;
++					if(match_len && (opt_value = option_find1(x, y, match_id, 1))){
++						match_str += 2;
++						if(option_len(opt_value) < match_len){
++							match = 0;
++							break;
++						}
++						else{
++							//wildcard match
++							match2 = 0;
++							for(i = 0;(i+match_len)<=option_len(opt_value);i++){									
++								if(!memcmp(option_ptr(opt_value, i), match_str, match_len)){
++									match2 = 1;
++									break;
++								}
++							}
++							if(match2 == 0) {
++								match = 0;
++								break;
++							}
++						}
++					}
++					match_str = next_str;
++				}
++				break;
++			}
++		}
++	}
++#endif
++	  else
+ 	{
+ 	  if (!(opt = option_find(mess, sz, o->opt, 1)))
+ 	    continue;
+@@ -490,8 +544,11 @@
+   for (vendor = daemon->dhcp_vendors; vendor; vendor = vendor->next)
+     {
+       int mopt;
+-      
++#ifdef ZYXEL_PATCH
++      if (vendor->match_type == MATCH_VENDOR || vendor->match_type == MATCH_VENDOR_EXACT)
++#else 
+       if (vendor->match_type == MATCH_VENDOR)
++#endif	  
+ 	mopt = OPTION_VENDOR_ID;
+       else if (vendor->match_type == MATCH_USER)
+ 	mopt = OPTION_USER_CLASS; 
+@@ -501,13 +558,23 @@
+       if ((opt = option_find(mess, sz, mopt, 1)))
+ 	{
+ 	  int i;
++#ifdef ZYXEL_PATCH
++	  if(vendor->match_type == MATCH_VENDOR_EXACT){
++	    if((vendor->len == option_len(opt) && memcmp(vendor->data, option_ptr(opt, 0), vendor->len) == 0)){
++		   vendor->netid.next = netid;
++		   netid = &vendor->netid;
++		   break;
++		}
++	  }
++	  else
++#endif
+ 	  for (i = 0; i <= (option_len(opt) - vendor->len); i++)
+ 	    if (memcmp(vendor->data, option_ptr(opt, i), vendor->len) == 0)
+ 	      {
+ 		vendor->netid.next = netid;
+ 		netid = &vendor->netid;
+ 		break;
+-	      }
++	      }	  
+ 	}
+     }
+ 

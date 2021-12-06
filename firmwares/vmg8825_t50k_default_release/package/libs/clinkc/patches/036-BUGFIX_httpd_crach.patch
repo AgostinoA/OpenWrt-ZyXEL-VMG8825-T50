@@ -1,0 +1,986 @@
+Index: clinkc/include/cybergarage/http/chttp.h
+===================================================================
+--- clinkc.orig/include/cybergarage/http/chttp.h	2014-09-14 23:26:32.277600749 +0800
++++ clinkc/include/cybergarage/http/chttp.h	2014-09-15 11:51:54.189524634 +0800
+@@ -52,7 +52,17 @@
+ /****************************************
+ * Define
+ ****************************************/
+-
++#ifdef ZYXEL_PATCH
++//if client thread size > CG_CLIENT_THREAD_LIMIT, wait CG_CLIENT_THREAD_WAIT_TIME
++#ifndef CG_CLIENT_THREAD_WAIT_TIME
++#define CG_CLIENT_THREAD_WAIT_TIME 3000
++#endif
++#ifndef CG_CLIENT_THREAD_LIMIT
++#define CG_CLIENT_THREAD_LIMIT 30
++#endif
++#define CG_CLIENT_SOCKET_PER_THREAD 3
++#define CG_MAX_WAIT_CLIENT_SOCKET 20
++#endif
+ 
+ #define CG_HTTP_READLINE_BUFSIZE 1024
+ #define CG_HTTP_SEVERNAME_MAXLEN 64
+@@ -158,7 +168,11 @@
+ #define CG_HTTP_CONN_TIMEOUT 30
+ 
+ /* HTTP server - client thread blocking timeout */
++#ifdef ZYXEL_PATCH
++#define CG_HTTP_SERVER_READ_TIMEOUT 30
++#else
+ #define CG_HTTP_SERVER_READ_TIMEOUT 120
++#endif
+ 
+ #ifdef ZYXEL_PATCH /*BBF TR-069:The suggested SessionTimeout MUST be 30 seconds or greater, by ZyXEL charisse*/
+ #define CG_HTTP_CWMP_SEND_RECV_TIMEOUT 3
+@@ -314,6 +328,7 @@
+ 	CgMutex *mutex;
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 	void *ctxdata;
++	CgSocketList *clientSocks;
+ #endif
+ } CgHttpServer, CgHttpServerList;
+ 
+@@ -472,6 +487,7 @@
+ #endif
+ BOOL cg_http_request_read(CgHttpRequest *httpReq, CgSocket *sock);
+ BOOL cg_http_request_postresponse(CgHttpRequest *httpReq, CgHttpResponse *httpRes);
++BOOL cg_http_request_postFile(CgHttpRequest *httpReq, CgHttpResponse *httpRes, const char *file, BOOL chunked);
+ BOOL cg_http_request_poststatuscode(CgHttpRequest *httpReq, int httpStatCode);
+ BOOL cg_http_request_postdata(CgHttpRequest *httpReq, void *data, int dataLen);
+ BOOL cg_http_request_postchunkedsize(CgHttpRequest *httpReq, int dataLen);
+Index: clinkc/src/cybergarage/http/chttp_server.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_server.c	2014-09-14 23:26:32.177602006 +0800
++++ clinkc/src/cybergarage/http/chttp_server.c	2014-09-15 00:12:11.603718575 +0800
+@@ -61,6 +61,7 @@
+ 		httpServer->listener = NULL;
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
+ 		httpServer->ctxdata = NULL;
++		httpServer->clientSocks = NULL;
+ #endif
+ #ifdef ZYXEL_PATCH /*fix the bug of thread list never end, ZyXEL 2014, by Charisse*/
+ 		httpServer->prev = NULL;
+@@ -143,12 +144,12 @@
+ 	}
+ 
+ 	/*diable Nagle's algorithm, ZyXEL*/
+-	int res = 0;
+ 	int flag = 1;
+-	res = setsockopt(httpServer->sock->id, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
+-	if(res == -1)
++#if 0  // use TCP_CORK/TCP_PUSH to instead of TCP_NODELAY
++	if(setsockopt(httpServer->sock->id, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag)) == -1)
+ 	     printf("Error setsockopt error=%s\n\n\n",strerror(errno));
+-
++#endif
++	
+ 	if (cg_socket_listen(httpServer->sock) == FALSE) {
+ 		cg_socket_delete(httpServer->sock);
+ 		httpServer->sock = NULL;
+@@ -186,7 +187,12 @@
+ ****************************************/
+ 
+ typedef struct _CgHttpServerClientData {
++#ifdef ZYXEL_PATCH
++	CgSocketList *clientSocks;
++	int _clientSockSize;
++#else
+ 	CgSocket *clientSock;
++#endif
+ 	CgHttpServer *httpServer;
+ } CgHttpServerClientData;
+ 
+@@ -201,7 +207,16 @@
+ 	if ( NULL != clientData )
+ 	{
+ 		clientData->httpServer = httpServer;
++#ifdef ZYXEL_PATCH
++		clientData->clientSocks = cg_socketlist_new();
++		clientData->_clientSockSize = 0;
++		if(clientSock){
++			cg_socketlist_add(clientData->clientSocks, clientSock);
++			clientData->_clientSockSize++;
++		}
++#else		
+ 		clientData->clientSock = clientSock;
++#endif		
+ 	}
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -209,6 +224,29 @@
+ 	return clientData;
+ }
+ 
++#ifdef ZYXEL_PATCH
++static int cg_http_server_get_threadClientSocksize(CgThread *thread){
++	if(thread){
++		CgHttpServerClientData *clientData = (CgHttpServerClientData *)cg_thread_getuserdata(thread);
++		if(clientData) return clientData->_clientSockSize;
++		else return 0;
++	}
++	else return 0;
++}
++static void cg_http_server_add_threadClientSock(CgThread *thread, CgSocket *clientSock){
++	if(thread){
++		CgHttpServerClientData *clientData = (CgHttpServerClientData *)cg_thread_getuserdata(thread);
++		if(clientData && clientSock){
++			cg_socketlist_add(clientData->clientSocks, clientSock);
++			clientData->_clientSockSize++;
++		}
++	}
++}
++static void cg_http_server_interrupt_thread(CgThread *thread){
++	pthread_kill(thread->pThread, SIGQUIT);
++}
++#endif
++
+ static void cg_http_server_clientdata_delete(CgHttpServerClientData *clientData)
+ {
+ 	cg_log_debug_l4("Entering...\n");
+@@ -222,23 +260,118 @@
+ {
+ 	CgHttpServerClientData *clientData;
+ 	CgHttpServer *httpServer;
++#ifdef ZYXEL_PATCH
++	fd_set activeFds;
++	CgSocket *activeSock;
++	int maxFd, nReturn, nread, clientThreadSize;
++	CgSocketList *clientSocks;
++#endif	
+ 	CgSocket *clientSock;
+ 	void *httpServerUserData;
+ 	CgHttpRequest *httpReq;
+ 	char *version = NULL;
+ 
+ 	cg_log_debug_l4("Entering...\n");
+-
++#ifdef ZYXEL_PATCH //set thread un-joinabled, by Mark 20140903
++	pthread_detach(pthread_self());
++#endif
+ 	clientData = (CgHttpServerClientData *)cg_thread_getuserdata(thread);
+ 	httpServer = clientData->httpServer;
++#ifdef ZYXEL_PATCH
++	clientSocks = clientData->clientSocks;
++#else	
+ 	clientSock = clientData->clientSock;
++#endif
+ 	httpServerUserData = cg_http_server_getuserdata(httpServer);
+ 
+ 	httpReq = cg_http_request_new();
++	
++#ifdef ZYXEL_PATCH	
++	while (cg_thread_isrunnable(thread) == TRUE) {
++		cg_thread_lock(thread);
++		if(clientData->_clientSockSize <= 0) break;	
++		FD_ZERO(&activeFds); 
++		maxFd = -1;
++		for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL; activeSock = cg_socket_next(activeSock)){
++			FD_SET(activeSock->id, &activeFds);
++			maxFd = (maxFd < activeSock->id) ? activeSock->id+1 : maxFd;
++		}
++		cg_thread_unlock(thread);
++		
++		nReturn = select(maxFd, &activeFds, NULL, NULL, NULL); 
++		if(nReturn < 0) {
++			if (errno == EINTR){
++				continue; 
++			}
++            break; 
++		}
++		else if(nReturn){
++			clientSock = NULL;
++			for (activeSock = cg_socketlist_gets(clientSocks); activeSock != NULL, nReturn > 0; ){
++				clientSock = activeSock;
++				activeSock = cg_socket_next(clientSock);
++				if(FD_ISSET(clientSock->id, &activeFds)){
++					nReturn--;
++					if(cg_http_request_read(httpReq, clientSock) == FALSE){		
++						cg_thread_lock(thread);
++						cg_list_remove((CgList*)clientSock);
++						clientData->_clientSockSize--;
++						cg_thread_unlock(thread);
++						cg_socket_delete(clientSock);
++						clientSock = NULL;
++						continue;
++					}
++					else{					
++						cg_http_request_setsocket(httpReq, clientSock);
++						
++						version = cg_http_request_getversion(httpReq);
++						if (cg_strcmp(version, CG_HTTP_VER11) == 0)
++						{
++							/* According to HTTP/1.1 spec, we must not tolerate
++							   HTTP/1.1 request without HOST-header */
++							if (cg_http_request_gethost(httpReq) == NULL)
++							{
++								cg_http_request_postbadrequest(httpReq);
++								clientSock = NULL;
++								continue;
++							}
++						}
++
++						if (httpServer->listener != NULL) {
++							cg_http_request_setuserdata(httpReq, httpServerUserData);
++							httpServer->listener(httpReq);
++						}
++
++						/* Close connection according to HTTP version and headers */
++						/* We are having HTTP/1.1 or better => terminate, if requested */
++						if (cg_strcmp(version, CG_HTTP_VER10) == 0 || 
++							cg_http_request_iskeepaliveconnection(httpReq) == FALSE )
++						{
++							/* Terminate connection after HTTP/1.0 request */
++							cg_thread_lock(thread);
++							cg_list_remove((CgList*)clientSock);
++							clientData->_clientSockSize--;
++							cg_thread_unlock(thread);
++							cg_socket_delete(clientSock);
++							clientSock = NULL;
++							continue;
++						}
++					}
++				}
++			}
++		}
++	}
++	thread->isAlreadyExit = TRUE;
++	cg_thread_unlock(thread);
++	// This code frequently crashes. mutex lock referencing free'd memory.
++	cg_http_server_lock(httpServer);
++	cg_thread_remove(thread);
++	cg_http_server_unlock(httpServer);
++#else
+ 	cg_http_request_setsocket(httpReq, clientSock);
+-
++	
+ 	/**** Thanks for Makela Aapo (10/31/05) ****/
+-	while (cg_http_request_read(httpReq, clientSock) == TRUE && cg_thread_isrunnable(thread) == TRUE) {
++	while (cg_http_request_read(httpReq, clientSock) == TRUE && cg_thread_isrunnable(thread) == TRUE){
+ 		/* Check some validity of the request */
+ 		version = cg_http_request_getversion(httpReq);
+ 		if (cg_strcmp(version, CG_HTTP_VER11) == 0)
+@@ -270,21 +403,23 @@
+ 			break;
+ 		}
+ 	}
+-
++#endif
+ 	cg_log_debug_s("Dropping HTTP client\n");
+ 	cg_http_request_delete(httpReq);
+-
++#ifdef ZYXEL_PATCH	
++	cg_socketlist_delete(clientSocks);
++#else
+ 	cg_socket_close(clientSock);
+ 	cg_socket_delete(clientSock);
+-
++#endif
+ 	cg_http_server_clientdata_delete(clientData);
+ 	cg_thread_setuserdata(thread, NULL);
+-
++#ifndef ZYXEL_PATCH	
+     // This code frequently crashes. mutex lock referencing free'd memory.
+ 	cg_http_server_lock(httpServer);
+ 	cg_thread_remove(thread);
+ 	cg_http_server_unlock(httpServer);
+-
++#endif
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	cg_thread_delete(thread);
+@@ -301,6 +436,13 @@
+ 	CgHttpServerClientData *clientData;
+ 	CgSocket *serverSock;
+ 	CgSocket *clientSock;
++#ifdef ZYXEL_PATCH 
++	fd_set activeFds;
++	CgSocket *activeSock;
++	int maxFd, nReturn, nread, clientThreadSize;
++	int waitClientSockets, threadSockets, threadSockets_tmp;
++	CgThread *tmpClientThread;
++#endif	
+ 
+ 	cg_log_debug_l4("Entering...\n");
+ 
+@@ -312,6 +454,26 @@
+ 	serverSock = httpServer->sock;
+ 	while (cg_thread_isrunnable(thread) == TRUE) {
+ #ifdef ZYXEL_PATCH /*support ssl, ZyXEL 2013*/
++		//poll server socket and all client socket that is not to start handle		
++		FD_ZERO(&activeFds); 
++		FD_SET(serverSock->id, &activeFds);
++		maxFd = serverSock->id+1;
++		for (activeSock = cg_socketlist_gets(httpServer->clientSocks); activeSock != NULL; activeSock = cg_socket_next(activeSock)){
++			FD_SET(activeSock->id, &activeFds);
++			maxFd = (maxFd < activeSock->id) ? activeSock->id+1 : maxFd;
++		}	
++		nReturn = select(maxFd, &activeFds, NULL, NULL, NULL); 
++		if(nReturn < 0) {
++			if (errno == EINTR) continue; 
++            break; 
++		}
++		else if(nReturn){
++			if(nReturn && FD_ISSET(serverSock->id, &activeFds)){
++				nReturn--;
++				if(cg_socketlist_size(httpServer->clientSocks) >= CG_MAX_WAIT_CLIENT_SOCKET){
++					cg_log_debug_l4("Over accept socket limitation, don't accpet any connection now.\n");
++				}
++				else {
+ #if defined(CG_USE_OPENSSL)
+ 		if (cg_socket_isssl(serverSock) == TRUE) {
+ 			clientSock = cg_socket_ssl_new();
+@@ -330,7 +492,59 @@
+ 			cg_socket_delete(clientSock);
+ 			continue;
+ 		}
+-
++#ifdef ZYXEL_PATCH
++					cg_socketlist_add(httpServer->clientSocks, clientSock);		
++				}
++			}
++			if(nReturn){
++				clientSock = NULL;
++				for (activeSock = cg_socketlist_gets(httpServer->clientSocks); activeSock != NULL, nReturn > 0; ){
++					clientSock = activeSock;
++					activeSock = cg_socket_next(clientSock);
++					if(FD_ISSET(clientSock->id, &activeFds)){						
++						nReturn--;
++						// Limit client count, if client thread size > limit, wait for thread close
++						cg_list_remove((CgList*)clientSock);
++						//if no data to read, close client socket
++						if((nread = cg_socket_haveRecvData(clientSock)) <= 0){
++							cg_socket_delete(clientSock);
++							clientSock = NULL;
++							continue;
++						}
++						else if(CG_CLIENT_THREAD_LIMIT && (clientThreadSize = cg_threadlist_size(httpServer->clientThreads)) >= CG_CLIENT_THREAD_LIMIT){
++							//cg_sleep(CG_CLIENT_THREAD_WAIT_TIME); 
++							//break;
++
++							cg_http_server_lock(httpServer);
++							httpClientThread = NULL;
++							tmpClientThread = NULL;
++							threadSockets = threadSockets_tmp = 255;
++							for (httpClientThread = cg_threadlist_gets(httpServer->clientThreads); httpClientThread != NULL; httpClientThread = cg_thread_next(httpClientThread)){
++								cg_thread_lock(httpClientThread);
++								threadSockets = cg_http_server_get_threadClientSocksize(httpClientThread);
++								if(httpClientThread->isAlreadyExit == FALSE && threadSockets < CG_CLIENT_SOCKET_PER_THREAD){
++									if(tmpClientThread == NULL){ tmpClientThread = httpClientThread; threadSockets_tmp = threadSockets; continue;}
++									else if(threadSockets < threadSockets_tmp){
++										cg_thread_unlock(tmpClientThread);
++										tmpClientThread = httpClientThread;
++										continue;
++									}
++								}
++								cg_thread_unlock(httpClientThread);
++							}
++							cg_http_server_unlock(httpServer);
++							if(tmpClientThread){
++								cg_http_server_add_threadClientSock(tmpClientThread, clientSock);
++								cg_thread_unlock(tmpClientThread);
++								cg_http_server_interrupt_thread(tmpClientThread);
++							}
++							else{
++								cg_socket_delete(clientSock);
++								clientSock = NULL;
++							}
++						}
++						else{
++#endif
+ 		cg_socket_settimeout(clientSock, cg_http_server_gettimeout(httpServer));
+ 		clientData = cg_http_server_clientdata_new(httpServer, clientSock);
+ 		httpClientThread = cg_thread_new();
+@@ -343,6 +557,13 @@
+ 		cg_http_server_unlock(httpServer);
+ 
+ 		cg_thread_start(httpClientThread);
++#ifdef ZYXEL_PATCH
++						}
++					}
++				}
++			}
++		}
++#endif
+ 	}
+ 
+ 	cg_log_debug_l4("Leaving...\n");
+@@ -367,7 +588,7 @@
+ 
+ 	/**** Thanks for Makela Aapo (10/31/05) ****/
+ 	httpServer->clientThreads = cg_threadlist_new();
+-#ifdef ZYXEL_PATCH /*fix the bug of thread list never end, ZyXEL 2014, by Charisse*/
++#if 0 //def ZYXEL_PATCH /*fix the bug of thread list never end, ZyXEL 2014, by Charisse*/
+ 	clientThreads = httpServer->clientThreads;
+ 	clientThreads->prev = NULL;
+ 	clientThreads->next = NULL;
+@@ -383,6 +604,9 @@
+ 		return FALSE;
+ 	}
+ 
++#ifdef ZYXEL_PATCH
++	httpServer->clientSocks = cg_socketlist_new();
++#endif
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return TRUE;
+@@ -407,7 +631,13 @@
+ 		cg_threadlist_delete(httpServer->clientThreads);
+ 		httpServer->clientThreads = NULL;
+ 	}
+-
++	
++#ifdef ZYXEL_PATCH
++	if(httpServer->clientSocks != NULL){
++		cg_socketlist_delete(httpServer->clientSocks);
++		httpServer->clientSocks = NULL;
++	}
++#endif	
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return TRUE;
+Index: clinkc/src/cybergarage/util/cthread.c
+===================================================================
+--- clinkc.orig/src/cybergarage/util/cthread.c	2014-09-14 23:26:32.029603867 +0800
++++ clinkc/src/cybergarage/util/cthread.c	2014-09-14 23:26:32.309600347 +0800
+@@ -216,11 +216,19 @@
+ 
+ 	if ( NULL != thread )
+ 	{
++#ifdef ZYXEL_PATCH
++		memset(thread, 0, sizeof(CgThread));
++#endif
+ 		cg_list_node_init((CgList *)thread);
+ 		
+ 		thread->runnableFlag = FALSE;
+ 		thread->action = NULL;
+ 		thread->userData = NULL;
++#ifdef ZYXEL_PATCH
++		/* Mutex */
++		thread->mutex = cg_mutex_new();
++		thread->isAlreadyExit = FALSE;
++#endif
+ 	}
+ 
+ #if defined (WINCE)
+@@ -263,6 +271,11 @@
+ #if defined DEBUG_MEM
+ 		memdiags_tlist_removethread(thread);
+ #endif
++
++#ifdef ZYXEL_PATCH	
++		if (thread->mutex)
++			cg_mutex_delete(thread->mutex);
++#endif
+ 		free(thread);
+ 		return TRUE;
+ 	}
+@@ -280,7 +293,10 @@
+ #else //all except WINCE
+ 
+ 	cg_log_debug_l4("Entering...\n");
+-
++#ifdef ZYXEL_PATCH	
++	if (thread->mutex)
++		cg_mutex_delete(thread->mutex);
++#endif
+ 	if (thread->runnableFlag == TRUE) 
+ 		cg_thread_stop(thread);
+ 
+@@ -474,7 +490,9 @@
+ 		cg_log_debug_s("Thread %p joined.\n", thread); */
+ 		/* Now we wait one second for thread termination instead of using pthread_join */
+ 
+-		cg_sleep(CG_THREAD_MIN_SLEEP);  //original
++#ifndef ZYXEL_PATCH	 //dont waiting thread leave, by Mark 20140903	
++		cg_sleep(CG_THREAD_MIN_SLEEP);  //original 
++#endif
+ 
+ 		/* MODIFICATION END Fabrice Fontaine Orange 24/04/2007 */
+ #endif
+Index: clinkc/src/cybergarage/net/csocket.c
+===================================================================
+--- clinkc.orig/src/cybergarage/net/csocket.c	2014-09-14 23:26:32.261600950 +0800
++++ clinkc/src/cybergarage/net/csocket.c	2014-09-15 15:42:31.179018631 +0800
+@@ -128,7 +128,7 @@
+ 
+ static int socketCnt = 0;
+ 
+-#if defined(CG_NET_USE_SOCKET_LIST)
++#if defined(CG_NET_USE_SOCKET_LIST) && !defined(ZYXEL_PATH)
+ static CgSocketList *socketList;
+ #endif
+ 
+@@ -225,7 +225,7 @@
+ 		signal(SIGPIPE,SIG_IGN);
+ #endif
+ 
+-#if defined(CG_NET_USE_SOCKET_LIST)
++#if defined(CG_NET_USE_SOCKET_LIST) && !defined(ZYXEL_PATH)
+ 		socketList = cg_socketlist_new();
+ #endif	
+ 
+@@ -257,7 +257,7 @@
+ 		signal(SIGPIPE,SIG_DFL);
+ #endif
+ 
+-#if defined(CG_NET_USE_SOCKET_LIST)
++#if defined(CG_NET_USE_SOCKET_LIST) && !defined(ZYXEL_PATH)
+ 		cg_socketlist_delete(socketList);
+ #endif
+ 	}
+@@ -278,9 +278,12 @@
+ 	cg_socket_startup();
+ 
+ 	sock = (CgSocket *)malloc(sizeof(CgSocket));
+-
++	
+ 	if ( NULL != sock )
+ 	{
++#if defined(CG_NET_USE_SOCKET_LIST)
++		cg_list_node_init((CgList *)sock);
++#endif
+ #if defined(WIN32) && !defined(__CYGWIN__) && !defined(__MINGW32__) && !defined(ITRON)
+ 		sock->id = INVALID_SOCKET;
+ #else
+@@ -1082,6 +1085,117 @@
+ 
+ 	return nTotalSent;
+ }
++
++#ifdef ZYXEL_PATCH
++#include <sys/mman.h>
++#define READBUFSIZE 2000
++int cg_socket_sendfile(CgSocket *sock, int fp, ssize_t flen)
++{
++	ssize_t nSent, size_to_send;
++	int nTotalSent = 0;
++	int cmdPos = 0;
++	int retryCnt = 0;
++
++	cg_log_debug_l4("Entering...\n");
++
++	if (fp <= 0 || flen <= 0)
++		return 0;
++		
++	size_to_send = flen;
++#if defined(CG_HAVE_SENDFILE)
++	if (cg_socket_isssl(sock) == FALSE) {
++		do{
++			nSent = sendfile(sock->id, fp, 0, size_to_send);
++			if(nSent < 0 && ( errno == EINTR || errno == EAGAIN )){
++				if (CG_NET_SOCKET_SEND_RETRY_CNT < retryCnt++) break;
++				sleep( 1 );
++				continue;
++			}
++			else if(nSent == 0) break;
++			else{
++				size_to_send -= nSent;
++				nTotalSent += nSent;
++				retryCnt = 0;
++			}
++		} while (0 < size_to_send);
++	}
++	else{
++#endif
++#if defined(CG_USE_OPENSSL)
++	unsigned char* ptr = NULL, *p = NULL;
++	ssize_t nRead = 0, nWrite = 0, n = 0;
++	BOOL useMmap = FALSE;
++
++	ptr = mmap( 0, flen, PROT_READ, MAP_PRIVATE, fp, 0 );
++	if(ptr){ useMmap = TRUE; }
++	else ptr = (unsigned char*)malloc(READBUFSIZE);
++	
++	if(ptr != NULL){
++		nSent = nRead = 0;
++		do{
++			if(!useMmap){
++				if( (nRead -= nSent) <=0 ){
++					if((nRead = read(fp, ptr, READBUFSIZE))<=0){
++						if(nRead == 0 || CG_NET_SOCKET_SEND_RETRY_CNT < retryCnt++) break;
++						if( errno == EINTR || errno == EAGAIN ) sleep( 1 );
++						continue;
++					}						
++					p = ptr;
++				}
++				else{
++					p = ptr + nSent;
++				}
++				nWrite = nRead;
++			}
++			else{
++				nWrite = size_to_send;
++				p = ptr+nTotalSent;
++			}
++#if defined(CG_USE_OPENSSL)
++			if (cg_socket_isssl(sock) == TRUE) 
++				nSent = SSL_write(sock->ssl, p, nWrite);
++			else
++#endif
++#if defined(BTRON) || (defined(TENGINE) && !defined(CG_TENGINE_NET_KASAGO))
++			nSent = so_send(sock->id, (B*)(p), nWrite, 0);
++#elif defined(TENGINE) && defined(CG_TENGINE_NET_KASAGO)
++			nSent = ka_send(sock->id, (B*)(p), nWrite, 0);
++#elif defined(ITRON)
++			nSent = tcp_snd_dat(sock->id, p, nWrite, TMO_FEVR);
++#else
++			nSent = send(sock->id, p, nWrite, 0);
++#endif
++			if ( nSent <= 0 ){
++				if (CG_NET_SOCKET_SEND_RETRY_CNT < retryCnt++) break;
++				continue;
++			}
++			else{
++				size_to_send -= nSent;
++				nTotalSent += nSent;
++				retryCnt = 0;
++			}
++			
++		} while (0 < size_to_send);
++		
++		if(useMmap) munmap( ptr, flen );
++		else free(ptr);
++	}
++#endif		
++#if defined(CG_HAVE_SENDFILE)
++	}
++#endif
++
++#ifdef SOCKET_DEBUG
++cg_log_debug_s("w %d : %s\n", nTotalSent, ((cmd != NULL) ? cmd : ""));
++#endif
++	
++	cg_log_debug_l4("Leaving...\n");
++
++	return nTotalSent;
++}
++
++#
++#endif
+ /****************************************
+ * cg_socket_readline
+ ****************************************/
+@@ -1759,7 +1873,7 @@
+ * cg_socket_getavailableid
+ ****************************************/
+ 
+-#if defined(CG_NET_USE_SOCKET_LIST)
++#if defined(CG_NET_USE_SOCKET_LIST) && !defined(ZYXEL_PATH)
+ 
+ static int cg_socket_getavailableid(int type)
+ {
+@@ -1794,7 +1908,7 @@
+ * cg_socket_getavailableid
+ ****************************************/
+ 
+-#if defined(CG_NET_USE_SOCKET_LIST)
++#if defined(CG_NET_USE_SOCKET_LIST) && !defined(ZYXEL_PATH)
+ 
+ #define CG_NET_SOCKET_MIN_SOCKET_PORT 50000
+ 
+@@ -1934,3 +2048,19 @@
+ 	return WSAGetLastError();
+ };
+ #endif
++
++#ifdef ZYXEL_PATCH
++int cg_socket_haveRecvData(CgSocket *sock){
++	char buf[10];
++	return  recv(sock->id, buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT);
++}
++#include <netinet/tcp.h>
++BOOL cg_socket_nopush(CgSocket *socket){
++	int flag = 1;
++	return (setsockopt(socket->id, IPPROTO_TCP, TCP_CORK, (const void *)&flag, sizeof(int)) < 0) ? FALSE : TRUE;
++}
++BOOL cg_socket_push(CgSocket *socket){
++	int flag = 0;
++	return (setsockopt(socket->id, IPPROTO_TCP, TCP_CORK, (const void *)&flag, sizeof(int)) < 0) ? FALSE : TRUE;
++}
++#endif
+\ No newline at end of file
+Index: clinkc/include/cybergarage/net/csocket.h
+===================================================================
+--- clinkc.orig/include/cybergarage/net/csocket.h	2014-09-14 23:26:32.261600950 +0800
++++ clinkc/include/cybergarage/net/csocket.h	2014-09-15 15:25:32.519130629 +0800
+@@ -82,6 +82,10 @@
+ #define CG_NET_USE_SOCKET_LIST 1
+ #endif
+ 
++#ifdef ZYXEL_PATCH
++#define CG_NET_USE_SOCKET_LIST 1
++#endif
++
+ /****************************************
+ * Data Type
+ ****************************************/
+@@ -182,6 +186,7 @@
+ BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, char *boundIfName, BOOL bindFlag, BOOL reuseFlag);
+ 
+ BOOL cg_socket_connect(CgSocket *sock, char *addr, int port, const char *boundIfName);
++int cg_socket_sendfile(CgSocket *sock, int fp, ssize_t flen);
+ #else
+ BOOL cg_socket_bind(CgSocket *sock, int bindPort, char *bindAddr, BOOL bindFlag, BOOL reuseFlag);
+ 
+@@ -260,6 +265,12 @@
+ 
+ #endif
+ 
++#ifdef ZYXEL_PATCH
++int cg_socket_haveRecvData(CgSocket *sock);
++BOOL cg_socket_nopush(CgSocket *socket);
++BOOL cg_socket_push(CgSocket *socket);
++#endif
++
+ #ifdef  __cplusplus
+ }
+ #endif
+Index: clinkc/include/cybergarage/util/cthread.h
+===================================================================
+--- clinkc.orig/include/cybergarage/util/cthread.h	2014-09-14 23:26:31.997604269 +0800
++++ clinkc/include/cybergarage/util/cthread.h	2014-09-14 23:26:32.309600347 +0800
+@@ -123,8 +123,16 @@
+ 
+ 	/** Arbitrary data pointer */
+ 	void *userData;
++#ifdef ZYXEL_PATCH
++	CgMutex *mutex;
++	BOOL isAlreadyExit;
++#endif	
+ } CgThread, CgThreadList;
+ 
++#ifdef ZYXEL_PATCH
++#define cg_thread_lock(thread) cg_mutex_lock(thread->mutex)
++#define cg_thread_unlock(thread) cg_mutex_unlock(thread->mutex)
++#endif
+ /**
+  * Prototype for the threads' worker functions 
+  */
+Index: clinkc/src/cybergarage/ssl/cssl.c
+===================================================================
+--- clinkc.orig/src/cybergarage/ssl/cssl.c	2014-09-14 23:26:32.021603967 +0800
++++ clinkc/src/cybergarage/ssl/cssl.c	2014-09-14 23:26:32.309600347 +0800
+@@ -58,14 +58,14 @@
+ 	if( ctxdata == NULL) return TRUE;
+ 
+ 	if (ctxdata->cert_file != NULL){
+-		printf("SSL_CTX_use_certificate_file '%s'\n",ctxdata->cert_file);
++		cg_log_debug_l4("SSL_CTX_use_certificate_file '%s'\n",ctxdata->cert_file);
+ 		if (SSL_CTX_use_certificate_file(sock->ctx,ctxdata->cert_file, SSL_FILETYPE_PEM) <= 0){
+-			printf("unable to get certificate from '%s'\n",ctxdata->cert_file);
++			cg_log_debug_l4("unable to get certificate from '%s'\n",ctxdata->cert_file);
+ 			return 0;
+ 		}
+ 		if (ctxdata->key_file == NULL) ctxdata->key_file=ctxdata->cert_file;
+ 		if (SSL_CTX_use_PrivateKey_file(sock->ctx,ctxdata->key_file,SSL_FILETYPE_PEM) <= 0){
+-			printf("unable to get private key from '%s'\n",ctxdata->key_file);
++			cg_log_debug_l4("unable to get private key from '%s'\n",ctxdata->key_file);
+ 			return 0;
+ 		}
+ 
+@@ -73,7 +73,7 @@
+ 		/* Now we know that a key and cert have been set against
+ 		 * the SSL context */
+ 		if (!SSL_CTX_check_private_key(sock->ctx)){
+-			printf("Private key does not match the certificate public key\n");
++			cg_log_debug_l4("Private key does not match the certificate public key\n");
+ 			return 0;
+ 		}
+ 	}
+@@ -90,7 +90,7 @@
+ 
+ 	if (ctxdata->CAfile != NULL){
+ 		if (! SSL_CTX_load_verify_locations(sock->ctx, ctxdata->CAfile, ctxdata->CApath)){
+-			printf( "Load Trust Certificate Authority File : [%s/%s] Fail\n", ctxdata->CApath, ctxdata->CAfile);
++			cg_log_debug_l4( "Load Trust Certificate Authority File : [%s/%s] Fail\n", ctxdata->CApath, ctxdata->CAfile);
+ 		}
+ 		cg_ssl_set_verify(sock, ctxdata);
+ 	}
+@@ -102,17 +102,17 @@
+ 		num = scandir(ctxdata->CApath, &fileList, (void *)cg_ssl_filter_cafile, alphasort);
+ 
+ 		if (-1 == num) {
+-			printf( "scandir() failed\n");
++			cg_log_debug_l4( "scandir() failed\n");
+ 		}
+ 		else {
+ 			if (0 == num){
+-				printf( "No Any Trust CA File List (PEM Format)\n");
++				cg_log_debug_l4( "No Any Trust CA File List (PEM Format)\n");
+ 			} else {
+ 				/* Load Trust CA File List */
+ 				while (num--) {
+ 					snprintf(caname, sizeof(caname), "%s%s", ctxdata->CApath, fileList[num]->d_name);
+ 					if (! SSL_CTX_load_verify_locations(sock->ctx, caname, NULL)){
+-						printf( "Load Trust Certificate Authority File : [%s] Fail\n", caname);
++						cg_log_debug_l4( "Load Trust Certificate Authority File : [%s] Fail\n", caname);
+ 					}
+ 
+ 					free(fileList[num]);
+@@ -161,19 +161,19 @@
+ 	char*	 str;
+ 
+ 	/* Get the cipher - opt */
+-	printf ("SSL connection using %s\n", SSL_get_cipher (sock->ssl));
++	cg_log_debug_l4 ("SSL connection using %s\n", SSL_get_cipher (sock->ssl));
+ 
+   	/* Get client's certificate (note: beware of dynamic allocation) - opt */
+   	cert = SSL_get_peer_certificate (sock->ssl);
+   	if (cert != NULL) {
+-    	printf ("Peer certificate:\n");
++    	cg_log_debug_l4 ("Peer certificate:\n");
+ 
+     	str = X509_NAME_oneline (X509_get_subject_name (cert), 0, 0);
+-    	printf ("\t subject: %s\n", str);
++    	cg_log_debug_l4 ("\t subject: %s\n", str);
+     	free (str);
+ 
+    		str = X509_NAME_oneline (X509_get_issuer_name  (cert), 0, 0);
+-    	printf ("\t issuer: %s\n", str);
++    	cg_log_debug_l4 ("\t issuer: %s\n", str);
+     	free (str);
+ 
+     	/* We could do all sorts of certificate verification stuff here before
+@@ -182,14 +182,14 @@
+     	X509_free (cert);
+   	}
+ 	else{
+-		printf("No peer certificate\n");
++		cg_log_debug_l4("No peer certificate\n");
+ 	}
+ }
+ 
+ BOOL cg_ssl_accept(CgSocket *serverSock, CgSocket *clientSock){
+ 	int ret_sslconnect = 0;
+ 
+-	printf("%s()\n", __func__);
++	cg_log_debug_l4("%s()\n", __func__);
+ 	if (cg_socket_isssl(clientSock) != TRUE) return TRUE;
+ 
+ 	if(clientSock->ctx == NULL)
+@@ -202,13 +202,13 @@
+ 	}
+ 
+ 	if ( (ret_sslconnect=SSL_accept(clientSock->ssl)) < 1) {
+-		printf("SSL_get_error =%d\n", SSL_get_error(clientSock->ssl, ret_sslconnect));
+-		printf("SSL_accept <1\n");
++		cg_log_debug_l4("SSL_get_error =%d\n", SSL_get_error(clientSock->ssl, ret_sslconnect));
++		cg_log_debug_l4("SSL_accept <1\n");
+ 		return FALSE;
+ 	}
+ 
+ 
+-	printf( "%s(): SSL Certificate Authority Verify Result = [%s]\n",__func__, X509_verify_cert_error_string(SSL_get_verify_result(clientSock->ssl)));
++	cg_log_debug_l4( "%s(): SSL Certificate Authority Verify Result = [%s]\n",__func__, X509_verify_cert_error_string(SSL_get_verify_result(clientSock->ssl)));
+ 
+ 	cg_ssl_show_cert(clientSock);
+ 	return TRUE;
+@@ -243,8 +243,8 @@
+ 
+ 					}
+ 				    /* Handle a suspect certificate here */
+-					printf("commonName=%s, ctxdata->verify_cn=%s\n", commonName, ctxdata->verify_cn);
+-					printf("Common Name doesn't math host name");
++					cg_log_debug_l4("commonName=%s, ctxdata->verify_cn=%s\n", commonName, ctxdata->verify_cn);
++					cg_log_debug_l4("Common Name doesn't math host name");
+ 					return FALSE;
+ 				}
+ 			}
+Index: clinkc/src/cybergarage/http/chttp_request.c
+===================================================================
+--- clinkc.orig/src/cybergarage/http/chttp_request.c	2014-09-14 23:26:32.277600749 +0800
++++ clinkc/src/cybergarage/http/chttp_request.c	2014-09-15 14:53:07.477483017 +0800
+@@ -930,7 +930,9 @@
+ 	cg_log_debug_l4("Entering...\n");
+ 
+ 	sock = cg_http_request_getsocket(httpReq);
+-
++#ifdef ZYXEL_PATCH
++	cg_socket_nopush(sock);
++#endif
+ 	cg_log_debug_s("Got request:\n");
+ 	cg_http_request_print(httpReq);
+ 	
+@@ -958,13 +960,80 @@
+ 		
+ 	/**** send header and content ****/
+ 	cg_http_packet_post((CgHttpPacket *)httpRes, sock);
+-	
++#ifdef ZYXEL_PATCH
++	cg_socket_push(sock);
++#endif	
+ 	cg_log_debug_l4("Leaving...\n");
+ 
+ 	return TRUE;
+ }
+ 
+ /****************************************
++* cg_http_response_postresponse
++****************************************/
++#ifdef ZYXEL_PATCH
++#include <sys/stat.h> 
++#include <fcntl.h>
++BOOL cg_http_request_postFile(CgHttpRequest *httpReq, CgHttpResponse *httpRes, const char *file, BOOL chunked)
++{
++	CgSocket *sock;
++	char httpDate[CG_HTTP_DATE_MAXLEN];
++	char *version, *reasonPhrase;
++	int statusCode;
++	char statusCodeBuf[CG_STRING_INTEGER_BUFLEN];
++	struct stat st;
++	int fp = 0;
++	BOOL ret = FALSE;
++	
++	cg_log_debug_l4("Entering...\n");
++	if( ! stat(file, &st) && st.st_mode & S_IFREG && (fp = open(file, O_RDONLY)) >0){
++		cg_http_response_setcontentlength(httpRes, st.st_size);
++		
++		sock = cg_http_request_getsocket(httpReq);
++		cg_socket_nopush(sock);
++
++		cg_log_debug_s("Got request:\n");
++		cg_http_request_print(httpReq);
++		
++		cg_http_response_setdate(httpRes, cg_http_getdate(cg_getcurrentsystemtime(), httpDate, sizeof(httpDate)));
++
++		version = cg_http_response_getversion(httpRes);
++		statusCode = cg_http_response_getstatuscode(httpRes);	
++		reasonPhrase = cg_http_response_getreasonphrase(httpRes);
++
++		if (version == NULL || reasonPhrase == NULL){
++			close(fp);
++			return FALSE;		
++		}
++		cg_int2str(statusCode, statusCodeBuf, sizeof(statusCodeBuf));
++			
++		/**** send first line ****/
++		cg_socket_write(sock, version, cg_strlen(version));
++		cg_socket_write(sock, CG_HTTP_SP, sizeof(CG_HTTP_SP)-1);
++		cg_socket_write(sock, statusCodeBuf, cg_strlen(statusCodeBuf));
++		cg_socket_write(sock, CG_HTTP_SP, sizeof(CG_HTTP_SP)-1);
++		cg_socket_write(sock, reasonPhrase, cg_strlen(reasonPhrase));
++		cg_socket_write(sock, CG_HTTP_CRLF, sizeof(CG_HTTP_CRLF)-1);
++		
++		cg_log_debug_s("Posting response:\n");
++		cg_http_response_print(httpRes);
++			
++		/**** send header and content ****/
++		cg_http_packet_post((CgHttpPacket *)httpRes, sock);
++		
++		cg_socket_sendfile(sock, fp, st.st_size);
++		close(fp);
++		
++		ret = TRUE;
++		cg_socket_push(sock);
++		
++	}
++	cg_log_debug_l4("Leaving...\n");
++
++	return ret;
++}
++#endif
++/****************************************
+ * cg_http_request_poststatuscode
+ ****************************************/
+ 

@@ -1,0 +1,48 @@
+Index: samba-3.0.37/source/modules/vfs_default.c
+===================================================================
+--- samba-3.0.37.orig/source/modules/vfs_default.c	2009-09-30 20:21:56.000000000 +0800
++++ samba-3.0.37/source/modules/vfs_default.c	2017-07-14 20:12:21.443101700 +0800
+@@ -702,6 +702,24 @@
+ 	return 0;
+ }
+ 
++int isvfat()
++{
++	FILE *fp = NULL;
++	int flag=0;
++	char buffer[64];
++	fp = popen("mount -t vfat | grep usb", "r");
++
++	if(fp != NULL){
++		if( fgets(buffer, 64, fp) != NULL ) {
++			if (strlen(buffer) > 0)
++				flag=1;
++		}
++		pclose(fp);
++	}
++
++	return flag;
++}
++
+ static int vfswrap_ftruncate(vfs_handle_struct *handle, files_struct *fsp, int fd, SMB_OFF_T len)
+ {
+ 	int result = -1;
+@@ -717,6 +735,18 @@
+ 		return result;
+ 	}
+ 
++	/* If upload large file (about 1 GB file size) in vfat partition, windows client will suffer 
++	 * from samba session time out.
++	 *
++	 * Root cause  : In vfat partition, vfs will spend much time preallocating file.
++	 * Solution    : Skip preallocation in vfat partition.
++	 * Side-effect : In theory, may cause file fragmentation, but user cannot feel that.
++	 */
++	if(isvfat()==1){
++		result = 0;
++		goto done;
++	}
++
+ 	/* we used to just check HAVE_FTRUNCATE_EXTEND and only use
+ 	   sys_ftruncate if the system supports it. Then I discovered that
+ 	   you can have some filesystems that support ftruncate

@@ -1,0 +1,172 @@
+Index: libzyutil-1.0/common.c
+===================================================================
+--- libzyutil-1.0.orig/common.c	2018-08-15 15:14:25.601520380 +0800
++++ libzyutil-1.0/common.c	2018-08-15 15:24:38.053705603 +0800
+@@ -8,6 +8,12 @@
+ #include <stdio.h>
+ #include <time.h>
+ 
++#ifdef ABOG_CUSTOMIZATION
++#include <sys/stat.h>
++#include <stdlib.h>
++#include <dirent.h>
++#endif
++
+ #include <ctype.h>
+ #include <unistd.h>
+ #define _GNU_SOURCE
+@@ -1285,6 +1291,138 @@
+     free(tmpFilePath);
+ }
+ 
++#ifdef ABOG_CUSTOMIZATION
++#define REMOTE_MANAGEMENT_FILE_FOLDER "/tmp/rmm/"
++void zyTouchFile(int pid, char *ip)
++{
++	char cmd[128] = {0};
++	char *addr = NULL;
++	FILE *fp = NULL;
++
++	if(!(fp = fopen("/tmp/isWANRoute.sh", "r")))
++	{
++		fp = fopen("/tmp/isWANRoute.sh", "w");
++		fprintf(fp, "route=`ip r get $1`\n");
++		fprintf(fp, "if expr \"$1\" : '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' >/dev/null; then\n");
++		fprintf(fp, "	iface=`echo $route | awk '{print substr($3,1,3)}'`\n");
++		//fprintf(fp, "	echo iface is $iface\n");
++		fprintf(fp, "	if [ \"$iface\" == \"nas\" ]; then\n");
++		//fprintf(fp, "		echo $1 comes from wan side\n");
++		fprintf(fp, "		exit 1\n");
++		fprintf(fp, "	fi\n");
++		fprintf(fp, "	iface=`echo $route | awk '{print substr($5,1,3)}'`\n");
++		//fprintf(fp, "	echo iface is $iface\n");
++		fprintf(fp, "	if [ \"$iface\" == \"nas\" ]; then\n");
++		//fprintf(fp, "		echo $1 comes from wan side\n");
++		fprintf(fp, "		exit 1\n");
++		fprintf(fp, "	fi\n");
++		//fprintf(fp, "	echo $1 comes from br side\n");
++		fprintf(fp, "else\n");
++		fprintf(fp, "	iface=`echo $route | awk '{print substr($5,1,3)}'`\n");
++		//fprintf(fp, "	echo iface is $iface\n");
++		fprintf(fp, "	if [ \"$iface\" == \"nas\" ]; then\n");
++		//fprintf(fp, "		echo $1 comes from wan side\n");
++		fprintf(fp, "		exit 1\n");
++		fprintf(fp, "	fi\n");
++		fprintf(fp, "	iface=`echo $route | awk '{print substr($7,1,3)}'`\n");
++		//fprintf(fp, "	echo iface is $iface\n");
++		fprintf(fp, "	if [ \"$iface\" == \"nas\" ]; then\n");
++		//fprintf(fp, "		echo $1 comes from wan side\n");
++		fprintf(fp, "		exit 1\n");
++		fprintf(fp, "	fi\n");
++		//fprintf(fp, "	echo $1 comes from br side\n");
++		fprintf(fp, "fi\n");
++		fprintf(fp, "exit 0\n");
++#if 0
++		fprintf(fp, "route=`ip r get $1`\n");
++		fprintf(fp, "iface=`echo $route | awk '{print substr($3,1,2)}'`\n");
++		fprintf(fp, "if [ \"$iface\" == \"nas\" ]; then\n");
++		//fprintf(fp, "	echo $1 comes from wan side\n");
++		fprintf(fp, "	exit 1\n");
++		fprintf(fp, "fi\n");
++		//fprintf(fp, "	echo $1 comes from br side\n");
++		fprintf(fp, "exit 0\n");
++#endif
++	}
++	fclose(fp);
++	chmod("/tmp/isWANRoute.sh", S_IRUSR|S_IWUSR|S_IXUSR|S_IRGRP|S_IROTH);
++
++	if (strstr(ip, "."))
++	{
++		addr = strstr(ip, ":");
++		if (addr)
++			addr[0] = 0;
++	}
++	sprintf(cmd, "/tmp/isWANRoute.sh %s", ip);
++	if (addr)
++		addr[0] = ':';
++
++	if (!system(cmd))
++		return;
++
++	DIR* dir = opendir(REMOTE_MANAGEMENT_FILE_FOLDER);
++	if (dir)
++	{
++		/* Directory exists. */
++		closedir(dir);
++	}
++	else
++	{
++		sprintf(cmd, "mkdir %s", REMOTE_MANAGEMENT_FILE_FOLDER);
++		system(cmd);
++	}
++	sprintf(cmd, "touch %s%d", REMOTE_MANAGEMENT_FILE_FOLDER, pid);
++	system(cmd);
++
++
++	system("echo 0 > /proc/tc3162/led_pwr_green");
++	system("echo 1 > /proc/tc3162/led_pwr_green");
++}
++
++static int zyCountFilesInRemoteManageFolder(void)
++{
++	int file_count = 0;
++	DIR *dirp;
++	struct dirent *entry;
++
++	dirp = opendir(REMOTE_MANAGEMENT_FILE_FOLDER); /* There should be error handling after this */
++	if (dirp==NULL)
++		return 0;
++	while ((entry = readdir(dirp)) != NULL) {
++		if (entry->d_type == DT_REG) { /* If the entry is a regular file */
++			file_count++;
++		}
++	}
++	closedir(dirp);
++	return file_count;
++}
++
++void zyRemoveFile(int pid)
++{
++	char cmd[128] = {0};
++
++	DIR* dir = opendir(REMOTE_MANAGEMENT_FILE_FOLDER);
++	if (dir)
++	{
++		/* Directory exists. */
++		closedir(dir);
++	}
++	else
++	{
++		return;
++	}
++
++	sprintf(cmd, "rm %s%d &>/dev/null", REMOTE_MANAGEMENT_FILE_FOLDER, pid);
++	system(cmd);
++
++	if (zyCountFilesInRemoteManageFolder() == 0)
++	{
++		system("echo 0 > /proc/tc3162/led_pwr_green");
++		system("echo 2 > /proc/tc3162/led_pwr_green");
++	}
++}
++#endif
++
+ /*!
+  *  Check if it is an alphanumeric character.
+  *
+Index: libzyutil-1.0/zyutil.h
+===================================================================
+--- libzyutil-1.0.orig/zyutil.h	2018-08-15 15:14:25.573520380 +0800
++++ libzyutil-1.0/zyutil.h	2018-08-15 15:26:05.712779923 +0800
+@@ -127,6 +127,11 @@
+ char *zyGetAccountInfoFromFile(char *username, char *filePath);
+ void zyRemoveAccountInfoFromFile(char *username, char *filePath);
+ 
++#ifdef ABOG_CUSTOMIZATION
++void zyTouchFile(int pid, char *ip);
++void zyRemoveFile(int pid);
++#endif
++
+ /*!
+  *  Check serial number format.
+  *

@@ -1,0 +1,182 @@
+Index: linux-3.18.21/drivers/tty/serial/serial_core.c
+===================================================================
+--- linux-3.18.21.orig/drivers/tty/serial/serial_core.c	2015-09-01 06:19:23.000000000 +0800
++++ linux-3.18.21/drivers/tty/serial/serial_core.c	2018-11-08 13:23:17.158865225 +0800
+@@ -38,6 +38,8 @@
+ #include <asm/irq.h>
+ #include <asm/uaccess.h>
+ 
++#define UART_CFLAG_DEVON    0x10000  //I-CHIA.HUANG 2018.11.07  let uart2 open
++
+ /*
+  * This is used to lock changes in serial line configuration.
+  */
+@@ -2326,8 +2328,21 @@
+ 	normal->type		= TTY_DRIVER_TYPE_SERIAL;
+ 	normal->subtype		= SERIAL_TYPE_NORMAL;
+ 	normal->init_termios	= tty_std_termios;
+-	normal->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
+-	normal->init_termios.c_ispeed = normal->init_termios.c_ospeed = 9600;
++	//I-CHIA.HUANG 2018.11.07 for uart2
++#if	TCSUPPORT_UART2
++	if (normal->major == 4 && normal->minor_start == 65)
++	{
++		normal->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL | UART_CFLAG_DEVON;
++		normal->init_termios.c_ispeed = normal->init_termios.c_ospeed = 9600;
++	}
++	else
++	{
++#endif	
++		normal->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
++		normal->init_termios.c_ispeed = normal->init_termios.c_ospeed = 9600;
++#if TCSUPPORT_UART2
++	}
++#endif
+ 	normal->flags		= TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
+ 	normal->driver_state    = drv;
+ 	tty_set_operations(normal, &uart_ops);
+Index: linux-3.18.21/drivers/tty/serial/tc3162_uart2.c
+===================================================================
+--- linux-3.18.21.orig/drivers/tty/serial/tc3162_uart2.c	2018-11-08 13:19:56.354189302 +0800
++++ linux-3.18.21/drivers/tty/serial/tc3162_uart2.c	2018-11-08 13:23:08.038745810 +0800
+@@ -65,6 +65,13 @@
+ #define UART_CFLAG_DEBUG	0x8000
+ #define UART_CFLAG_DEVON	0x10000
+ 
++#define RG_GPIO_UART2_MODE_SHIFT   24 //I-CHIA.HUANG 2018.11.05 The 24th bit is UART2 MODE
++#define RG_GPIO_UART2_MODE_MASK    (0x1 << RG_GPIO_UART2_MODE_SHIFT)//I-CHIA.HUANG 2018.11.05
++#define RG_GPIO_UART2_CTSRTS_SHIFT 25 //I-CHIA.HUANG 2018.11.05 The 24th bit is UART2 MODE
++#define RG_GPIO_UART2_CTSRTS_MASK  (0x1 << RG_GPIO_UART2_CTSRTS_SHIFT)//I-CHIA.HUANG 2018.11.05
++char en751627_default = NULL; //I-CHIA.HUANG 2018.11.05   In order to define the default value of EN751627
++unsigned int  set_en751627_rg_gpio_uart2_mode   = 0;//I-CHIA.HUANG 2018.11.05   In order to open the UART2_MODE through address
++unsigned int  set_en751627_rg_gpio_uart2_ctsrts = 0;//I-CHIA.HUANG 2018.11.05   In order to open the UART2_CTSRTS through address
+ 
+ /* crystal clock is 20Mhz */
+ /*---------------------
+@@ -466,8 +473,11 @@
+ 	{
+ 		if(port->unused1 & UART_HWFC_ENABLE)
+ 			miscc |= (UART_MISCC_CTSHWFC | UART_MISCC_RTSHWFC);
+-		else {
++		else 
++		{
+ 			termios->c_cflag &= ~CRTSCTS;
++ 			miscc &= ~UART_MISCC_CTSHWFC;
++ 			miscc &= ~UART_MISCC_RTSHWFC;
+ 			printk("Chip hasn't support HW flow control yet\n");
+ 		}
+ 	}
+@@ -479,11 +489,74 @@
+ 	}
+ 
+ #if defined(TCSUPPORT_CPU_EN7516) || defined(TCSUPPORT_CPU_EN7527)
++   
++	//I-CHIA.HUANG 2018.11.05   In order to open the UART2_MODE through address
++	if (set_en751627_rg_gpio_uart2_mode != (VPint(0xbfa2015c) & RG_GPIO_UART2_MODE_MASK))
++	{
++		if ((VPint(0xbfa2015c) & RG_GPIO_UART2_MODE_MASK))
++		{
++			termios->c_cflag |=  UART_CFLAG_DEVON;
++		}
++		else
++		{
++			termios->c_cflag &= ~UART_CFLAG_DEVON;
++		}   
++	}
++
++	//I-CHIA.HUANG 2018.11.05   In order to open the UART2_CTSRTS through address
++	if (set_en751627_rg_gpio_uart2_ctsrts != (VPint(0xbfa2015c) & RG_GPIO_UART2_CTSRTS_MASK))
++	{
++		if ((VPint(0xbfa2015c) & RG_GPIO_UART2_CTSRTS_MASK))
++		{
++			if (!(VPint(0xbfa2015c) & RG_GPIO_UART2_MODE_MASK))
++			{
++				termios->c_cflag &= ~CRTSCTS;
++				//I-CHIA.HUANG 2018.11.05 CCTSRTS  must be closed
++				miscc &= ~UART_MISCC_CTSHWFC;
++				miscc &= ~UART_MISCC_RTSHWFC;
++				printk("1.Since UART2_mode is off, UART2_CTSRTS is forced to shut down if UART2_CTSRTS is set.\n");
++			}
++			else
++			{
++				termios->c_cflag |= CRTSCTS;
++				miscc |= (UART_MISCC_CTSHWFC | UART_MISCC_RTSHWFC); 
++			}
++		}
++		else
++		{
++			termios->c_cflag &= ~CRTSCTS;
++		}   
++	}
++    
++	//I-CHIA.HUANG 2018.11.05   UART2_CTSRTS
++	if (termios->c_cflag & CRTSCTS)
++	{
++		if (!(termios->c_cflag & UART_CFLAG_DEVON))
++		{
++			reg  =  VPint(0xbfa2015c);
++			reg &= ~RG_GPIO_UART2_CTSRTS_MASK;
++			VPint(0xbfa2015c) = reg;
++			termios->c_cflag &= ~CRTSCTS;
++		}
++		else
++		{
++			reg  = VPint(0xbfa2015c);
++			reg |= RG_GPIO_UART2_CTSRTS_MASK;
++			VPint(0xbfa2015c) = reg;
++		}
++	}
++	else
++	{
++		reg  =  VPint(0xbfa2015c);
++		reg &= ~RG_GPIO_UART2_CTSRTS_MASK;
++		VPint(0xbfa2015c) = reg;
++	}
++
+ 	if (termios->c_cflag & UART_CFLAG_DEVON) {
+ 		if(!isFPGA) {
+ 			reg = VPint(0xbfa2015c); //GPIO_SHR_SCH
+ 			if(port->iobase == CR_UART2_BASE) {
+-				reg |= (0x1 << 24) | (0x1 << 25); //Turn on UART2_MODE, UART2_CTSRTS
++				reg |= (0x1 << 24); //Turn on UART2_MODE
+ 			} else if(port->iobase == CR_UART3_BASE) {
+ 				reg |= (0x1 << 26); //Turn on UART3_MODE
+ 			}
+@@ -492,14 +565,23 @@
+ 	} else {
+ 		if(!isFPGA) {
+ 			reg = VPint(0xbfa2015c); //GPIO_SHR_SCH
+-			if(port->iobase == CR_UART2_BASE) {
+-				reg &= ~((0x1 << 24) | (0x1 << 25)); //Turn off UART2_MODE, UART2_CTSRTS
+-			} else if(port->iobase == CR_UART3_BASE) {
++			if(port->iobase == CR_UART2_BASE) 
++			{
++				reg &= ~((0x1 << 24) | (0x1 << 25)); //Turn off UART2_MODE and UART2_CTSRTS
++				//I-CHIA.HUANG 2018.11.05 CCTSRTS  must be closed
++				termios->c_cflag &= ~CRTSCTS;
++				miscc &= ~UART_MISCC_CTSHWFC;
++				miscc &= ~UART_MISCC_RTSHWFC;
++				printk("2.UART2_CTSRTS is shut down.\n");
++			} else if(port->iobase == CR_UART3_BASE) {
+ 				reg &= ~(0x1 << 26); //Turn off UART3_MODE
+ 			}
+ 			VPint(0xbfa2015c) = reg;
+ 		}
+ 	}
++	
++ 	set_en751627_rg_gpio_uart2_mode   = ((VPint(0xbfa2015c) & RG_GPIO_UART2_MODE_MASK));//I-CHIA.HUANG 2018.11.05   Store the address of the previous 0xbfa2015c,in order to use the address to open/close UART2_mode
++ 	set_en751627_rg_gpio_uart2_ctsrts = ((VPint(0xbfa2015c) & RG_GPIO_UART2_CTSRTS_MASK));//I-CHIA.HUANG 2018.11.05   Store the address of the previous 0xbfa2015c,in order to use the address to open/close UART2_ctsrts
+ #endif
+ 
+ 	/*
+@@ -787,6 +869,10 @@
+ 	}
+ 	else if (isEN751627)
+ 	{
++		//I-CHIA.HUANG 2018.11.05 Let UART2_MODE default is ON
++		reg = VPint(0xbfa2015c); //RG_PON_I2C_MODE
++		reg |= RG_GPIO_UART2_MODE_MASK; //Turn on UART2_MODE
++		VPint(0xbfa2015c) = reg;
+ 		printk("Init UART2 and UART3, still need to trun on for using.");
+ 	}
+ 	else

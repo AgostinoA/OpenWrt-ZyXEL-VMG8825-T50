@@ -1,0 +1,108 @@
+Index: linux-3.18.21/net/bridge/netfilter/ebt_AUTOMAP.c
+===================================================================
+--- linux-3.18.21.orig/net/bridge/netfilter/ebt_AUTOMAP.c	2018-06-20 18:15:59.817347980 +0800
++++ linux-3.18.21/net/bridge/netfilter/ebt_AUTOMAP.c	2018-06-20 18:21:59.056750490 +0800
+@@ -13,6 +13,8 @@
+ #include <linux/netfilter_bridge/ebtables.h>
+ #include <linux/netfilter_bridge/ebt_AUTOMAP.h>
+ 
++#include <linux/version.h>
++
+ #if 0
+ static int getVlanPrioAndIpHeader(struct sk_buff *skb, unsigned char *prio, struct iphdr **iph){
+ 	unsigned short TCI;
+@@ -81,12 +83,21 @@
+ //	getVlanPrioAndIpHeader(skb, &prio, &iph);
+ 
+ 	/* get ip header */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
++	if (skb->protocol == __constant_htons(ETH_P_IP))
++		iph = (struct iphdr *)skb_network_header(skb);
++    else if (skb->protocol == __constant_htons(ETH_P_8021Q)) {
++        if (*(unsigned short *)(skb_network_header(skb) + VLAN_HLEN - 2) == __constant_htons(ETH_P_IP))
++			iph = (struct iphdr *)(skb_network_header(skb) + VLAN_HLEN);
++    }
++#else
+ 	if (skb->protocol == __constant_htons(ETH_P_IP))
+ 		iph = (struct iphdr *)(skb->network_header);
+     else if (skb->protocol == __constant_htons(ETH_P_8021Q)) {
+         if (*(unsigned short *)(skb->network_header + VLAN_HLEN - 2) == __constant_htons(ETH_P_IP))
+ 			iph = (struct iphdr *)(skb->network_header + VLAN_HLEN);
+     }
++#endif
+ 	
+ 	switch(aminfo->type){
+ 		case AUTOMAP_TYPE_8021P:
+Index: linux-3.18.21/net/bridge/netfilter/ebt_ftos.c
+===================================================================
+--- linux-3.18.21.orig/net/bridge/netfilter/ebt_ftos.c	2018-06-20 18:15:59.829348142 +0800
++++ linux-3.18.21/net/bridge/netfilter/ebt_ftos.c	2018-06-20 19:57:03.673987199 +0800
+@@ -42,6 +42,8 @@
+ #include <linux/netfilter_bridge/ebt_ftos_t.h>
+ #include <net/dsfield.h>
+ 
++#include <linux/version.h>
++
+ #define PPPOE_HLEN   6
+ #define PPP_TYPE_IPV4   0x0021  /* IPv4 in PPP */
+ #define PPP_TYPE_IPV6   0x0057  /* IPv6 in PPP */
+@@ -56,6 +58,24 @@
+ 	u_int16_t diffs[2];
+ 
+ 	/* if VLAN frame, we need to point to correct network header */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
++   if (skb->protocol == __constant_htons(ETH_P_IP))
++      iph = (struct iphdr *)skb_network_header(skb);
++   else if ((skb)->protocol == __constant_htons(ETH_P_IPV6))
++      ipv6h = (struct ipv6hdr *)skb_network_header(skb);
++   else if (skb->protocol == __constant_htons(ETH_P_8021Q)) {
++      if (*(unsigned short *)(skb_network_header(skb) + VLAN_HLEN - 2) == __constant_htons(ETH_P_IP))
++         iph = (struct iphdr *)(skb_network_header(skb) + VLAN_HLEN);
++      else if (*(unsigned short *)(skb_network_header(skb) + VLAN_HLEN - 2) == __constant_htons(ETH_P_IPV6))
++         ipv6h = (struct ipv6hdr *)(skb_network_header(skb) + VLAN_HLEN);
++   }
++   else if (skb->protocol == __constant_htons(ETH_P_PPP_SES)) {
++      if (*(unsigned short *)(skb_network_header(skb) + PPPOE_HLEN) == PPP_TYPE_IPV4)
++         iph = (struct iphdr *)(skb_network_header(skb) + PPPOE_HLEN + 2);
++      else if (*(unsigned short *)(skb_network_header(skb) + PPPOE_HLEN) == PPP_TYPE_IPV6)
++         ipv6h = (struct ipv6hdr *)(skb_network_header(skb) + PPPOE_HLEN + 2);
++   }
++#else
+    if (skb->protocol == __constant_htons(ETH_P_IP))
+       iph = (struct iphdr *)(skb->network_header);
+    else if ((skb)->protocol == __constant_htons(ETH_P_IPV6))
+@@ -72,6 +92,8 @@
+       else if (*(unsigned short *)(skb->network_header + PPPOE_HLEN) == PPP_TYPE_IPV6)
+          ipv6h = (struct ipv6hdr *)(skb->network_header + PPPOE_HLEN + 2);
+    }
++#endif
++
+    /* if not IP header, do nothing. */
+    if ((iph == NULL) && (ipv6h == NULL))
+ 	   return ftosinfo->target;
+@@ -105,8 +127,11 @@
+       		struct vlan_hdr *frame;
+       		unsigned char prio = 0;
+       		unsigned short TCI;
+-
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
++              frame = (struct vlan_hdr *)skb_network_header(skb);
++#else
+       		frame = (struct vlan_hdr *)(skb->network_header);
++#endif
+       		TCI = ntohs(frame->h_vlan_TCI);
+       		prio = (unsigned char)((TCI >> 13) & 0x7);
+       		  //printk("ebt_target_ftos:FTOS_8021QFTOS ..... 0x%08x\n", prio);
+@@ -146,8 +171,11 @@
+          struct vlan_hdr *frame;
+          unsigned char prio = 0;
+          unsigned short TCI;
+-
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
++         frame = (struct vlan_hdr *)skb_network_header(skb);
++#else
+          frame = (struct vlan_hdr *)(skb->network_header);
++#endif
+          TCI = ntohs(frame->h_vlan_TCI);
+          prio = (unsigned char)((TCI >> 13) & 0x7);
+          //printk("ebt_target_ftos:FTOS_8021QFTOS ..... 0x%08x\n", prio);

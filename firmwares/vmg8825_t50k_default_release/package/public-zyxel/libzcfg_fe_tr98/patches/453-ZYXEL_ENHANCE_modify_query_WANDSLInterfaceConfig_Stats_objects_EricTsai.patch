@@ -1,0 +1,198 @@
+Index: libzcfg_fe_tr98-1.0/wanDev.c
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/wanDev.c	2017-04-25 15:37:55.029921510 +0800
++++ libzcfg_fe_tr98-1.0/wanDev.c	2017-04-25 15:33:39.322744800 +0800
+@@ -1249,26 +1249,21 @@
+ #define MAX_32BITUNSIGNINT 4294967295
+ #define DSLSTATS_PARAM_NOTSUPPORT (MAX_32BITUNSIGNINT-1)
+ 
+-/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.SubPathNames
++//#define TR98_DSLINTFCFG_STATS_REQ_SUBOBJPARAM_NOTIFY
+ 
+-    Related object in TR181:
+-    Device.DSL.Line.i.Stats.SubPathNames.
+-*/
+-extern zcfgRet_t WANDslIfaceCfgStatsSubObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++#ifdef TR98_DSLINTFCFG_STATS_REQ_SUBOBJPARAM_NOTIFY
++// require 'WANDSLInterfaceConfig.Stats' sub object param notify
++zcfgRet_t WANDslIfaceCfgStatsSubObj_RetrieveTr181DslLineStatsSubObj(char *tr98FullPathName, struct json_object **tr98Jobj, struct json_object **dslStatsObj, bool updateFlag)
+ {
+-	zcfgRet_t ret;
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	tr98Parameter_t *paramList = NULL;
+ 	char tr181PathName[MAX_TR181_PATHNAME] = {0};
+ 	char tr181Obj[128] = {0};
+-	tr98Parameter_t *paramList = NULL;
+ 	objIndex_t dslLineIid;
+-	uint32_t  dslLineOid = 0;
+-	struct json_object *dslStatsObj = NULL;
+-	struct json_object *paramValue = NULL;
+-	char vendorParamName[32] = {0};
+-	struct json_object *vendorParamValue = NULL;
++	uint32_t dslLineStatsOid = 0;
+ 	int n = 0;
+ 	bool subPathNameMatch = false;
+-	const char *subPathNames[] = { "Stats.CurrentDay", "Stats.QuarterHour", "Stats.LastShowtime", 0 };
++	const char *subPathNames[] = { "Stats.Total", "Stats.Showtime", "Stats.CurrentDay", "Stats.QuarterHour", "Stats.LastShowtime", 0 };
+ 
+ 	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
+ 
+@@ -1285,13 +1280,13 @@
+ 			}
+ 			paramList++;
+ 		}
+-		return ZCFG_SUCCESS;
++		return ZCFG_OBJECT_UPDATED;
+ #endif //ELISA_TR69_WANDSL_CUSTOMIZATION
+ 		return ret;
+ 	}
+ 	printf("%s: Tr181 mapping name: %s\n", __FUNCTION__, tr181PathName);
+ 
+-	while(subPathNames[n]) {
++	while(subPathNames[n] && !subPathNameMatch) {
+ 		char subPathName[30] = {0};
+ 		strcpy(subPathName, subPathNames[n]);
+ 		if(strstr(tr98FullPathName, subPathName)) {
+@@ -1311,12 +1306,123 @@
+ 
+ 	IID_INIT(dslLineIid);
+ 	sprintf(tr181Obj, "Device.%s", tr181PathName);
+-	dslLineOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
+-	if((ret = feObjJsonGet(dslLineOid, &dslLineIid, &dslStatsObj, updateFlag)) != ZCFG_SUCCESS){
++	dslLineStatsOid = zcfgFeObjNameToObjId(tr181Obj, &dslLineIid);
++	if((ret = feObjJsonGet(dslLineStatsOid, &dslLineIid, dslStatsObj, updateFlag)) != ZCFG_SUCCESS){
+ 		zcfgLog(ZCFG_LOG_INFO, "%s : Get dslStatsObj obj fail.\n", __FUNCTION__);
+ 		return ret;
+ 	}
+ 
++	return ZCFG_SUCCESS;
++}
++#else
++zcfgRet_t WANDslIfaceCfgStatsSubObj_RetrieveTr181DslLineStatsSubObj(char *tr98FullPathName, struct json_object **tr98Jobj, struct json_object **dslStatsObj, bool updateFlag)
++{
++	zcfgRet_t ret = ZCFG_SUCCESS;
++	tr98Parameter_t *paramList = NULL;
++	int n = 0, subPathNameMatch = 0;
++	char tr98WanIfaceName[TR98_MAX_OBJ_NAME_LENGTH] = {0}, tr181DslPathName[MAX_TR181_PATHNAME] = {0};;
++	const char *dslLineName = NULL;
++	objIndex_t dslChannelIid, dslLineIid;
++	struct json_object *dslChannelObj = NULL;
++	const char *subPathNames[] = { "Stats.Total", "Stats.Showtime", "Stats.CurrentDay", "Stats.QuarterHour", "Stats.LastShowtime", 0 };
++	int subObjOids[] = {RDM_OID_DSL_LINE_ST_TOTAL, RDM_OID_DSL_LINE_ST_SHOWTIME, RDM_OID_DSL_LINE_ST_LAST_CUR_DAY, RDM_OID_DSL_LINE_ST_LAST_QUAR_HR, RDM_OID_DSL_LINE_ST_LAST_SHOWTIME};
++	uint32_t dslLineStatsOid = 0;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++
++	strcpy(tr98WanIfaceName, tr98FullPathName);
++	char *p = strstr(tr98WanIfaceName, ".WANDSLInterfaceConfig");
++	*p = '\0';
++
++	if((ret = zcfgFe98To181MappingNameGet(tr98WanIfaceName, tr181DslPathName)) != ZCFG_SUCCESS){
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	while(subPathNames[n] && !subPathNameMatch) {
++		char subPathName[30] = {0};
++		strcpy(subPathName, subPathNames[n]);
++		if(strstr(tr98FullPathName, subPathName)) {
++			subPathNameMatch = n+1;
++		}
++		n++;
++	}
++
++	if(!subPathNameMatch) {
++		zcfgLog(ZCFG_LOG_INFO, "%s : Tr98/Tr181 mapping not match\n", __FUNCTION__);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	printf("%s: Tr181 mapping name: %s\n", __FUNCTION__, tr181DslPathName);
++
++	IID_INIT(dslChannelIid);
++	if(sscanf(tr181DslPathName, "DSL.Channel.%hhu", &dslChannelIid.idx[0]) != 1){
++#ifdef ELISA_TR69_WANDSL_CUSTOMIZATION
++		/*Not a DSL interface, all parameters set to 0 or empty*/
++		*tr98Jobj = json_object_new_object();
++		paramList = tr98Obj[handler].parameter;
++		while(paramList->name != NULL) {
++			if(!strstr(paramList->name, "ATUCFECErrors") && !strstr(paramList->name, "ATUCCRCErrors")){
++				zcfgFeTr98DefaultValueSet(*tr98Jobj, paramList->name, paramList->type);
++			}
++			paramList++;
++		}
++		return ZCFG_SUCCESS;
++#endif //ELISA_TR69_WANDSL_CUSTOMIZATION
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	dslChannelIid.level = 1;
++	if((ret = feObjJsonGet(RDM_OID_DSL_CHANNEL, &dslChannelIid, &dslChannelObj, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get dslChannelObj obj fail.\n", __FUNCTION__);
++		return ret;
++	}
++
++	if(strcmp(json_object_get_string(json_object_object_get(dslChannelObj, "Status")), "Up")){
++		// specific dsl not running, no corresponding stats object
++		json_object_put(dslChannelObj);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	IID_INIT(dslLineIid);
++	dslLineIid.level = 1;
++	dslLineName = json_object_get_string(json_object_object_get(dslChannelObj, "LowerLayers"));
++	if(sscanf(dslLineName, "DSL.Line.%hhu", &dslLineIid.idx[0]) != 1){
++		json_object_put(dslChannelObj);
++		return ZCFG_NO_SUCH_OBJECT;
++	}
++
++	dslLineStatsOid = subObjOids[subPathNameMatch-1];
++	if((ret = feObjJsonGet(dslLineStatsOid, &dslLineIid, dslStatsObj, updateFlag)) != ZCFG_SUCCESS){
++		zcfgLog(ZCFG_LOG_INFO, "%s : Get dslStatsObj obj fail.\n", __FUNCTION__);
++	}
++
++	return ret;
++}
++#endif
++
++/*  TR98 Object Name : InternetGatewayDevice.WANDevice.i.WANDSLInterfaceConfig.Stats.SubPathNames
++
++    Related object in TR181:
++    Device.DSL.Line.i.Stats.SubPathNames.
++*/
++extern zcfgRet_t WANDslIfaceCfgStatsSubObjGet(char *tr98FullPathName, int handler, struct json_object **tr98Jobj, bool updateFlag)
++{
++	zcfgRet_t ret;
++	tr98Parameter_t *paramList = NULL;
++	struct json_object *dslStatsObj = NULL;
++	struct json_object *paramValue = NULL;
++	char vendorParamName[32] = {0};
++	struct json_object *vendorParamValue = NULL;
++
++	zcfgLog(ZCFG_LOG_INFO, "%s : Enter\n", __FUNCTION__);
++
++	*tr98Jobj = NULL;
++	ret = WANDslIfaceCfgStatsSubObj_RetrieveTr181DslLineStatsSubObj(tr98FullPathName, tr98Jobj, &dslStatsObj, updateFlag);
++	if(*tr98Jobj)
++		return ret;
++	else if(!dslStatsObj)
++		return ret;
++
+ 	*tr98Jobj = json_object_new_object();
+ 	paramList = tr98Obj[handler].parameter;
+ 	while(paramList->name != NULL) {
+Index: libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h
+===================================================================
+--- libzcfg_fe_tr98-1.0.orig/zcfg_fe_tr98_handle.h	2017-04-25 15:37:54.973921509 +0800
++++ libzcfg_fe_tr98-1.0/zcfg_fe_tr98_handle.h	2017-04-25 15:35:15.029382300 +0800
+@@ -416,8 +416,10 @@
+ {TR98_WAN_DSL_INTF_CONF,        0,              para_WANDslIfaceCfg,    WANDslIfaceCfgObjGet,    WANDslIfaceCfgObjSet,   NULL,             NULL,            NULL},
+ {TR98_WAN_DSL_INTF_TEST_PARAM,  0,              para_WANDslIfTestParam, WANDslIfTestParamObjGet,    NULL,                   NULL,             NULL,            NULL},
+ {TR98_WAN_DSL_INTF_CONF_STAT,   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_TTL,                      0,              para_WANDslIfaceCfgStatTotal,  WANDslIfaceCfgTtlObjGet,                    NULL,                   NULL,             NULL,            NULL},
+-{TR98_ST,                       0,              para_WANDslIfaceCfgStatSt,     WANDslIfaceCfgStObjGet,                    NULL,                   NULL,             NULL,            NULL},
++//{TR98_TTL,                      0,              para_WANDslIfaceCfgStatTotal,  WANDslIfaceCfgTtlObjGet,                    NULL,                   NULL,             NULL,            NULL},
++//{TR98_ST,                       0,              para_WANDslIfaceCfgStatSt,     WANDslIfaceCfgStObjGet,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_TTL,                      0,              para_WANDslIfaceCfgStatObjs,  WANDslIfaceCfgStatsSubObjGet,                    NULL,                   NULL,             NULL,            NULL},
++{TR98_ST,                       0,              para_WANDslIfaceCfgStatObjs,     WANDslIfaceCfgStatsSubObjGet,                    NULL,                   NULL,             NULL,            NULL},
+ //{TR98_LST_SHOWTIME,             0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
+ {TR98_CURRENT_DAY,              0,              para_WANDslIfaceCfgStatObjs,   WANDslIfaceCfgStatsSubObjGet,                    NULL,                   NULL,             NULL,            NULL, NULL, NULL},
+ //{TR98_QTR_HR,                   0,              NULL,                   NULL,                    NULL,                   NULL,             NULL,            NULL},
