@@ -1,4 +1,4 @@
-# OpenWrt for ZyXEL VMG8825-T50/K <span style="color: yellow"> WORKING PROGRESS </span>
+# OpenWrt for ZyXEL VMG8825-T50/K <span style="color: yellow"> ! WORKING PROGRESS </span>
 
   # WEB 
   https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50
