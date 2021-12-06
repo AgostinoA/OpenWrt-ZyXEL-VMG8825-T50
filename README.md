@@ -1,14 +1,13 @@
 # OpenWrt for ZyXEL VMG8825-T50/K
   
 # WEB 
-https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50
+* [OpenWrt](https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50)
+* [Zyxel](./docs/api.md)
 
 # Firmware
-ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
-
+* [VMG8825-T50K_5.50(ABOM.3)](ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip)
 
 # TODO
-
 ```diff
 - N/A
 + DONE
