@@ -43,7 +43,7 @@
 ```
 
 ```diff
-+ list firmwares ZyXEL-VMG8825-T50
+! list firmwares ZyXEL-VMG8825-T50
 ! hack json automate
 # qemu code
 + kernel main:last
