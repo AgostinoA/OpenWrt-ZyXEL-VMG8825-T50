@@ -5,9 +5,8 @@
 * [Zyxel](./docs/api.md)
 
 # Firmware
-* [VMG8825-T50K_5.50(ABOM.3)]
 ```diff
-- ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
++ VMG8825-T50K_5.50(ABOM.3) -> ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
 ```
 
 # TODO
