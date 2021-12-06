@@ -7,6 +7,8 @@ https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50
 # Firmware
 ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
 
+
+# TODO
 - list firmwares
 - hack json automate
 - qemu code
