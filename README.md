@@ -43,10 +43,10 @@
 ```
 
 ```diff
-+ list firmwares
++ list firmwares ZyXEL-VMG8825-T50
 ! hack json automate
 # qemu code
 + kernel main:last
-+ source firmware ZyXEL-VMG8825-T50
-+ source firmware OpenWrt
++ source ZyXEL-VMG8825-T50
++ source OpenWrt
 ```
