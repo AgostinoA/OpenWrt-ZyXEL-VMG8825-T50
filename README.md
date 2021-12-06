@@ -1,5 +1,5 @@
-# OpenWrt for ZyXEL VMG8825-T50/K <span style="color: yellow"> ! WORKING PROGRESS </span>
-
+# OpenWrt for ZyXEL VMG8825-T50/K
+  
   # WEB 
   https://openwrt.org/inbox/toh/zyxel/zyxel_vmg8825-t50
 
@@ -14,3 +14,13 @@
   - kernel main:last
   - source firmware ZyXEL-VMG8825-T50-OpenWrt
   - source firmware OpenWrt
+
+
+```diff
+- list firmwares
++ hack json automate
+! qemu code
+#  kernel main:last
+#  source firmware ZyXEL-VMG8825-T50-OpenWrt
+@@ source firmware OpenWrt@@
+```
