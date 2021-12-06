@@ -18,10 +18,10 @@ ftp://ftp.zyxel.com/VMG8825-T50K/firmware/VMG8825-T50K_5.50(ABOM.3)C0.zip
 ```
 
 ```diff
-- list firmwares
-+ hack json automate
-! qemu code
+! list firmwares
+! hack json automate
+# qemu code
 #  kernel main:last
-#  source firmware ZyXEL-VMG8825-T50-OpenWrt
-@@ source firmware OpenWrt@@
++  source firmware ZyXEL-VMG8825-T50-OpenWrt
++ source firmware OpenWrt
 ```
