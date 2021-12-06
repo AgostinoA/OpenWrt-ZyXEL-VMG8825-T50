@@ -1,3 +1,5 @@
+[![CI](https://github.com/AgostinoA/OpenWrt-ZyXEL-VMG8825-T50/actions/workflows/blank.yml/badge.svg)](https://github.com/AgostinoA/OpenWrt-ZyXEL-VMG8825-T50/actions/workflows/blank.yml)
+
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
