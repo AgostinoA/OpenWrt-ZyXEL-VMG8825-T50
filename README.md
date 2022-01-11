@@ -47,8 +47,8 @@
 + add source ZyXEL-VMG8825-T50
 + add source OpenWrt
 + list firmwares ZyXEL-VMG8825-T50
-! hack json automate
-! script auto build stock
+! hack json automate with node.js
+! script auto build stock 
 # patch all ZyXEL-VMG8825-T50 on Openwrt
 # script auto build openwrt
 # qemu code generator
