@@ -1,5 +1,4 @@
-Modem --- USB
-
-GND    ---   GND
-RX     ------   TX   
-TX     ------   RX
+# Modem --- USB
+- GND    ---   GND
+- RX     ------   TX   
+- TX     ------   RX
