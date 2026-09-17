@@ -18,7 +18,7 @@
   <p align="center">
     Porting OpenWrt
     The original firmwares are all based on OpenWrt Attitude Adjustment, so the chance of success is very high.
-    In this period I am blocked from university studies, as soon as I finish, I immediately start working on it. If anyone wants to start working on it in between, I'm grateful. 
+     If anyone wants to start working on it in between, I'm grateful. 
     Try to put more sources, firmware and raw, on this github. I have an idea of how to proceed, the more information we have the better.
     <br />
     <a href="https://www.ilpuntotecnico.com/forum/index.php?topic=82576.30"><strong>ilPuntotecnico</strong></a>
